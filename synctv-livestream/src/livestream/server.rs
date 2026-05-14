@@ -111,6 +111,8 @@ pub struct LivestreamConfig {
     pub cluster_secret: Option<String>,
     /// Maximum gRPC message size for cross-node HLS relay calls.
     pub grpc_max_message_size_bytes: usize,
+    /// Whether cross-node HLS relay calls negotiate gzip compression.
+    pub grpc_compression_enabled: bool,
     /// Maximum memory (in megabytes) for the GOP cache per stream.
     /// 0 means use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
@@ -976,6 +978,7 @@ impl LivestreamServer {
         let hls_proxy =
             crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
                 .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
+                .with_grpc_compression(self.config.grpc_compression_enabled)
                 .with_connection_pool(shared_grpc_pool.clone());
 
         // 5c. Create PullStreamManager with the same shared pool
@@ -987,6 +990,8 @@ impl LivestreamServer {
                 self.config.stream_timeout_seconds,
             )
             .with_connection_pool(shared_grpc_pool)
+            .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
+            .with_grpc_compression(self.config.grpc_compression_enabled)
             .with_cluster_secret(self.config.cluster_secret.clone())
             .with_hls_proxy(hls_proxy.clone()),
         );
@@ -1142,6 +1147,7 @@ mod tests {
             distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
@@ -1549,6 +1555,7 @@ mod tests {
             distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
@@ -1592,6 +1599,7 @@ mod tests {
             distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
@@ -1639,6 +1647,7 @@ mod tests {
             distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),

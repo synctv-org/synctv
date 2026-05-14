@@ -20,6 +20,7 @@ use synctv_core::{
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, ProvidersManager, ProxySigningKey, RemoteProviderManager,
         RoomService, UserService,
     },
@@ -89,6 +90,48 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     svc
 }
 
+fn make_fake_alist_providers_manager(pool: &sqlx::PgPool) -> Arc<ProvidersManager> {
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    providers_manager.register_factory(
+        "alist",
+        Box::new(|instance_id, _config, _instance_manager| {
+            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+        }),
+    );
+    Arc::new(providers_manager)
+}
+
+fn make_room_service_with_provider_credentials(
+    pool: &sqlx::PgPool,
+    user_service: &UserService,
+    providers_manager: Arc<ProvidersManager>,
+) -> RoomService {
+    let credential_encryption =
+        synctv_core::service::CredentialEncryption::new(b"0123456789abcdef0123456789abcdef")
+            .unwrap();
+    let credential_repo = Arc::new(
+        synctv_core::repository::UserProviderCredentialRepository::new_with_encryption(
+            pool.clone(),
+            credential_encryption.clone(),
+        ),
+    );
+    let mut room_service = RoomService::new_with_providers_and_options(
+        pool.clone(),
+        user_service.clone(),
+        providers_manager,
+        RoomServiceOptions {
+            credential_encryption: Some(credential_encryption),
+            credential_repo: Some(credential_repo),
+            ..RoomServiceOptions::default()
+        },
+    );
+    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    room_service
+}
+
 #[derive(Debug)]
 struct FakeDynamicProvider {
     instance_id: String,
@@ -102,7 +145,7 @@ impl FakeDynamicProvider {
     }
 
     fn is_bound_instance(&self) -> bool {
-        self.instance_id != "fake_dynamic_default"
+        self.instance_id != "alist_default"
     }
 
     fn folder_cursor(&self) -> &'static str {
@@ -148,7 +191,7 @@ impl FakeDynamicProvider {
 #[async_trait]
 impl MediaProvider for FakeDynamicProvider {
     fn name(&self) -> &'static str {
-        "fake_dynamic"
+        "alist"
     }
 
     async fn generate_playback(
@@ -324,7 +367,7 @@ async fn create_dynamic_playlist(
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["fake_dynamic".to_string()],
+        providers: vec!["alist".to_string()],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -341,7 +384,7 @@ async fn create_dynamic_playlist(
         name: "Dynamic Playlist".to_string(),
         parent_id: None,
         position: 0.0,
-        source_provider: Some("fake_dynamic".to_string()),
+        source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({})),
         provider_instance_name: Some(provider_instance_name.to_string()),
         created_at: Utc::now(),
@@ -362,32 +405,16 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
 
     let user_service = Arc::new(make_user_service(&pool));
 
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-        ProviderInstanceRepository::new(pool.clone()),
-    )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
-    providers_manager.register_factory(
-        "fake_dynamic",
-        Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
-        }),
-    );
-    let providers_manager = Arc::new(providers_manager);
-
-    let mut room_service = RoomService::new_with_providers(
-        pool.clone(),
-        (*user_service).clone(),
+    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let room_service = make_room_service_with_provider_credentials(
+        &pool,
+        &user_service,
         providers_manager.clone(),
     );
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider(
-            "fake_dynamic",
-            "fake_dynamic_default",
-            &serde_json::json!({}),
-        )
+        .create_provider("alist", "alist_default", &serde_json::json!({}))
         .await
         .unwrap();
 
@@ -405,8 +432,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         )
         .await
         .unwrap();
-    let playlist =
-        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
@@ -481,7 +507,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     assert_eq!(direct.urls.len(), 1);
     assert_eq!(
         direct.urls[0].url,
-        "https://fake_dynamic_default.example.com/episode-1.mp4"
+        "https://alist_default.example.com/episode-1.mp4"
     );
 }
 
@@ -492,32 +518,16 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-        ProviderInstanceRepository::new(pool.clone()),
-    )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
-    providers_manager.register_factory(
-        "fake_dynamic",
-        Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
-        }),
-    );
-    let providers_manager = Arc::new(providers_manager);
-
-    let mut room_service = RoomService::new_with_providers(
-        pool.clone(),
-        (*user_service).clone(),
+    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let room_service = make_room_service_with_provider_credentials(
+        &pool,
+        &user_service,
         providers_manager.clone(),
     );
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider(
-            "fake_dynamic",
-            "fake_dynamic_default",
-            &serde_json::json!({}),
-        )
+        .create_provider("alist", "alist_default", &serde_json::json!({}))
         .await
         .unwrap();
 
@@ -536,8 +546,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         .await
         .unwrap();
 
-    let playlist =
-        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
@@ -603,36 +612,20 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-        ProviderInstanceRepository::new(pool.clone()),
-    )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
-    providers_manager.register_factory(
-        "fake_dynamic",
-        Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
-        }),
-    );
-    let providers_manager = Arc::new(providers_manager);
-
-    let mut room_service = RoomService::new_with_providers(
-        pool.clone(),
-        (*user_service).clone(),
+    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let room_service = make_room_service_with_provider_credentials(
+        &pool,
+        &user_service,
         providers_manager.clone(),
     );
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider(
-            "fake_dynamic",
-            "fake_dynamic_default",
-            &serde_json::json!({}),
-        )
+        .create_provider("alist", "alist_default", &serde_json::json!({}))
         .await
         .unwrap();
     providers_manager
-        .create_provider("fake_dynamic", "fake_dynamic_alt", &serde_json::json!({}))
+        .create_provider("alist", "alist_alt", &serde_json::json!({}))
         .await
         .unwrap();
 
@@ -651,7 +644,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .await
         .unwrap();
 
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_alt").await;
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
@@ -702,7 +695,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let direct = playback_snapshot.playback_infos.get("direct").unwrap();
     assert_eq!(
         direct.urls[0].url,
-        "https://fake_dynamic_alt.example.com/bound-episode-1.mp4"
+        "https://alist_alt.example.com/bound-episode-1.mp4"
     );
 }
 
@@ -761,7 +754,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         None,
         0.0,
     );
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let media_public_id = codec.encode_media_id(media.id).unwrap();
@@ -938,11 +931,11 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
         Some(owner.id),
         "Broken Playback Provider".to_string(),
         serde_json::json!({ "opaque": true }),
-        "missing_provider",
+        "live_proxy",
         None,
         0.0,
     );
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let media_public_id = codec.encode_media_id(media.id).unwrap();
@@ -1002,36 +995,20 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-        ProviderInstanceRepository::new(pool.clone()),
-    )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
-    providers_manager.register_factory(
-        "fake_dynamic",
-        Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
-        }),
-    );
-    let providers_manager = Arc::new(providers_manager);
-
-    let mut room_service = RoomService::new_with_providers(
-        pool.clone(),
-        (*user_service).clone(),
+    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let room_service = make_room_service_with_provider_credentials(
+        &pool,
+        &user_service,
         providers_manager.clone(),
     );
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider(
-            "fake_dynamic",
-            "fake_dynamic_default",
-            &serde_json::json!({}),
-        )
+        .create_provider("alist", "alist_default", &serde_json::json!({}))
         .await
         .unwrap();
     providers_manager
-        .create_provider("fake_dynamic", "fake_dynamic_alt", &serde_json::json!({}))
+        .create_provider("alist", "alist_alt", &serde_json::json!({}))
         .await
         .unwrap();
 
@@ -1050,7 +1027,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
         .await
         .unwrap();
 
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_alt").await;
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();

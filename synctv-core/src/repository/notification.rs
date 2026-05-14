@@ -9,7 +9,7 @@ use crate::{
     Error, Result,
 };
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{postgres::PgRow, PgPool, Row};
 
 /// Notification repository for database operations
 #[derive(Clone, Debug)]
@@ -27,34 +27,33 @@ impl NotificationRepository {
     pub async fn create(&self, req: &CreateNotificationRequest) -> Result<Notification> {
         let now = Utc::now();
 
-        let n = sqlx::query_as!(
-            Notification,
-            r#"
+        let row = sqlx::query(
+            r"
             INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id,
-                      user_id as "user_id: UserId",
-                      type as "notification_type: NotificationType",
+                      user_id,
+                      type AS notification_type,
                       title,
                       content,
-                      data as "data!: serde_json::Value",
+                      data,
                       is_read,
                       created_at,
                       updated_at
-            "#,
-            req.user_id as UserId,
-            req.notification_type.to_string(),
-            req.title.as_str(),
-            req.content.as_str(),
-            req.data.clone(),
-            false,
-            now,
-            now,
+            ",
         )
+        .bind(req.user_id.as_i64())
+        .bind(i16::from(req.notification_type))
+        .bind(req.title.as_str())
+        .bind(req.content.as_str())
+        .bind(req.data.clone())
+        .bind(false)
+        .bind(now)
+        .bind(now)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(n)
+        notification_from_row(&row)
     }
 
     /// Get notification by ID
@@ -67,15 +66,14 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let n = sqlx::query_as!(
-            Notification,
-            r#"
+        let row = sqlx::query(
+            r"
             SELECT id,
-                   user_id as "user_id: UserId",
-                   type as "notification_type: NotificationType",
+                   user_id,
+                   type AS notification_type,
                    title,
                    content,
-                   data as "data!: serde_json::Value",
+                   data,
                    is_read,
                    created_at,
                    updated_at
@@ -83,15 +81,15 @@ impl NotificationRepository {
             WHERE id = $1
               AND created_at >= $2
               AND created_at <= $3
-            "#,
-            notification_id,
-            one_year_ago,
-            now,
+            ",
         )
+        .bind(notification_id)
+        .bind(one_year_ago)
+        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(n)
+        row.as_ref().map(notification_from_row).transpose()
     }
 
     /// Get notification by ID, scoped to a user.
@@ -103,11 +101,11 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let n = sqlx::query_as::<_, Notification>(
+        let row = sqlx::query(
             r"
             SELECT id,
                    user_id,
-                   type,
+                   type AS notification_type,
                    title,
                    content,
                    data,
@@ -128,7 +126,7 @@ impl NotificationRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(n)
+        row.as_ref().map(notification_from_row).transpose()
     }
 
     /// List notifications for a user with pagination, filters, and total count.
@@ -148,7 +146,7 @@ impl NotificationRepository {
         let offset = query.pagination.offset().cast_signed();
 
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT id, user_id, type, title, content, data, is_read, created_at, updated_at, \
+            "SELECT id, user_id, type AS notification_type, title, content, data, is_read, created_at, updated_at, \
              COUNT(*) OVER() AS total_count \
              FROM notifications WHERE user_id = ",
         );
@@ -167,7 +165,7 @@ impl NotificationRepository {
         }
         if let Some(notification_type) = &query.notification_type {
             qb.push(" AND type = ");
-            qb.push_bind(notification_type.to_string());
+            qb.push_bind(i16::from(*notification_type));
         }
         if let Some(is_read) = query.is_read {
             qb.push(" AND is_read = ");
@@ -200,7 +198,7 @@ impl NotificationRepository {
             .map_or(0i64, |row| row.try_get("total_count").unwrap_or(0));
         let notifications: Result<Vec<Notification>> = rows
             .into_iter()
-            .map(|row| Ok(Notification::from_row(&row)?))
+            .map(|row| notification_from_row(&row))
             .collect();
 
         Ok((notifications?, total))
@@ -225,7 +223,7 @@ impl NotificationRepository {
 
         if let Some(notification_type) = notification_type {
             qb.push(" AND type = ");
-            qb.push_bind(notification_type.to_string());
+            qb.push_bind(i16::from(*notification_type));
         }
         if let Some(is_read) = is_read {
             qb.push(" AND is_read = ");
@@ -382,6 +380,21 @@ impl NotificationRepository {
 
         Ok(result.rows_affected())
     }
+}
+
+fn notification_from_row(row: &PgRow) -> Result<Notification> {
+    let user_id: i64 = row.try_get("user_id")?;
+    Ok(Notification {
+        id: row.try_get("id")?,
+        user_id: UserId::expect_positive(user_id),
+        notification_type: row.try_get("notification_type")?,
+        title: row.try_get("title")?,
+        content: row.try_get("content")?,
+        data: row.try_get("data")?,
+        is_read: row.try_get("is_read")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
 }
 
 #[cfg(test)]

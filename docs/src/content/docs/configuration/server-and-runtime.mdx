@@ -51,7 +51,9 @@ HTTP REST、公开 gRPC 和健康检查使用这个端口。Helm 会把 HTTP 和
 
 默认值：`true`。
 
-允许 gRPC 客户端和服务端协商 gzip 压缩。它不强制所有请求压缩。
+允许主 SyncTV 进程中的 gRPC 客户端和服务端协商 gzip 压缩，包括公开 gRPC、management gRPC、cluster/livestream 内部 gRPC 链路，以及出站远程 media-provider gRPC client。它不强制所有请求压缩。
+
+独立部署的远程 media-provider server 不读取主 SyncTV 配置文件。它的服务端压缩协商使用 `PROVIDER_GRPC_COMPRESSION_ENABLED` 配置。
 
 ### `server.trusted_proxies`
 

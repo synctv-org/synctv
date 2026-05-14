@@ -10,7 +10,7 @@
 //! Each provider service is wrapped with a per-service circuit breaker to prevent
 //! a failing backend from consuming all server threads. The circuit breaker tracks
 //! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
-//! then transitions to half-open after `CIRCUIT_BREAKER_TIMEOUT` to allow recovery.
+//! then transitions to half-open after `CIRCUIT_BREAKER_TIMEOUT_SECS` to allow recovery.
 //!
 //! `record_success` is called only for RPCs that complete with an OK gRPC status.
 //! Backend failures that are encoded as gRPC error responses still count as
@@ -29,6 +29,7 @@ use synctv_media_providers::grpc::{
     bilibili::bilibili_server::BilibiliServer, bilibili_server::BilibiliService,
     emby::emby_server::EmbyServer, emby_server::EmbyService,
 };
+use tonic::codec::CompressionEncoding;
 use tonic::codegen::http::{HeaderMap, Response as HttpResponse};
 use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
@@ -40,6 +41,7 @@ use tracing::{info, warn, Level};
 
 const PROVIDER_GRPC_MESSAGE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
+const PROVIDER_GRPC_COMPRESSION_ENABLED_ENV: &str = "PROVIDER_GRPC_COMPRESSION_ENABLED";
 
 trait GrpcStatusHeaders {
     fn grpc_status_headers(&self) -> &HeaderMap;
@@ -71,6 +73,25 @@ fn should_record_circuit_breaker_failure(headers: &HeaderMap) -> bool {
             | Code::Unavailable
             | Code::DataLoss
     )
+}
+
+fn parse_bool_env_value(env_name: &str, raw_value: &str) -> Result<bool, String> {
+    let normalized = raw_value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!(
+            "{env_name} must be a boolean value: true/false, 1/0, yes/no, or on/off"
+        )),
+    }
+}
+
+fn parse_env_bool(env_name: &str, default: bool) -> Result<bool, String> {
+    match std::env::var(env_name) {
+        Ok(raw_value) => parse_bool_env_value(env_name, &raw_value),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{env_name} must be valid UTF-8")),
+    }
 }
 
 fn validate_provider_secret(metadata: &MetadataMap, expected_secret: &str) -> Result<(), Status> {
@@ -245,8 +266,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("PROVIDER_LISTEN_ADDR")
         .unwrap_or_else(|_| "[::]:50051".to_string())
         .parse()?;
+    let grpc_compression_enabled = parse_env_bool(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, true)?;
 
     info!("Starting Provider gRPC server on {}", addr);
+    info!(
+        "{}={}",
+        PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, grpc_compression_enabled
+    );
 
     // Create service instances
     let alist_service = AlistGrpcService::new();
@@ -294,6 +320,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("All provider services initialized and marked SERVING");
 
+    let alist_server = AlistServer::new(alist_service)
+        .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
+        .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT);
+    let bilibili_server = BilibiliServer::new(bilibili_service)
+        .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
+        .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT);
+    let emby_server = EmbyServer::new(emby_service)
+        .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
+        .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT);
+
+    let alist_server = if grpc_compression_enabled {
+        alist_server
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip)
+    } else {
+        alist_server
+    };
+    let bilibili_server = if grpc_compression_enabled {
+        bilibili_server
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip)
+    } else {
+        bilibili_server
+    };
+    let emby_server = if grpc_compression_enabled {
+        emby_server
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip)
+    } else {
+        emby_server
+    };
+    let health_service = if grpc_compression_enabled {
+        health_service
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip)
+    } else {
+        health_service
+    };
+
     Server::builder()
         .max_frame_size(Some(PROVIDER_GRPC_FRAME_SIZE_LIMIT))
         .concurrency_limit_per_connection(100)
@@ -305,28 +370,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ))
         .add_service(
-            alist_cb_layer.named_layer(InterceptedService::new(
-                AlistServer::new(alist_service)
-                    .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
-                    .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT),
-                move |req| alist_auth.validate(req),
-            )),
+            alist_cb_layer.named_layer(InterceptedService::new(alist_server, move |req| {
+                alist_auth.validate(req)
+            })),
         )
         .add_service(
-            bilibili_cb_layer.named_layer(InterceptedService::new(
-                BilibiliServer::new(bilibili_service)
-                    .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
-                    .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT),
-                move |req| bilibili_auth.validate(req),
-            )),
+            bilibili_cb_layer.named_layer(InterceptedService::new(bilibili_server, move |req| {
+                bilibili_auth.validate(req)
+            })),
         )
         .add_service(
-            emby_cb_layer.named_layer(InterceptedService::new(
-                EmbyServer::new(emby_service)
-                    .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
-                    .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT),
-                move |req| emby_auth.validate(req),
-            )),
+            emby_cb_layer.named_layer(InterceptedService::new(emby_server, move |req| {
+                emby_auth.validate(req)
+            })),
         )
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
@@ -409,5 +465,27 @@ mod tests {
     fn missing_grpc_status_defaults_to_success_path() {
         assert!(should_record_circuit_breaker_success(&grpc_headers(None)));
         assert!(!should_record_circuit_breaker_failure(&grpc_headers(None)));
+    }
+
+    #[test]
+    fn parse_bool_env_value_accepts_common_values() {
+        for value in ["true", "1", "yes", "on", " TRUE "] {
+            assert!(
+                parse_bool_env_value(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, value)
+                    .expect("valid truthy compression env value should parse")
+            );
+        }
+
+        for value in ["false", "0", "no", "off", " FALSE "] {
+            assert!(
+                !parse_bool_env_value(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, value)
+                    .expect("valid falsy compression env value should parse")
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bool_env_value_rejects_invalid_values() {
+        assert!(parse_bool_env_value(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, "maybe").is_err());
     }
 }

@@ -10,10 +10,13 @@
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 use synctv_core::{
-    models::{ChatMessage, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
+    models::{
+        ChatMessage, ChatMessageType, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
+    },
     repository::{ChatRepository, RoomRepository, SettingsRepository, UserRepository},
     service::{
-        global_settings::SettingsRegistry, AlwaysLeader, ChatPartitionManager, SettingsService,
+        global_settings::SettingsRegistry, AlwaysLeader, AuditAction, ChatPartitionManager,
+        SettingsService,
     },
 };
 use synctv_core_testing::create_test_pool;
@@ -89,7 +92,7 @@ async fn test_chat_message_default_partition_routing() {
         room_id: room.id,
         user_id: Some(owner.id),
         content: "Future message".to_string(),
-        message_type: 1,
+        message_type: ChatMessageType::Text,
         created_at: far_future,
     };
 
@@ -145,7 +148,7 @@ async fn test_audit_logs_default_partition_routing() {
     let result =
         sqlx::query("INSERT INTO audit_logs (actor_id, action, created_at) VALUES ($1, $2, $3)")
             .bind(UserId::expect_positive(1))
-            .bind("test_action")
+            .bind(i16::from(AuditAction::SettingsUpdated))
             .bind(far_future)
             .execute(&pool)
             .await;

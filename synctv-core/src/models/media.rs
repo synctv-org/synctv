@@ -85,16 +85,124 @@ impl FromStr for ProviderType {
     }
 }
 
+impl ProviderType {
+    #[must_use]
+    pub const fn as_i16(self) -> i16 {
+        match self {
+            Self::DirectUrl => 1,
+            Self::Bilibili => 2,
+            Self::Alist => 3,
+            Self::Emby => 4,
+            Self::Rtmp => 5,
+            Self::LiveProxy => 6,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectUrl => "direct_url",
+            Self::Bilibili => "bilibili",
+            Self::Alist => "alist",
+            Self::Emby => "emby",
+            Self::Rtmp => "rtmp",
+            Self::LiveProxy => "live_proxy",
+        }
+    }
+}
+
+impl TryFrom<i16> for ProviderType {
+    type Error = String;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::DirectUrl),
+            2 => Ok(Self::Bilibili),
+            3 => Ok(Self::Alist),
+            4 => Ok(Self::Emby),
+            5 => Ok(Self::Rtmp),
+            6 => Ok(Self::LiveProxy),
+            other => Err(format!("Unknown provider type code: {other}")),
+        }
+    }
+}
+
+impl From<ProviderType> for i16 {
+    fn from(value: ProviderType) -> Self {
+        value.as_i16()
+    }
+}
+
+pub fn provider_type_code_from_name(raw: &str) -> Result<i16, String> {
+    raw.parse::<ProviderType>().map(ProviderType::as_i16)
+}
+
+pub fn provider_type_name_from_code(code: i16) -> Result<String, String> {
+    ProviderType::try_from(code).map(|provider| provider.to_string())
+}
+
+pub fn provider_type_codes_from_names<'a>(
+    names: impl IntoIterator<Item = &'a String>,
+) -> Result<Vec<i16>, String> {
+    names
+        .into_iter()
+        .map(|name| provider_type_code_from_name(name))
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderTypeName(pub String);
+
+impl From<i16> for ProviderTypeName {
+    fn from(value: i16) -> Self {
+        Self(provider_type_name_from_code(value).unwrap_or_else(|_| value.to_string()))
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for ProviderTypeName {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <i16 as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderTypeName {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let code = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(Self(provider_type_name_from_code(code)?))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderTypeNames(pub Vec<String>);
+
+impl sqlx::Type<sqlx::Postgres> for ProviderTypeNames {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <Vec<i16> as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <Vec<i16> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderTypeNames {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let codes = <Vec<i16> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        let names = codes
+            .into_iter()
+            .map(provider_type_name_from_code)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self(names))
+    }
+}
+
 impl std::fmt::Display for ProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DirectUrl => write!(f, "direct_url"),
-            Self::Bilibili => write!(f, "bilibili"),
-            Self::Alist => write!(f, "alist"),
-            Self::Emby => write!(f, "emby"),
-            Self::Rtmp => write!(f, "rtmp"),
-            Self::LiveProxy => write!(f, "live_proxy"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -112,8 +220,9 @@ pub struct Media {
     pub creator_id: Option<UserId>,
     pub name: String,
     pub position: f64,
-    /// Provider type name (e.g., "bilibili", "alist", "emby", "`direct_url`")
-    /// Stored as string for flexibility, not an enum
+    /// Provider type name (e.g., "bilibili", "alist", "emby", "`direct_url`").
+    /// The database stores the corresponding numeric provider type code; API
+    /// and provider boundaries keep using canonical names.
     pub source_provider: String,
     /// Provider-specific configuration (JSONB)
     /// Should ONLY be parsed by the provider implementation, NOT by Media model

@@ -227,6 +227,12 @@ impl RealtimeJoinError {
             | Self::Internal(message) => message,
         }
     }
+
+    pub fn log_if_internal(&self, context: &'static str) {
+        if let Self::Internal(message) = self {
+            tracing::error!(context, error = %message, "Unexpected realtime join failure");
+        }
+    }
 }
 
 impl From<String> for RealtimeJoinError {
@@ -246,6 +252,17 @@ impl From<crate::impls::ApiError> for RealtimeJoinError {
             crate::impls::ErrorKind::PermissionDenied
             | crate::impls::ErrorKind::Unauthenticated => Self::PermissionDenied(message),
             _ => Self::Internal(message),
+        }
+    }
+}
+
+impl From<RealtimeJoinError> for crate::impls::ApiError {
+    fn from(error: RealtimeJoinError) -> Self {
+        match error {
+            RealtimeJoinError::PermissionDenied(message) => Self::Authorization(message),
+            RealtimeJoinError::RateLimited(message) => Self::RateLimited(message),
+            RealtimeJoinError::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
+            RealtimeJoinError::Internal(message) => Self::Internal(message),
         }
     }
 }

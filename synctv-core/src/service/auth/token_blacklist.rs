@@ -624,10 +624,74 @@ impl TieredTokenBlacklistStore {
     }
 
     async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
-        match &self.redis_runtime {
-            Some(runtime) => Some(runtime.snapshot().await),
-            None => None,
+        self.redis_conn_snapshot_result().await
+    }
+
+    async fn redis_conn_snapshot_result(&self) -> Option<redis::aio::ConnectionManager> {
+        let runtime = self.redis_runtime.as_ref()?;
+        if let Ok(conn) =
+            tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await
+        {
+            Some(conn)
+        } else {
+            tracing::warn!(
+                timeout_ms = runtime.operation_timeout().as_millis(),
+                "Redis L2 token blacklist connection snapshot timed out"
+            );
+            None
         }
+    }
+
+    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Option<T>
+    where
+        F: std::future::Future<Output = redis::RedisResult<T>>,
+    {
+        let timeout = self.redis_runtime.as_ref().map_or(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            |runtime| runtime.operation_timeout(),
+        );
+
+        match tokio::time::timeout(timeout, future).await {
+            Ok(Ok(value)) => Some(value),
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    operation,
+                    error = %error,
+                    "Redis L2 token blacklist operation failed"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    operation,
+                    timeout_ms = timeout.as_millis(),
+                    "Redis L2 token blacklist operation timed out"
+                );
+                None
+            }
+        }
+    }
+
+    async fn redis_get_string(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        key: &str,
+        operation: &'static str,
+    ) -> Option<Option<String>> {
+        self.run_redis_op(operation, conn.get(key)).await
+    }
+
+    async fn redis_set_ex(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        key: &str,
+        value: impl redis::ToSingleRedisArg + Send + Sync,
+        ttl_secs: u64,
+        operation: &'static str,
+    ) -> bool {
+        self.run_redis_op(operation, conn.set_ex::<_, _, ()>(key, value, ttl_secs))
+            .await
+            .is_some()
     }
 }
 
@@ -643,26 +707,20 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
-            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
-            match result {
-                Ok(Some(val)) => {
-                    let is_bl = val == "1";
-                    let l1_ttl = if is_bl {
-                        L1_POSITIVE_TTL
-                    } else {
-                        L1_NEGATIVE_TTL
-                    };
-                    self.l1_blacklist
-                        .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
-                        .await;
-                    return is_bl;
-                }
-                Ok(None) => {
-                    // L2 miss, continue to PG
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, key = %key, "Redis L2 blacklist lookup failed, falling back to PG");
-                }
+            if let Some(Some(val)) = self
+                .redis_get_string(&mut conn, &redis_key, "blacklist lookup")
+                .await
+            {
+                let is_bl = val == "1";
+                let l1_ttl = if is_bl {
+                    L1_POSITIVE_TTL
+                } else {
+                    L1_NEGATIVE_TTL
+                };
+                self.l1_blacklist
+                    .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
+                    .await;
+                return is_bl;
             }
         }
 
@@ -677,9 +735,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 let redis_key = self.bl_key(key);
                 // Use a reasonable TTL; we don't know the token's TTL here,
                 // so use L1_POSITIVE_TTL as a safe upper bound for L2.
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, "1", L1_POSITIVE_TTL.as_secs())
-                    .await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "1",
+                    L1_POSITIVE_TTL.as_secs(),
+                    "blacklist positive cache write",
+                )
+                .await;
             }
         } else {
             // Negative sentinel: populate L1 + L2
@@ -688,8 +751,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let _: redis::RedisResult<()> =
-                    conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "0",
+                    L2_NEGATIVE_TTL_SECS,
+                    "blacklist negative cache write",
+                )
+                .await;
             }
         }
 
@@ -706,26 +775,20 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
-            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
-            match result {
-                Ok(Some(val)) => {
-                    let is_bl = val == "1";
-                    let l1_ttl = if is_bl {
-                        L1_POSITIVE_TTL
-                    } else {
-                        L1_NEGATIVE_TTL
-                    };
-                    self.l1_blacklist
-                        .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
-                        .await;
-                    return Ok(is_bl);
-                }
-                Ok(None) => {
-                    // L2 miss, continue to PG
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, key = %key, "Redis L2 blacklist lookup failed, falling back to PG");
-                }
+            if let Some(Some(val)) = self
+                .redis_get_string(&mut conn, &redis_key, "checked blacklist lookup")
+                .await
+            {
+                let is_bl = val == "1";
+                let l1_ttl = if is_bl {
+                    L1_POSITIVE_TTL
+                } else {
+                    L1_NEGATIVE_TTL
+                };
+                self.l1_blacklist
+                    .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
+                    .await;
+                return Ok(is_bl);
             }
         }
 
@@ -738,9 +801,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, "1", L1_POSITIVE_TTL.as_secs())
-                    .await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "1",
+                    L1_POSITIVE_TTL.as_secs(),
+                    "checked blacklist positive cache write",
+                )
+                .await;
             }
         } else {
             // Negative sentinel: populate L1 + L2
@@ -749,8 +817,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let _: redis::RedisResult<()> =
-                    conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "0",
+                    L2_NEGATIVE_TTL_SECS,
+                    "checked blacklist negative cache write",
+                )
+                .await;
             }
         }
 
@@ -765,7 +839,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let _: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
+            self.redis_set_ex(
+                &mut conn,
+                &redis_key,
+                "1",
+                l2_ttl,
+                "blacklist write-through",
+            )
+            .await;
         }
 
         // 3. Write to L1 moka (positive, overwrites any stale negative sentinel)
@@ -819,11 +900,18 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let cache_result: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
-            if let Err(e) = cache_result {
+            if !self
+                .redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "1",
+                    l2_ttl,
+                    "blacklist-if-not-exists cache write",
+                )
+                .await
+            {
                 tracing::warn!(
                     key = %key,
-                    error = %e,
                     "Failed to populate Redis L2 blacklist cache after PG write"
                 );
             }
@@ -850,35 +938,29 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
-            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
-            match result {
-                Ok(Some(val)) => {
-                    if val == "_" {
-                        // Negative sentinel
-                        self.l1_family
-                            .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
-                            .await;
-                        return None;
-                    }
-                    // Positive: parse timestamp
-                    if let Ok(ts) = val.parse::<i64>() {
-                        self.l1_family
-                            .insert(
-                                key.to_string(),
-                                (Some(ts), Instant::now() + L1_POSITIVE_TTL),
-                            )
-                            .await;
-                        return Some(ts);
-                    }
-                    // Malformed value, fall through to PG
-                    tracing::warn!(key = %key, val = %val, "Malformed family revocation value in Redis L2");
+            if let Some(Some(val)) = self
+                .redis_get_string(&mut conn, &redis_key, "family lookup")
+                .await
+            {
+                if val == "_" {
+                    // Negative sentinel
+                    self.l1_family
+                        .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
+                        .await;
+                    return None;
                 }
-                Ok(None) => {
-                    // L2 miss, continue to PG
+                // Positive: parse timestamp
+                if let Ok(ts) = val.parse::<i64>() {
+                    self.l1_family
+                        .insert(
+                            key.to_string(),
+                            (Some(ts), Instant::now() + L1_POSITIVE_TTL),
+                        )
+                        .await;
+                    return Some(ts);
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, key = %key, "Redis L2 family lookup failed, falling back to PG");
-                }
+                // Malformed value, fall through to PG
+                tracing::warn!(key = %key, val = %val, "Malformed family revocation value in Redis L2");
             }
         }
 
@@ -894,9 +976,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
-                    .await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    ts.to_string(),
+                    L1_POSITIVE_TTL.as_secs(),
+                    "family positive cache write",
+                )
+                .await;
             }
             Some(ts)
         } else {
@@ -906,8 +993,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let _: redis::RedisResult<()> =
-                    conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "_",
+                    L2_NEGATIVE_TTL_SECS,
+                    "family negative cache write",
+                )
+                .await;
             }
             None
         }
@@ -922,30 +1015,26 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
-            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
-            match result {
-                Ok(Some(val)) => {
-                    if val == "_" {
-                        self.l1_family
-                            .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
-                            .await;
-                        return Ok(None);
-                    }
-                    if let Ok(ts) = val.parse::<i64>() {
-                        self.l1_family
-                            .insert(
-                                key.to_string(),
-                                (Some(ts), Instant::now() + L1_POSITIVE_TTL),
-                            )
-                            .await;
-                        return Ok(Some(ts));
-                    }
-                    tracing::warn!(key = %key, val = %val, "Malformed family revocation value in Redis L2");
+            if let Some(Some(val)) = self
+                .redis_get_string(&mut conn, &redis_key, "checked family lookup")
+                .await
+            {
+                if val == "_" {
+                    self.l1_family
+                        .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
+                        .await;
+                    return Ok(None);
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, key = %key, "Redis L2 family lookup failed, falling back to PG");
+                if let Ok(ts) = val.parse::<i64>() {
+                    self.l1_family
+                        .insert(
+                            key.to_string(),
+                            (Some(ts), Instant::now() + L1_POSITIVE_TTL),
+                        )
+                        .await;
+                    return Ok(Some(ts));
                 }
+                tracing::warn!(key = %key, val = %val, "Malformed family revocation value in Redis L2");
             }
         }
 
@@ -960,9 +1049,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
-                    .await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    ts.to_string(),
+                    L1_POSITIVE_TTL.as_secs(),
+                    "checked family positive cache write",
+                )
+                .await;
             }
             Ok(Some(ts))
         } else {
@@ -971,8 +1065,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let _: redis::RedisResult<()> =
-                    conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
+                self.redis_set_ex(
+                    &mut conn,
+                    &redis_key,
+                    "_",
+                    L2_NEGATIVE_TTL_SECS,
+                    "checked family negative cache write",
+                )
+                .await;
             }
             Ok(None)
         }
@@ -986,8 +1086,14 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let _: redis::RedisResult<()> =
-                conn.set_ex(&redis_key, timestamp.to_string(), l2_ttl).await;
+            self.redis_set_ex(
+                &mut conn,
+                &redis_key,
+                timestamp.to_string(),
+                l2_ttl,
+                "family write-through",
+            )
+            .await;
         }
 
         // 3. Write to L1 moka (positive, overwrites any stale negative sentinel)
@@ -1670,6 +1776,58 @@ mod tests {
             store.redis_runtime.is_none(),
             "standalone shared-state profile should allow PG+L1 token blacklist mode"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_tiered_token_blacklist_redis_timeout_falls_back_to_pg() {
+        #[derive(Clone)]
+        struct HangingRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for HangingRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                std::future::pending().await
+            }
+
+            fn operation_timeout(&self) -> Duration {
+                Duration::from_millis(10)
+            }
+        }
+
+        let (postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let pg = PgTokenBlacklistStore::new(pool.clone());
+        pg.blacklist("jti:redis-timeout", 3600).await.unwrap();
+        pg.set_family_revoked("family:redis-timeout", 1_700_000_000, 3600)
+            .await
+            .unwrap();
+
+        let store = TieredTokenBlacklistStore::from_runtime(
+            pg,
+            Some(Arc::new(HangingRedisRuntime)),
+            "timeout:".to_string(),
+        );
+
+        let is_blacklisted = tokio::time::timeout(
+            Duration::from_millis(300),
+            store.is_blacklisted_checked("jti:redis-timeout"),
+        )
+        .await
+        .expect("Redis snapshot timeout should not hang blacklist lookup")
+        .unwrap();
+        assert!(is_blacklisted);
+
+        let family_revoked_at = tokio::time::timeout(
+            Duration::from_millis(300),
+            store.get_family_revoked_at_checked("family:redis-timeout"),
+        )
+        .await
+        .expect("Redis snapshot timeout should not hang family lookup")
+        .unwrap();
+        assert_eq!(family_revoked_at, Some(1_700_000_000));
+
+        pool.close().await;
+        postgres.cleanup().await;
     }
 
     // Helper: create a TieredTokenBlacklistStore with no Redis and a lazy PG pool

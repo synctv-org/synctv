@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
 use tracing::info;
 #[cfg(unix)]
@@ -139,6 +140,13 @@ where
         }))
         .max_decoding_message_size(config.config.server.grpc_max_message_size_bytes)
         .max_encoding_message_size(config.config.server.grpc_max_message_size_bytes);
+    let management_service = if config.config.server.grpc_compression_enabled {
+        management_service
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip)
+    } else {
+        management_service
+    };
 
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter

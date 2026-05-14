@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, provider, provider_user_id, user_id as \"user_id: UserId\",\n                   username, email, avatar_url, created_at, updated_at\n            FROM auth_oauth2_identities\n            WHERE provider = $1 AND provider_user_id = $2\n            ",
+  "query": "\n            SELECT id, provider_type as \"provider: OAuth2ProviderTypeName\",\n                   provider_instance_name, provider_issuer, provider_user_id,\n                   user_id as \"user_id: UserId\",\n                   username, email, avatar_url, created_at, updated_at\n            FROM auth_oauth2_identities\n            WHERE user_id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -10,54 +10,65 @@
       },
       {
         "ordinal": 1,
-        "name": "provider",
-        "type_info": "Varchar"
+        "name": "provider: OAuth2ProviderTypeName",
+        "type_info": "Int2"
       },
       {
         "ordinal": 2,
-        "name": "provider_user_id",
+        "name": "provider_instance_name",
         "type_info": "Varchar"
       },
       {
         "ordinal": 3,
-        "name": "user_id: UserId",
-        "type_info": "Int8"
+        "name": "provider_issuer",
+        "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "username",
+        "name": "provider_user_id",
         "type_info": "Varchar"
       },
       {
         "ordinal": 5,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
         "name": "email",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "avatar_url",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "Int8"
       ]
     },
     "nullable": [
       false,
       false,
+      false,
+      true,
       false,
       false,
       false,
@@ -67,5 +78,5 @@
       false
     ]
   },
-  "hash": "1b88e31f7469e996a6e838aef971189b010a2129590cddef449793579daf281b"
+  "hash": "bb3a9fff6b9ef59720cd84b43088474b0491f04bc52e8d772acdd3c6e1b9afd7"
 }

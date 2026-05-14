@@ -66,7 +66,8 @@ use crate::realtime_fanout::{default_realtime_fanout_service, RealtimeFanoutServ
 use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
-    default_room_lifecycle_fanout_service, RoomLifecycleFanoutService,
+    default_room_lifecycle_fanout_service, default_room_lifecycle_fanout_service_with_realtime,
+    RoomLifecycleFanoutService,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
@@ -562,7 +563,10 @@ impl ClientApiImpl {
             self.live_streaming_infrastructure.clone(),
             realtime_fanout.clone(),
         );
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            realtime_fanout.clone(),
+            self.realtime_event_service.clone(),
+        );
         self.realtime_fanout = realtime_fanout;
         self
     }
@@ -608,6 +612,10 @@ impl ClientApiImpl {
         );
         self.media_fanout =
             default_media_fanout_service(self.realtime_fanout.clone(), Some(event_service.clone()));
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            self.realtime_fanout.clone(),
+            Some(event_service.clone()),
+        );
         self.realtime_event_service = Some(event_service);
         self
     }

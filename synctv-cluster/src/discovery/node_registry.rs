@@ -21,9 +21,6 @@ use crate::error::{Error, Result};
 /// `is_nodes_stale()` returns `true`.
 const NODES_STALE_THRESHOLD_SECS: u64 = 30;
 
-/// Timeout for Redis operations in seconds
-const REDIS_TIMEOUT_SECS: u64 = 5;
-
 /// Interval between cached Redis connection health checks.
 const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 
@@ -491,6 +488,13 @@ impl NodeRegistry {
         self.last_refreshed.store(0, Ordering::Relaxed);
     }
 
+    fn redis_operation_timeout(&self) -> Duration {
+        self.redis_runtime.as_ref().map_or(
+            synctv_core::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            |runtime| runtime.operation_timeout(),
+        )
+    }
+
     fn node_index_key(&self) -> String {
         format!("{}:index", self.key_prefix)
     }
@@ -633,7 +637,7 @@ impl NodeRegistry {
             scan_iterations += 1;
 
             let op_result: std::result::Result<(u64, Vec<String>), Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                self.redis_operation_timeout(),
                 redis::cmd("SSCAN")
                     .arg(&index_key)
                     .arg(cursor)
@@ -673,15 +677,13 @@ impl NodeRegistry {
             pipe.cmd("SREM").arg(&index_key).arg(node_id).ignore();
         }
 
-        let op_result: std::result::Result<(), Error> = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
-            pipe.query_async(conn),
-        )
-        .await
-        .map_err(|_| Error::Timeout("Redis node index cleanup timed out".to_string()))
-        .and_then(|r| {
-            r.map_err(|e| Error::Database(format!("Redis node index cleanup failed: {e}")))
-        });
+        let op_result: std::result::Result<(), Error> =
+            timeout(self.redis_operation_timeout(), pipe.query_async(conn))
+                .await
+                .map_err(|_| Error::Timeout("Redis node index cleanup timed out".to_string()))
+                .and_then(|r| {
+                    r.map_err(|e| Error::Database(format!("Redis node index cleanup failed: {e}")))
+                });
         self.record_operation_result(&op_result);
 
         match op_result {
@@ -771,7 +773,7 @@ impl NodeRegistry {
 
         // Create new connection
         let conn = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            self.redis_operation_timeout(),
             runtime.multiplexed_connection(),
         )
         .await
@@ -1041,7 +1043,7 @@ impl NodeRegistry {
 
         let now_rfc3339 = Utc::now().to_rfc3339();
         let op_result: std::result::Result<u64, Error> = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            self.redis_operation_timeout(),
             REGISTER_NODE_SCRIPT
                 .key(&key)
                 .key(&index_key)
@@ -1155,7 +1157,7 @@ impl NodeRegistry {
             // ambiguity when remote_epoch == 0 (which would return 0, colliding
             // with a successful epoch-0 result).
             let op_result: std::result::Result<i64, Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                self.redis_operation_timeout(),
                 HEARTBEAT_NODE_SCRIPT
                     .key(&key)
                     .key(&index_key)
@@ -1303,7 +1305,7 @@ impl NodeRegistry {
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
 
             let op_result: std::result::Result<i64, Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                self.redis_operation_timeout(),
                 UNREGISTER_NODE_SCRIPT
                     .key(&key)
                     .key(&index_key)
@@ -1351,7 +1353,7 @@ impl NodeRegistry {
             let ttl = self.heartbeat_timeout_secs * 2;
 
             let op_result: std::result::Result<i64, Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                self.redis_operation_timeout(),
                 REGISTER_REMOTE_NODE_SCRIPT
                     .key(&key)
                     .key(&index_key)
@@ -1396,7 +1398,7 @@ impl NodeRegistry {
         let ttl = self.heartbeat_timeout_secs * 2;
 
         let op_result: std::result::Result<Option<String>, Error> = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            self.redis_operation_timeout(),
             HEARTBEAT_REMOTE_NODE_SCRIPT
                 .key(&key)
                 .key(&index_key)
@@ -1444,7 +1446,7 @@ impl NodeRegistry {
             // Use epoch validation if provided, otherwise just delete
             if let Some(epoch) = expected_epoch {
                 let op_result: std::result::Result<i64, Error> = timeout(
-                    Duration::from_secs(REDIS_TIMEOUT_SECS),
+                    self.redis_operation_timeout(),
                     UNREGISTER_NODE_SCRIPT
                         .key(&key)
                         .key(&index_key)
@@ -1538,13 +1540,13 @@ impl NodeRegistry {
                 for key in &keys {
                     cmd.arg(key);
                 }
-                let mget_result: std::result::Result<Vec<Option<String>>, Error> = timeout(
-                    Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    cmd.query_async(&mut conn),
-                )
-                .await
-                .map_err(|_| Error::Timeout("Redis MGET timed out".to_string()))
-                .and_then(|r| r.map_err(|e| Error::Database(format!("Redis MGET failed: {e}"))));
+                let mget_result: std::result::Result<Vec<Option<String>>, Error> =
+                    timeout(self.redis_operation_timeout(), cmd.query_async(&mut conn))
+                        .await
+                        .map_err(|_| Error::Timeout("Redis MGET timed out".to_string()))
+                        .and_then(|r| {
+                            r.map_err(|e| Error::Database(format!("Redis MGET failed: {e}")))
+                        });
                 self.record_operation_result(&mget_result);
                 let values = mget_result?;
 
@@ -1601,7 +1603,7 @@ impl NodeRegistry {
 
         let key = self.node_key(node_id);
         let op_result: std::result::Result<Option<String>, Error> = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            self.redis_operation_timeout(),
             redis::cmd("GET").arg(&key).query_async(&mut conn),
         )
         .await
@@ -2135,6 +2137,26 @@ mod tests {
         let nodes = registry.local_nodes.read().await;
         assert!(nodes.contains_key("dns-peer-1"));
         assert_eq!(nodes["dns-peer-1"].api_address, "10.0.0.2:8080");
+    }
+
+    #[test]
+    fn test_redis_operation_timeout_uses_runtime_budget() {
+        let registry = NodeRegistry::new(
+            synctv_core::coordination_runtime_from_client_with_config_and_operation_timeout(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                redis::aio::ConnectionManagerConfig::new(),
+                std::time::Duration::from_secs(17),
+            ),
+            "self".to_string(),
+            30,
+            "synctv:",
+        )
+        .unwrap();
+
+        assert_eq!(
+            registry.redis_operation_timeout(),
+            std::time::Duration::from_secs(17)
+        );
     }
 
     #[tokio::test]

@@ -7,10 +7,21 @@
 
 use chrono::Utc;
 use synctv_core::{
-    models::ProviderInstance, repository::ProviderInstanceRepository,
-    service::CredentialEncryption, Error,
+    models::{ProviderInstance, ProviderType, SignupMethod},
+    repository::ProviderInstanceRepository,
+    service::CredentialEncryption,
+    Error,
 };
 use synctv_core_testing::create_test_pool;
+
+fn provider_codes(providers: &[ProviderType]) -> Vec<i16> {
+    providers
+        .iter()
+        .copied()
+        .map(ProviderType::as_i16)
+        .collect()
+}
+
 fn test_key() -> Vec<u8> {
     vec![
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -58,7 +69,7 @@ async fn test_plaintext_jwt_secret_is_not_a_schema_policy() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&["bilibili"] as &[&str])
+    .bind(provider_codes(&[ProviderType::Bilibili]))
     .bind(true)
     .execute(&pool)
     .await;
@@ -85,7 +96,7 @@ async fn test_plaintext_custom_ca_is_not_a_schema_policy() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&["bilibili"] as &[&str])
+    .bind(provider_codes(&[ProviderType::Bilibili]))
     .bind(true)
     .execute(&pool)
     .await;
@@ -114,7 +125,7 @@ async fn test_null_secrets_allowed_by_schema() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&["bilibili"] as &[&str])
+    .bind(provider_codes(&[ProviderType::Bilibili]))
     .bind(true)
     .execute(&pool)
     .await;
@@ -145,7 +156,7 @@ async fn test_enc_prefixed_secrets_allowed_by_schema() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&["bilibili"] as &[&str])
+    .bind(provider_codes(&[ProviderType::Bilibili]))
     .bind(true)
     .execute(&pool)
     .await;
@@ -165,12 +176,14 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
     let instance = make_instance("referenced_instance", None, None);
     repo.create(&instance).await.unwrap();
 
-    let user_id: i64 =
-        sqlx::query_scalar("INSERT INTO users (username, role) VALUES ($1, 3) RETURNING id")
-            .bind("provider_ref_owner")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO users (username, signup_method, role) VALUES ($1, $2, 3) RETURNING id",
+    )
+    .bind("provider_ref_owner")
+    .bind(i16::from(SignupMethod::Email))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let room_id: i64 =
         sqlx::query_scalar("INSERT INTO rooms (name, created_by) VALUES ($1, $2) RETURNING id")
             .bind("Provider Ref Room")
@@ -186,7 +199,7 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
     .bind(user_id)
     .bind("Remote Folder")
     .bind(1.0_f64)
-    .bind("bilibili")
+    .bind(ProviderType::Bilibili.as_i16())
     .bind("{}")
     .bind("referenced_instance")
     .execute(&pool)

@@ -42,6 +42,25 @@ async fn create_user(pool: &PgPool, username: &str) -> User {
     user_repo.create(&make_user(username)).await.unwrap()
 }
 
+fn oauth_user_info(
+    provider: OAuth2Provider,
+    provider_instance_name: &str,
+    provider_user_id: &str,
+    username: &str,
+    email: Option<&str>,
+    avatar: Option<&str>,
+) -> OAuth2UserInfo {
+    OAuth2UserInfo {
+        provider,
+        provider_instance_name: provider_instance_name.to_string(),
+        provider_issuer: None,
+        provider_user_id: provider_user_id.to_string(),
+        username: username.to_string(),
+        email: email.map(str::to_string),
+        avatar: avatar.map(str::to_string),
+    }
+}
+
 // ─── upsert conflict handling ────────────────────────────────────────
 
 #[tokio::test]
@@ -54,23 +73,31 @@ async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping()
     let user_b = create_user(&pool, "oauth_user_b").await;
 
     let provider = OAuth2Provider::GitHub;
+    let provider_instance_name = "github-main";
     let provider_user_id = "gh_unique_001";
-    let user_info = OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: provider_user_id.to_string(),
-        username: "ghuser".to_string(),
-        email: None,
-        avatar: None,
-    };
+    let user_info = oauth_user_info(
+        provider.clone(),
+        provider_instance_name,
+        provider_user_id,
+        "ghuser",
+        None,
+        None,
+    );
 
     // Initial upsert for user_a
     oauth_repo
-        .upsert(&user_a.id, &provider, provider_user_id, &user_info)
+        .upsert(
+            &user_a.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &user_info,
+        )
         .await
         .unwrap();
 
     let mapping = oauth_repo
-        .find_by_provider(&provider, provider_user_id)
+        .find_by_provider_instance(provider_instance_name, provider_user_id)
         .await
         .unwrap()
         .unwrap();
@@ -79,7 +106,13 @@ async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping()
     // Upsert again with user_b must be rejected: external identities are stable
     // and must never be silently reassigned to another local user.
     let err = oauth_repo
-        .upsert(&user_b.id, &provider, provider_user_id, &user_info)
+        .upsert(
+            &user_b.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &user_info,
+        )
         .await
         .expect_err("OAuth identity rebinding must be rejected");
 
@@ -93,7 +126,7 @@ async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping()
     );
 
     let mapping = oauth_repo
-        .find_by_provider(&provider, provider_user_id)
+        .find_by_provider_instance(provider_instance_name, provider_user_id)
         .await
         .unwrap()
         .unwrap();
@@ -123,35 +156,51 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
     let user = create_user(&pool, "oauth_profile_user").await;
 
     let provider = OAuth2Provider::GitHub;
+    let provider_instance_name = "github-main";
     let provider_user_id = "gh_profile_001";
-    let initial_info = OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: provider_user_id.to_string(),
-        username: "oldname".to_string(),
-        email: None,
-        avatar: None,
-    };
+    let initial_info = oauth_user_info(
+        provider.clone(),
+        provider_instance_name,
+        provider_user_id,
+        "oldname",
+        None,
+        None,
+    );
 
     oauth_repo
-        .upsert(&user.id, &provider, provider_user_id, &initial_info)
+        .upsert(
+            &user.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &initial_info,
+        )
         .await
         .unwrap();
 
-    let updated_info = OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: provider_user_id.to_string(),
-        username: "newname".to_string(),
-        email: Some("new@example.com".to_string()),
-        avatar: Some("https://avatar.example/new.png".to_string()),
-    };
+    let mut updated_info = oauth_user_info(
+        provider.clone(),
+        provider_instance_name,
+        provider_user_id,
+        "newname",
+        Some("new@example.com"),
+        Some("https://avatar.example/new.png"),
+    );
+    updated_info.provider_issuer = Some("https://github.com".to_string());
 
     oauth_repo
-        .upsert(&user.id, &provider, provider_user_id, &updated_info)
+        .upsert(
+            &user.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &updated_info,
+        )
         .await
         .unwrap();
 
     let mapping = oauth_repo
-        .find_by_provider(&provider, provider_user_id)
+        .find_by_provider_instance(provider_instance_name, provider_user_id)
         .await
         .unwrap()
         .unwrap();
@@ -161,6 +210,10 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
     assert_eq!(
         mapping.avatar_url.as_deref(),
         Some("https://avatar.example/new.png")
+    );
+    assert_eq!(
+        mapping.provider_issuer.as_deref(),
+        Some("https://github.com")
     );
 }
 
@@ -173,17 +226,25 @@ async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
     let user_a = create_user(&pool, "oauth_tx_owner").await;
     let user_b = create_user(&pool, "oauth_tx_conflict").await;
     let provider = OAuth2Provider::Google;
+    let provider_instance_name = "google-main";
     let provider_user_id = "google_tx_conflict_001";
-    let user_info = OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: provider_user_id.to_string(),
-        username: "googleuser".to_string(),
-        email: Some("tx@google.com".to_string()),
-        avatar: None,
-    };
+    let user_info = oauth_user_info(
+        provider.clone(),
+        provider_instance_name,
+        provider_user_id,
+        "googleuser",
+        Some("tx@google.com"),
+        None,
+    );
 
     oauth_repo
-        .upsert(&user_a.id, &provider, provider_user_id, &user_info)
+        .upsert(
+            &user_a.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &user_info,
+        )
         .await
         .unwrap();
 
@@ -192,6 +253,7 @@ async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
         .upsert_with_executor(
             &user_b.id,
             &provider,
+            provider_instance_name,
             provider_user_id,
             &user_info,
             &mut *tx,
@@ -210,7 +272,7 @@ async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
     );
 
     let mapping = oauth_repo
-        .find_by_provider(&provider, provider_user_id)
+        .find_by_provider_instance(provider_instance_name, provider_user_id)
         .await
         .unwrap()
         .unwrap();
@@ -225,19 +287,28 @@ async fn test_upsert_with_executor_in_transaction() {
 
     let user = create_user(&pool, "oauth_tx_user").await;
     let provider = OAuth2Provider::Google;
+    let provider_instance_name = "google-main";
     let provider_user_id = "google_tx_001";
-    let user_info = OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: provider_user_id.to_string(),
-        username: "googleuser".to_string(),
-        email: Some("tx@google.com".to_string()),
-        avatar: None,
-    };
+    let user_info = oauth_user_info(
+        provider.clone(),
+        provider_instance_name,
+        provider_user_id,
+        "googleuser",
+        Some("tx@google.com"),
+        None,
+    );
 
     // Use within a transaction
     let mut tx = pool.begin().await.unwrap();
     oauth_repo
-        .upsert_with_executor(&user.id, &provider, provider_user_id, &user_info, &mut *tx)
+        .upsert_with_executor(
+            &user.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &user_info,
+            &mut *tx,
+        )
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -245,7 +316,7 @@ async fn test_upsert_with_executor_in_transaction() {
     // Verify it was persisted
     let user_mappings = oauth_repo.find_by_user(&user.id).await.unwrap();
     let mapping = oauth_repo
-        .find_by_provider(&provider, provider_user_id)
+        .find_by_provider_instance(provider_instance_name, provider_user_id)
         .await
         .unwrap()
         .unwrap();
@@ -262,24 +333,32 @@ async fn test_find_by_provider_with_executor_in_transaction() {
 
     let user = create_user(&pool, "oauth_find_tx_user").await;
     let provider = OAuth2Provider::Discord;
+    let provider_instance_name = "discord-main";
     let provider_user_id = "discord_find_001";
-    let user_info = OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: provider_user_id.to_string(),
-        username: "discorduser".to_string(),
-        email: None,
-        avatar: None,
-    };
+    let user_info = oauth_user_info(
+        provider.clone(),
+        provider_instance_name,
+        provider_user_id,
+        "discorduser",
+        None,
+        None,
+    );
 
     oauth_repo
-        .upsert(&user.id, &provider, provider_user_id, &user_info)
+        .upsert(
+            &user.id,
+            &provider,
+            provider_instance_name,
+            provider_user_id,
+            &user_info,
+        )
         .await
         .unwrap();
 
     // Find within transaction
     let mut tx = pool.begin().await.unwrap();
     let mapping = oauth_repo
-        .find_by_provider_with_executor(&provider, provider_user_id, &mut *tx)
+        .find_by_provider_instance_with_executor(provider_instance_name, provider_user_id, &mut *tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -300,18 +379,28 @@ async fn test_delete_all_for_user_with_executor() {
 
     let info_gh = OAuth2UserInfo {
         provider: OAuth2Provider::GitHub,
+        provider_instance_name: "github-main".to_string(),
+        provider_issuer: None,
         provider_user_id: "gh_del_001".to_string(),
         username: "ghuser".to_string(),
         email: None,
         avatar: None,
     };
     oauth_repo
-        .upsert(&user.id, &OAuth2Provider::GitHub, "gh_del_001", &info_gh)
+        .upsert(
+            &user.id,
+            &OAuth2Provider::GitHub,
+            "github-main",
+            "gh_del_001",
+            &info_gh,
+        )
         .await
         .unwrap();
 
     let info_google = OAuth2UserInfo {
         provider: OAuth2Provider::Google,
+        provider_instance_name: "google-main".to_string(),
+        provider_issuer: None,
         provider_user_id: "google_del_001".to_string(),
         username: "googleuser".to_string(),
         email: None,
@@ -321,6 +410,7 @@ async fn test_delete_all_for_user_with_executor() {
         .upsert(
             &user.id,
             &OAuth2Provider::Google,
+            "google-main",
             "google_del_001",
             &info_google,
         )

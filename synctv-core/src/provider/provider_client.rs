@@ -27,6 +27,8 @@ use std::sync::Arc;
 use std::{future::Future, time::Duration};
 use synctv_media_providers::alist::{AlistError, AlistInterface};
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
+use tonic::client::GrpcService;
+use tonic::codec::CompressionEncoding;
 use tonic::{Code, Request, Status};
 
 #[cfg(test)]
@@ -37,15 +39,26 @@ pub struct RemoteProviderConnection {
     channel: tonic::transport::Channel,
     auth_secret: Option<Arc<str>>,
     request_context: Option<ExecutionControl>,
+    grpc_compression_enabled: bool,
 }
 
 impl RemoteProviderConnection {
     #[must_use]
     pub fn new(channel: tonic::transport::Channel, auth_secret: Option<impl Into<String>>) -> Self {
+        Self::new_with_grpc_compression(channel, auth_secret, true)
+    }
+
+    #[must_use]
+    pub fn new_with_grpc_compression(
+        channel: tonic::transport::Channel,
+        auth_secret: Option<impl Into<String>>,
+        grpc_compression_enabled: bool,
+    ) -> Self {
         Self {
             channel,
             auth_secret: auth_secret.map(|secret| Arc::<str>::from(secret.into())),
             request_context: None,
+            grpc_compression_enabled,
         }
     }
 
@@ -57,6 +70,11 @@ impl RemoteProviderConnection {
     #[must_use]
     pub fn auth_secret(&self) -> Option<&str> {
         self.auth_secret.as_deref()
+    }
+
+    #[must_use]
+    pub const fn grpc_compression_enabled(&self) -> bool {
+        self.grpc_compression_enabled
     }
 
     #[must_use]
@@ -76,6 +94,72 @@ impl RemoteProviderConnection {
             .as_ref()
             .and_then(ExecutionControl::remaining_timeout)
             .unwrap_or(GRPC_REQUEST_TIMEOUT)
+    }
+}
+
+fn apply_provider_client_compression<T>(client: T, grpc_compression_enabled: bool) -> T
+where
+    T: ProviderGrpcClientCompression,
+{
+    if grpc_compression_enabled {
+        client
+            .accept_provider_compression(CompressionEncoding::Gzip)
+            .send_provider_compression(CompressionEncoding::Gzip)
+    } else {
+        client
+    }
+}
+
+pub(crate) trait ProviderGrpcClientCompression: Sized {
+    fn accept_provider_compression(self, encoding: CompressionEncoding) -> Self;
+    fn send_provider_compression(self, encoding: CompressionEncoding) -> Self;
+}
+
+impl<T> ProviderGrpcClientCompression
+    for synctv_media_providers::grpc::alist::alist_client::AlistClient<T>
+where
+    T: GrpcService<tonic::body::Body>,
+    T::ResponseBody: tonic::codegen::Body<Data = tonic::codegen::Bytes> + Send + 'static,
+    <T::ResponseBody as tonic::codegen::Body>::Error: Into<tonic::codegen::StdError> + Send,
+{
+    fn accept_provider_compression(self, encoding: CompressionEncoding) -> Self {
+        self.accept_compressed(encoding)
+    }
+
+    fn send_provider_compression(self, encoding: CompressionEncoding) -> Self {
+        self.send_compressed(encoding)
+    }
+}
+
+impl<T> ProviderGrpcClientCompression
+    for synctv_media_providers::grpc::bilibili::bilibili_client::BilibiliClient<T>
+where
+    T: GrpcService<tonic::body::Body>,
+    T::ResponseBody: tonic::codegen::Body<Data = tonic::codegen::Bytes> + Send + 'static,
+    <T::ResponseBody as tonic::codegen::Body>::Error: Into<tonic::codegen::StdError> + Send,
+{
+    fn accept_provider_compression(self, encoding: CompressionEncoding) -> Self {
+        self.accept_compressed(encoding)
+    }
+
+    fn send_provider_compression(self, encoding: CompressionEncoding) -> Self {
+        self.send_compressed(encoding)
+    }
+}
+
+impl<T> ProviderGrpcClientCompression
+    for synctv_media_providers::grpc::emby::emby_client::EmbyClient<T>
+where
+    T: GrpcService<tonic::body::Body>,
+    T::ResponseBody: tonic::codegen::Body<Data = tonic::codegen::Bytes> + Send + 'static,
+    <T::ResponseBody as tonic::codegen::Body>::Error: Into<tonic::codegen::StdError> + Send,
+{
+    fn accept_provider_compression(self, encoding: CompressionEncoding) -> Self {
+        self.accept_compressed(encoding)
+    }
+
+    fn send_provider_compression(self, encoding: CompressionEncoding) -> Self {
+        self.send_compressed(encoding)
     }
 }
 
@@ -154,7 +238,10 @@ macro_rules! impl_grpc_method {
         {
             Box::pin(async move {
                 use $client_mod as _client_mod;
-                let mut client = _client_mod::$client_name::new(self.connection.channel());
+                let mut client = apply_provider_client_compression(
+                    _client_mod::$client_name::new(self.connection.channel()),
+                    self.connection.grpc_compression_enabled(),
+                );
                 let request = build_grpc_request(self.connection.auth_secret(), request)
                     .map_err(<$error>::from)?;
                 let response =
@@ -521,7 +608,10 @@ impl AlistInterface for GrpcAlistClient {
         request: synctv_media_providers::grpc::alist::LoginReq,
     ) -> Result<String, AlistError> {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
-        let mut client = AlistClient::new(self.connection.channel());
+        let mut client = apply_provider_client_compression(
+            AlistClient::new(self.connection.channel()),
+            self.connection.grpc_compression_enabled(),
+        );
         let request = build_grpc_request(self.connection.auth_secret(), request)?;
         let response = execute_grpc_request(&self.connection, "login", async move {
             client

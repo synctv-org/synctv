@@ -9,6 +9,7 @@ pub mod client_ip;
 pub mod config_adapters;
 pub mod fanout;
 pub mod grpc;
+pub mod grpc_support;
 pub mod http;
 pub mod impls;
 mod media_fanout;

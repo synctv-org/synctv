@@ -71,7 +71,22 @@ fn make_room_service_with_providers(
     providers_manager: Arc<ProvidersManager>,
 ) -> RoomService {
     let user_service = make_user_service(&pool);
-    let mut svc = RoomService::new_with_providers(pool, user_service, providers_manager);
+    let credential_encryption =
+        CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid");
+    let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+        pool.clone(),
+        credential_encryption.clone(),
+    ));
+    let mut svc = RoomService::new_with_providers_and_options(
+        pool,
+        user_service,
+        providers_manager,
+        RoomServiceOptions {
+            credential_encryption: Some(credential_encryption),
+            credential_repo: Some(credential_repo),
+            ..RoomServiceOptions::default()
+        },
+    );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
 }
@@ -206,7 +221,7 @@ struct FakeDynamicProvider {
 
 impl FakeDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
-        Self::with_provider_type("fake_dynamic", instance_id, false)
+        Self::with_provider_type("alist", instance_id, false)
     }
 
     fn with_provider_type(
@@ -222,7 +237,7 @@ impl FakeDynamicProvider {
     }
 
     fn requiring_credential_encryption(instance_id: impl Into<String>) -> Self {
-        Self::with_provider_type("fake_dynamic_sensitive", instance_id, true)
+        Self::with_provider_type("alist", instance_id, true)
     }
 
     fn is_bound_instance(&self) -> bool {
@@ -390,31 +405,27 @@ impl DynamicFolder for FakeDynamicProvider {
     }
 }
 
-async fn register_fake_dynamic_provider(room_service: &RoomService) {
-    register_fake_dynamic_provider_instance(room_service, "fake_dynamic_default").await;
+async fn register_alist_provider(room_service: &RoomService) {
+    register_alist_provider_instance(room_service, "alist_default").await;
 }
 
-async fn register_fake_dynamic_provider_instance(room_service: &RoomService, instance_id: &str) {
+async fn register_alist_provider_instance(room_service: &RoomService, instance_id: &str) {
     room_service
         .media_service()
         .providers_manager()
-        .create_provider("fake_dynamic", instance_id, &serde_json::json!({}))
+        .create_provider("alist", instance_id, &serde_json::json!({}))
         .await
         .expect("Failed to register fake dynamic provider");
 }
 
-async fn register_fake_dynamic_provider_instance_requiring_encryption(
+async fn register_alist_provider_instance_requiring_encryption(
     room_service: &RoomService,
     instance_id: &str,
 ) {
     room_service
         .media_service()
         .providers_manager()
-        .create_provider(
-            "fake_dynamic_sensitive",
-            instance_id,
-            &serde_json::json!({}),
-        )
+        .create_provider("alist", instance_id, &serde_json::json!({}))
         .await
         .expect("Failed to register fake dynamic provider requiring encryption");
 }
@@ -425,7 +436,7 @@ async fn create_dynamic_playlist(
     owner_id: &UserId,
     provider_instance_name: &str,
 ) -> Playlist {
-    insert_test_provider_instance(pool, provider_instance_name, "fake_dynamic").await;
+    insert_test_provider_instance(pool, provider_instance_name, "alist").await;
 
     let playlist = Playlist {
         id: PlaylistId::new(),
@@ -434,7 +445,7 @@ async fn create_dynamic_playlist(
         name: "Dynamic Playlist".to_string(),
         parent_id: None,
         position: 0.0,
-        source_provider: Some("fake_dynamic".to_string()),
+        source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({})),
         provider_instance_name: Some(provider_instance_name.to_string()),
         created_at: Utc::now(),
@@ -453,7 +464,7 @@ async fn create_dynamic_sensitive_playlist(
     owner_id: &UserId,
     provider_instance_name: &str,
 ) -> Playlist {
-    insert_test_provider_instance(pool, provider_instance_name, "fake_dynamic_sensitive").await;
+    insert_test_provider_instance(pool, provider_instance_name, "alist").await;
 
     let playlist = Playlist {
         id: PlaylistId::new(),
@@ -462,7 +473,7 @@ async fn create_dynamic_sensitive_playlist(
         name: "Dynamic Sensitive Playlist".to_string(),
         parent_id: None,
         position: 0.0,
-        source_provider: Some("fake_dynamic_sensitive".to_string()),
+        source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({})),
         provider_instance_name: Some(provider_instance_name.to_string()),
         created_at: Utc::now(),
@@ -1015,7 +1026,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media1).await.unwrap();
+    let media1 = media_repo.create(&media1).await.unwrap();
     media_repo.create(&media2).await.unwrap();
 
     room_service
@@ -1052,7 +1063,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     )));
     let mut providers_manager = ProvidersManager::new(provider_instance_manager);
     providers_manager.register_factory(
-        "fake_dynamic",
+        "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
         }),
@@ -1075,9 +1086,8 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         .await
         .unwrap();
 
-    register_fake_dynamic_provider(&room_service).await;
-    let playlist =
-        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    register_alist_provider(&room_service).await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
 
     let playback = room_service.playback_service();
     playback
@@ -1116,7 +1126,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     )));
     let mut providers_manager = ProvidersManager::new(provider_instance_manager);
     providers_manager.register_factory(
-        "fake_dynamic",
+        "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
         }),
@@ -1144,14 +1154,9 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         .await
         .unwrap();
 
-    register_fake_dynamic_provider(&room_service).await;
-    let playlist = create_dynamic_playlist(
-        &pool,
-        &room.id,
-        &playlist_creator.id,
-        "fake_dynamic_default",
-    )
-    .await;
+    register_alist_provider(&room_service).await;
+    let playlist =
+        create_dynamic_playlist(&pool, &room.id, &playlist_creator.id, "alist_default").await;
 
     user_repo
         .ban(
@@ -1194,7 +1199,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
     )));
     let mut providers_manager = ProvidersManager::new(provider_instance_manager);
     providers_manager.register_factory(
-        "fake_dynamic",
+        "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
         }),
@@ -1222,14 +1227,9 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
         .await
         .unwrap();
 
-    register_fake_dynamic_provider(&room_service).await;
-    let playlist = create_dynamic_playlist(
-        &pool,
-        &room.id,
-        &playlist_creator.id,
-        "fake_dynamic_default",
-    )
-    .await;
+    register_alist_provider(&room_service).await;
+    let playlist =
+        create_dynamic_playlist(&pool, &room.id, &playlist_creator.id, "alist_default").await;
 
     room_service
         .playback_service()
@@ -1275,7 +1275,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
     )));
     let mut providers_manager = ProvidersManager::new(provider_instance_manager);
     providers_manager.register_factory(
-        "fake_dynamic",
+        "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
         }),
@@ -1298,9 +1298,8 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
         .await
         .unwrap();
 
-    register_fake_dynamic_provider(&room_service).await;
-    let playlist =
-        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    register_alist_provider(&room_service).await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
 
     let playback = room_service.playback_service();
     playback
@@ -1337,7 +1336,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
     )));
     let mut providers_manager = ProvidersManager::new(provider_instance_manager);
     providers_manager.register_factory(
-        "fake_dynamic",
+        "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
         }),
@@ -1360,9 +1359,9 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
         .await
         .unwrap();
 
-    register_fake_dynamic_provider(&room_service).await;
-    register_fake_dynamic_provider_instance(&room_service, "fake_dynamic_alt").await;
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
+    register_alist_provider(&room_service).await;
+    register_alist_provider_instance(&room_service, "alist_alt").await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_alt").await;
 
     let playback = room_service.playback_service();
     playback
@@ -1399,7 +1398,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
     )));
     let mut providers_manager = ProvidersManager::new(provider_instance_manager);
     providers_manager.register_factory(
-        "fake_dynamic_sensitive",
+        "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(
                 FakeDynamicProvider::requiring_credential_encryption(instance_id),
@@ -1439,18 +1438,11 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         .await
         .unwrap();
 
-    register_fake_dynamic_provider_instance_requiring_encryption(
-        &room_service,
-        "fake_dynamic_sensitive_default",
-    )
-    .await;
-    let playlist = create_dynamic_sensitive_playlist(
-        &pool,
-        &room.id,
-        &owner.id,
-        "fake_dynamic_sensitive_default",
-    )
-    .await;
+    register_alist_provider_instance_requiring_encryption(&room_service, "alist_sensitive_default")
+        .await;
+    let playlist =
+        create_dynamic_sensitive_playlist(&pool, &room.id, &owner.id, "alist_sensitive_default")
+            .await;
 
     let items = room_service
         .media_service()

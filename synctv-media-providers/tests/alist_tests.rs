@@ -941,6 +941,29 @@ struct OpenListFixture {
     token: String,
 }
 
+async fn login_openlist_when_ready(host: &str, password: &str) -> String {
+    let started_at = tokio::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+    let mut last_error = None;
+
+    while started_at.elapsed() < timeout {
+        let mut client = AlistClient::new(host).unwrap();
+        match client.login("admin", password, false).await {
+            Ok(token) => return token,
+            Err(error) => {
+                last_error = Some(error.to_string());
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    panic!(
+        "OpenList did not accept admin login within {:?}; last error: {}",
+        timeout,
+        last_error.unwrap_or_else(|| "no login attempt completed".to_string())
+    );
+}
+
 async fn start_openlist_fixture() -> OpenListFixture {
     const ADMIN_PASSWORD: &str = "synctv-openlist-test";
     let image = GenericImage::new("openlistteam/openlist", "latest")
@@ -972,8 +995,7 @@ async fn start_openlist_fixture() -> OpenListFixture {
 
     let port = container.get_host_port_ipv4(5244.tcp()).await.unwrap();
     let host = format!("http://127.0.0.1:{port}");
-    let mut client = AlistClient::new(&host).unwrap();
-    let token = client.login("admin", ADMIN_PASSWORD, false).await.unwrap();
+    let token = login_openlist_when_ready(&host, ADMIN_PASSWORD).await;
 
     let addition = json!({
         "root_folder_path": "/srv/openlist-files",

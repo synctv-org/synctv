@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, QueryBuilder};
+use sqlx::{postgres::PgRow, PgPool, Postgres, QueryBuilder, Row};
 
 use crate::models::{PageParams, UserId};
-use crate::Result;
+use crate::service::{AuditAction, AuditTargetType};
+use crate::{Error, Result};
 
 /// Audit log entry as read from the database
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -10,8 +11,8 @@ pub struct AuditLogRow {
     pub id: i64,
     pub actor_id: Option<UserId>,
     pub actor_username: Option<String>,
-    pub action: String,
-    pub target_type: Option<String>,
+    pub action: AuditAction,
+    pub target_type: Option<AuditTargetType>,
     pub target_id: Option<String>,
     pub details: Option<serde_json::Value>,
     pub ip_address: Option<String>,
@@ -23,8 +24,8 @@ pub struct AuditLogRow {
 #[derive(Debug, Clone, Default)]
 pub struct AuditLogQuery {
     pub actor_id: Option<UserId>,
-    pub action: Option<String>,
-    pub target_type: Option<String>,
+    pub action: Option<AuditAction>,
+    pub target_type: Option<AuditTargetType>,
     pub target_id: Option<String>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
@@ -62,11 +63,11 @@ impl AuditLogRepository {
         }
         if let Some(ref v) = query.action {
             builder.push(" AND action = ");
-            builder.push_bind(v);
+            builder.push_bind(i16::from(*v));
         }
         if let Some(ref v) = query.target_type {
             builder.push(" AND target_type = ");
-            builder.push_bind(v);
+            builder.push_bind(i16::from(*v));
         }
         if let Some(ref v) = query.target_id {
             builder.push(" AND target_id = ");
@@ -114,10 +115,11 @@ impl AuditLogRepository {
         list_builder.push(" OFFSET ");
         list_builder.push_bind(query.page.offset().cast_signed());
 
-        let rows = list_builder
-            .build_query_as::<AuditLogRow>()
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = list_builder.build().fetch_all(&self.pool).await?;
+        let rows = rows
+            .iter()
+            .map(audit_log_row_from_row)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok((rows, total))
     }
@@ -126,7 +128,7 @@ impl AuditLogRepository {
     ///
     /// Scans recent partitions only (last 365 days) to avoid full partition scan.
     pub async fn get_by_id(&self, id: i64) -> Result<Option<AuditLogRow>> {
-        let row = sqlx::query_as::<_, AuditLogRow>(
+        let row = sqlx::query(
             "SELECT id, actor_id, actor_username, action, target_type, target_id, \
              details, ip_address, user_agent, created_at \
              FROM audit_logs \
@@ -136,6 +138,26 @@ impl AuditLogRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row)
+        row.as_ref().map(audit_log_row_from_row).transpose()
     }
+}
+
+fn audit_log_row_from_row(row: &PgRow) -> Result<AuditLogRow> {
+    let action_code: i16 = row.try_get("action")?;
+    let target_type_code: Option<i16> = row.try_get("target_type")?;
+    Ok(AuditLogRow {
+        id: row.try_get("id")?,
+        actor_id: row.try_get("actor_id")?,
+        actor_username: row.try_get("actor_username")?,
+        action: AuditAction::try_from(action_code).map_err(Error::Internal)?,
+        target_type: target_type_code
+            .map(AuditTargetType::try_from)
+            .transpose()
+            .map_err(Error::Internal)?,
+        target_id: row.try_get("target_id")?,
+        details: row.try_get("details")?,
+        ip_address: row.try_get("ip_address")?,
+        user_agent: row.try_get("user_agent")?,
+        created_at: row.try_get("created_at")?,
+    })
 }

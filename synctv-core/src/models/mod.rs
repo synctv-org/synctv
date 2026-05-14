@@ -126,22 +126,26 @@ pub mod settings;
 pub mod user;
 pub mod user_preferences;
 
-pub use chat::{ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest, SendDanmakuRequest};
+pub use chat::{
+    ChatMessage, ChatMessageType, DanmakuMessage, DanmakuPosition, SendChatRequest,
+    SendDanmakuRequest,
+};
 pub use id::{
-    generate_id, generate_invite_code, BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId,
-    TypedId, UserId, INVITE_CODE_LENGTH,
+    generate_id, BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId,
 };
 pub use media::{
+    provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
     Danmaku, Media, MediaListQuery, MediaListSortBy, PlaybackInfo, PlaybackResult, PlaybackUrl,
-    PlaybackUrlMetadata, ProviderType, Subtitle, SubtitleUrl,
+    PlaybackUrlMetadata, ProviderType, ProviderTypeName, ProviderTypeNames, Subtitle, SubtitleUrl,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
     NotificationListQuery, NotificationListSortBy, NotificationType,
 };
 pub use oauth2_client::{
+    oauth2_provider_type_code_from_name, oauth2_provider_type_name_from_code,
     OAuth2AuthUrlResponse, OAuth2CallbackRequest, OAuth2CallbackResponse, OAuth2Provider,
-    OAuth2UserInfo, UserOAuthProviderMapping,
+    OAuth2ProviderTypeName, OAuth2UserInfo, UserOAuthProviderMapping,
 };
 pub use pagination::{Page, PageParams, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 pub use permission::{PermissionBits, Role as RoomRole};

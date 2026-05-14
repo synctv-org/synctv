@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS media_provider_instances (
     tls BOOLEAN NOT NULL DEFAULT false,
     insecure_tls BOOLEAN NOT NULL DEFAULT false,
 
-    providers TEXT[] NOT NULL DEFAULT '{}',
+    providers SMALLINT[] NOT NULL DEFAULT '{}',
 
     enabled BOOLEAN NOT NULL DEFAULT true,
 

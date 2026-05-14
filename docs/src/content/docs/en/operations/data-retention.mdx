@@ -23,7 +23,7 @@ import { Aside } from '@astrojs/starlight/components';
 | Email | User email, email identity, notification recipient | PII; only return to the user themselves or administrators |
 | Authentication data | Password credential, OPAQUE credential, WebAuthn credential, OAuth2 identity, email token, refresh token or blacklist | Highly sensitive; should not enter logs |
 | Provider credentials | Alist token, Emby API key, Bilibili cookie, remote provider JWT secret | Highly sensitive; protected by `security.credential_encryption_key` |
-| Room data | Room name, members, permissions, playlists, media, playback state, invitations, review records | Business data |
+| Room data | Room name, members, permissions, playlists, media, playback state, invitation notifications, review records | Business data |
 | Message data | Chat, danmaku, notification content | May contain user input and sensitive context |
 | Audit data | Actor, action, target, details, IP, User-Agent | Useful for security investigations; may also contain personal data |
 
@@ -92,7 +92,7 @@ User deletion uses soft delete plus transactional resource cleanup:
 - Chat messages may be anonymized or retained with necessary context according to user cleanup semantics.
 - Soft-deleted records are permanently purged after the retention window.
 
-Room deletion also starts with soft delete and cleans room playlists, media, members, invitations, review records, playback state, and related resources. The room row is hard-deleted after the retention window.
+Room deletion also starts with soft delete and cleans room playlists, media, members, invitation notifications, review records, playback state, and related resources. The room row is hard-deleted after the retention window.
 
 ## Backups
 

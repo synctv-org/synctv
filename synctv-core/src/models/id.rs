@@ -3,8 +3,6 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-pub const INVITE_CODE_LENGTH: usize = 24;
-
 static EPHEMERAL_ID_COUNTER: AtomicI64 = AtomicI64::new(1_000_000_000);
 static USER_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static ROOM_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
@@ -18,10 +16,6 @@ static BAN_RECORD_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 /// Persistent database rows must use database identity columns instead.
 pub fn generate_id() -> i64 {
     EPHEMERAL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
-pub fn generate_invite_code() -> String {
-    synctv_common::snanoid!(INVITE_CODE_LENGTH)
 }
 
 fn validate_id(id: i64, type_name: &str) -> Result<(), String> {

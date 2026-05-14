@@ -23,7 +23,7 @@ import { Aside } from '@astrojs/starlight/components';
 | 邮箱 | 用户邮箱、邮箱验证身份、通知收件地址 | PII，只应返回给本人或管理员 |
 | 认证数据 | password credential、OPAQUE credential、WebAuthn credential、OAuth2 identity、email token、refresh token/blacklist | 高敏感，不应进入日志 |
 | Provider 凭据 | Alist token、Emby API key、Bilibili cookie、远程 Provider JWT secret | 高敏感，依赖 `security.credential_encryption_key` 保护 |
-| 房间数据 | 房间名、成员、权限、播放列表、媒体、播放状态、邀请和审核记录 | 业务数据 |
+| 房间数据 | 房间名、成员、权限、播放列表、媒体、播放状态、邀请通知和审核记录 | 业务数据 |
 | 消息数据 | 聊天、弹幕、通知内容 | 可能包含用户输入和敏感上下文 |
 | 审计数据 | actor、action、target、details、IP、User-Agent | 安全排查必要，但也可能包含个人数据 |
 
@@ -92,7 +92,7 @@ Runtime settings 是数据库热更新设置，适合调整 `room.room_ttl`、`c
 - 聊天消息可能按用户清理语义匿名化或保留必要上下文。
 - 软删除记录在保留期后由清理任务永久删除。
 
-房间删除同样先软删除，并清理房间相关播放列表、媒体、成员、邀请、审核、播放状态等资源。保留期结束后再硬删除房间行。
+房间删除同样先软删除，并清理房间相关播放列表、媒体、成员、邀请通知、审核、播放状态等资源。保留期结束后再硬删除房间行。
 
 ## 备份
 

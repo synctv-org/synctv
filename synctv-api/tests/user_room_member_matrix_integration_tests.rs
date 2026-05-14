@@ -931,6 +931,10 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         banned_only.rooms[0].room.as_ref().unwrap().id,
         codec.encode_room_id(banned_room.id).unwrap()
     );
+    assert!(
+        banned_only.rooms[0].room.as_ref().unwrap().is_banned,
+        "list_my_rooms must return the same active ban state it filters by"
+    );
 
     let participating_room = client_api
         .list_my_rooms(

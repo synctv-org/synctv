@@ -1,6 +1,7 @@
 // Provider Store - key-value storage abstraction for provider caching and locking
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -10,6 +11,24 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{RedisConnectionRuntime, SharedStateProfile};
+
+async fn run_provider_redis_op<T, F>(
+    timeout: Duration,
+    operation: &'static str,
+    future: F,
+) -> Result<T, StoreError>
+where
+    F: Future<Output = redis::RedisResult<T>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(StoreError::Backend(error.to_string())),
+        Err(_) => Err(StoreError::Backend(format!(
+            "Redis provider store {operation} timed out after {:.3}s",
+            timeout.as_secs_f64()
+        ))),
+    }
+}
 
 static DELETE_LOCK_IF_OWNER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     redis::Script::new(
@@ -249,40 +268,57 @@ impl RedisProviderStore {
     }
 
     /// Get a cloned connection snapshot for the current operation.
-    async fn conn(&self) -> redis::aio::ConnectionManager {
-        self.redis_runtime.snapshot().await
+    async fn conn(
+        &self,
+        operation: &'static str,
+    ) -> Result<redis::aio::ConnectionManager, StoreError> {
+        crate::redis_runtime_snapshot(&*self.redis_runtime, operation)
+            .await
+            .map_err(|error| StoreError::Backend(error.to_string()))
+    }
+
+    fn operation_timeout(&self) -> Duration {
+        self.redis_runtime.operation_timeout()
     }
 }
 
 #[async_trait::async_trait]
 impl ProviderStore for RedisProviderStore {
     async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        let result: Option<Vec<u8>> = redis::cmd("GET")
-            .arg(key)
-            .query_async(&mut self.conn().await)
-            .await
-            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut conn = self.conn("GET").await?;
+        let result: Option<Vec<u8>> = run_provider_redis_op(
+            self.operation_timeout(),
+            "GET",
+            redis::cmd("GET").arg(key).query_async(&mut conn),
+        )
+        .await?;
         Ok(result)
     }
 
     async fn set_raw(&self, key: &str, value: &[u8], ttl: Duration) -> Result<(), StoreError> {
-        redis::cmd("SET")
-            .arg(key)
-            .arg(value)
-            .arg("EX")
-            .arg(ttl.as_secs().max(1))
-            .query_async::<()>(&mut self.conn().await)
-            .await
-            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut conn = self.conn("SET").await?;
+        run_provider_redis_op(
+            self.operation_timeout(),
+            "SET",
+            redis::cmd("SET")
+                .arg(key)
+                .arg(value)
+                .arg("EX")
+                .arg(ttl.as_secs().max(1))
+                .query_async::<()>(&mut conn),
+        )
+        .await?;
         Ok(())
     }
 
     async fn delete(&self, key: &str) -> Result<(), StoreError> {
-        redis::cmd("DEL")
-            .arg(key)
-            .query_async::<()>(&mut self.conn().await)
-            .await
-            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut conn = self.conn("DEL").await?;
+        run_provider_redis_op(
+            self.operation_timeout(),
+            "DEL",
+            redis::cmd("DEL").arg(key).query_async::<()>(&mut conn),
+        )
+        .await?;
         Ok(())
     }
 
@@ -290,15 +326,19 @@ impl ProviderStore for RedisProviderStore {
         let ttl_secs = ttl.as_secs().max(1);
         let owner_token = Uuid::new_v4().to_string();
         for _ in 0..10 {
-            let result: Option<String> = redis::cmd("SET")
-                .arg(key)
-                .arg(&owner_token)
-                .arg("NX")
-                .arg("EX")
-                .arg(ttl_secs)
-                .query_async(&mut self.conn().await)
-                .await
-                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let mut conn = self.conn("lock SET NX").await?;
+            let result: Option<String> = run_provider_redis_op(
+                self.operation_timeout(),
+                "lock SET NX",
+                redis::cmd("SET")
+                    .arg(key)
+                    .arg(&owner_token)
+                    .arg("NX")
+                    .arg("EX")
+                    .arg(ttl_secs)
+                    .query_async(&mut conn),
+            )
+            .await?;
 
             if result.is_some() {
                 let key_owned = key.to_string();
@@ -307,12 +347,37 @@ impl ProviderStore for RedisProviderStore {
                 return Ok(StoreLockGuard::new(move || {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         handle.spawn(async move {
-                            let mut conn = redis_runtime.snapshot().await;
-                            let _: Result<i32, _> = DELETE_LOCK_IF_OWNER_SCRIPT
-                                .key(&key_owned)
-                                .arg(&owner_token_owned)
-                                .invoke_async(&mut conn)
-                                .await;
+                            let timeout = redis_runtime.operation_timeout();
+                            let mut conn =
+                                match crate::redis_runtime_snapshot(&*redis_runtime, "lock release")
+                                    .await
+                                {
+                                    Ok(conn) => conn,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            key = %key_owned,
+                                            error = %error,
+                                            "Failed to obtain Redis provider lock release connection; lock will expire via TTL"
+                                        );
+                                        return;
+                                    }
+                                };
+                            if let Err(error) = run_provider_redis_op(
+                                timeout,
+                                "lock release",
+                                DELETE_LOCK_IF_OWNER_SCRIPT
+                                    .key(&key_owned)
+                                    .arg(&owner_token_owned)
+                                    .invoke_async::<i32>(&mut conn),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    key = %key_owned,
+                                    error = %error,
+                                    "Failed to release Redis provider lock; lock will expire via TTL"
+                                );
+                            }
                         });
                     } else {
                         tracing::warn!(
@@ -510,6 +575,22 @@ mod tests {
         assert!(
             Arc::ptr_eq(&store.redis_runtime, &runtime),
             "Redis provider store should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_redis_op_timeout_returns_backend_error() {
+        let err = run_provider_redis_op(
+            Duration::from_millis(5),
+            "test pending op",
+            std::future::pending::<redis::RedisResult<()>>(),
+        )
+        .await
+        .expect_err("pending Redis operation must be bounded by operation timeout");
+
+        assert!(
+            matches!(&err, StoreError::Backend(message) if message.contains("test pending op") && message.contains("timed out")),
+            "timeout should be reported as backend error with operation context, got {err}"
         );
     }
 

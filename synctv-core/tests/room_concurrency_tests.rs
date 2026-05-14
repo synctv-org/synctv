@@ -9,6 +9,7 @@
 //!
 //! - Multi-user concurrent join with `max_members` limit enforcement
 //! - Concurrent creation of rooms with the same name by different users succeeds
+//! - Concurrent repository-level inserts do not enforce room-name product policy
 //! - Concurrent room settings updates (optimistic lock retry)
 //!
 //! # Requirements
@@ -373,10 +374,10 @@ async fn test_concurrent_room_creation_same_name_different_users() {
     assert_eq!(persisted_count, 10, "All active rooms should persist");
 }
 
-/// Test that concurrent room creation by the same user with the same name is prevented.
+/// Test that repository-level room creation does not enforce duplicate-name policy.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_concurrent_room_creation_same_user_prevented() {
+async fn test_concurrent_room_creation_same_user_is_repository_allowed() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
@@ -406,22 +407,25 @@ async fn test_concurrent_room_creation_same_user_prevented() {
     }
 
     let mut success_count = 0;
-    let mut already_exists_count = 0;
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
-            Err(Error::AlreadyExists(msg)) => {
-                assert_eq!(msg, "You already have a room with this name");
-                already_exists_count += 1;
-            }
             Err(e) => panic!("Unexpected room creation error: {e:?}"),
         }
     }
 
-    assert_eq!(success_count, 1, "Only one room should be created");
+    assert_eq!(success_count, 5, "Repository should persist all rows");
+    let persisted_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM rooms WHERE created_by = $1 AND name = $2 AND deleted_at IS NULL",
+    )
+    .bind(user_id.as_i64())
+    .bind("Repeated Room")
+    .fetch_one(pool)
+    .await
+    .expect("Failed to count persisted rooms");
     assert_eq!(
-        already_exists_count, 4,
-        "All other competing creates should fail with AlreadyExists"
+        persisted_count, 5,
+        "Room-name product policy belongs above the repository layer"
     );
 }
 

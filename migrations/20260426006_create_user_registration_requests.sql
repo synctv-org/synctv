@@ -7,12 +7,14 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
     opaque_credential_identifier BYTEA,
     opaque_ciphersuite VARCHAR(64),
     opaque_server_setup_version INTEGER,
-    oauth2_provider VARCHAR(50),
+    oauth2_provider_type SMALLINT,
+    oauth2_provider_instance_name VARCHAR(64),
+    oauth2_provider_issuer TEXT,
     oauth2_provider_user_id VARCHAR(255),
     oauth2_provider_username VARCHAR(255),
     oauth2_avatar_url TEXT,
     oauth2_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
-    signup_method SMALLINT NOT NULL DEFAULT 0,
+    signup_method SMALLINT NOT NULL,
     status SMALLINT NOT NULL,
     requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     reviewed_at TIMESTAMPTZ,
@@ -23,23 +25,28 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
         CHECK (email IS NULL OR length(trim(email)) > 0)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_username_pending
+CREATE INDEX IF NOT EXISTS idx_user_registration_requests_status_requested
+    ON user_registration_requests(status, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_user_registration_requests_pending_username
     ON user_registration_requests(LOWER(username))
     WHERE reviewed_at IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_email_pending
-    ON user_registration_requests(email)
+CREATE INDEX IF NOT EXISTS idx_user_registration_requests_pending_email
+    ON user_registration_requests(LOWER(email))
     WHERE reviewed_at IS NULL
       AND email IS NOT NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_oauth2_identity_pending
-    ON user_registration_requests(oauth2_provider, oauth2_provider_user_id)
+CREATE INDEX IF NOT EXISTS idx_user_registration_requests_pending_oauth2_identity
+    ON user_registration_requests(oauth2_provider_instance_name, oauth2_provider_user_id)
     WHERE reviewed_at IS NULL
-      AND oauth2_provider IS NOT NULL
+      AND oauth2_provider_instance_name IS NOT NULL
       AND oauth2_provider_user_id IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_user_registration_requests_status_requested
-    ON user_registration_requests(status, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_registration_requests_pending_oauth2_type
+    ON user_registration_requests(oauth2_provider_type)
+    WHERE reviewed_at IS NULL
+      AND oauth2_provider_type IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_user_registration_requests_reviewed_by
     ON user_registration_requests(reviewed_by)

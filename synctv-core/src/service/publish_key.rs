@@ -19,6 +19,20 @@ use crate::{
     Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
+async fn run_publish_key_redis_op<T, F>(
+    timeout: Duration,
+    operation: &'static str,
+    future: F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = std::result::Result<T, redis::RedisError>>,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+        .map_err(Error::Redis)
+}
+
 /// Generated publish key for RTMP streaming
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishKey {
@@ -197,19 +211,24 @@ impl JtiStore for RedisJtiStore {
 
         // Obtain a fresh connection snapshot (follows Sentinel failover).
         let redis_key = format!("{}publish_key:jti:{}", self.key_prefix, jti);
-        let mut conn = self.redis_runtime.snapshot().await;
+        let mut conn =
+            crate::redis_runtime_snapshot(&*self.redis_runtime, "claim publish-key JTI").await?;
         let ttl_ms = ttl_secs.saturating_mul(1000);
         // Cross-replica check: atomic SET key value PX <ms> NX
         // Using a single SET command with NX and PX flags is atomic in Redis,
         // eliminating the TOCTOU gap between a separate SETNX + EXPIRE pair.
-        let set_result: std::result::Result<Option<String>, _> = redis::cmd("SET")
-            .arg(&redis_key)
-            .arg(1i64)
-            .arg("PX")
-            .arg(ttl_ms)
-            .arg("NX")
-            .query_async(&mut conn)
-            .await;
+        let set_result: std::result::Result<Option<String>, _> = run_publish_key_redis_op(
+            self.redis_runtime.operation_timeout(),
+            "claim publish-key JTI",
+            redis::cmd("SET")
+                .arg(&redis_key)
+                .arg(1i64)
+                .arg("PX")
+                .arg(ttl_ms)
+                .arg("NX")
+                .query_async(&mut conn),
+        )
+        .await;
         match set_result {
             Ok(Some(_)) => {
                 // SET returned OK — we claimed the key atomically with its TTL
@@ -704,6 +723,40 @@ mod tests {
         assert!(
             Arc::ptr_eq(&store.redis_runtime, &runtime),
             "Redis JTI store should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redis_jti_store_snapshot_timeout_fails_closed() {
+        #[derive(Clone)]
+        struct HangingRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for HangingRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                panic!("snapshot timeout should cancel this future")
+            }
+
+            fn operation_timeout(&self) -> Duration {
+                Duration::from_millis(1)
+            }
+        }
+
+        let store = RedisJtiStore::from_runtime_fail_closed(
+            Arc::new(HangingRedisRuntime),
+            "synctv:".to_string(),
+            3600,
+        );
+
+        let error = store
+            .try_claim("jti-timeout", 60)
+            .await
+            .expect_err("fail-closed publish-key JTI store should reject Redis timeouts");
+
+        assert!(
+            matches!(error, Error::Timeout(ref msg) if msg == "Redis timeout: claim publish-key JTI"),
+            "unexpected error: {error}"
         );
     }
 

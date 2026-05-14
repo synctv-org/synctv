@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 
-use crate::models::{ReviewRequestId, ReviewStatus, RoomId, SignupMethod, UserId};
+use crate::models::{
+    oauth2_provider_type_name_from_code, ReviewRequestId, ReviewStatus, RoomId, SignupMethod,
+    UserId,
+};
 use crate::repository::query_builder::escape_ilike;
 use crate::Result;
 
@@ -17,6 +20,8 @@ pub struct UserRegistrationReviewRecord {
     pub reviewed_by: Option<UserId>,
     pub rejection_reason: Option<String>,
     pub oauth2_provider: Option<String>,
+    pub oauth2_provider_instance_name: Option<String>,
+    pub oauth2_provider_issuer: Option<String>,
     pub oauth2_provider_user_id: Option<String>,
     pub oauth2_provider_username: Option<String>,
     pub oauth2_avatar_url: Option<String>,
@@ -90,6 +95,55 @@ pub struct ReviewRepository {
     pool: PgPool,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct UserRegistrationReviewRow {
+    id: UserId,
+    username: String,
+    email: String,
+    signup_method: SignupMethod,
+    status: ReviewStatus,
+    requested_at: DateTime<Utc>,
+    reviewed_at: Option<DateTime<Utc>>,
+    reviewed_by: Option<UserId>,
+    rejection_reason: Option<String>,
+    oauth2_provider_type: Option<i16>,
+    oauth2_provider_instance_name: Option<String>,
+    oauth2_provider_issuer: Option<String>,
+    oauth2_provider_user_id: Option<String>,
+    oauth2_provider_username: Option<String>,
+    oauth2_avatar_url: Option<String>,
+    oauth2_email_verified: bool,
+}
+
+impl TryFrom<UserRegistrationReviewRow> for UserRegistrationReviewRecord {
+    type Error = crate::Error;
+
+    fn try_from(row: UserRegistrationReviewRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            username: row.username,
+            email: row.email,
+            signup_method: row.signup_method,
+            status: row.status,
+            requested_at: row.requested_at,
+            reviewed_at: row.reviewed_at,
+            reviewed_by: row.reviewed_by,
+            rejection_reason: row.rejection_reason,
+            oauth2_provider: row
+                .oauth2_provider_type
+                .map(oauth2_provider_type_name_from_code)
+                .transpose()
+                .map_err(crate::Error::InvalidInput)?,
+            oauth2_provider_instance_name: row.oauth2_provider_instance_name,
+            oauth2_provider_issuer: row.oauth2_provider_issuer,
+            oauth2_provider_user_id: row.oauth2_provider_user_id,
+            oauth2_provider_username: row.oauth2_provider_username,
+            oauth2_avatar_url: row.oauth2_avatar_url,
+            oauth2_email_verified: row.oauth2_email_verified,
+        })
+    }
+}
+
 impl ReviewRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -100,11 +154,12 @@ impl ReviewRepository {
         &self,
         request_id: UserId,
     ) -> Result<Option<UserRegistrationReviewRecord>> {
-        sqlx::query_as::<_, UserRegistrationReviewRecord>(
+        let row = sqlx::query_as::<_, UserRegistrationReviewRow>(
             r"
             SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
                    requested_at, reviewed_at, reviewed_by, rejection_reason,
-                   oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
+                   oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
+                   oauth2_provider_user_id, oauth2_provider_username,
                    oauth2_avatar_url, oauth2_email_verified
             FROM user_registration_requests
             WHERE id = $1
@@ -113,7 +168,9 @@ impl ReviewRepository {
         .bind(request_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(Into::into)
+        .map_err(crate::Error::from)?;
+
+        row.map(UserRegistrationReviewRecord::try_from).transpose()
     }
 
     pub async fn list_user_registrations(
@@ -138,11 +195,12 @@ impl ReviewRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        let rows = sqlx::query_as::<_, UserRegistrationReviewRecord>(
+        let rows = sqlx::query_as::<_, UserRegistrationReviewRow>(
             r"
             SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
                    requested_at, reviewed_at, reviewed_by, rejection_reason,
-                   oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
+                   oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
+                   oauth2_provider_user_id, oauth2_provider_username,
                    oauth2_avatar_url, oauth2_email_verified
             FROM user_registration_requests
             WHERE status = $1
@@ -158,6 +216,11 @@ impl ReviewRepository {
         .fetch_all(&self.pool)
         .await?;
 
+        let rows = rows
+            .into_iter()
+            .map(UserRegistrationReviewRecord::try_from)
+            .collect::<Result<Vec<_>>>()?;
+
         Ok(ReviewPage { rows, total })
     }
 
@@ -167,19 +230,109 @@ impl ReviewRepository {
         reviewed_by: Option<UserId>,
         reason: &str,
     ) -> Result<u64> {
-        let result = sqlx::query!(
+        Self::reject_user_registration_with_executor(&self.pool, request_id, reviewed_by, reason)
+            .await
+    }
+
+    pub async fn approve_user_registration_with_executor<'e, E>(
+        executor: E,
+        request_id: UserId,
+        reviewed_by: Option<UserId>,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
+            r"
+            UPDATE user_registration_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $4
+            ",
+        )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Approved))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn reject_user_registration_with_executor<'e, E>(
+        executor: E,
+        request_id: UserId,
+        reviewed_by: Option<UserId>,
+        reason: &str,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
             r"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Rejected),
-            reviewed_by.map(|id| id.as_i64()),
-            reason,
-            i16::from(ReviewStatus::Pending)
         )
-        .execute(&self.pool)
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Rejected))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(reason)
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn approve_room_creation_with_executor<'e, E>(
+        executor: E,
+        request_id: RoomId,
+        reviewed_by: Option<UserId>,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
+            r"
+            UPDATE room_creation_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $4
+            ",
+        )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Approved))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn reject_room_creation_with_executor<'e, E>(
+        executor: E,
+        request_id: RoomId,
+        reviewed_by: Option<UserId>,
+        reason: Option<&str>,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
+            r"
+            UPDATE room_creation_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $5
+            ",
+        )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Rejected))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(reason)
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected())
@@ -292,6 +445,105 @@ impl ReviewRepository {
         .await?;
 
         Ok(row)
+    }
+
+    pub async fn approve_room_join_by_member_with_executor<'e, E>(
+        executor: E,
+        room_id: RoomId,
+        user_id: UserId,
+        reviewed_by: Option<UserId>,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
+            r"
+            UPDATE room_join_requests
+            SET status = $3,
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewed_by = $4
+            WHERE room_id = $1
+              AND user_id = $2
+              AND reviewed_at IS NULL
+              AND status = $5
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(user_id.as_i64())
+        .bind(i16::from(ReviewStatus::Approved))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn approve_room_join_with_executor<'e, E>(
+        executor: E,
+        request_id: ReviewRequestId,
+        room_id: RoomId,
+        reviewed_by: Option<UserId>,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
+            r"
+            UPDATE room_join_requests
+            SET status = $2,
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewed_by = $3
+            WHERE id = $1
+              AND room_id = $4
+              AND reviewed_at IS NULL
+              AND status = $5
+            ",
+        )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Approved))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(room_id.as_i64())
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn reject_room_join_with_executor<'e, E>(
+        executor: E,
+        request_id: ReviewRequestId,
+        room_id: RoomId,
+        reviewed_by: Option<UserId>,
+        reason: Option<&str>,
+    ) -> Result<u64>
+    where
+        E: PgExecutor<'e>,
+    {
+        let result = sqlx::query(
+            r"
+            UPDATE room_join_requests
+            SET status = $2,
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewed_by = $3,
+                rejection_reason = $4
+            WHERE id = $1
+              AND room_id = $5
+              AND reviewed_at IS NULL
+              AND status = $6
+            ",
+        )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Rejected))
+        .bind(reviewed_by.map(|id| id.as_i64()))
+        .bind(reason)
+        .bind(room_id.as_i64())
+        .bind(i16::from(ReviewStatus::Pending))
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 
     pub async fn list_room_joins(

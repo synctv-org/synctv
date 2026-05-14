@@ -4,7 +4,9 @@
 
 use crate::{
     models::{
-        oauth2_client::{OAuth2Provider, OAuth2UserInfo, UserOAuthProviderMapping},
+        oauth2_client::{
+            OAuth2Provider, OAuth2ProviderTypeName, OAuth2UserInfo, UserOAuthProviderMapping,
+        },
         UserId,
     },
     Result,
@@ -37,19 +39,28 @@ impl UserOAuthProviderRepository {
     pub async fn upsert(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
+        provider_type: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
         user_info: &OAuth2UserInfo,
     ) -> Result<()> {
-        self.upsert_with_executor(user_id, provider, provider_user_id, user_info, &self.pool)
-            .await
+        self.upsert_with_executor(
+            user_id,
+            provider_type,
+            provider_instance_name,
+            provider_user_id,
+            user_info,
+            &self.pool,
+        )
+        .await
     }
 
     /// Insert or update `OAuth2` provider mapping using a provided executor (pool or transaction)
     pub async fn upsert_with_executor<'e, E>(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
+        provider_type: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
         user_info: &OAuth2UserInfo,
         executor: E,
@@ -59,17 +70,24 @@ impl UserOAuthProviderRepository {
     {
         let result = sqlx::query!(
             r"
-            INSERT INTO auth_oauth2_identities (provider, provider_user_id, user_id, username, email, avatar_url)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (provider, provider_user_id)
+            INSERT INTO auth_oauth2_identities (
+                provider_type, provider_instance_name, provider_issuer,
+                provider_user_id, user_id, username, email, avatar_url
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (provider_instance_name, provider_user_id)
             DO UPDATE SET
+                provider_type = EXCLUDED.provider_type,
+                provider_issuer = EXCLUDED.provider_issuer,
                 username = EXCLUDED.username,
                 email = EXCLUDED.email,
                 avatar_url = EXCLUDED.avatar_url,
                 updated_at = CURRENT_TIMESTAMP
             WHERE auth_oauth2_identities.user_id = EXCLUDED.user_id
             ",
-            provider.as_str(),
+            provider_type.as_i16(),
+            provider_instance_name,
+            user_info.provider_issuer.as_deref(),
             provider_user_id,
             user_id as &UserId,
             user_info.username.as_str(),
@@ -88,23 +106,27 @@ impl UserOAuthProviderRepository {
         Ok(())
     }
 
-    /// Find user by `OAuth2` provider and provider user ID
-    pub async fn find_by_provider(
+    /// Find user by `OAuth2` provider instance and provider user ID
+    pub async fn find_by_provider_instance(
         &self,
-        provider: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
     ) -> Result<Option<UserOAuthProviderMapping>> {
-        self.find_by_provider_with_executor(provider, provider_user_id, &self.pool)
-            .await
+        self.find_by_provider_instance_with_executor(
+            provider_instance_name,
+            provider_user_id,
+            &self.pool,
+        )
+        .await
     }
 
-    /// Find user by `OAuth2` provider and provider user ID using a provided executor
+    /// Find user by `OAuth2` provider instance and provider user ID using a provided executor
     ///
     /// Allows the lookup to participate in an existing transaction, which is necessary
     /// for the atomic find-or-create pattern used in [`OAuth2Service::find_or_create_and_link`].
-    pub async fn find_by_provider_with_executor<'e, E>(
+    pub async fn find_by_provider_instance_with_executor<'e, E>(
         &self,
-        provider: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
         executor: E,
     ) -> Result<Option<UserOAuthProviderMapping>>
@@ -114,12 +136,14 @@ impl UserOAuthProviderRepository {
         let row = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
-            SELECT id, provider, provider_user_id, user_id as "user_id: UserId",
+            SELECT id, provider_type as "provider: OAuth2ProviderTypeName",
+                   provider_instance_name, provider_issuer, provider_user_id,
+                   user_id as "user_id: UserId",
                    username, email, avatar_url, created_at, updated_at
             FROM auth_oauth2_identities
-            WHERE provider = $1 AND provider_user_id = $2
+            WHERE provider_instance_name = $1 AND provider_user_id = $2
             "#,
-            provider.as_str(),
+            provider_instance_name,
             provider_user_id,
         )
         .fetch_optional(executor)
@@ -133,7 +157,9 @@ impl UserOAuthProviderRepository {
         let rows = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
-            SELECT id, provider, provider_user_id, user_id as "user_id: UserId",
+            SELECT id, provider_type as "provider: OAuth2ProviderTypeName",
+                   provider_instance_name, provider_issuer, provider_user_id,
+                   user_id as "user_id: UserId",
                    username, email, avatar_url, created_at, updated_at
             FROM auth_oauth2_identities
             WHERE user_id = $1
@@ -146,17 +172,17 @@ impl UserOAuthProviderRepository {
         Ok(rows.into_iter().map(std::convert::Into::into).collect())
     }
 
-    /// Delete `OAuth2` provider mapping
-    pub async fn delete(
+    /// Delete one `OAuth2` provider instance mapping
+    pub async fn delete_instance(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
     ) -> Result<bool> {
         let result = sqlx::query!(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider = $2 AND provider_user_id = $3",
+            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3",
             user_id as &UserId,
-            provider.as_str(),
+            provider_instance_name,
             provider_user_id,
         )
         .execute(&self.pool)
@@ -199,12 +225,12 @@ impl UserOAuthProviderRepository {
     pub async fn delete_by_user_and_provider(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
+        provider_type: &OAuth2Provider,
     ) -> Result<bool> {
         let result = sqlx::query!(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider = $2",
+            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider_type = $2",
             user_id as &UserId,
-            provider.as_str(),
+            provider_type.as_i16(),
         )
         .execute(&self.pool)
         .await?;
@@ -216,7 +242,9 @@ impl UserOAuthProviderRepository {
 /// Row representation for SQL queries.
 struct OAuth2ClientRow {
     pub id: i64,
-    pub provider: String,
+    pub provider: OAuth2ProviderTypeName,
+    pub provider_instance_name: String,
+    pub provider_issuer: Option<String>,
     pub provider_user_id: String,
     pub user_id: UserId,
     pub username: String,
@@ -230,7 +258,9 @@ impl From<OAuth2ClientRow> for UserOAuthProviderMapping {
     fn from(row: OAuth2ClientRow) -> Self {
         Self {
             id: row.id,
-            provider: row.provider,
+            provider: row.provider.0,
+            provider_instance_name: row.provider_instance_name,
+            provider_issuer: row.provider_issuer,
             provider_user_id: row.provider_user_id,
             user_id: row.user_id,
             username: row.username,
@@ -252,7 +282,9 @@ mod tests {
         let now = Utc::now();
         let row = OAuth2ClientRow {
             id: 1,
-            provider: "github".to_string(),
+            provider: OAuth2ProviderTypeName("github".to_string()),
+            provider_instance_name: "github-main".to_string(),
+            provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_user_456".to_string(),
             user_id: UserId::expect_positive(42),
             username: "ghuser".to_string(),
@@ -265,6 +297,11 @@ mod tests {
         let mapping: UserOAuthProviderMapping = row.into();
         assert_eq!(mapping.id, 1);
         assert_eq!(mapping.provider, "github");
+        assert_eq!(mapping.provider_instance_name, "github-main");
+        assert_eq!(
+            mapping.provider_issuer.as_deref(),
+            Some("https://github.com")
+        );
         assert_eq!(mapping.provider_user_id, "gh_user_456");
         assert_eq!(mapping.user_id, UserId::expect_positive(42));
         assert_eq!(mapping.username, "ghuser");
@@ -282,7 +319,9 @@ mod tests {
         let now = Utc::now();
         let row = OAuth2ClientRow {
             id: 2,
-            provider: "oidc".to_string(),
+            provider: OAuth2ProviderTypeName("oidc".to_string()),
+            provider_instance_name: "corp_oidc".to_string(),
+            provider_issuer: None,
             provider_user_id: "oidc_user_001".to_string(),
             user_id: UserId::expect_positive(2),
             username: "oidcuser".to_string(),
@@ -302,7 +341,9 @@ mod tests {
         let now = Utc::now();
         let row = OAuth2ClientRow {
             id: 3,
-            provider: "google".to_string(),
+            provider: OAuth2ProviderTypeName("google".to_string()),
+            provider_instance_name: "google".to_string(),
+            provider_issuer: Some("https://accounts.google.com".to_string()),
             provider_user_id: "goog_123".to_string(),
             user_id: UserId::expect_positive(3),
             username: "googleuser".to_string(),

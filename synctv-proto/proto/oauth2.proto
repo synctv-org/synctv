@@ -219,6 +219,22 @@ message UnlinkProviderRequest {
         message: "provider_user_id must be empty or at most 256 visible characters"
         expression: "this == '' || (size(this) <= 256 && !this.matches('.*[\\\\x00-\\\\x1F\\\\x7F].*'))"
     }];
+
+    // Required when provider_user_id is set: the configured provider instance namespace.
+    // Empty with empty provider_user_id unlinks every binding for provider type.
+    string provider_instance_name = 3 [
+        (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+        (buf.validate.field).string = {
+            pattern: "^[A-Za-z0-9_-]+$",
+            max_len: 64
+        }
+    ];
+
+    option (buf.validate.message).cel = {
+        id: "oauth2.unlink_provider.instance_for_specific_identity"
+        message: "provider_instance_name is required when provider_user_id is set"
+        expression: "this.provider_user_id == '' || this.provider_instance_name != ''"
+    };
 }
 
 message UnlinkProviderResponse {
@@ -250,6 +266,12 @@ message LinkedProvider {
     // When the provider was linked (Unix timestamp, seconds)
     // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
     int64 linked_at = 3;
+
+    // Provider instance name that owns this external identity namespace.
+    string provider_instance_name = 4;
+
+    // Optional issuer metadata when known for OIDC-like providers.
+    string provider_issuer = 5;
 }
 
 // ==================== User Info ====================

@@ -988,7 +988,7 @@ mod tests {
         )
         .await
         .expect_err("strict SSRF policy must block metadata IPs");
-        let err = map_proxy_execution_error(proxy_error.into());
+        let err = map_proxy_execution_error(proxy_error);
 
         assert_eq!(err.status, StatusCode::FORBIDDEN);
         assert_eq!(err.message, "Proxy target is not allowed by SSRF policy");

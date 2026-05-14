@@ -91,15 +91,8 @@ where
 
 #[allow(clippy::result_large_err)]
 fn map_message_stream_join_error(error: RealtimeJoinError) -> Status {
-    match error {
-        RealtimeJoinError::RateLimited(message) => Status::resource_exhausted(message),
-        RealtimeJoinError::ServiceUnavailable(message) => Status::unavailable(message),
-        RealtimeJoinError::PermissionDenied(message) => Status::permission_denied(message),
-        _ => {
-            tracing::error!("Unexpected MessageStream pre_join failure: {error}");
-            Status::internal("Failed to establish message stream")
-        }
-    }
+    error.log_if_internal("grpc_message_stream_pre_join");
+    map_api_error(crate::impls::ApiError::from(error))
 }
 
 #[allow(clippy::result_large_err)]
@@ -2986,6 +2979,6 @@ mod tests {
             "Connection 'conn123' is already registered".to_string(),
         ));
         assert_eq!(status.code(), tonic::Code::Internal);
-        assert_eq!(status.message(), "Failed to establish message stream");
+        assert_eq!(status.message(), "Internal error");
     }
 }

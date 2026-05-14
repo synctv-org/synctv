@@ -2,12 +2,97 @@
 // Database access layer for provider instance configuration management.
 
 use crate::models::{
-    normalize_provider_instance_name, ProviderInstance, ProviderInstanceListQuery,
+    normalize_provider_instance_name, provider_type_code_from_name, provider_type_codes_from_names,
+    provider_type_name_from_code, ProviderInstance, ProviderInstanceListQuery,
     ProviderInstanceListSortBy, UserId, UserProviderCredential,
 };
 use crate::service::CredentialEncryption;
 use crate::Result;
 use sqlx::PgPool;
+
+#[derive(Debug, sqlx::FromRow)]
+struct ProviderInstanceRow {
+    name: String,
+    endpoint: String,
+    comment: Option<String>,
+    jwt_secret: Option<String>,
+    custom_ca: Option<String>,
+    timeout: String,
+    tls: bool,
+    insecure_tls: bool,
+    providers: Vec<i16>,
+    enabled: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl TryFrom<ProviderInstanceRow> for ProviderInstance {
+    type Error = crate::Error;
+
+    fn try_from(row: ProviderInstanceRow) -> Result<Self> {
+        let providers = row
+            .providers
+            .into_iter()
+            .map(provider_type_name_from_code)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::Error::InvalidInput)?;
+
+        Ok(Self {
+            name: row.name,
+            endpoint: row.endpoint,
+            comment: row.comment,
+            jwt_secret: row.jwt_secret,
+            custom_ca: row.custom_ca,
+            timeout: row.timeout,
+            tls: row.tls,
+            insecure_tls: row.insecure_tls,
+            providers,
+            enabled: row.enabled,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct UserProviderCredentialRow {
+    id: i64,
+    user_id: UserId,
+    provider: i16,
+    server_id: String,
+    provider_instance_name: Option<String>,
+    credential_data: serde_json::Value,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl TryFrom<UserProviderCredentialRow> for UserProviderCredential {
+    type Error = crate::Error;
+
+    fn try_from(row: UserProviderCredentialRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            user_id: row.user_id,
+            provider: provider_type_name_from_code(row.provider)
+                .map_err(crate::Error::InvalidInput)?,
+            server_id: row.server_id,
+            provider_instance_name: row.provider_instance_name,
+            credential_data: row.credential_data,
+            expires_at: row.expires_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
+}
+
+fn provider_type_code(provider: &str) -> Result<i16> {
+    provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
+}
+
+fn provider_type_codes(providers: &[String]) -> Result<Vec<i16>> {
+    provider_type_codes_from_names(providers).map_err(crate::Error::InvalidInput)
+}
 
 /// Provider Instance Repository
 ///
@@ -57,12 +142,12 @@ impl ProviderInstanceRepository {
     fn push_list_filters(
         builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
         query: &ProviderInstanceListQuery,
-    ) {
+    ) -> Result<()> {
         builder.push(" WHERE TRUE");
 
         if let Some(provider_type) = &query.provider_type {
             builder.push(" AND ");
-            builder.push_bind(provider_type.clone());
+            builder.push_bind(provider_type_code(provider_type)?);
             builder.push(" = ANY(providers)");
         }
         if let Some(enabled) = query.enabled {
@@ -80,11 +165,16 @@ impl ProviderInstanceRepository {
             builder.push(" ESCAPE '\\' OR endpoint ILIKE ");
             builder.push_bind(pattern.clone());
             builder.push(" ESCAPE '\\' OR COALESCE(comment, '') ILIKE ");
-            builder.push_bind(pattern.clone());
-            builder.push(" ESCAPE '\\' OR array_to_string(providers, ' ') ILIKE ");
             builder.push_bind(pattern);
-            builder.push(" ESCAPE '\\')");
+            builder.push(" ESCAPE '\\'");
+            if let Ok(provider_code) = provider_type_code(search) {
+                builder.push(" OR ");
+                builder.push_bind(provider_code);
+                builder.push(" = ANY(providers)");
+            }
+            builder.push(")");
         }
+        Ok(())
     }
 
     fn sensitive_fields_present(instance: &ProviderInstance) -> bool {
@@ -164,18 +254,24 @@ impl ProviderInstanceRepository {
         Ok(instance)
     }
 
+    fn decrypt_instance_row(&self, row: ProviderInstanceRow) -> Result<ProviderInstance> {
+        self.decrypt_instance(row.try_into()?)
+    }
+
     /// Decrypt sensitive fields on a list of `ProviderInstance`.
-    fn decrypt_instances(&self, instances: Vec<ProviderInstance>) -> Result<Vec<ProviderInstance>> {
-        instances
-            .into_iter()
-            .map(|i| self.decrypt_instance(i))
+    fn decrypt_instance_rows(
+        &self,
+        rows: Vec<ProviderInstanceRow>,
+    ) -> Result<Vec<ProviderInstance>> {
+        rows.into_iter()
+            .map(|row| self.decrypt_instance_row(row))
             .collect()
     }
 
     /// Get all provider instances (sensitive fields decrypted)
     pub async fn get_all(&self) -> Result<Vec<ProviderInstance>> {
-        let instances = sqlx::query_as!(
-            ProviderInstance,
+        let rows = sqlx::query_as!(
+            ProviderInstanceRow,
             r"
             SELECT name, endpoint, comment, jwt_secret, custom_ca, timeout, tls,
                    insecure_tls, providers, enabled, created_at, updated_at
@@ -185,13 +281,13 @@ impl ProviderInstanceRepository {
         )
         .fetch_all(&self.pool)
         .await?;
-        self.decrypt_instances(instances)
+        self.decrypt_instance_rows(rows)
     }
 
     /// Get all enabled provider instances (sensitive fields decrypted)
     pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
-        let instances = sqlx::query_as!(
-            ProviderInstance,
+        let rows = sqlx::query_as!(
+            ProviderInstanceRow,
             r"
             SELECT name, endpoint, comment, jwt_secret, custom_ca, timeout, tls,
                    insecure_tls, providers, enabled, created_at, updated_at
@@ -202,13 +298,13 @@ impl ProviderInstanceRepository {
         )
         .fetch_all(&self.pool)
         .await?;
-        self.decrypt_instances(instances)
+        self.decrypt_instance_rows(rows)
     }
 
     /// Get provider instance by name (sensitive fields decrypted)
     pub async fn get_by_name(&self, name: &str) -> Result<Option<ProviderInstance>> {
-        let instance = sqlx::query_as!(
-            ProviderInstance,
+        let row = sqlx::query_as!(
+            ProviderInstanceRow,
             r"
             SELECT name, endpoint, comment, jwt_secret, custom_ca, timeout, tls,
                    insecure_tls, providers, enabled, created_at, updated_at
@@ -219,8 +315,8 @@ impl ProviderInstanceRepository {
         )
         .fetch_optional(&self.pool)
         .await?;
-        match instance {
-            Some(i) => Ok(Some(self.decrypt_instance(i)?)),
+        match row {
+            Some(row) => Ok(Some(self.decrypt_instance_row(row)?)),
             None => Ok(None),
         }
     }
@@ -231,35 +327,35 @@ impl ProviderInstanceRepository {
 
         let mut builder =
             sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM media_provider_instances");
-        Self::push_list_filters(&mut builder, query);
+        Self::push_list_filters(&mut builder, query)?;
         let order_by = Self::build_order_by(query);
         builder.push(format!(" ORDER BY {order_by} LIMIT "));
         builder.push_bind(limit);
         builder.push(" OFFSET ");
         builder.push_bind(offset);
 
-        let instances = builder
-            .build_query_as::<ProviderInstance>()
+        let rows = builder
+            .build_query_as::<ProviderInstanceRow>()
             .fetch_all(&self.pool)
             .await?;
-        self.decrypt_instances(instances)
+        self.decrypt_instance_rows(rows)
     }
 
     /// Get instances that support a specific provider type (sensitive fields decrypted)
     pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
-        let instances = sqlx::query_as!(
-            ProviderInstance,
+        let rows = sqlx::query_as!(
+            ProviderInstanceRow,
             r"
             SELECT name, endpoint, comment, jwt_secret, custom_ca, timeout, tls,
                    insecure_tls, providers, enabled, created_at, updated_at
             FROM media_provider_instances
             WHERE $1 = ANY(providers) AND enabled = true
             ",
-            provider,
+            provider_type_code(provider)?,
         )
         .fetch_all(&self.pool)
         .await?;
-        self.decrypt_instances(instances)
+        self.decrypt_instance_rows(rows)
     }
 
     /// Create a new provider instance (encrypts sensitive fields before storage)
@@ -267,6 +363,7 @@ impl ProviderInstanceRepository {
         self.ensure_encryption_for_sensitive_fields(instance)?;
         let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
         let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
+        let provider_codes = provider_type_codes(&instance.providers)?;
         let result = sqlx::query!(
             r"
             INSERT INTO media_provider_instances
@@ -281,7 +378,7 @@ impl ProviderInstanceRepository {
             instance.timeout.as_str(),
             instance.tls,
             instance.insecure_tls,
-            &instance.providers,
+            &provider_codes,
             instance.enabled,
         )
         .execute(&self.pool)
@@ -304,6 +401,7 @@ impl ProviderInstanceRepository {
         self.ensure_encryption_for_sensitive_fields(instance)?;
         let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
         let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
+        let provider_codes = provider_type_codes(&instance.providers)?;
 
         let result = sqlx::query!(
             r"
@@ -321,7 +419,7 @@ impl ProviderInstanceRepository {
             instance.timeout.as_str(),
             instance.tls,
             instance.insecure_tls,
-            &instance.providers,
+            &provider_codes,
             instance.enabled,
         )
         .execute(&self.pool)
@@ -462,7 +560,7 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    /// Decrypt credentials on a `UserProviderCredential` in place
+    /// Decrypt credentials on a `UserProviderCredential` in place.
     fn decrypt_in_credential(
         &self,
         mut cred: UserProviderCredential,
@@ -471,21 +569,27 @@ impl UserProviderCredentialRepository {
         Ok(cred)
     }
 
-    /// Decrypt credentials on a list of `UserProviderCredential`
-    fn decrypt_credentials(
+    fn decrypt_credential_row(
         &self,
-        creds: Vec<UserProviderCredential>,
+        row: UserProviderCredentialRow,
+    ) -> Result<UserProviderCredential> {
+        self.decrypt_in_credential(row.try_into()?)
+    }
+
+    /// Decrypt credentials on a list of `UserProviderCredentialRow`.
+    fn decrypt_credential_rows(
+        &self,
+        rows: Vec<UserProviderCredentialRow>,
     ) -> Result<Vec<UserProviderCredential>> {
-        creds
-            .into_iter()
-            .map(|c| self.decrypt_in_credential(c))
+        rows.into_iter()
+            .map(|row| self.decrypt_credential_row(row))
             .collect()
     }
 
     /// Get all credentials for a user (decrypted)
     pub async fn get_by_user(&self, user_id: UserId) -> Result<Vec<UserProviderCredential>> {
-        let creds = sqlx::query_as!(
-            UserProviderCredential,
+        let rows = sqlx::query_as!(
+            UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
                    provider_instance_name, credential_data as "credential_data!: serde_json::Value",
@@ -499,13 +603,13 @@ impl UserProviderCredentialRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        self.decrypt_credentials(creds)
+        self.decrypt_credential_rows(rows)
     }
 
     /// Get credential by ID (decrypted)
     pub async fn get_by_id(&self, id: i64) -> Result<Option<UserProviderCredential>> {
-        let cred = sqlx::query_as!(
-            UserProviderCredential,
+        let row = sqlx::query_as!(
+            UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
                    provider_instance_name, credential_data as "credential_data!: serde_json::Value",
@@ -518,8 +622,8 @@ impl UserProviderCredentialRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        match cred {
-            Some(c) => Ok(Some(self.decrypt_in_credential(c)?)),
+        match row {
+            Some(row) => Ok(Some(self.decrypt_credential_row(row)?)),
             None => Ok(None),
         }
     }
@@ -531,8 +635,8 @@ impl UserProviderCredentialRepository {
         provider: &str,
         server_id: &str,
     ) -> Result<Option<UserProviderCredential>> {
-        let cred = sqlx::query_as!(
-            UserProviderCredential,
+        let row = sqlx::query_as!(
+            UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
                    provider_instance_name, credential_data as "credential_data!: serde_json::Value",
@@ -541,14 +645,14 @@ impl UserProviderCredentialRepository {
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
             "#,
             user_id as UserId,
-            provider,
+            provider_type_code(provider)?,
             server_id,
         )
         .fetch_optional(&self.pool)
         .await?;
 
-        match cred {
-            Some(c) => Ok(Some(self.decrypt_in_credential(c)?)),
+        match row {
+            Some(row) => Ok(Some(self.decrypt_credential_row(row)?)),
             None => Ok(None),
         }
     }
@@ -559,8 +663,8 @@ impl UserProviderCredentialRepository {
         user_id: UserId,
         provider: &str,
     ) -> Result<Vec<UserProviderCredential>> {
-        let creds = sqlx::query_as!(
-            UserProviderCredential,
+        let rows = sqlx::query_as!(
+            UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
                    provider_instance_name, credential_data as "credential_data!: serde_json::Value",
@@ -569,12 +673,12 @@ impl UserProviderCredentialRepository {
             WHERE user_id = $1 AND provider = $2
             "#,
             user_id as UserId,
-            provider,
+            provider_type_code(provider)?,
         )
         .fetch_all(&self.pool)
         .await?;
 
-        self.decrypt_credentials(creds)
+        self.decrypt_credential_rows(rows)
     }
 
     /// Create a new user credential (encrypts before storage)
@@ -583,9 +687,10 @@ impl UserProviderCredentialRepository {
         credential: &UserProviderCredential,
     ) -> Result<UserProviderCredential> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
+        let provider_code = provider_type_code(&credential.provider)?;
 
         let created = sqlx::query_as!(
-            UserProviderCredential,
+            UserProviderCredentialRow,
             r#"
             INSERT INTO user_media_provider_credentials
             (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
@@ -595,7 +700,7 @@ impl UserProviderCredentialRepository {
                       expires_at, created_at, updated_at
             "#,
             credential.user_id as UserId,
-            credential.provider.as_str(),
+            provider_code,
             credential.server_id.as_str(),
             Self::normalize_provider_instance_name_for_db(
                 credential.provider_instance_name.as_deref(),
@@ -606,7 +711,7 @@ impl UserProviderCredentialRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        self.decrypt_in_credential(created)
+        self.decrypt_credential_row(created)
     }
 
     /// Insert or replace the credential for a `(user_id, provider, server_id)` binding.
@@ -618,9 +723,10 @@ impl UserProviderCredentialRepository {
         credential: &UserProviderCredential,
     ) -> Result<UserProviderCredential> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
+        let provider_code = provider_type_code(&credential.provider)?;
 
         let upserted = sqlx::query_as!(
-            UserProviderCredential,
+            UserProviderCredentialRow,
             r#"
             INSERT INTO user_media_provider_credentials
             (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
@@ -636,7 +742,7 @@ impl UserProviderCredentialRepository {
                       expires_at, created_at, updated_at
             "#,
             credential.user_id as UserId,
-            credential.provider.as_str(),
+            provider_code,
             credential.server_id.as_str(),
             Self::normalize_provider_instance_name_for_db(
                 credential.provider_instance_name.as_deref(),
@@ -647,7 +753,7 @@ impl UserProviderCredentialRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        self.decrypt_in_credential(upserted)
+        self.decrypt_credential_row(upserted)
     }
 
     /// Update an existing user credential (encrypts before storage)
@@ -703,7 +809,7 @@ impl UserProviderCredentialRepository {
         let result = sqlx::query!(
             "DELETE FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2",
             user_id as UserId,
-            provider,
+            provider_type_code(provider)?,
         )
         .execute(&self.pool)
         .await?;
@@ -719,8 +825,8 @@ impl UserProviderCredentialRepository {
 
     /// Get all expired credentials (for cleanup jobs, decrypted)
     pub async fn get_expired(&self) -> Result<Vec<UserProviderCredential>> {
-        let creds = sqlx::query_as!(
-            UserProviderCredential,
+        let rows = sqlx::query_as!(
+            UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
                    provider_instance_name, credential_data as "credential_data!: serde_json::Value",
@@ -732,7 +838,7 @@ impl UserProviderCredentialRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        self.decrypt_credentials(creds)
+        self.decrypt_credential_rows(rows)
     }
 
     /// Delete all expired credentials

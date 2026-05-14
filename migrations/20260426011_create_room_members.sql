@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS room_members (
     room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
 
-    role SMALLINT NOT NULL DEFAULT 3,
+    role SMALLINT NOT NULL,
     added_permissions BIGINT NOT NULL DEFAULT 0
         CHECK (added_permissions >= 0),
     removed_permissions BIGINT NOT NULL DEFAULT 0

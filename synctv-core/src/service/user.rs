@@ -1,11 +1,9 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::net::IpAddr;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use synctv_common::ExecutionControl;
 
@@ -19,28 +17,17 @@ use crate::{
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
-        PasswordCredentialMaterial, RoomMemberRepository, UserOAuthProviderRepository,
-        UserPreferencesRepository, UserRepository,
+        PasswordCredentialMaterial, ReviewRepository, RoomMemberRepository,
+        UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordRecord, OpaquePasswordService,
         TokenAuthContext, TokenBlacklistStore, TokenType,
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
+    service::session_store::RedisJsonSessionStore,
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
-
-static CONSUME_REDIS_VALUE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
-    redis::Script::new(
-        r#"
-        local value = redis.call("GET", KEYS[1])
-        if value then
-            redis.call("DEL", KEYS[1])
-        end
-        return value
-        "#,
-    )
-});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationMode {
@@ -82,12 +69,16 @@ const MFA_SESSION_TTL_SECS: u64 = 300;
 const MFA_SESSION_CAPACITY: u64 = 10_000;
 const TWO_FACTOR_REQUIRED_MESSAGE: &str =
     "Two-factor authentication is required before tokens can be issued";
-pub(crate) const PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS: &str =
-    "Pending registration username already exists";
-pub(crate) const PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS: &str =
-    "Pending registration email already exists";
-pub(crate) const PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS: &str =
-    "Pending OAuth2 registration identity already exists";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingRegistrationConflict {
+    Username,
+    Email,
+    OAuth2Identity(UserId),
+}
+
+const USER_REGISTRATION_PENDING_LOCK_NS: i32 = 20_260_406;
+const OAUTH2_PENDING_REGISTRATION_LOCK_NS: i32 = 20_260_407;
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or_default()
@@ -103,6 +94,8 @@ struct PendingRegistrationRequest {
     opaque_ciphersuite: Option<String>,
     opaque_server_setup_version: Option<i32>,
     oauth2_provider: Option<OAuth2Provider>,
+    oauth2_provider_instance_name: Option<String>,
+    oauth2_provider_issuer: Option<String>,
     oauth2_provider_user_id: Option<String>,
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
@@ -119,7 +112,9 @@ struct PendingRegistrationRequestRow {
     opaque_ciphersuite: Option<String>,
     opaque_server_setup_version: Option<i32>,
     signup_method: SignupMethod,
-    oauth2_provider: Option<String>,
+    oauth2_provider: Option<crate::models::OAuth2ProviderTypeName>,
+    oauth2_provider_instance_name: Option<String>,
+    oauth2_provider_issuer: Option<String>,
     oauth2_provider_user_id: Option<String>,
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
@@ -569,19 +564,20 @@ impl MfaSessionStore for InMemoryMfaSessionStore {
     }
 }
 
+const OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE: &str = "auth:opaque:login";
+const OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE: &str = "auth:opaque:registration";
+const MFA_SESSION_REDIS_NAMESPACE: &str = "auth:mfa";
+
 pub struct RedisOpaqueLoginSessionStore {
-    runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    store: RedisJsonSessionStore,
 }
 
 pub struct RedisOpaqueRegistrationSessionStore {
-    runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    store: RedisJsonSessionStore,
 }
 
 pub struct RedisMfaSessionStore {
-    runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    store: RedisJsonSessionStore,
 }
 
 impl RedisOpaqueLoginSessionStore {
@@ -590,30 +586,9 @@ impl RedisOpaqueLoginSessionStore {
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
-        let key_prefix = key_prefix.into();
-        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        };
         Self {
-            runtime,
-            key_prefix,
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
         }
-    }
-
-    fn redis_key(&self, session_id: &str) -> String {
-        format!("{}auth:opaque:login:{session_id}", self.key_prefix)
-    }
-
-    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
-    where
-        F: Future<Output = std::result::Result<T, redis::RedisError>>,
-    {
-        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
-            .await
-            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
-            .internal_with_err(&format!("Failed to {operation}"))
     }
 }
 
@@ -623,30 +598,9 @@ impl RedisOpaqueRegistrationSessionStore {
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
-        let key_prefix = key_prefix.into();
-        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        };
         Self {
-            runtime,
-            key_prefix,
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
         }
-    }
-
-    fn redis_key(&self, session_id: &str) -> String {
-        format!("{}auth:opaque:registration:{session_id}", self.key_prefix)
-    }
-
-    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
-    where
-        F: Future<Output = std::result::Result<T, redis::RedisError>>,
-    {
-        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
-            .await
-            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
-            .internal_with_err(&format!("Failed to {operation}"))
     }
 }
 
@@ -656,30 +610,9 @@ impl RedisMfaSessionStore {
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
-        let key_prefix = key_prefix.into();
-        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        };
         Self {
-            runtime,
-            key_prefix,
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
         }
-    }
-
-    fn redis_key(&self, session_id: &str) -> String {
-        format!("{}auth:mfa:{session_id}", self.key_prefix)
-    }
-
-    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
-    where
-        F: Future<Output = std::result::Result<T, redis::RedisError>>,
-    {
-        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
-            .await
-            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
-            .internal_with_err(&format!("Failed to {operation}"))
     }
 }
 
@@ -691,35 +624,27 @@ impl OpaqueLoginSessionStore for RedisOpaqueLoginSessionStore {
         session: &OpaqueLoginSession,
         ttl: Duration,
     ) -> Result<()> {
-        let key = self.redis_key(session_id);
-        let value = serde_json::to_string(session)
-            .internal_with_err("Failed to serialize OPAQUE login session")?;
-        let mut conn = self.runtime.snapshot().await;
-        let _: () = self
-            .run_redis_op(
+        self.store
+            .store(
+                OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize OPAQUE login session",
                 "store OPAQUE login session in Redis",
-                conn.set_ex(key, value, ttl.as_secs()),
             )
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>> {
-        let key = self.redis_key(session_id);
-        let mut conn = self.runtime.snapshot().await;
-        let value: Option<String> = self
-            .run_redis_op(
+        self.store
+            .consume(
+                OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize OPAQUE login session",
                 "consume OPAQUE login session from Redis",
-                CONSUME_REDIS_VALUE_SCRIPT.key(key).invoke_async(&mut conn),
             )
-            .await?;
-
-        value
-            .map(|json| {
-                serde_json::from_str(&json)
-                    .internal_with_err("Failed to deserialize OPAQUE login session")
-            })
-            .transpose()
+            .await
     }
 
     fn supports_cross_node_single_use(&self) -> bool {
@@ -735,35 +660,27 @@ impl OpaqueRegistrationSessionStore for RedisOpaqueRegistrationSessionStore {
         session: &OpaqueRegistrationSession,
         ttl: Duration,
     ) -> Result<()> {
-        let key = self.redis_key(session_id);
-        let value = serde_json::to_string(session)
-            .internal_with_err("Failed to serialize OPAQUE registration session")?;
-        let mut conn = self.runtime.snapshot().await;
-        let _: () = self
-            .run_redis_op(
+        self.store
+            .store(
+                OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize OPAQUE registration session",
                 "store OPAQUE registration session in Redis",
-                conn.set_ex(key, value, ttl.as_secs()),
             )
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn consume(&self, session_id: &str) -> Result<Option<OpaqueRegistrationSession>> {
-        let key = self.redis_key(session_id);
-        let mut conn = self.runtime.snapshot().await;
-        let value: Option<String> = self
-            .run_redis_op(
+        self.store
+            .consume(
+                OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize OPAQUE registration session",
                 "consume OPAQUE registration session from Redis",
-                CONSUME_REDIS_VALUE_SCRIPT.key(key).invoke_async(&mut conn),
             )
-            .await?;
-
-        value
-            .map(|json| {
-                serde_json::from_str(&json)
-                    .internal_with_err("Failed to deserialize OPAQUE registration session")
-            })
-            .transpose()
+            .await
     }
 
     fn supports_cross_node_single_use(&self) -> bool {
@@ -774,47 +691,38 @@ impl OpaqueRegistrationSessionStore for RedisOpaqueRegistrationSessionStore {
 #[async_trait::async_trait]
 impl MfaSessionStore for RedisMfaSessionStore {
     async fn store(&self, session_id: &str, session: &MfaSession, ttl: Duration) -> Result<()> {
-        let key = self.redis_key(session_id);
-        let value =
-            serde_json::to_string(session).internal_with_err("Failed to serialize MFA session")?;
-        let mut conn = self.runtime.snapshot().await;
-        let _: () = self
-            .run_redis_op(
+        self.store
+            .store(
+                MFA_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize MFA session",
                 "store MFA session in Redis",
-                conn.set_ex(key, value, ttl.as_secs()),
             )
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn get(&self, session_id: &str) -> Result<Option<MfaSession>> {
-        let key = self.redis_key(session_id);
-        let mut conn = self.runtime.snapshot().await;
-        let value: Option<String> = self
-            .run_redis_op("get MFA session from Redis", conn.get(key))
-            .await?;
-        value
-            .map(|json| {
-                serde_json::from_str(&json).internal_with_err("Failed to deserialize MFA session")
-            })
-            .transpose()
+        self.store
+            .get(
+                MFA_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize MFA session",
+                "get MFA session from Redis",
+            )
+            .await
     }
 
     async fn consume(&self, session_id: &str) -> Result<Option<MfaSession>> {
-        let key = self.redis_key(session_id);
-        let mut conn = self.runtime.snapshot().await;
-        let value: Option<String> = self
-            .run_redis_op(
+        self.store
+            .consume(
+                MFA_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize MFA session",
                 "consume MFA session from Redis",
-                CONSUME_REDIS_VALUE_SCRIPT.key(key).invoke_async(&mut conn),
             )
-            .await?;
-
-        value
-            .map(|json| {
-                serde_json::from_str(&json).internal_with_err("Failed to deserialize MFA session")
-            })
-            .transpose()
+            .await
     }
 
     fn supports_cross_node_single_use(&self) -> bool {
@@ -2009,22 +1917,154 @@ impl UserService {
         username: &str,
         email: Option<&str>,
     ) -> Result<bool> {
+        self.has_pending_registration_request_with_executor(username, email, self.repository.pool())
+            .await
+    }
+
+    async fn has_pending_registration_request_with_executor<'e, E>(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let exists = sqlx::query_scalar::<_, bool>(
-            r#"
+            r"
             SELECT EXISTS (
                 SELECT 1
                 FROM user_registration_requests
                 WHERE reviewed_at IS NULL
-                  AND (LOWER(username) = LOWER($1) OR ($2::TEXT IS NOT NULL AND email = $2))
+                  AND (
+                      LOWER(username) = LOWER($1)
+                      OR ($2::TEXT IS NOT NULL AND LOWER(email) = LOWER($2))
+                  )
             )
-            "#,
+            ",
         )
         .bind(username)
         .bind(email)
-        .fetch_one(self.repository.pool())
+        .fetch_one(executor)
         .await?;
 
         Ok(exists)
+    }
+
+    pub(crate) async fn pending_oauth2_registration_conflict<'e, E>(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        provider_instance_name: &str,
+        provider_user_id: &str,
+        executor: E,
+    ) -> Result<Option<PendingRegistrationConflict>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let row = sqlx::query_as::<_, (Option<i64>, bool, bool)>(
+            r"
+            SELECT
+                (
+                    SELECT id
+                    FROM user_registration_requests
+                    WHERE reviewed_at IS NULL
+                      AND status = $4
+                      AND oauth2_provider_instance_name = $5
+                      AND oauth2_provider_user_id = $6
+                    ORDER BY requested_at DESC, id DESC
+                    LIMIT 1
+                ) AS oauth2_request_id,
+                EXISTS (
+                    SELECT 1
+                    FROM user_registration_requests
+                    WHERE reviewed_at IS NULL
+                      AND status = $4
+                      AND LOWER(username) = LOWER($1)
+                      AND (
+                          signup_method != $3
+                          OR oauth2_provider_instance_name IS DISTINCT FROM $5
+                          OR oauth2_provider_user_id IS DISTINCT FROM $6
+                      )
+                ) AS username_exists,
+                EXISTS (
+                    SELECT 1
+                    FROM user_registration_requests
+                    WHERE reviewed_at IS NULL
+                      AND status = $4
+                      AND $2::TEXT IS NOT NULL
+                      AND LOWER(email) = LOWER($2)
+                      AND (
+                          signup_method != $3
+                          OR oauth2_provider_instance_name IS DISTINCT FROM $5
+                          OR oauth2_provider_user_id IS DISTINCT FROM $6
+                      )
+                ) AS email_exists
+            ",
+        )
+        .bind(username)
+        .bind(email)
+        .bind(SignupMethod::OAuth2)
+        .bind(i16::from(ReviewStatus::Pending))
+        .bind(provider_instance_name)
+        .bind(provider_user_id)
+        .fetch_one(executor)
+        .await?;
+
+        let (oauth2_request_id, username_exists, email_exists) = row;
+        if let Some(request_id) = oauth2_request_id {
+            return Ok(Some(PendingRegistrationConflict::OAuth2Identity(
+                UserId::try_from(request_id).internal_with_err("Invalid pending request ID")?,
+            )));
+        }
+        if email_exists {
+            return Ok(Some(PendingRegistrationConflict::Email));
+        }
+        if username_exists {
+            return Ok(Some(PendingRegistrationConflict::Username));
+        }
+
+        Ok(None)
+    }
+
+    async fn lock_pending_registration_identity(
+        tx: &mut Transaction<'_, Postgres>,
+        username: &str,
+        email: Option<&str>,
+    ) -> Result<()> {
+        let normalized_username = username.to_ascii_lowercase();
+        let normalized_email = email.map(str::to_ascii_lowercase);
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(USER_REGISTRATION_PENDING_LOCK_NS)
+            .bind(normalized_username)
+            .execute(&mut **tx)
+            .await?;
+
+        if let Some(email) = normalized_email {
+            sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+                .bind(USER_REGISTRATION_PENDING_LOCK_NS)
+                .bind(email)
+                .execute(&mut **tx)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn lock_oauth2_pending_registration_identity(
+        tx: &mut Transaction<'_, Postgres>,
+        username: &str,
+        email: Option<&str>,
+        provider_instance_name: &str,
+        provider_user_id: &str,
+    ) -> Result<()> {
+        Self::lock_pending_registration_identity(tx, username, email).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(OAUTH2_PENDING_REGISTRATION_LOCK_NS)
+            .bind(format!("{provider_instance_name}:{provider_user_id}"))
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
     }
 
     async fn create_registration_request(
@@ -2035,6 +2075,17 @@ impl UserService {
         opaque_record: &OpaquePasswordRecord,
         signup_method: SignupMethod,
     ) -> Result<User> {
+        let mut tx = self.repository.pool().begin().await?;
+        Self::lock_pending_registration_identity(&mut tx, username, email).await?;
+        if self
+            .has_pending_registration_request_with_executor(username, email, &mut *tx)
+            .await?
+        {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
+        }
+
         let request_id = sqlx::query_scalar!(
             r#"
             INSERT INTO user_registration_requests (
@@ -2055,7 +2106,7 @@ impl UserService {
             i16::from(signup_method),
             i16::from(ReviewStatus::Pending)
         )
-        .fetch_one(self.repository.pool())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
@@ -2065,6 +2116,7 @@ impl UserService {
             }
             _ => Error::Database(e),
         })?;
+        tx.commit().await?;
 
         let mut user = User::new_with_status(
             username.to_string(),
@@ -2081,7 +2133,6 @@ impl UserService {
         &self,
         username: &str,
         email: Option<&str>,
-        provider: &OAuth2Provider,
         provider_user_id: &str,
         user_info: &crate::service::oauth2::OAuth2UserInfo,
         executor: E,
@@ -2093,17 +2144,20 @@ impl UserService {
             r#"
             INSERT INTO user_registration_requests (
                 username, email, signup_method, status, requested_at,
-                oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
-                oauth2_avatar_url, oauth2_email_verified
+                oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
+                oauth2_provider_user_id, oauth2_provider_username, oauth2_avatar_url,
+                oauth2_email_verified
             )
-            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id AS "id: UserId"
             "#,
             username,
             email,
             i16::from(SignupMethod::OAuth2),
             i16::from(ReviewStatus::Pending),
-            provider.as_str(),
+            user_info.provider.as_i16(),
+            user_info.provider_instance_name.as_str(),
+            user_info.provider_issuer.as_deref(),
             provider_user_id,
             user_info.username.as_str(),
             user_info.avatar.as_deref(),
@@ -2112,21 +2166,11 @@ impl UserService {
         .fetch_one(executor)
         .await
         .map_err(|e| match e {
-            sqlx::Error::Database(ref db_err) => match db_err.constraint().unwrap_or_default() {
-                "idx_user_registration_requests_username_pending" => {
-                    Error::AlreadyExists(PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS.to_string())
-                }
-                "idx_user_registration_requests_email_pending" => {
-                    Error::AlreadyExists(PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS.to_string())
-                }
-                "idx_user_registration_requests_oauth2_identity_pending" => {
-                    Error::AlreadyExists(PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS.to_string())
-                }
-                _ if db_err.constraint().is_some() => Error::AlreadyExists(
+            sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
+                Error::AlreadyExists(
                     synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                ),
-                _ => Error::Database(e),
-            },
+                )
+            }
             _ => Error::Database(e),
         })?;
 
@@ -2147,7 +2191,9 @@ impl UserService {
                    opaque_ciphersuite,
                    opaque_server_setup_version,
                    signup_method AS "signup_method: SignupMethod",
-                   oauth2_provider,
+                   oauth2_provider_type AS "oauth2_provider: crate::models::OAuth2ProviderTypeName",
+                   oauth2_provider_instance_name,
+                   oauth2_provider_issuer,
                    oauth2_provider_user_id,
                    oauth2_provider_username,
                    oauth2_avatar_url,
@@ -2166,9 +2212,10 @@ impl UserService {
             let oauth2_provider = row
                 .oauth2_provider
                 .map(|provider| {
-                    OAuth2Provider::from_str_name(&provider).ok_or_else(|| {
+                    OAuth2Provider::from_str_name(&provider.0).ok_or_else(|| {
                         Error::InvalidInput(format!(
-                            "Unsupported OAuth2 provider in registration request: {provider}"
+                            "Unsupported OAuth2 provider in registration request: {}",
+                            provider.0
                         ))
                     })
                 })
@@ -2182,6 +2229,8 @@ impl UserService {
                 opaque_ciphersuite: row.opaque_ciphersuite,
                 opaque_server_setup_version: row.opaque_server_setup_version,
                 oauth2_provider,
+                oauth2_provider_instance_name: row.oauth2_provider_instance_name,
+                oauth2_provider_issuer: row.oauth2_provider_issuer,
                 oauth2_provider_user_id: row.oauth2_provider_user_id,
                 oauth2_provider_username: row.oauth2_provider_username,
                 oauth2_avatar_url: row.oauth2_avatar_url,
@@ -2238,6 +2287,12 @@ impl UserService {
                     "OAuth2 registration request is missing provider user ID".to_string(),
                 ));
             };
+            let Some(provider_instance_name) = request.oauth2_provider_instance_name.as_deref()
+            else {
+                return Err(Error::InvalidInput(
+                    "OAuth2 registration request is missing provider instance name".to_string(),
+                ));
+            };
 
             let created = self
                 .repository
@@ -2250,6 +2305,8 @@ impl UserService {
 
             let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
                 provider: provider.clone(),
+                provider_instance_name: provider_instance_name.to_string(),
+                provider_issuer: request.oauth2_provider_issuer.clone(),
                 provider_user_id: provider_user_id.to_string(),
                 username: request
                     .oauth2_provider_username
@@ -2262,6 +2319,7 @@ impl UserService {
                 .upsert_with_executor(
                     &created.id,
                     provider,
+                    provider_instance_name,
                     provider_user_id,
                     &oauth2_user_info,
                     &mut *tx,
@@ -2311,18 +2369,17 @@ impl UserService {
                 .await?
         };
 
-        sqlx::query!(
-            r#"
-            UPDATE user_registration_requests
-            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
-            WHERE id = $1
-            "#,
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Approved),
-            reviewed_by.map(UserId::as_i64),
+        let approved = ReviewRepository::approve_user_registration_with_executor(
+            &mut *tx,
+            *request_id,
+            reviewed_by.copied(),
         )
-        .execute(&mut *tx)
         .await?;
+        if approved == 0 {
+            return Err(Error::NotFound(format!(
+                "Pending registration request {request_id} not found"
+            )));
+        }
 
         tx.commit().await?;
 
@@ -2343,22 +2400,15 @@ impl UserService {
         reviewed_by: Option<&UserId>,
         reason: &str,
     ) -> Result<()> {
-        let result = sqlx::query!(
-            r#"
-            UPDATE user_registration_requests
-            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
-            WHERE id = $1 AND reviewed_at IS NULL AND status = $5
-            "#,
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Rejected),
-            reviewed_by.map(UserId::as_i64),
+        let result = ReviewRepository::reject_user_registration_with_executor(
+            self.repository.pool(),
+            *request_id,
+            reviewed_by.copied(),
             reason,
-            i16::from(ReviewStatus::Pending)
         )
-        .execute(self.repository.pool())
         .await?;
 
-        if result.rows_affected() == 0 {
+        if result == 0 {
             return Err(Error::NotFound(format!(
                 "Pending registration request {request_id} not found"
             )));

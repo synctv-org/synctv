@@ -7,12 +7,11 @@
 //! - `RedisCacheL2`: Redis-backed L2 with TTL, retry logic, and atomic set-if-newer.
 //! - `NoopCacheL2`: No-op backend (L1-only mode). All reads return None, all writes are no-ops.
 
-use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 use crate::{Error, RedisConnectionRuntime, Result, SharedStateProfile};
 use async_trait::async_trait;
 use std::future::Future;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 enum L2RedisAttemptError {
     Redis(redis::RedisError),
@@ -130,23 +129,30 @@ fn json_with_inferred_updated_at_ms(json: &str) -> Result<String> {
     })
 }
 
-async fn run_l2_redis_attempt<T, F>(future: F) -> std::result::Result<T, L2RedisAttemptError>
+async fn run_l2_redis_attempt<T, F>(
+    timeout: Duration,
+    future: F,
+) -> std::result::Result<T, L2RedisAttemptError>
 where
     F: Future<Output = std::result::Result<T, redis::RedisError>>,
 {
-    match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, future).await {
+    match tokio::time::timeout(timeout, future).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(err)) => Err(L2RedisAttemptError::Redis(err)),
         Err(_) => Err(L2RedisAttemptError::Timeout),
     }
 }
 
-async fn run_l2_redis_op<T, F>(operation: impl Into<String>, future: F) -> Result<T>
+async fn run_l2_redis_op<T, F>(
+    timeout: Duration,
+    operation: impl Into<String>,
+    future: F,
+) -> Result<T>
 where
     F: Future<Output = std::result::Result<T, redis::RedisError>>,
 {
     let operation = operation.into();
-    match run_l2_redis_attempt(future).await {
+    match run_l2_redis_attempt(timeout, future).await {
         Ok(value) => Ok(value),
         Err(L2RedisAttemptError::Timeout) => {
             Err(Error::Timeout(format!("L2 cache timeout: {operation}")))
@@ -274,9 +280,13 @@ impl RedisCacheL2 {
         Self { conn }
     }
 
-    /// Get a clone of the current `ConnectionManager` for use in an operation.
-    async fn conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.snapshot().await
+    /// Get a bounded clone of the current `ConnectionManager` for use in an operation.
+    async fn conn(&self, operation: impl Into<String>) -> Result<redis::aio::ConnectionManager> {
+        crate::redis_runtime_snapshot(&*self.conn, operation).await
+    }
+
+    fn operation_timeout(&self) -> Duration {
+        self.conn.operation_timeout()
     }
 
     fn namespace_index_key(prefix: &str) -> String {
@@ -323,23 +333,37 @@ pub fn build_l2_cache_backend_from_profile(
 impl CacheL2Backend for RedisCacheL2 {
     async fn get(&self, key: &str) -> Result<Option<String>> {
         use redis::AsyncCommands;
-        let mut conn = self.conn().await;
+        let mut conn = self.conn("get L2 cache connection").await?;
 
-        let result =
-            run_l2_redis_op("get from L2 cache", conn.get::<_, Option<String>>(key)).await?;
+        let result = run_l2_redis_op(
+            self.operation_timeout(),
+            "get from L2 cache",
+            conn.get::<_, Option<String>>(key),
+        )
+        .await?;
         Ok(result)
     }
 
     async fn get_scoped(&self, prefix: &str, key: &str) -> Result<Option<String>> {
         use redis::AsyncCommands;
 
-        let mut conn = self.conn().await;
-        let result =
-            run_l2_redis_op("get from L2 cache", conn.get::<_, Option<String>>(key)).await?;
+        let mut conn = self.conn("get scoped L2 cache connection").await?;
+        let result = run_l2_redis_op(
+            self.operation_timeout(),
+            "get from L2 cache",
+            conn.get::<_, Option<String>>(key),
+        )
+        .await?;
 
         if result.is_none() {
             let index_key = Self::namespace_index_key(prefix);
-            if let Err(error) = conn.zrem::<_, _, usize>(&index_key, key).await {
+            if let Err(error) = run_l2_redis_op(
+                self.operation_timeout(),
+                "prune missing L2 key from namespace index",
+                conn.zrem::<_, _, usize>(&index_key, key),
+            )
+            .await
+            {
                 tracing::debug!(
                     prefix = %prefix,
                     key = %key,
@@ -354,10 +378,11 @@ impl CacheL2Backend for RedisCacheL2 {
 
     async fn set(&self, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
-        let mut conn = self.conn().await;
+        let mut conn = self.conn("get L2 cache connection for set").await?;
         let json = json_with_inferred_updated_at_ms(json)?;
 
         run_l2_redis_op(
+            self.operation_timeout(),
             "set in L2 cache",
             conn.set_ex::<_, _, ()>(key, json, ttl_secs),
         )
@@ -366,7 +391,7 @@ impl CacheL2Backend for RedisCacheL2 {
     }
 
     async fn set_scoped(&self, prefix: &str, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
-        let mut conn = self.conn().await;
+        let mut conn = self.conn("get scoped L2 cache connection for set").await?;
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs);
         let now = Self::now_unix_seconds();
@@ -392,6 +417,7 @@ impl CacheL2Backend for RedisCacheL2 {
             .ignore();
 
         run_l2_redis_op(
+            self.operation_timeout(),
             format!("set in L2 cache namespace '{prefix}'"),
             pipe.query_async::<()>(&mut conn),
         )
@@ -401,14 +427,21 @@ impl CacheL2Backend for RedisCacheL2 {
 
     async fn delete(&self, key: &str) -> Result<()> {
         use redis::AsyncCommands;
-        let mut conn = self.conn().await;
+        let mut conn = self.conn("get L2 cache connection for delete").await?;
 
-        run_l2_redis_op("delete from L2 cache", conn.del::<_, ()>(key)).await?;
+        run_l2_redis_op(
+            self.operation_timeout(),
+            "delete from L2 cache",
+            conn.del::<_, ()>(key),
+        )
+        .await?;
         Ok(())
     }
 
     async fn delete_scoped(&self, prefix: &str, key: &str) -> Result<()> {
-        let mut conn = self.conn().await;
+        let mut conn = self
+            .conn("get scoped L2 cache connection for delete")
+            .await?;
         let index_key = Self::namespace_index_key(prefix);
         let mut pipe = redis::pipe();
         pipe.atomic()
@@ -421,6 +454,7 @@ impl CacheL2Backend for RedisCacheL2 {
             .ignore();
 
         run_l2_redis_op(
+            self.operation_timeout(),
             format!("delete from L2 cache namespace '{prefix}'"),
             pipe.query_async::<()>(&mut conn),
         )
@@ -431,8 +465,10 @@ impl CacheL2Backend for RedisCacheL2 {
     async fn delete_with_retry(&self, key: &str, max_retries: u32, cache_type: &str) -> Result<()> {
         use redis::AsyncCommands;
         for attempt in 0..max_retries {
-            let mut conn = self.conn().await;
-            match run_l2_redis_attempt(conn.del::<_, ()>(key)).await {
+            let mut conn = self
+                .conn("get L2 cache connection for retry delete")
+                .await?;
+            match run_l2_redis_attempt(self.operation_timeout(), conn.del::<_, ()>(key)).await {
                 Ok(()) => return Ok(()),
                 Err(L2RedisAttemptError::Redis(e)) => {
                     let is_last_attempt = attempt == max_retries - 1;
@@ -503,7 +539,9 @@ impl CacheL2Backend for RedisCacheL2 {
         cache_type: &str,
     ) -> Result<()> {
         for attempt in 0..max_retries {
-            let mut conn = self.conn().await;
+            let mut conn = self
+                .conn("get scoped L2 cache connection for retry delete")
+                .await?;
             let index_key = Self::namespace_index_key(prefix);
             let mut pipe = redis::pipe();
             pipe.atomic()
@@ -515,7 +553,9 @@ impl CacheL2Backend for RedisCacheL2 {
                 .arg(key)
                 .ignore();
 
-            match run_l2_redis_attempt(pipe.query_async::<()>(&mut conn)).await {
+            match run_l2_redis_attempt(self.operation_timeout(), pipe.query_async::<()>(&mut conn))
+                .await
+            {
                 Ok(()) => return Ok(()),
                 Err(L2RedisAttemptError::Redis(e)) => {
                     let is_last_attempt = attempt == max_retries - 1;
@@ -583,26 +623,36 @@ impl CacheL2Backend for RedisCacheL2 {
     }
 
     async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
-        let mut conn = self.conn().await;
+        let mut conn = self.conn("get L2 cache connection for batch get").await?;
         let mut pipe = redis::pipe();
         for key in keys {
             pipe.get(key);
         }
 
-        let results: Vec<Option<String>> =
-            run_l2_redis_op("batch get from L2 cache", pipe.query_async(&mut conn)).await?;
+        let results: Vec<Option<String>> = run_l2_redis_op(
+            self.operation_timeout(),
+            "batch get from L2 cache",
+            pipe.query_async(&mut conn),
+        )
+        .await?;
         Ok(results)
     }
 
     async fn get_batch_scoped(&self, prefix: &str, keys: &[String]) -> Result<Vec<Option<String>>> {
-        let mut conn = self.conn().await;
+        let mut conn = self
+            .conn("get scoped L2 cache connection for batch get")
+            .await?;
         let mut pipe = redis::pipe();
         for key in keys {
             pipe.get(key);
         }
 
-        let results: Vec<Option<String>> =
-            run_l2_redis_op("batch get from L2 cache", pipe.query_async(&mut conn)).await?;
+        let results: Vec<Option<String>> = run_l2_redis_op(
+            self.operation_timeout(),
+            "batch get from L2 cache",
+            pipe.query_async(&mut conn),
+        )
+        .await?;
 
         let missing_keys: Vec<&String> = keys
             .iter()
@@ -615,7 +665,13 @@ impl CacheL2Backend for RedisCacheL2 {
             for key in missing_keys {
                 prune_pipe.cmd("ZREM").arg(&index_key).arg(key).ignore();
             }
-            if let Err(error) = prune_pipe.query_async::<()>(&mut conn).await {
+            if let Err(error) = run_l2_redis_op(
+                self.operation_timeout(),
+                "prune missing L2 batch keys from namespace index",
+                prune_pipe.query_async::<()>(&mut conn),
+            )
+            .await
+            {
                 tracing::debug!(
                     prefix = %prefix,
                     error = %error,
@@ -634,10 +690,13 @@ impl CacheL2Backend for RedisCacheL2 {
         ttl_secs: u64,
         new_ts_millis: i64,
     ) -> Result<bool> {
-        let mut conn = self.conn().await;
+        let mut conn = self
+            .conn("get L2 cache connection for set_if_newer")
+            .await?;
         let json = json_with_updated_at_ms(json, new_ts_millis)?;
 
         let result: i64 = run_l2_redis_op(
+            self.operation_timeout(),
             "run set_if_newer Lua script",
             SET_IF_NEWER_SCRIPT
                 .key(key)
@@ -659,13 +718,16 @@ impl CacheL2Backend for RedisCacheL2 {
         ttl_secs: u64,
         new_ts_millis: i64,
     ) -> Result<bool> {
-        let mut conn = self.conn().await;
+        let mut conn = self
+            .conn("get scoped L2 cache connection for set_if_newer")
+            .await?;
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs);
         let now = Self::now_unix_seconds();
         let json = json_with_updated_at_ms(json, new_ts_millis)?;
 
         let result: i64 = run_l2_redis_op(
+            self.operation_timeout(),
             "run set_if_newer Lua script",
             SET_IF_NEWER_SCOPED_SCRIPT
                 .key(key)
@@ -683,9 +745,12 @@ impl CacheL2Backend for RedisCacheL2 {
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
-        let mut conn = self.conn().await;
+        let mut conn = self
+            .conn("get L2 cache connection for prefix delete")
+            .await?;
         let index_key = Self::namespace_index_key(prefix);
         let keys: Vec<String> = run_l2_redis_op(
+            self.operation_timeout(),
             format!("load L2 cache namespace index for prefix '{prefix}'"),
             redis::cmd("ZRANGE")
                 .arg(&index_key)
@@ -704,6 +769,7 @@ impl CacheL2Backend for RedisCacheL2 {
             pipe.ignore();
 
             run_l2_redis_op(
+                self.operation_timeout(),
                 format!("delete indexed L2 cache keys for prefix '{prefix}'"),
                 pipe.query_async::<()>(&mut conn),
             )
@@ -711,6 +777,7 @@ impl CacheL2Backend for RedisCacheL2 {
         }
 
         run_l2_redis_op(
+            self.operation_timeout(),
             format!("delete L2 cache namespace index for prefix '{prefix}'"),
             redis::cmd("DEL")
                 .arg(&index_key)
@@ -893,7 +960,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_l2_redis_timeout_maps_to_timeout_error() {
-        let timeout_future = run_l2_redis_op("get from L2 cache", async {
+        let timeout_future = run_l2_redis_op(TEST_TIMEOUT, "get from L2 cache", async {
             std::future::pending::<()>().await;
             #[allow(unreachable_code)]
             Ok::<(), redis::RedisError>(())
@@ -901,7 +968,7 @@ mod tests {
 
         tokio::pin!(timeout_future);
         tokio::task::yield_now().await;
-        tokio::time::advance(REDIS_OPERATION_TIMEOUT).await;
+        tokio::time::advance(TEST_TIMEOUT).await;
 
         let err = timeout_future.await.expect_err("operation should time out");
         assert!(matches!(
@@ -912,7 +979,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_l2_redis_retry_attempt_reports_timeout() {
-        let timeout_future = run_l2_redis_attempt(async {
+        let timeout_future = run_l2_redis_attempt(TEST_TIMEOUT, async {
             std::future::pending::<()>().await;
             #[allow(unreachable_code)]
             Ok::<(), redis::RedisError>(())
@@ -920,7 +987,7 @@ mod tests {
 
         tokio::pin!(timeout_future);
         tokio::task::yield_now().await;
-        tokio::time::advance(REDIS_OPERATION_TIMEOUT).await;
+        tokio::time::advance(TEST_TIMEOUT).await;
 
         let err = timeout_future
             .await

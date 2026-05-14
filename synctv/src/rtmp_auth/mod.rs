@@ -92,8 +92,11 @@ impl SharedUserStreamIndex {
         format!("{}rtmp:user_stream:{}", self.key_prefix, user_id)
     }
 
-    async fn redis_conn_snapshot(&self) -> redis::aio::ConnectionManager {
-        self.redis_runtime.snapshot().await
+    async fn redis_conn_snapshot(
+        &self,
+        operation: &'static str,
+    ) -> anyhow::Result<redis::aio::ConnectionManager> {
+        Ok(synctv_core::redis_runtime_snapshot(&*self.redis_runtime, operation).await?)
     }
 }
 
@@ -108,19 +111,30 @@ impl UserStreamIndex for SharedUserStreamIndex {
     ) -> anyhow::Result<()> {
         let stream_value = format!("{room_id}|{media_id}");
         let redis_key = self.user_stream_key(&user_id.to_string());
-        let mut conn = self.redis_conn_snapshot().await;
-        let _: ((), i64) = redis::pipe()
-            .set(&redis_key, &stream_value)
-            .expire(&redis_key, ttl_secs)
-            .query_async(&mut conn)
-            .await?;
+        let operation = "store RTMP user stream index";
+        let mut conn = self.redis_conn_snapshot(operation).await?;
+        let _: ((), i64) = tokio::time::timeout(
+            self.redis_runtime.operation_timeout(),
+            redis::pipe()
+                .set(&redis_key, &stream_value)
+                .expire(&redis_key, ttl_secs)
+                .query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Redis timeout: {operation}"))??;
         Ok(())
     }
 
     async fn delete(&self, user_id: UserId) -> anyhow::Result<()> {
-        let mut conn = self.redis_conn_snapshot().await;
+        let operation = "delete RTMP user stream index";
+        let mut conn = self.redis_conn_snapshot(operation).await?;
         let key = self.user_stream_key(&user_id.to_string());
-        let _: () = redis::cmd("DEL").arg(&key).query_async(&mut conn).await?;
+        let _: () = tokio::time::timeout(
+            self.redis_runtime.operation_timeout(),
+            redis::cmd("DEL").arg(&key).query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Redis timeout: {operation}"))??;
         Ok(())
     }
 

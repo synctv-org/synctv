@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS media (
 
     position DOUBLE PRECISION NOT NULL,
 
-    source_provider VARCHAR(64) NOT NULL,
+    source_provider SMALLINT NOT NULL,
 
     source_config JSONB NOT NULL,
 
@@ -21,8 +21,6 @@ CREATE TABLE IF NOT EXISTS media (
 
     version INTEGER NOT NULL DEFAULT 0,
 
-    CONSTRAINT media_name_length
-        CHECK (char_length(name) <= 500),
     CONSTRAINT media_playlist_same_room_fk
         FOREIGN KEY (playlist_id, room_id)
         REFERENCES playlists(id, room_id)

@@ -220,74 +220,11 @@ impl IntoResponse for AppError {
     }
 }
 
-/// Convert `ProviderError` to HTTP errors with standard `AppError` format.
-///
-/// This replaces the old `error_response(parse_provider_error(...))` pattern
-/// which used string matching and returned a non-standard JSON format.
+/// Convert `ProviderError` through the API-layer classifier so every transport
+/// shares one provider error mapping table.
 impl From<synctv_core::provider::ProviderError> for AppError {
     fn from(err: synctv_core::provider::ProviderError) -> Self {
-        use synctv_core::provider::ProviderError;
-        match err {
-            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
-                Self::new(StatusCode::SERVICE_UNAVAILABLE, msg)
-            }
-            ProviderError::UpstreamHttp { status, .. } => {
-                tracing::warn!(status = status, "Upstream HTTP error");
-                match status {
-                    401 | 403 => Self::unauthorized("Provider authentication failed"),
-                    404 => Self::not_found(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND),
-                    409 => Self::conflict("Upstream provider reported a request conflict."),
-                    429 => Self::too_many_requests("Upstream provider rate limited the request."),
-                    408 => Self::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Upstream provider service is temporarily unavailable.",
-                    ),
-                    status if status >= 500 => Self::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Upstream provider service is temporarily unavailable.",
-                    ),
-                    _ => Self::bad_request("Upstream provider rejected the request."),
-                }
-            }
-            ProviderError::ParseError(msg)
-            | ProviderError::InvalidConfig(msg)
-            | ProviderError::InvalidUrl(msg)
-            | ProviderError::MissingField(msg)
-            | ProviderError::UnsupportedFormat(msg) => Self::bad_request(msg),
-            ProviderError::NotFound => Self::not_found(synctv_common::messages::RESOURCE_NOT_FOUND),
-            ProviderError::InstanceNotFound(msg) | ProviderError::CredentialNotFound(msg) => {
-                Self::not_found(msg)
-            }
-            ProviderError::MissingInstance => Self::not_found("Provider instance not configured"),
-            ProviderError::AuthRequired => {
-                Self::unauthorized(synctv_common::messages::AUTHENTICATION_REQUIRED)
-            }
-            ProviderError::Authentication(msg) | ProviderError::CredentialExpired(msg) => {
-                Self::unauthorized(msg)
-            }
-            ProviderError::CredentialRequired => Self::unauthorized("Credential required"),
-            ProviderError::InvalidCredentialType => Self::bad_request("Invalid credential type"),
-            ProviderError::RouteRegistrationFailed(msg) => {
-                tracing::error!("Route registration failed: {}", msg);
-                Self::internal("Provider route registration failed")
-            }
-            ProviderError::IoError(e) => {
-                tracing::error!("Provider IO error: {}", e);
-                Self::internal("Provider IO error")
-            }
-            ProviderError::JsonError(e) => {
-                tracing::error!("Provider JSON error: {}", e);
-                Self::bad_request("Invalid data format")
-            }
-            ProviderError::EncryptionRequired(msg) => {
-                tracing::error!("Provider encryption required: {}", msg);
-                Self::internal_server_error("Credential encryption not configured")
-            }
-            ProviderError::Internal(msg) => {
-                tracing::error!("Provider internal error: {}", msg);
-                Self::internal("Provider internal error")
-            }
-        }
+        Self::from(crate::impls::ApiError::from(err))
     }
 }
 
@@ -298,8 +235,7 @@ impl From<synctv_core::Error> for AppError {
 
         match err {
             Error::NotFound(msg) => Self::not_found(msg),
-            Error::AlreadyExists(msg) => Self::conflict(msg),
-            Error::Conflict(msg) => Self::conflict(msg),
+            Error::AlreadyExists(msg) | Error::Conflict(msg) => Self::conflict(msg),
             Error::Authentication(msg) => Self::unauthorized(msg),
             Error::EmailNotVerified => {
                 Self::forbidden("Email not verified. Please verify your email to continue.")
@@ -434,8 +370,7 @@ pub(crate) fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
         StatusCode::NOT_FOUND => ApiError::NotFound(message),
         StatusCode::CONFLICT => match error_code {
             Some(error_codes::ALREADY_EXISTS) => ApiError::AlreadyExists(message),
-            Some(error_codes::CONFLICT) => ApiError::Conflict(message),
-            None | Some(_) => ApiError::Conflict(message),
+            Some(error_codes::CONFLICT | _) | None => ApiError::Conflict(message),
         },
         StatusCode::TOO_MANY_REQUESTS => match retry_after_seconds {
             Some(retry_after_seconds) => ApiError::RateLimitedWithRetry {
@@ -1058,7 +993,10 @@ mod tests {
             "connection refused".to_string(),
         ));
         assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(app_err.message, "connection refused");
+        assert_eq!(
+            app_err.message,
+            "Service temporarily unavailable. Please try again later."
+        );
     }
 
     #[test]
@@ -1067,7 +1005,10 @@ mod tests {
             "upstream provider down".to_string(),
         ));
         assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(app_err.message, "upstream provider down");
+        assert_eq!(
+            app_err.message,
+            "Service temporarily unavailable. Please try again later."
+        );
     }
 
     #[test]
@@ -1092,7 +1033,7 @@ mod tests {
         assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             app_err.message,
-            "Upstream provider service is temporarily unavailable."
+            "Service temporarily unavailable. Please try again later."
         );
     }
 
@@ -1105,7 +1046,7 @@ mod tests {
         assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             app_err.message,
-            "Upstream provider service is temporarily unavailable."
+            "Service temporarily unavailable. Please try again later."
         );
     }
 

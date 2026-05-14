@@ -26,7 +26,7 @@ const KNOWN_DEV_CLUSTER_SECRETS: &[&str] =
 const KNOWN_DEV_ROOT_PASSWORDS: &[&str] = &["Rootpasswd1234567890!", "DevRootPass12345"];
 
 fn is_known_dev_secret(value: &str, known_values: &[&str]) -> bool {
-    known_values.iter().any(|known| value == *known)
+    known_values.contains(&value)
 }
 
 fn is_known_dev_hex_secret(value: &str, known_values: &[&str]) -> bool {
@@ -5026,20 +5026,19 @@ mod tests {
             .parent()
             .expect("synctv-core should be inside the workspace root");
 
-        for config_file in ["synctv.example.yaml"] {
-            let path = workspace_root.join(config_file);
-            let path_str = path
-                .to_str()
-                .expect("checked-in config path should be valid UTF-8");
-            Config::load_config_file(path_str)
-                .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
-            let unknown_keys = Config::collect_unknown_config_file_keys(path_str)
-                .unwrap_or_else(|error| panic!("{config_file} unknown-key scan failed: {error}"));
-            assert!(
-                unknown_keys.is_empty(),
-                "{config_file} should not contain unsupported keys: {unknown_keys:?}"
-            );
-        }
+        let config_file = "synctv.example.yaml";
+        let path = workspace_root.join(config_file);
+        let path_str = path
+            .to_str()
+            .expect("checked-in config path should be valid UTF-8");
+        Config::load_config_file(path_str)
+            .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
+        let unknown_keys = Config::collect_unknown_config_file_keys(path_str)
+            .unwrap_or_else(|error| panic!("{config_file} unknown-key scan failed: {error}"));
+        assert!(
+            unknown_keys.is_empty(),
+            "{config_file} should not contain unsupported keys: {unknown_keys:?}"
+        );
     }
 
     #[test]

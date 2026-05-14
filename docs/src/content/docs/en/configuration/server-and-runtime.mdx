@@ -58,7 +58,9 @@ server:
   grpc_compression_enabled: true
 ```
 
-Allows gRPC clients and servers to negotiate gzip compression. It does not force every request to be compressed; compression is used when the peer advertises support and the message can benefit from it.
+Allows the main SyncTV process gRPC clients and servers to negotiate gzip compression, including public gRPC, management gRPC, cluster/livestream internal gRPC links, and outbound remote media-provider gRPC clients. It does not force every request to be compressed; compression is used when the peer advertises support and the message can benefit from it.
+
+Standalone remote media-provider server deployments do not load the main SyncTV config file. Configure their server-side compression negotiation with `PROVIDER_GRPC_COMPRESSION_ENABLED` instead.
 
 Keep it enabled when:
 

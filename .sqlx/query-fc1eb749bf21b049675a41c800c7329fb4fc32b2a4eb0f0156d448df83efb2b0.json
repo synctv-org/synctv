@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT id,\n                       room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       content,\n                       message_type,\n                       created_at\n                FROM chat_messages\n                WHERE room_id = $1\n                  AND created_at >= NOW() - INTERVAL '90 days'\n                ORDER BY created_at DESC, id DESC\n                LIMIT $2::int4\n                ",
+  "query": "\n                SELECT id,\n                       room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       content,\n                       message_type AS \"message_type: ChatMessageType\",\n                       created_at\n                FROM chat_messages\n                WHERE room_id = $1\n                  AND created_at >= NOW() - INTERVAL '90 days'\n                ORDER BY created_at DESC, id DESC\n                LIMIT $2::int4\n                ",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "message_type",
+        "name": "message_type: ChatMessageType",
         "type_info": "Int2"
       },
       {
@@ -49,5 +49,5 @@
       false
     ]
   },
-  "hash": "7e127ce4bcc96386a073af2cbf32581ef9f92c6ff5916211a858579a0eeed6f3"
+  "hash": "fc1eb749bf21b049675a41c800c7329fb4fc32b2a4eb0f0156d448df83efb2b0"
 }

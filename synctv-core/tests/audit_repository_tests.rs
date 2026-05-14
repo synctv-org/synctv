@@ -9,14 +9,15 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::models::{PageParams, UserId};
 use synctv_core::repository::{AuditLogQuery, AuditLogRepository};
+use synctv_core::service::{AuditAction, AuditTargetType};
 use synctv_core_testing::create_test_pool;
 /// Insert an audit log directly via SQL and return the generated id.
 async fn insert_audit_log(
     pool: &PgPool,
     actor_id: Option<UserId>,
     actor_username: Option<&str>,
-    action: &str,
-    target_type: Option<&str>,
+    action: AuditAction,
+    target_type: Option<AuditTargetType>,
     target_id: Option<&str>,
     created_at: chrono::DateTime<Utc>,
 ) -> i64 {
@@ -29,8 +30,8 @@ async fn insert_audit_log(
     )
     .bind(actor_id)
     .bind(actor_username)
-    .bind(action)
-    .bind(target_type)
+    .bind(i16::from(action))
+    .bind(target_type.map(i16::from))
     .bind(target_id)
     .bind(created_at)
     .fetch_one(pool)
@@ -51,8 +52,26 @@ async fn test_list_filter_by_actor_id() {
     let actor_a = UserId::new();
     let actor_b = UserId::new();
 
-    insert_audit_log(&pool, Some(actor_a), None, "login", None, None, now).await;
-    insert_audit_log(&pool, Some(actor_b), None, "login", None, None, now).await;
+    insert_audit_log(
+        &pool,
+        Some(actor_a),
+        None,
+        AuditAction::UserLogin,
+        None,
+        None,
+        now,
+    )
+    .await;
+    insert_audit_log(
+        &pool,
+        Some(actor_b),
+        None,
+        AuditAction::UserLogin,
+        None,
+        None,
+        now,
+    )
+    .await;
 
     let query = AuditLogQuery {
         actor_id: Some(actor_a),
@@ -72,12 +91,12 @@ async fn test_list_filter_by_action() {
     let repo = AuditLogRepository::new(pool.clone());
     let now = Utc::now();
 
-    insert_audit_log(&pool, None, None, "user_created", None, None, now).await;
-    insert_audit_log(&pool, None, None, "user_banned", None, None, now).await;
-    insert_audit_log(&pool, None, None, "user_banned", None, None, now).await;
+    insert_audit_log(&pool, None, None, AuditAction::UserCreated, None, None, now).await;
+    insert_audit_log(&pool, None, None, AuditAction::UserBanned, None, None, now).await;
+    insert_audit_log(&pool, None, None, AuditAction::UserBanned, None, None, now).await;
 
     let query = AuditLogQuery {
-        action: Some("user_banned".to_string()),
+        action: Some(AuditAction::UserBanned),
         from: Some(now - Duration::hours(1)),
         ..Default::default()
     };
@@ -97,8 +116,8 @@ async fn test_list_filter_by_target_type_and_target_id() {
         &pool,
         None,
         None,
-        "delete",
-        Some("room"),
+        AuditAction::RoomDeleted,
+        Some(AuditTargetType::Room),
         Some("room_001"),
         now,
     )
@@ -107,8 +126,8 @@ async fn test_list_filter_by_target_type_and_target_id() {
         &pool,
         None,
         None,
-        "update",
-        Some("room"),
+        AuditAction::RoomCreated,
+        Some(AuditTargetType::Room),
         Some("room_002"),
         now,
     )
@@ -117,15 +136,15 @@ async fn test_list_filter_by_target_type_and_target_id() {
         &pool,
         None,
         None,
-        "update",
-        Some("user"),
+        AuditAction::UserCreated,
+        Some(AuditTargetType::User),
         Some("user_001"),
         now,
     )
     .await;
 
     let query = AuditLogQuery {
-        target_type: Some("room".to_string()),
+        target_type: Some(AuditTargetType::Room),
         target_id: Some("room_001".to_string()),
         from: Some(now - Duration::hours(1)),
         ..Default::default()
@@ -133,7 +152,7 @@ async fn test_list_filter_by_target_type_and_target_id() {
     let (rows, total) = repo.list(&query).await.unwrap();
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].action, "delete");
+    assert_eq!(rows[0].action, AuditAction::RoomDeleted);
 }
 
 #[tokio::test]
@@ -145,9 +164,27 @@ async fn test_list_filter_by_time_range() {
     let yesterday = now - Duration::days(1);
     let two_days_ago = now - Duration::days(2);
 
-    insert_audit_log(&pool, None, None, "old_action", None, None, two_days_ago).await;
-    insert_audit_log(&pool, None, None, "recent_action", None, None, yesterday).await;
-    insert_audit_log(&pool, None, None, "newest_action", None, None, now).await;
+    insert_audit_log(
+        &pool,
+        None,
+        None,
+        AuditAction::UserDeleted,
+        None,
+        None,
+        two_days_ago,
+    )
+    .await;
+    insert_audit_log(
+        &pool,
+        None,
+        None,
+        AuditAction::UserCreated,
+        None,
+        None,
+        yesterday,
+    )
+    .await;
+    insert_audit_log(&pool, None, None, AuditAction::UserBanned, None, None, now).await;
 
     let query = AuditLogQuery {
         from: Some(yesterday - Duration::hours(1)),
@@ -157,7 +194,7 @@ async fn test_list_filter_by_time_range() {
     let (rows, total) = repo.list(&query).await.unwrap();
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].action, "recent_action");
+    assert_eq!(rows[0].action, AuditAction::UserCreated);
 }
 
 #[tokio::test]
@@ -175,8 +212,8 @@ async fn test_list_all_filters_combined() {
         &pool,
         Some(actor_admin_1),
         Some("admin"),
-        "ban_user",
-        Some("user"),
+        AuditAction::UserBanned,
+        Some(AuditTargetType::User),
         Some("user_999"),
         now,
     )
@@ -187,8 +224,8 @@ async fn test_list_all_filters_combined() {
         &pool,
         Some(actor_admin_1),
         None,
-        "ban_user",
-        Some("room"),
+        AuditAction::UserBanned,
+        Some(AuditTargetType::Room),
         Some("room_1"),
         now,
     )
@@ -197,8 +234,8 @@ async fn test_list_all_filters_combined() {
         &pool,
         Some(actor_admin_2),
         None,
-        "ban_user",
-        Some("user"),
+        AuditAction::UserBanned,
+        Some(AuditTargetType::User),
         Some("user_999"),
         now,
     )
@@ -207,8 +244,8 @@ async fn test_list_all_filters_combined() {
         &pool,
         Some(actor_admin_1),
         None,
-        "delete_user",
-        Some("user"),
+        AuditAction::UserDeleted,
+        Some(AuditTargetType::User),
         Some("user_999"),
         now,
     )
@@ -216,8 +253,8 @@ async fn test_list_all_filters_combined() {
 
     let query = AuditLogQuery {
         actor_id: Some(actor_admin_1),
-        action: Some("ban_user".to_string()),
-        target_type: Some("user".to_string()),
+        action: Some(AuditAction::UserBanned),
+        target_type: Some(AuditTargetType::User),
         target_id: Some("user_999".to_string()),
         from: Some(now - Duration::hours(1)),
         to: Some(now + Duration::hours(1)),
@@ -238,11 +275,11 @@ async fn test_get_by_id_within_365_days() {
     let repo = AuditLogRepository::new(pool.clone());
     let now = Utc::now();
 
-    let id = insert_audit_log(&pool, None, None, "recent_event", None, None, now).await;
+    let id = insert_audit_log(&pool, None, None, AuditAction::UserLogin, None, None, now).await;
 
     let row = repo.get_by_id(id).await.unwrap();
     assert!(row.is_some());
-    assert_eq!(row.unwrap().action, "recent_event");
+    assert_eq!(row.unwrap().action, AuditAction::UserLogin);
 }
 
 #[tokio::test]
@@ -252,7 +289,16 @@ async fn test_get_by_id_older_than_365_days_returns_none() {
     let repo = AuditLogRepository::new(pool.clone());
     let old_date = Utc::now() - Duration::days(400);
 
-    let id = insert_audit_log(&pool, None, None, "ancient_event", None, None, old_date).await;
+    let id = insert_audit_log(
+        &pool,
+        None,
+        None,
+        AuditAction::UserLogout,
+        None,
+        None,
+        old_date,
+    )
+    .await;
 
     // The entry exists in the DB but get_by_id should not return it
     let row = repo.get_by_id(id).await.unwrap();

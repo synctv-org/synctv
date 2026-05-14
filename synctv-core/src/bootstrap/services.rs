@@ -485,7 +485,8 @@ pub async fn init_services_with_options(
             Some(cache_invalidation.clone()),
             options.provider_address_overrides,
             options.ssrf_guard.clone(),
-        ),
+        )
+        .with_grpc_compression(config.server.grpc_compression_enabled),
     );
 
     // Pre-warm cache with all enabled provider instances from database

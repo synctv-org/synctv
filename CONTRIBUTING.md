@@ -9,7 +9,7 @@ Typical local setup:
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 cargo check --workspace --all-targets
-cargo test --workspace
+cargo nextest run --workspace --locked --run-ignored default --nff
 ```
 
 Run the service locally:
@@ -31,7 +31,8 @@ Use the narrowest relevant test first, then run broader checks before handing of
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace --locked --run-ignored default --nff
+cargo test --workspace --doc --locked
 cargo check --workspace --all-targets --features openapi
 ```
 
@@ -62,6 +63,27 @@ Update docs when changing:
 ## API and Compatibility
 
 This project is still under active design. Do not preserve obsolete paths, protobuf fields, or configuration shapes unless maintainers explicitly require compatibility. Prefer clear current architecture over compatibility shims for old experimental designs.
+
+## Database and Domain Validation
+
+Keep database schema constraints focused on stable storage integrity, not product policy.
+
+Database migrations may enforce long-lived persistence invariants such as primary keys, foreign keys, required storage columns, identity uniqueness, unique indexes, lookup indexes, and data-shape rules that are unlikely to change without a deliberate storage migration. They should not encode business-level validation that changes with product behavior.
+
+Do not put these in SQL `CHECK` constraints, database enum types, or string enum lists:
+
+- Role, status, signup-method, review-state, provider-type, or other business enum value lists.
+- Workflow/state-machine coupling such as "pending means reviewed_at is null" or "rejected requires a reason".
+- Permission assignability rules, runtime settings allowlists, feature policy, rate/limit policy, playback policy, room policy, or moderation policy.
+- Numeric ranges that are product choices rather than physical storage constraints.
+
+Store enum-like fields such as status, role, signup method, message type, and review state as numeric codes (`SMALLINT` is usually enough), and keep the meaning/mapping in Rust domain types. Avoid persisting those values as strings.
+
+Implement volatile business rules in the domain/service layer, keep repository inputs typed where practical, and cover them with focused tests. If direct database writes could create invalid business state, prefer service-only write paths, operational consistency checks, or repair tooling over moving volatile policy into the schema.
+
+`UNIQUE` is allowed when the rule is a stable identity or near-permanent uniqueness invariant and database atomicity is valuable: usernames, emails, provider instance names, OAuth account identities, idempotency keys, and one-active-row-per-stable-scope patterns are typical examples. Do not use `UNIQUE` for product policy that may be relaxed, re-scoped, or reinterpreted during normal feature work. A new project is not an exception: migrations should still avoid business constraints that would make ordinary product changes require database constraint churn.
+
+User-facing labels and display names, such as room names, should be treated as product policy unless they are explicitly defined as stable identifiers. Enforce those rules in services, using transactional locks or other coordination where concurrency matters.
 
 ## Security-Sensitive Changes
 

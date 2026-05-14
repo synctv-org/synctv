@@ -36,7 +36,7 @@
       {
         "ordinal": 6,
         "name": "source_provider",
-        "type_info": "Varchar"
+        "type_info": "Int2"
       },
       {
         "ordinal": 7,

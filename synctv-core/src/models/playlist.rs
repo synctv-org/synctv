@@ -64,8 +64,9 @@ pub struct Playlist {
     pub position: f64,
 
     // Dynamic folder fields
-    /// Provider type name for dynamic folders (e.g., "alist", "emby")
-    /// NULL for static folders (manually added media)
+    /// Provider type name for dynamic folders (e.g., "alist", "emby").
+    /// The database stores the corresponding numeric provider type code.
+    /// NULL means a static folder with manually added media.
     pub source_provider: Option<String>,
     pub source_config: Option<JsonValue>,
     pub provider_instance_name: Option<String>,

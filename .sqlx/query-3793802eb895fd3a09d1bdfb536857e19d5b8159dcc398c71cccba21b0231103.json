@@ -16,7 +16,7 @@
       {
         "ordinal": 2,
         "name": "provider",
-        "type_info": "Varchar"
+        "type_info": "Int2"
       },
       {
         "ordinal": 3,
@@ -52,7 +52,7 @@
     "parameters": {
       "Left": [
         "Int8",
-        "Text"
+        "Int2"
       ]
     },
     "nullable": [

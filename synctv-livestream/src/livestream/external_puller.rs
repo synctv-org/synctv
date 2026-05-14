@@ -1475,7 +1475,7 @@ mod tests {
             .extra_allowed_host("internal.example".to_string())
             .build();
 
-        let error = match ExternalStreamPuller::new_async_with_resolver(
+        let Err(error) = ExternalStreamPuller::new_async_with_resolver(
             "room123".to_string(),
             "media456".to_string(),
             "rtmp://internal.example/app/stream".to_string(),
@@ -1489,9 +1489,8 @@ mod tests {
             },
         )
         .await
-        {
-            Ok(_) => panic!("hostname allowlist must not allow metadata/link-local targets"),
-            Err(error) => error,
+        else {
+            panic!("hostname allowlist must not allow metadata/link-local targets");
         };
 
         assert!(

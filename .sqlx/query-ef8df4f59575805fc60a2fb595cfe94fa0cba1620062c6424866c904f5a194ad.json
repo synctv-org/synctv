@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id,\n                   room_id as \"room_id: RoomId\",\n                   user_id as \"user_id: UserId\",\n                   content,\n                   message_type,\n                   created_at\n            FROM chat_messages\n            WHERE id = $1\n            ",
+  "query": "\n                SELECT id,\n                       room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       content,\n                       message_type AS \"message_type: ChatMessageType\",\n                       created_at\n                FROM chat_messages\n                WHERE room_id = $1 AND (created_at, id) < ($2, $3)\n                ORDER BY created_at DESC, id DESC\n                LIMIT $4::int4\n                ",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "message_type",
+        "name": "message_type: ChatMessageType",
         "type_info": "Int2"
       },
       {
@@ -36,7 +36,10 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "Timestamptz",
+        "Int8",
+        "Int4"
       ]
     },
     "nullable": [
@@ -48,5 +51,5 @@
       false
     ]
   },
-  "hash": "7f883ae29bc8985379f556b2a68326474a1f95c0a84def82f8603e9dc4f37967"
+  "hash": "ef8df4f59575805fc60a2fb595cfe94fa0cba1620062c6424866c904f5a194ad"
 }

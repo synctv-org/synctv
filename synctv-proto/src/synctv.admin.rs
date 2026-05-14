@@ -117,6 +117,7 @@ pub struct UserRegistrationReview {
     pub reviewed_by: ::prost::alloc::string::String,
     #[prost(string, tag = "9")]
     pub rejection_reason: ::prost::alloc::string::String,
+    /// Provider type, e.g. "github" or "oidc".
     #[prost(string, tag = "10")]
     pub oauth2_provider: ::prost::alloc::string::String,
     #[prost(string, tag = "11")]
@@ -127,6 +128,10 @@ pub struct UserRegistrationReview {
     pub oauth2_avatar_url: ::prost::alloc::string::String,
     #[prost(bool, tag = "14")]
     pub oauth2_email_verified: bool,
+    #[prost(string, tag = "15")]
+    pub oauth2_provider_instance_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "16")]
+    pub oauth2_provider_issuer: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.RoomCreationReview")]

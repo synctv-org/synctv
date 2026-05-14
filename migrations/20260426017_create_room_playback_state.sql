@@ -10,8 +10,6 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     version BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT room_playback_state_current_time_non_negative
         CHECK ("current_time" >= 0),
-    CONSTRAINT room_playback_state_speed_positive
-        CHECK (speed > 0),
     CONSTRAINT playback_media_same_room_fk
         FOREIGN KEY (playing_media_id, room_id)
         REFERENCES media(id, room_id)

@@ -1168,12 +1168,23 @@ impl RedisPubSub {
                     );
                     // Fallback: use pattern subscription if individual subscribes fail
                     let room_pattern = self.room_pubsub_pattern();
-                    if let Err(e) = pubsub.psubscribe(&room_pattern).await {
-                        return SubscriberExit::ConnectFailed(
-                            anyhow::anyhow!(e).context(format!(
-                                "Failed to fallback psubscribe to {room_pattern}"
-                            )),
-                        );
+                    match timeout(
+                        Duration::from_secs(REDIS_TIMEOUT_SECS),
+                        pubsub.psubscribe(&room_pattern),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            return SubscriberExit::ConnectFailed(anyhow::anyhow!(e).context(
+                                format!("Failed to fallback psubscribe to {room_pattern}"),
+                            ));
+                        }
+                        Err(_) => {
+                            return SubscriberExit::ConnectFailed(anyhow::anyhow!(
+                                "Timed out fallback psubscribe to {room_pattern}"
+                            ));
+                        }
                     }
                     // Pattern subscription covers all rooms, clear pending
                     pending_subscriptions.clear();
@@ -1184,12 +1195,23 @@ impl RedisPubSub {
                         "Timed out subscribing to room channels, falling back to pattern"
                     );
                     let room_pattern = self.room_pubsub_pattern();
-                    if let Err(e) = pubsub.psubscribe(&room_pattern).await {
-                        return SubscriberExit::ConnectFailed(
-                            anyhow::anyhow!(e).context(format!(
-                                "Failed to fallback psubscribe to {room_pattern}"
-                            )),
-                        );
+                    match timeout(
+                        Duration::from_secs(REDIS_TIMEOUT_SECS),
+                        pubsub.psubscribe(&room_pattern),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            return SubscriberExit::ConnectFailed(anyhow::anyhow!(e).context(
+                                format!("Failed to fallback psubscribe to {room_pattern}"),
+                            ));
+                        }
+                        Err(_) => {
+                            return SubscriberExit::ConnectFailed(anyhow::anyhow!(
+                                "Timed out fallback psubscribe to {room_pattern}"
+                            ));
+                        }
                     }
                     // Pattern subscription covers all rooms, clear pending
                     pending_subscriptions.clear();

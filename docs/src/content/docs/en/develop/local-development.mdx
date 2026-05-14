@@ -145,6 +145,18 @@ If database state looks wrong, check:
 - Migration files.
 - Whether the current branch changed schema or SQL queries.
 
+### Schema Boundaries
+
+Keep migrations focused on durable storage shape and stable data integrity. Use the database for primary keys, foreign keys, required storage columns, lookup indexes, unique indexes, and low-volatility physical constraints.
+
+Do not encode volatile business policy in SQL constraints. Business enum value lists, review states, room/member roles, provider kinds, permission rules, runtime-setting allowlists, playback limits, room policy, moderation workflow, and other product-level validation belong in the domain/service layer with typed inputs and tests. Store enum-like fields such as status, role, signup method, message type, and review state as numeric codes (`SMALLINT` is usually enough), not strings or database enum types.
+
+If a direct SQL write can create invalid business state, tighten the service write path, add a consistency check, or build repair tooling.
+
+`UNIQUE` is appropriate for stable identity or near-permanent uniqueness invariants when database atomicity is useful: usernames, emails, provider instance names, OAuth account identities, idempotency keys, and one-current-row-per-stable-scope patterns are typical examples. Do not use `UNIQUE` for policy that may be relaxed, re-scoped, or reinterpreted during ordinary product work. Only move a rule into the database when it is a storage invariant that should remain true independently of product policy.
+
+User-facing labels and display names, such as room names, are product policy by default unless they are explicitly designed as stable identity keys. When concurrency matters, enforce them in the service layer with transactional locks or another coordination mechanism.
+
 ## Tests and Checks
 
 CI-equivalent non-ignored tests:

@@ -59,8 +59,7 @@ use std::time::Duration;
 use synctv_common::ExecutionControl;
 
 use crate::{
-    cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, RedisConnectionRuntime,
-    Result, SharedStateMode, SharedStateProfile,
+    cache::KeyBuilder, Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 static RECORD_FAILURE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
@@ -614,9 +613,40 @@ impl RedisAttemptTracker {
         }
     }
 
-    /// Acquire a fresh ConnectionManager clone from the shared handle.
-    async fn get_conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.snapshot().await
+    /// Acquire a bounded fresh ConnectionManager clone from the shared handle.
+    async fn get_conn(
+        &self,
+        operation: &'static str,
+        key: &str,
+    ) -> Result<redis::aio::ConnectionManager> {
+        match crate::redis_runtime_snapshot(&*self.conn, operation).await {
+            Ok(conn) => Ok(conn),
+            Err(error) => {
+                if self.fail_closed {
+                    Self::log_fail_closed_rejection(operation, &error.to_string(), key);
+                    Err(Self::fail_closed_backend_error("please try again later"))
+                } else {
+                    self.mark_degraded();
+                    tracing::warn!(
+                        key = %key,
+                        error = %error,
+                        "Redis connection snapshot failed in brute-force tracker, using fallback"
+                    );
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    async fn fallback_attempts(&self, key: &str) -> (u64, i64) {
+        self.fallback.get(key).await.unwrap_or((0, 0))
+    }
+
+    async fn record_fallback_failure(&self, key: &str, now: i64) {
+        let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
+        self.fallback
+            .insert(key.to_string(), (count + 1, now))
+            .await;
     }
 
     /// Check if the tracker is currently in degraded mode (using in-memory fallback).
@@ -695,10 +725,17 @@ impl RedisAttemptTracker {
 #[async_trait]
 impl AttemptTracker for RedisAttemptTracker {
     async fn get_attempts(&self, key: &str) -> Result<(u64, i64)> {
-        let mut conn = self.get_conn().await;
+        let mut conn = match self.get_conn("get_attempts", key).await {
+            Ok(conn) => conn,
+            Err(error) if self.fail_closed => return Err(error),
+            Err(_) => return Ok(self.fallback_attempts(key).await),
+        };
 
-        let redis_result =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.get::<_, Option<String>>(key)).await;
+        let redis_result = tokio::time::timeout(
+            self.conn.operation_timeout(),
+            conn.get::<_, Option<String>>(key),
+        )
+        .await;
 
         let Ok(redis_result) = redis_result else {
             // Timeout
@@ -738,10 +775,17 @@ impl AttemptTracker for RedisAttemptTracker {
     }
 
     async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) -> Result<()> {
-        let mut conn = self.get_conn().await;
+        let mut conn = match self.get_conn("record_failure", key).await {
+            Ok(conn) => conn,
+            Err(error) if self.fail_closed => return Err(error),
+            Err(_) => {
+                self.record_fallback_failure(key, now).await;
+                return Ok(());
+            }
+        };
 
         let result: std::result::Result<u64, _> = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
+            self.conn.operation_timeout(),
             RECORD_FAILURE_SCRIPT
                 .key(key)
                 .arg(now)
@@ -784,8 +828,12 @@ impl AttemptTracker for RedisAttemptTracker {
         // Always clear fallback cache (best-effort)
         self.fallback.remove(key).await;
 
-        let mut conn = self.get_conn().await;
-        match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
+        let mut conn = match self.get_conn("reset", key).await {
+            Ok(conn) => conn,
+            Err(error) if self.fail_closed => return Err(error),
+            Err(_) => return Ok(()),
+        };
+        match tokio::time::timeout(self.conn.operation_timeout(), conn.del::<_, ()>(key)).await {
             Ok(Ok(())) => {
                 self.clear_degraded();
                 Ok(())

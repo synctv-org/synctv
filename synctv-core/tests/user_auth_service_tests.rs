@@ -86,6 +86,25 @@ fn create_user_service(pool: &PgPool) -> UserService {
     create_user_service_with_blacklist(pool, token_blacklist)
 }
 
+fn oauth2_user_info(
+    provider: OAuth2Provider,
+    provider_instance_name: &str,
+    provider_user_id: String,
+    username: impl Into<String>,
+    email: Option<String>,
+) -> synctv_core::service::OAuth2UserInfo {
+    synctv_core::service::OAuth2UserInfo {
+        provider,
+        provider_instance_name: provider_instance_name.to_string(),
+        provider_issuer: None,
+        provider_user_id,
+        username: username.into(),
+        email,
+        avatar: None,
+        email_verified: true,
+    }
+}
+
 struct FamilyRevocationFailingStore {
     inner: InMemoryTokenBlacklistStore,
 }
@@ -2507,6 +2526,8 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
     let provider = OAuth2Provider::Google;
     let user_info = synctv_core::service::OAuth2UserInfo {
         provider: provider.clone(),
+        provider_instance_name: "google".to_string(),
+        provider_issuer: Some("https://accounts.google.com".to_string()),
         provider_user_id: format!("oauth_concurrent_{}", synctv_common::snanoid!(8)),
         username: format!("oauth_concurrent_user_{}", synctv_common::snanoid!(6)),
         email: Some(format!(
@@ -2517,10 +2538,8 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
         email_verified: true,
     };
 
-    let first =
-        oauth_service.find_or_create_and_link(&user_service, "google", &provider, &user_info);
-    let second =
-        oauth_service.find_or_create_and_link(&user_service, "google", &provider, &user_info);
+    let first = oauth_service.find_or_create_and_link(&user_service, "google", &user_info);
+    let second = oauth_service.find_or_create_and_link(&user_service, "google", &user_info);
     let (first_result, second_result) = tokio::join!(first, second);
 
     let OAuth2LinkResult::Linked {
@@ -2544,7 +2563,7 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
 
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
     let mapping = oauth_repo
-        .find_by_provider(&provider, &user_info.provider_user_id)
+        .find_by_provider_instance("google", &user_info.provider_user_id)
         .await
         .expect("mapping lookup must succeed")
         .expect("mapping must exist");
@@ -2556,12 +2575,12 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
         SELECT COUNT(*)
         FROM users u
         JOIN auth_oauth2_identities oc ON oc.user_id = u.id
-        WHERE oc.provider = $1
+        WHERE oc.provider_instance_name = $1
           AND oc.provider_user_id = $2
           AND u.deleted_at IS NULL
         ",
     )
-    .bind(provider.as_str())
+    .bind("google")
     .bind(&user_info.provider_user_id)
     .fetch_one(&pool)
     .await
@@ -2625,24 +2644,23 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
     .with_settings_registry(settings_registry);
 
     let provider = OAuth2Provider::GitHub;
-    let user_info = synctv_core::service::OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: format!("oauth_pending_{}", synctv_common::snanoid!(8)),
-        username: format!("oauth_pending_user_{}", synctv_common::snanoid!(6)),
-        email: Some(format!(
+    let user_info = oauth2_user_info(
+        provider.clone(),
+        "github",
+        format!("oauth_pending_{}", synctv_common::snanoid!(8)),
+        format!("oauth_pending_user_{}", synctv_common::snanoid!(6)),
+        Some(format!(
             "oauth_pending_{}@test.com",
             synctv_common::snanoid!(6)
         )),
-        avatar: None,
-        email_verified: true,
-    };
+    );
 
     let first = oauth_service
-        .find_or_create_and_link(&user_service, "github", &provider, &user_info)
+        .find_or_create_and_link(&user_service, "github", &user_info)
         .await
         .expect("first OAuth2 review signup should create a pending request");
     let second = oauth_service
-        .find_or_create_and_link(&user_service, "github", &provider, &user_info)
+        .find_or_create_and_link(&user_service, "github", &user_info)
         .await
         .expect("repeated OAuth2 review signup should return existing pending request");
 
@@ -2656,6 +2674,102 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
     assert_eq!(
         first_pending.request_id, second_pending.request_id,
         "repeated pending OAuth2 signup should converge to the original review request"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_email_case_insensitive(
+) {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = create_user_service(&pool);
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool.clone(),
+    ));
+    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let oauth2_configs: OAuth2ProviderConfigs = serde_json::json!({
+        "github": {
+            "type": "github",
+            "enable_signup": true,
+            "signup_need_review": true,
+            "config": {
+                "client_id": "github-client-id",
+                "client_secret": "github-client-secret",
+                "redirect_url": "https://app.example.com/oauth2/callback"
+            }
+        }
+    })
+    .to_string()
+    .parse()
+    .expect("OAuth2 provider configs should parse");
+    settings_registry
+        .oauth2_providers
+        .set(oauth2_configs)
+        .await
+        .expect("OAuth2 runtime settings should be persisted");
+    let oauth_service = OAuth2Service::new(
+        UserOAuthProviderRepository::new(pool.clone()),
+        local_oauth_state_store(),
+        synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
+        false,
+    )
+    .expect("OAuth2 service should initialize")
+    .with_settings_registry(settings_registry);
+
+    let shared_email = format!(
+        "oauth_pending_email_{}@test.com",
+        synctv_common::snanoid!(6)
+    );
+    sqlx::query(
+        r"
+        INSERT INTO user_registration_requests (
+            username, email, signup_method, status, requested_at
+        )
+        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+        ",
+    )
+    .bind(format!("pending_email_seed_{}", synctv_common::snanoid!(6)))
+    .bind(shared_email.to_uppercase())
+    .bind(i16::from(synctv_core::models::SignupMethod::Email))
+    .bind(i16::from(synctv_core::models::ReviewStatus::Pending))
+    .execute(&pool)
+    .await
+    .expect("seed pending registration should insert");
+
+    let provider = OAuth2Provider::GitHub;
+    let user_info = oauth2_user_info(
+        provider.clone(),
+        "github",
+        format!("oauth_pending_email_{}", synctv_common::snanoid!(8)),
+        format!("oauth_pending_email_user_{}", synctv_common::snanoid!(6)),
+        Some(shared_email.to_lowercase()),
+    );
+
+    let result = oauth_service
+        .find_or_create_and_link(&user_service, "github", &user_info)
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::AlreadyExists(_))),
+        "OAuth2 review signup should reject a case-insensitive pending email collision"
+    );
+
+    let pending_count: i64 = sqlx::query_scalar(
+        r"
+        SELECT COUNT(*)
+        FROM user_registration_requests
+        WHERE reviewed_at IS NULL
+          AND LOWER(email) = LOWER($1)
+        ",
+    )
+    .bind(shared_email)
+    .fetch_one(&pool)
+    .await
+    .expect("pending count query should succeed");
+    assert_eq!(
+        pending_count, 1,
+        "service-level pending email policy should not create a duplicate review request"
     );
 }
 
@@ -2709,20 +2823,19 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
         .expect("seed local user should be created");
 
     let provider = OAuth2Provider::GitHub;
-    let user_info = synctv_core::service::OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: format!("oauth_review_collision_{}", synctv_common::snanoid!(8)),
-        username: "oauth_review_collision_user".to_string(),
-        email: Some(format!(
+    let user_info = oauth2_user_info(
+        provider.clone(),
+        "github",
+        format!("oauth_review_collision_{}", synctv_common::snanoid!(8)),
+        "oauth_review_collision_user",
+        Some(format!(
             "oauth_review_collision_{}@test.com",
             synctv_common::snanoid!(6)
         )),
-        avatar: None,
-        email_verified: true,
-    };
+    );
 
     let OAuth2LinkResult::PendingReview(pending) = oauth_service
-        .find_or_create_and_link(&user_service, "github", &provider, &user_info)
+        .find_or_create_and_link(&user_service, "github", &user_info)
         .await
         .expect("OAuth2 review signup should create a pending request with a suffixed username")
     else {
@@ -2772,23 +2885,22 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
         .expect("seed local user should be created");
 
     let provider = OAuth2Provider::Google;
-    let user_info = synctv_core::service::OAuth2UserInfo {
-        provider: provider.clone(),
-        provider_user_id: format!("oauth_collision_{}", synctv_common::snanoid!(8)),
-        username: "oauth_collision_user".to_string(),
-        email: Some(format!(
+    let user_info = oauth2_user_info(
+        provider.clone(),
+        "google",
+        format!("oauth_collision_{}", synctv_common::snanoid!(8)),
+        "oauth_collision_user",
+        Some(format!(
             "oauth_collision_{}@test.com",
             synctv_common::snanoid!(6)
         )),
-        avatar: None,
-        email_verified: true,
-    };
+    );
 
     let OAuth2LinkResult::Linked {
         user_id: created_user_id,
         is_new,
     } = oauth_service
-        .find_or_create_and_link(&user_service, "google", &provider, &user_info)
+        .find_or_create_and_link(&user_service, "google", &user_info)
         .await
         .expect("OAuth2 signup should succeed by choosing a suffixed username")
     else {

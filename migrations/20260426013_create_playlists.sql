@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS playlists (
 
     position DOUBLE PRECISION NOT NULL,
 
-    source_provider VARCHAR(64),
+    source_provider SMALLINT,
     source_config JSONB,
     provider_instance_name VARCHAR(64),
 

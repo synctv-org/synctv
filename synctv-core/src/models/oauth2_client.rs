@@ -36,6 +36,22 @@ pub enum OAuth2Provider {
 
 impl OAuth2Provider {
     #[must_use]
+    pub const fn as_i16(&self) -> i16 {
+        match self {
+            Self::QQ => 1,
+            Self::GitHub => 2,
+            Self::Google => 3,
+            Self::Microsoft => 4,
+            Self::Discord => 5,
+            Self::Casdoor => 6,
+            Self::Logto => 7,
+            Self::Oidc => 8,
+            Self::Feishu => 9,
+            Self::Gitee => 10,
+        }
+    }
+
+    #[must_use]
     pub const fn as_str(&self) -> &str {
         match self {
             Self::QQ => "qq",
@@ -106,6 +122,65 @@ impl FromStr for OAuth2Provider {
     }
 }
 
+impl TryFrom<i16> for OAuth2Provider {
+    type Error = String;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::QQ),
+            2 => Ok(Self::GitHub),
+            3 => Ok(Self::Google),
+            4 => Ok(Self::Microsoft),
+            5 => Ok(Self::Discord),
+            6 => Ok(Self::Casdoor),
+            7 => Ok(Self::Logto),
+            8 => Ok(Self::Oidc),
+            9 => Ok(Self::Feishu),
+            10 => Ok(Self::Gitee),
+            other => Err(format!("Unknown OAuth2 provider type code: {other}")),
+        }
+    }
+}
+
+impl From<OAuth2Provider> for i16 {
+    fn from(value: OAuth2Provider) -> Self {
+        value.as_i16()
+    }
+}
+
+pub fn oauth2_provider_type_code_from_name(raw: &str) -> Result<i16, String> {
+    raw.parse::<OAuth2Provider>()
+        .map(|provider| provider.as_i16())
+}
+
+pub fn oauth2_provider_type_name_from_code(code: i16) -> Result<String, String> {
+    OAuth2Provider::try_from(code).map(|provider| provider.to_string())
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuth2ProviderTypeName(pub String);
+
+impl From<i16> for OAuth2ProviderTypeName {
+    fn from(value: i16) -> Self {
+        Self(oauth2_provider_type_name_from_code(value).unwrap_or_else(|_| value.to_string()))
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for OAuth2ProviderTypeName {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for OAuth2ProviderTypeName {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(Self(oauth2_provider_type_name_from_code(value)?))
+    }
+}
+
 impl std::fmt::Display for OAuth2Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -119,7 +194,9 @@ impl std::fmt::Display for OAuth2Provider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserOAuthProviderMapping {
     pub id: i64,
-    pub provider: String, // Stored as string in DB
+    pub provider: String,
+    pub provider_instance_name: String,
+    pub provider_issuer: Option<String>,
     pub provider_user_id: String,
     pub user_id: UserId,
     pub username: String,
@@ -141,6 +218,8 @@ impl UserOAuthProviderMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuth2UserInfo {
     pub provider: OAuth2Provider,
+    pub provider_instance_name: String,
+    pub provider_issuer: Option<String>,
     pub provider_user_id: String,
     pub username: String,
     pub email: Option<String>,
@@ -240,6 +319,34 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_type_code_roundtrip_all_variants() {
+        let providers = [
+            OAuth2Provider::QQ,
+            OAuth2Provider::GitHub,
+            OAuth2Provider::Google,
+            OAuth2Provider::Microsoft,
+            OAuth2Provider::Discord,
+            OAuth2Provider::Casdoor,
+            OAuth2Provider::Logto,
+            OAuth2Provider::Oidc,
+            OAuth2Provider::Feishu,
+            OAuth2Provider::Gitee,
+        ];
+
+        for provider in providers {
+            let code = provider.as_i16();
+            assert_eq!(OAuth2Provider::try_from(code), Ok(provider.clone()));
+            assert_eq!(
+                oauth2_provider_type_name_from_code(code).as_deref(),
+                Ok(provider.as_str())
+            );
+        }
+
+        assert!(OAuth2Provider::try_from(0).is_err());
+        assert!(oauth2_provider_type_code_from_name("unknown").is_err());
+    }
+
+    #[test]
     fn test_provider_is_oidc() {
         // OIDC providers
         assert!(OAuth2Provider::Casdoor.is_oidc());
@@ -306,6 +413,8 @@ mod tests {
         let mapping = UserOAuthProviderMapping {
             id: 1,
             provider: "github".to_string(),
+            provider_instance_name: "github-main".to_string(),
+            provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_123".to_string(),
             user_id: UserId::expect_positive(1),
             username: "testuser".to_string(),
@@ -322,6 +431,8 @@ mod tests {
         let mapping = UserOAuthProviderMapping {
             id: 1,
             provider: "unknown_provider".to_string(),
+            provider_instance_name: "custom".to_string(),
+            provider_issuer: None,
             provider_user_id: "xyz".to_string(),
             user_id: UserId::expect_positive(1),
             username: "testuser".to_string(),
@@ -338,6 +449,8 @@ mod tests {
         let mapping = UserOAuthProviderMapping {
             id: 1,
             provider: "google".to_string(),
+            provider_instance_name: "google-work".to_string(),
+            provider_issuer: Some("https://accounts.google.com".to_string()),
             provider_user_id: "goog_456".to_string(),
             user_id: UserId::expect_positive(2),
             username: "googleuser".to_string(),
@@ -350,6 +463,11 @@ mod tests {
         let deserialized: UserOAuthProviderMapping = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.id, mapping.id);
         assert_eq!(deserialized.provider, mapping.provider);
+        assert_eq!(
+            deserialized.provider_instance_name,
+            mapping.provider_instance_name
+        );
+        assert_eq!(deserialized.provider_issuer, mapping.provider_issuer);
         assert_eq!(deserialized.provider_user_id, mapping.provider_user_id);
         assert_eq!(deserialized.username, mapping.username);
     }
@@ -358,6 +476,8 @@ mod tests {
     fn test_user_info_serde_roundtrip() {
         let info = OAuth2UserInfo {
             provider: OAuth2Provider::GitHub,
+            provider_instance_name: "github-main".to_string(),
+            provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_789".to_string(),
             username: "ghuser".to_string(),
             email: Some("gh@example.com".to_string()),
@@ -366,6 +486,11 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         let deserialized: OAuth2UserInfo = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.provider, OAuth2Provider::GitHub);
+        assert_eq!(deserialized.provider_instance_name, "github-main");
+        assert_eq!(
+            deserialized.provider_issuer.as_deref(),
+            Some("https://github.com")
+        );
         assert_eq!(deserialized.provider_user_id, "gh_789");
         assert_eq!(deserialized.username, "ghuser");
     }

@@ -96,12 +96,16 @@ static EXTEND_LOCK_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
     )
 });
 
-async fn run_distributed_lock_redis_op<T, F>(operation: impl Into<String>, future: F) -> Result<T>
+async fn run_distributed_lock_redis_op<T, F>(
+    timeout: std::time::Duration,
+    operation: impl Into<String>,
+    future: F,
+) -> Result<T>
 where
     F: Future<Output = std::result::Result<T, redis::RedisError>>,
 {
     let operation = operation.into();
-    tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+    tokio::time::timeout(timeout, future)
         .await
         .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
         .internal_with_err(&format!("Failed to {operation}"))
@@ -276,8 +280,8 @@ impl DistributedLock {
         Self::from_runtime_with_mode(crate::shared_runtime(redis), is_sentinel)
     }
 
-    async fn conn(&self) -> RedisConnectionManager {
-        self.redis_runtime.snapshot().await
+    async fn conn(&self, operation: impl Into<String>) -> crate::Result<RedisConnectionManager> {
+        crate::redis_runtime_snapshot(&*self.redis_runtime, operation).await
     }
 
     /// Generate a fencing token for a lock key using Redis INCR
@@ -288,9 +292,12 @@ impl DistributedLock {
     /// monotonicity across replicas.
     async fn generate_fencing_token(&self, key: &str) -> crate::Result<u64> {
         let token_key = format!("lock:token:{key}");
-        let mut conn = self.conn().await;
+        let mut conn = self
+            .conn(format!("generate fencing token for lock '{key}'"))
+            .await?;
 
         run_distributed_lock_redis_op(
+            self.redis_runtime.operation_timeout(),
             format!("generate fencing token for lock '{key}'"),
             GENERATE_FENCING_TOKEN_SCRIPT
                 .key(&token_key)
@@ -369,12 +376,13 @@ impl DistributedLock {
         let lock_key = format!("lock:{key}");
         let lock_value = synctv_common::snanoid!(16);
 
-        let mut conn = self.conn().await;
+        let mut conn = self.conn(format!("acquire lock '{key}'")).await?;
 
         // SET key value NX EX ttl
         // NX: Only set if not exists
         // EX: Set expiration time
         let result: Option<String> = run_distributed_lock_redis_op(
+            self.redis_runtime.operation_timeout(),
             "acquire lock",
             redis::cmd("SET")
                 .arg(&lock_key)
@@ -425,9 +433,10 @@ impl DistributedLock {
     pub async fn release(&self, key: &str, lock_value: &str) -> Result<bool> {
         let lock_key = format!("lock:{key}");
 
-        let mut conn = self.conn().await;
+        let mut conn = self.conn(format!("release lock '{key}'")).await?;
 
         let result: i32 = run_distributed_lock_redis_op(
+            self.redis_runtime.operation_timeout(),
             "release lock",
             RELEASE_LOCK_SCRIPT
                 .key(&lock_key)
@@ -668,9 +677,10 @@ impl DistributedLock {
     pub async fn extend(&self, key: &str, lock_value: &str, ttl_seconds: u64) -> Result<bool> {
         let lock_key = format!("lock:{key}");
 
-        let mut conn = self.conn().await;
+        let mut conn = self.conn(format!("extend lock '{key}'")).await?;
 
         let result: i32 = run_distributed_lock_redis_op(
+            self.redis_runtime.operation_timeout(),
             "extend lock",
             EXTEND_LOCK_SCRIPT
                 .key(&lock_key)
@@ -1294,11 +1304,15 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_distributed_lock_redis_timeout_maps_to_timeout_error() {
-        let timeout_future = run_distributed_lock_redis_op("acquire lock", async {
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), redis::RedisError>(())
-        });
+        let timeout_future = run_distributed_lock_redis_op(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            "acquire lock",
+            async {
+                std::future::pending::<()>().await;
+                #[allow(unreachable_code)]
+                Ok::<(), redis::RedisError>(())
+            },
+        );
 
         tokio::pin!(timeout_future);
         tokio::task::yield_now().await;

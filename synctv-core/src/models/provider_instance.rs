@@ -162,7 +162,8 @@ pub struct ProviderInstance {
     /// Skip TLS certificate verification (UNSAFE, dev/test only)
     pub insecure_tls: bool,
 
-    /// Supported media provider types (e.g., `["bilibili", "alist", "emby"]`)
+    /// Supported media provider type names (e.g., `["bilibili", "alist", "emby"]`).
+    /// The database stores the corresponding numeric provider type codes.
     pub providers: Vec<String>,
 
     /// Whether this instance is enabled
@@ -260,7 +261,8 @@ pub struct UserProviderCredential {
     /// User ID (foreign key to users table).
     pub user_id: UserId,
 
-    /// Media provider type ("bilibili", "alist", "emby")
+    /// Media provider type name ("bilibili", "alist", "emby").
+    /// The database stores the corresponding numeric provider type code.
     pub provider: String,
 
     /// Server identifier

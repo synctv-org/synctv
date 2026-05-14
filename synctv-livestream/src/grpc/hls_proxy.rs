@@ -10,6 +10,7 @@ use moka::Expiry;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tonic::codec::CompressionEncoding;
 use tonic::Request;
 use tracing::debug;
 
@@ -88,6 +89,8 @@ pub struct HlsProxyClient {
     cluster_secret: Option<String>,
     /// Maximum decoded gRPC message size for playlist and segment responses.
     grpc_max_message_size_bytes: usize,
+    /// Whether cross-node HLS relay clients should negotiate gzip compression.
+    grpc_compression_enabled: bool,
     /// Pooled gRPC connections to publisher nodes
     connection_pool: GrpcConnectionPool,
     /// Cache hit counter for monitoring
@@ -168,6 +171,7 @@ impl HlsProxyClient {
             playlist_cache,
             cluster_secret,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             connection_pool: GrpcConnectionPool::with_defaults(),
             cache_hits: Arc::new(AtomicU64::new(0)),
             cache_misses: Arc::new(AtomicU64::new(0)),
@@ -197,6 +201,13 @@ impl HlsProxyClient {
     #[must_use]
     pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
         self.grpc_max_message_size_bytes = max_message_size_bytes;
+        self
+    }
+
+    /// Enable or disable gzip compression negotiation for cross-node HLS relay calls.
+    #[must_use]
+    pub const fn with_grpc_compression(mut self, enabled: bool) -> Self {
+        self.grpc_compression_enabled = enabled;
         self
     }
 
@@ -438,9 +449,17 @@ impl HlsProxyClient {
                 self.connection_pool.invalidate(api_address);
                 anyhow::anyhow!("Failed to connect to publisher API at {api_address}: {e}")
             })?;
-        Ok(StreamRelayServiceClient::new(channel)
+        let client = StreamRelayServiceClient::new(channel)
             .max_decoding_message_size(self.grpc_max_message_size_bytes)
-            .max_encoding_message_size(self.grpc_max_message_size_bytes))
+            .max_encoding_message_size(self.grpc_max_message_size_bytes);
+        let client = if self.grpc_compression_enabled {
+            client
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip)
+        } else {
+            client
+        };
+        Ok(client)
     }
 
     /// Invalidate all cached segments and playlists for a given stream.
@@ -632,8 +651,7 @@ impl HlsProxyClient {
         let key = Self::cache_version_key(room_id, media_id);
         self.cache_versions
             .get(&key)
-            .map(|version| version.load(Ordering::SeqCst))
-            .unwrap_or(0)
+            .map_or(0, |version| version.load(Ordering::SeqCst))
     }
 
     /// Increment and return the cache version for a stream.

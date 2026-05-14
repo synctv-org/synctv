@@ -1079,8 +1079,8 @@ pub async fn list_room_streams(
             ("room_id" = String, Path, description = "Room ID")
         ),
         responses(
-            (status = 200, description = "Room availability and status", body = CheckRoomResponse),
-            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Room availability and status; exists=false when the room is not found", body = CheckRoomResponse),
+            (status = 400, description = "Invalid room ID", body = crate::openapi::ErrorResponseDoc)
         )
     )
 )]
@@ -1408,11 +1408,7 @@ pub async fn get_playlist(
         params(ListRoomsRequest),
         responses(
             (status = 200, description = "Rooms list", body = ListRoomsResponse),
-            (status = 400, description = "Invalid query", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
+            (status = 400, description = "Invalid query", body = crate::openapi::ErrorResponseDoc)
         )
     )
 )]
@@ -1634,14 +1630,9 @@ pub async fn get_chat_history(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoQuery(mut req): ProtoQuery<GetChatHistoryRequest>,
+    ProtoQuery(req): ProtoQuery<GetChatHistoryRequest>,
 ) -> AppResult<Json<GetChatHistoryResponse>> {
     let room_id = extract_room_id(path);
-    req.limit = if req.limit == 0 {
-        50
-    } else {
-        req.limit.clamp(1, 100)
-    };
     let response =
         execute_room_actor_endpoint(
             &state,
@@ -1902,20 +1893,16 @@ pub async fn list_playlists(
         tag = "Room",
         params(GetHotRoomsRequest),
         responses(
-            (status = 200, description = "Hot rooms", body = GetHotRoomsResponse)
+            (status = 200, description = "Hot rooms", body = GetHotRoomsResponse),
+            (status = 400, description = "Invalid query", body = crate::openapi::ErrorResponseDoc)
         )
     )
 )]
 pub async fn get_hot_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(mut req): ProtoQuery<GetHotRoomsRequest>,
+    ProtoQuery(req): ProtoQuery<GetHotRoomsRequest>,
 ) -> AppResult<Json<GetHotRoomsResponse>> {
-    req.limit = if req.limit == 0 {
-        10
-    } else {
-        req.limit.min(50)
-    };
     let response = execute_public_endpoint(
         &state,
         request_meta,
@@ -1936,8 +1923,9 @@ mod tests {
         AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, UpdatePlayback,
     };
     use crate::proto::client::{
-        DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetRoomMembersRequest,
-        ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest,
+        DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetHotRoomsRequest,
+        GetRoomMembersRequest, ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomsRequest,
+        MoveMediaRequest,
     };
 
     #[test]
@@ -2265,6 +2253,22 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("limit".to_string(), "many".to_string());
         assert!(serde_urlencoded::from_str::<GetChatHistoryRequest>("limit=many").is_err());
+    }
+
+    #[test]
+    fn test_chat_history_query_preserves_limit_for_shared_validation() {
+        let req: GetChatHistoryRequest = serde_urlencoded::from_str("limit=101").unwrap();
+
+        assert_eq!(req.limit, 101);
+        assert!(crate::impls::validate_proto_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_hot_rooms_query_preserves_limit_for_shared_validation() {
+        let req: GetHotRoomsRequest = serde_urlencoded::from_str("limit=51").unwrap();
+
+        assert_eq!(req.limit, 51);
+        assert!(crate::impls::validate_proto_request(&req).is_err());
     }
 
     #[test]

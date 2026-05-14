@@ -499,6 +499,29 @@ impl RedisRateLimitBackend {
         self.conn.snapshot().await
     }
 
+    async fn with_redis_conn<T, F, Fut>(
+        &self,
+        operation: &'static str,
+        f: F,
+    ) -> std::result::Result<T, RateLimitError>
+    where
+        F: FnOnce(redis::aio::ConnectionManager) -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<T, RateLimitError>>,
+    {
+        match tokio::time::timeout(self.conn.operation_timeout(), async {
+            let conn = self.get_conn().await;
+            f(conn).await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(RateLimitError::BackendUnavailable(format!(
+                "Redis rate limiter {operation} timed out after {}ms",
+                self.conn.operation_timeout().as_millis()
+            ))),
+        }
+    }
+
     async fn run_with_control<T, F>(
         control: Option<&ExecutionControl>,
         operation: F,
@@ -538,16 +561,18 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let expire_seconds = window_expire_seconds(window_seconds);
 
         let result: Vec<i64> = match Self::run_with_control(control, async {
-            let mut conn = self.get_conn().await;
-            REDIS_SLIDING_WINDOW_SCRIPT
-                .key(&redis_key)
-                .arg(millis_to_i64_saturating(window_start))
-                .arg(now)
-                .arg(expire_seconds)
-                .arg(max_requests)
-                .invoke_async(&mut conn)
-                .await
-                .map_err(RateLimitError::from)
+            self.with_redis_conn("sliding-window check", |mut conn| async move {
+                REDIS_SLIDING_WINDOW_SCRIPT
+                    .key(&redis_key)
+                    .arg(millis_to_i64_saturating(window_start))
+                    .arg(now)
+                    .arg(expire_seconds)
+                    .arg(max_requests)
+                    .invoke_async(&mut conn)
+                    .await
+                    .map_err(RateLimitError::from)
+            })
+            .await
         })
         .await
         {
@@ -611,16 +636,18 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let expire_seconds = window_expire_seconds(window_seconds);
 
         let result: Vec<i64> = match Self::run_with_control(control, async {
-            let mut conn = self.get_conn().await;
-            REDIS_SLIDING_WINDOW_SCRIPT
-                .key(&redis_key)
-                .arg(millis_to_i64_saturating(window_start))
-                .arg(now)
-                .arg(expire_seconds)
-                .arg(max_requests)
-                .invoke_async(&mut conn)
-                .await
-                .map_err(RateLimitError::from)
+            self.with_redis_conn("strict sliding-window check", |mut conn| async move {
+                REDIS_SLIDING_WINDOW_SCRIPT
+                    .key(&redis_key)
+                    .arg(millis_to_i64_saturating(window_start))
+                    .arg(now)
+                    .arg(expire_seconds)
+                    .arg(max_requests)
+                    .invoke_async(&mut conn)
+                    .await
+                    .map_err(RateLimitError::from)
+            })
+            .await
         })
         .await
         {
@@ -659,26 +686,42 @@ impl RateLimitBackend for RedisRateLimitBackend {
     ) -> Result<(u32, u64)> {
         use redis::AsyncCommands;
 
-        let mut conn = self.get_conn().await;
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
 
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .zrembyscore(&redis_key, 0, millis_to_i64_saturating(window_start))
-            .ignore()
-            .zcard(&redis_key);
+        let results: Vec<u32> = self
+            .with_redis_conn("quota query", |mut conn| {
+                let redis_key = redis_key.clone();
+                async move {
+                    let mut pipe = redis::pipe();
+                    pipe.atomic()
+                        .zrembyscore(&redis_key, 0, millis_to_i64_saturating(window_start))
+                        .ignore()
+                        .zcard(&redis_key);
 
-        let results: Vec<u32> = pipe.query_async(&mut conn).await?;
+                    pipe.query_async(&mut conn)
+                        .await
+                        .map_err(RateLimitError::from)
+                }
+            })
+            .await?;
         let current_count = results.first().copied().unwrap_or(0);
         let remaining = max_requests.saturating_sub(current_count);
 
-        let oldest: Option<u64> = conn
-            .zrange_withscores(&redis_key, 0, 0)
+        let oldest: Option<u64> = self
+            .with_redis_conn("quota oldest-score query", |mut conn| {
+                let redis_key = redis_key.clone();
+                async move {
+                    let entries: Vec<(String, u64)> = conn
+                        .zrange_withscores(&redis_key, 0, 0)
+                        .await
+                        .map_err(RateLimitError::from)?;
+                    Ok(entries.first().map(|(_, ts)| *ts))
+                }
+            })
             .await
-            .ok()
-            .and_then(|entries: Vec<(String, u64)>| entries.first().map(|(_, ts)| *ts));
+            .unwrap_or(None);
 
         let reset_seconds = if let Some(oldest_ts) = oldest {
             let time_since_oldest = now.saturating_sub(oldest_ts);
@@ -693,23 +736,30 @@ impl RateLimitBackend for RedisRateLimitBackend {
 
     async fn reset(&self, key: &str) -> Result<()> {
         let full_key = format!("{}{}", self.key_prefix, key);
-        let mut conn = self.get_conn().await;
         let seq_key = format!("{full_key}:seq");
-        let _: () = redis::cmd("DEL")
-            .arg(&full_key)
-            .arg(&seq_key)
-            .query_async(&mut conn)
+        let _: () = self
+            .with_redis_conn("reset", |mut conn| async move {
+                redis::cmd("DEL")
+                    .arg(&full_key)
+                    .arg(&seq_key)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(RateLimitError::from)
+            })
             .await?;
         Ok(())
     }
 
     async fn health_check(&self) -> std::result::Result<(), String> {
-        let mut conn = self.get_conn().await;
-        redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .map_err(|e| format!("Redis ping failed: {e}"))?;
-        Ok(())
+        self.with_redis_conn("health check", |mut conn| async move {
+            redis::cmd("PING")
+                .query_async::<String>(&mut conn)
+                .await
+                .map(|_| ())
+                .map_err(RateLimitError::from)
+        })
+        .await
+        .map_err(|e| format!("Redis ping failed: {e}"))
     }
 }
 
@@ -1101,6 +1151,71 @@ mod tests {
         assert!(
             Arc::ptr_eq(&backend.conn, &runtime),
             "rate-limit backend should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redis_rate_limit_timeout_falls_back_to_in_memory() {
+        #[derive(Clone)]
+        struct HangingRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for HangingRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                std::future::pending().await
+            }
+
+            fn operation_timeout(&self) -> Duration {
+                Duration::from_millis(10)
+            }
+        }
+
+        let backend = RedisRateLimitBackend::from_runtime(
+            Arc::new(HangingRedisRuntime),
+            "timeout-rate-limit:".to_string(),
+        );
+
+        let result = tokio::time::timeout(Duration::from_millis(200), backend.check("key", 5, 60))
+            .await
+            .expect("Redis timeout should bound non-strict rate limiting");
+
+        assert!(
+            result.is_ok(),
+            "non-strict Redis timeout should fall back to in-memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redis_rate_limit_timeout_fails_closed_in_strict_mode() {
+        #[derive(Clone)]
+        struct HangingRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for HangingRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                std::future::pending().await
+            }
+
+            fn operation_timeout(&self) -> Duration {
+                Duration::from_millis(10)
+            }
+        }
+
+        let backend = RedisRateLimitBackend::from_runtime(
+            Arc::new(HangingRedisRuntime),
+            "timeout-strict-rate-limit:".to_string(),
+        );
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            backend.check_strict("key", 5, 60),
+        )
+        .await
+        .expect("Redis timeout should bound strict rate limiting");
+
+        assert!(
+            matches!(result, Err(RateLimitError::BackendUnavailable(_))),
+            "strict Redis timeout should fail closed"
         );
     }
 

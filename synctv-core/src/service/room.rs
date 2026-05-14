@@ -65,25 +65,24 @@
 //! The `invalidate_room_caches()` method handles all three types appropriately.
 
 use chrono::{DateTime, Duration, Utc};
-use rand::RngExt;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
-        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
-        PlaylistId, ReviewRequestId, ReviewStatus, Room, RoomId, RoomListQuery, RoomMember,
-        RoomPlaybackState, RoomRole, RoomSettings, RoomStatus, RoomWithCount, UserId,
+        ChatMessage, ChatMessageType, Media, MediaId, MemberStatus, PageParams, PermissionBits,
+        Playlist, PlaylistId, ReviewRequestId, ReviewStatus, Room, RoomId, RoomListQuery,
+        RoomMember, RoomPlaybackState, RoomRole, RoomSettings, RoomStatus, RoomWithCount, UserId,
         UserListQuery, UserRole, UserStatus,
     },
     repository::{
         media::MediaListItem,
         playlist::PlaylistListItem,
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
-        ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
-        RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
+        ChatRepository, MediaRepository, PlaylistRepository, ReviewRepository,
+        RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
         UserProviderCredentialRepository,
     },
     service::{
@@ -117,6 +116,11 @@ struct CreateRoomCommand {
     created_by: UserId,
     password: Option<String>,
     settings: Option<RoomSettings>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RoomCreationPolicy {
+    enforce_creation_toggle: bool,
 }
 
 use std::{future::Future, sync::Arc};
@@ -187,10 +191,6 @@ pub struct AdminBanMemberWithOutboxRequest {
     pub lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
 }
 
-fn usize_to_i64_saturating(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
 fn initial_room_settings(settings: Option<RoomSettings>, password_provided: bool) -> RoomSettings {
     match settings {
         Some(settings) => settings,
@@ -229,9 +229,10 @@ fn merge_json_object_patch(target: &mut serde_json::Value, patch: serde_json::Va
 }
 
 const MAX_DELETE_TARGETS: usize = 100;
+const ROOM_JOIN_PENDING_LOCK_NS: i32 = 20_260_419;
+const ROOM_NAME_POLICY_LOCK_NS: i32 = 20_260_420;
+const ROOM_OWNER_POLICY_LOCK_NS: i32 = 20_260_421;
 const ROOM_JOIN_REQUEST_PENDING: ReviewStatus = ReviewStatus::Pending;
-const ROOM_JOIN_REQUEST_APPROVED: ReviewStatus = ReviewStatus::Approved;
-const ROOM_JOIN_REQUEST_REJECTED: ReviewStatus = ReviewStatus::Rejected;
 
 #[derive(Debug, Clone)]
 pub struct AuthorizedAdminActor {
@@ -408,14 +409,18 @@ impl RoomService {
         AuthorizedAdminActor::new(*admin_user_id, admin_user.username, admin_user.role)
     }
 
-    async fn create_room_creation_request(
+    async fn create_room_creation_request_with_executor<'e, E>(
         &self,
         requested_by: &UserId,
         name: &str,
         description: &str,
         password_hash: Option<&str>,
         settings: &RoomSettings,
-    ) -> Result<Room> {
+        executor: E,
+    ) -> Result<Room>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
@@ -434,7 +439,7 @@ impl RoomService {
             settings_payload,
             i16::from(ReviewStatus::Pending)
         )
-        .fetch_one(&self.pool)
+        .fetch_one(executor)
         .await?;
 
         let mut room =
@@ -484,8 +489,225 @@ impl RoomService {
         .map_err(Error::Database)
     }
 
-    async fn enforce_room_ownership_limit(
+    async fn ensure_user_can_create_room_now_tx(
         &self,
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: &UserId,
+    ) -> Result<()> {
+        let user = self
+            .user_service
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut **tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        if !user.can_create_room(true) {
+            return Err(Error::Authorization(format!(
+                "User cannot create rooms while account status is {}",
+                user.status
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_target_user_can_join_now_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        target_user_id: &UserId,
+    ) -> Result<()> {
+        let target_user = self
+            .user_service
+            .repository
+            .get_by_id_for_update_with_executor(target_user_id, &mut **tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {target_user_id} not found")))?;
+
+        if target_user.is_banned {
+            return Err(Error::Authorization(
+                "Target user cannot be added while banned".to_string(),
+            ));
+        }
+        if !target_user.status.can_join_room() {
+            return Err(Error::Authorization(format!(
+                "Target user cannot be added while account status is {}",
+                target_user.status
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_room_can_admit_member_now_tx(
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        target_user_id: &UserId,
+    ) -> Result<()> {
+        let room_state = sqlx::query(
+            r"
+            SELECT closed_at,
+                   EXISTS (
+                       SELECT 1
+                       FROM room_bans rb
+                       WHERE rb.room_id = rooms.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS is_banned,
+                   EXISTS (
+                       SELECT 1
+                       FROM room_member_bans rmb
+                       WHERE rmb.room_id = rooms.id
+                         AND rmb.user_id = $2
+                         AND rmb.revoked_at IS NULL
+                         AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS is_target_banned
+            FROM rooms
+            WHERE id = $1
+              AND deleted_at IS NULL
+            FOR UPDATE
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(target_user_id.as_i64())
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let closed_at: Option<DateTime<Utc>> = room_state.try_get("closed_at")?;
+        let is_banned: bool = room_state.try_get("is_banned")?;
+        let is_target_banned: bool = room_state.try_get("is_target_banned")?;
+
+        if closed_at.is_some() {
+            return Err(Error::InvalidInput("Room is closed".to_string()));
+        }
+        if is_banned {
+            return Err(Error::Authorization("Room is banned".to_string()));
+        }
+        if is_target_banned {
+            return Err(Error::Authorization(
+                "Target user is banned from this room".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn enforce_current_room_creation_policy(
+        &self,
+        user_id: &UserId,
+        settings: &RoomSettings,
+        policy: RoomCreationPolicy,
+    ) -> Result<()> {
+        if let Some(ref registry) = self.settings_registry {
+            if policy.enforce_creation_toggle {
+                if registry.disable_create_room.get().unwrap_or(false) {
+                    tracing::warn!(user_id = %user_id, "Room creation rejected: disable_create_room is true");
+                    return Err(Error::Authorization(
+                        "Room creation is currently disabled".to_string(),
+                    ));
+                }
+                if !registry.allow_room_creation.get().unwrap_or(true) {
+                    tracing::warn!(user_id = %user_id, "Room creation rejected: allow_room_creation is false");
+                    return Err(Error::Authorization(
+                        "Room creation is currently disabled".to_string(),
+                    ));
+                }
+            }
+            if registry.room_must_need_pwd.get().unwrap_or(false) && !settings.require_password.0 {
+                tracing::warn!(user_id = %user_id, "Room creation rejected: password required by server policy");
+                return Err(Error::InvalidInput(
+                    "Room password is required by server policy".to_string(),
+                ));
+            }
+            if registry.room_must_no_need_pwd.get().unwrap_or(false) && settings.require_password.0
+            {
+                tracing::warn!(user_id = %user_id, "Room creation rejected: passwords not allowed by server policy");
+                return Err(Error::InvalidInput(
+                    "Room passwords are not allowed by server policy".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn lock_room_name_policy(
+        tx: &mut Transaction<'_, Postgres>,
+        creator_id: &UserId,
+        name: &str,
+    ) -> Result<()> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(ROOM_NAME_POLICY_LOCK_NS)
+            .bind(format!("{creator_id}:{name}"))
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn lock_room_owner_policy(
+        tx: &mut Transaction<'_, Postgres>,
+        owner_id: &UserId,
+    ) -> Result<()> {
+        let lock_key = format!("room-owner-policy:{ROOM_OWNER_POLICY_LOCK_NS}:{owner_id}");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(lock_key)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn ensure_room_name_available_for_creator_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        creator_id: &UserId,
+        name: &str,
+    ) -> Result<()> {
+        self.ensure_room_name_available_for_creator_excluding_pending_tx(tx, creator_id, name, None)
+            .await
+    }
+
+    async fn ensure_room_name_available_for_creator_excluding_pending_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        creator_id: &UserId,
+        name: &str,
+        excluding_pending_request_id: Option<RoomId>,
+    ) -> Result<()> {
+        Self::lock_room_name_policy(tx, creator_id, name).await?;
+        let exists = RoomRepository::active_name_exists_for_creator_with_executor(
+            creator_id, name, &mut **tx,
+        )
+        .await?;
+        let pending_exists = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS(
+                SELECT 1
+                FROM room_creation_requests
+                WHERE requested_by = $1
+                  AND name = $2
+                  AND reviewed_at IS NULL
+                  AND status = $3
+                  AND ($4::BIGINT IS NULL OR id != $4)
+            )
+            ",
+        )
+        .bind(creator_id.as_i64())
+        .bind(name)
+        .bind(i16::from(ReviewStatus::Pending))
+        .bind(excluding_pending_request_id.map(|id| id.as_i64()))
+        .fetch_one(&mut **tx)
+        .await?;
+        if exists || pending_exists {
+            return Err(Error::AlreadyExists(
+                "You already have a room with this name".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn enforce_room_ownership_limit_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
         owner_id: &UserId,
         excluding_room_id: Option<&RoomId>,
     ) -> Result<()> {
@@ -496,27 +718,21 @@ impl RoomService {
             .transpose()?
             .unwrap_or(10);
 
-        let (rooms, total) = self
-            .room_repo
-            .list_by_creator(
-                owner_id,
-                PageParams::new(
-                    Some(1),
-                    Some(
-                        u32::try_from(max_rooms)
-                            .unwrap_or(u32::MAX)
-                            .saturating_add(1),
-                    ),
-                ),
-            )
-            .await?;
+        Self::lock_room_owner_policy(tx, owner_id).await?;
 
-        let owned_room_count = match excluding_room_id {
-            Some(room_id) => {
-                usize_to_i64_saturating(rooms.iter().filter(|room| room.id != *room_id).count())
-            }
-            None => total,
-        };
+        let owned_room_count = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM rooms
+            WHERE created_by = $1
+              AND deleted_at IS NULL
+              AND ($2::BIGINT IS NULL OR id != $2)
+            ",
+        )
+        .bind(owner_id.as_i64())
+        .bind(excluding_room_id.map(|id| id.as_i64()))
+        .fetch_one(&mut **tx)
+        .await?;
 
         if owned_room_count >= max_rooms {
             return Err(Error::InvalidInput(format!(
@@ -1271,8 +1487,8 @@ impl RoomService {
     ///
     /// All database operations run inside a single transaction so the room is
     /// either fully created or not visible at all — no partially-created rooms.
-    /// Duplicate room names for the same creator are rejected atomically by
-    /// the database UNIQUE constraint on `(rooms.created_by, rooms.name)`.
+    /// Duplicate room names for the same creator are a service-level product
+    /// policy, checked under a transaction-scoped advisory lock before insert.
     ///
     /// When a distributed lock is configured (multi-replica mode), a per-user
     /// lock still coalesces repeated requests from the same user (network
@@ -1386,53 +1602,13 @@ impl RoomService {
             "Creating new room"
         );
 
-        // Check global settings: room creation must be allowed.
-        // Setting precedence:
-        // 1. `disable_create_room` (highest priority) — when true, room creation is
-        // unconditionally blocked. This is the "kill switch" for emergencies or
-        // maintenance windows.
-        // 2. `allow_room_creation` — when explicitly set to false, room creation is
-        // blocked. Defaults to true when unset. This is the normal admin toggle
-        // for controlling whether users can create rooms.
-        // Both settings exist to serve different admin workflows:
-        // - `disable_create_room` = emergency override (takes priority over everything)
-        // - `allow_room_creation` = standard policy control (opt-out, default-allow)
-        if let Some(ref registry) = self.settings_registry {
-            if enforce_creation_policy {
-                // `disable_create_room` takes precedence (explicit disable)
-                if registry.disable_create_room.get().unwrap_or(false) {
-                    tracing::warn!(user_id = %created_by, "Room creation rejected: disable_create_room is true");
-                    return Err(Error::Authorization(
-                        "Room creation is currently disabled".to_string(),
-                    ));
-                }
-                // `allow_room_creation` defaults to true; when explicitly set to false, block
-                if !registry.allow_room_creation.get().unwrap_or(true) {
-                    tracing::warn!(user_id = %created_by, "Room creation rejected: allow_room_creation is false");
-                    return Err(Error::Authorization(
-                        "Room creation is currently disabled".to_string(),
-                    ));
-                }
-            }
-            // `room_must_need_pwd`: if true, rooms must require a password.
-            if registry.room_must_need_pwd.get().unwrap_or(false)
-                && !room_settings.require_password.0
-            {
-                tracing::warn!(user_id = %created_by, "Room creation rejected: password required by server policy");
-                return Err(Error::InvalidInput(
-                    "Room password is required by server policy".to_string(),
-                ));
-            }
-            // `room_must_no_need_pwd`: if true, rooms must NOT require a password.
-            if registry.room_must_no_need_pwd.get().unwrap_or(false)
-                && room_settings.require_password.0
-            {
-                tracing::warn!(user_id = %created_by, "Room creation rejected: passwords not allowed by server policy");
-                return Err(Error::InvalidInput(
-                    "Room passwords are not allowed by server policy".to_string(),
-                ));
-            }
-        }
+        self.enforce_current_room_creation_policy(
+            &created_by,
+            &room_settings,
+            RoomCreationPolicy {
+                enforce_creation_toggle: enforce_creation_policy,
+            },
+        )?;
 
         // Validate room name using centralized validator
         crate::validation::RoomNameValidator::new()
@@ -1454,8 +1630,6 @@ impl RoomService {
             None
         };
 
-        self.enforce_room_ownership_limit(&created_by, None).await?;
-
         let need_review = self
             .settings_registry
             .as_ref()
@@ -1468,15 +1642,24 @@ impl RoomService {
                 "Room requires review, creating room creation request"
             );
 
+            let mut tx = self.pool.begin().await?;
+            self.ensure_user_can_create_room_now_tx(&mut tx, &created_by)
+                .await?;
+            self.enforce_room_ownership_limit_tx(&mut tx, &created_by, None)
+                .await?;
+            self.ensure_room_name_available_for_creator_tx(&mut tx, &created_by, &name)
+                .await?;
             let pending_room = self
-                .create_room_creation_request(
+                .create_room_creation_request_with_executor(
                     &created_by,
                     &name,
                     &description,
                     pwd_hash.as_deref(),
                     &room_settings,
+                    &mut *tx,
                 )
                 .await?;
+            tx.commit().await?;
             let pending_member = RoomMember::new(pending_room.id, created_by, RoomRole::Creator);
 
             if let Some(ref notif_service) = self.user_notification_service {
@@ -1527,6 +1710,13 @@ impl RoomService {
         // Transaction: Create room with all related data atomically.
         // On error, the transaction will be automatically rolled back.
         let mut tx = self.pool.begin().await?;
+
+        self.ensure_user_can_create_room_now_tx(&mut tx, &created_by)
+            .await?;
+        self.enforce_room_ownership_limit_tx(&mut tx, &created_by, None)
+            .await?;
+        self.ensure_room_name_available_for_creator_tx(&mut tx, &created_by, &name)
+            .await?;
 
         // 1. Create room
         let room = Room::new_with_description(name, description, created_by);
@@ -1655,10 +1845,11 @@ impl RoomService {
                 )
             })?;
 
-        self.enforce_room_ownership_limit(&new_owner_id, Some(&room_id))
-            .await?;
-
         let mut tx = self.pool.begin().await?;
+        self.enforce_room_ownership_limit_tx(&mut tx, &new_owner_id, Some(&room_id))
+            .await?;
+        self.ensure_room_name_available_for_creator_tx(&mut tx, &new_owner_id, &room.name)
+            .await?;
 
         let updated_room = self
             .room_repo
@@ -2050,6 +2241,13 @@ impl RoomService {
         user_id: &UserId,
         role: RoomRole,
     ) -> Result<RoomMember> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(ROOM_JOIN_PENDING_LOCK_NS)
+            .bind(format!("{room_id}:{user_id}"))
+            .execute(&mut *tx)
+            .await?;
+
         let existing_request_id = sqlx::query_scalar!(
             r#"
             SELECT id
@@ -2062,7 +2260,7 @@ impl RoomService {
             room_id.as_i64(),
             user_id.as_i64(),
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if existing_request_id.is_none() {
@@ -2078,7 +2276,7 @@ impl RoomService {
                 i16::from(role),
                 i16::from(ROOM_JOIN_REQUEST_PENDING),
             )
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await;
 
             if let Err(error) = insert_result {
@@ -2093,6 +2291,7 @@ impl RoomService {
             }
         }
 
+        tx.commit().await?;
         let pending = RoomMember::new(*room_id, *user_id, role);
         Ok(pending)
     }
@@ -2125,59 +2324,34 @@ impl RoomService {
         Ok((row.user_id, row.requested_role))
     }
 
-    async fn load_pending_join_request_by_id(
-        &self,
-        room_id: &RoomId,
-        request_id: ReviewRequestId,
-    ) -> Result<(UserId, RoomRole)> {
-        let row = sqlx::query!(
-            r#"
-            SELECT user_id AS "user_id: UserId",
-                   COALESCE(requested_role, $3) AS "requested_role!: RoomRole"
-            FROM room_join_requests
-            WHERE id = $1
-              AND room_id = $2
-              AND reviewed_at IS NULL
-              AND status = $4
-            "#,
-            request_id.as_i64(),
-            room_id.as_i64(),
-            i16::from(RoomRole::Member),
-            i16::from(ROOM_JOIN_REQUEST_PENDING),
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
-
-        Ok((row.user_id, row.requested_role))
-    }
-
     async fn resolve_pending_join_request_as_approved_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         room_id: &RoomId,
         user_id: &UserId,
         reviewed_by: Option<&UserId>,
     ) -> Result<u64> {
-        let result = sqlx::query!(
-            r#"
-            UPDATE room_join_requests
-            SET status = $3,
-                reviewed_at = CURRENT_TIMESTAMP,
-                reviewed_by = $4
-            WHERE room_id = $1
-              AND user_id = $2
-              AND reviewed_at IS NULL
-              AND status = $5
-            "#,
-            room_id.as_i64(),
-            user_id.as_i64(),
-            i16::from(ROOM_JOIN_REQUEST_APPROVED),
-            reviewed_by.map(UserId::as_i64),
-            i16::from(ROOM_JOIN_REQUEST_PENDING),
+        ReviewRepository::approve_room_join_by_member_with_executor(
+            &mut **tx,
+            *room_id,
+            *user_id,
+            reviewed_by.copied(),
         )
-        .execute(&mut **tx)
-        .await?;
-        Ok(result.rows_affected())
+        .await
+    }
+
+    async fn resolve_pending_join_request_by_id_as_approved_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        request_id: ReviewRequestId,
+        room_id: &RoomId,
+        reviewed_by: Option<&UserId>,
+    ) -> Result<u64> {
+        ReviewRepository::approve_room_join_with_executor(
+            &mut **tx,
+            request_id,
+            *room_id,
+            reviewed_by.copied(),
+        )
+        .await
     }
 
     async fn active_member_add_options(&self, room_id: &RoomId) -> Result<AddMemberOptions> {
@@ -2196,6 +2370,10 @@ impl RoomService {
         reviewed_by: Option<&UserId>,
         require_pending_review: bool,
     ) -> Result<RoomMember> {
+        self.ensure_target_user_can_join_now_tx(tx, target_user_id)
+            .await?;
+        Self::ensure_room_can_admit_member_now_tx(tx, room_id, target_user_id).await?;
+
         let mut member = RoomMember::new(*room_id, *target_user_id, role);
         member.status = MemberStatus::Active;
         let options = self.active_member_add_options(room_id).await?;
@@ -2216,6 +2394,43 @@ impl RoomService {
             ));
         }
         Ok(created)
+    }
+
+    async fn approve_pending_join_request_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        request_id: ReviewRequestId,
+        reviewed_by: Option<&UserId>,
+    ) -> Result<(UserId, RoomMember)> {
+        let (target_user_id, requested_role) =
+            Self::load_pending_join_request_by_id_for_update(tx, room_id, request_id).await?;
+        self.ensure_target_user_can_join_now_tx(tx, &target_user_id)
+            .await?;
+        Self::ensure_room_can_admit_member_now_tx(tx, room_id, &target_user_id).await?;
+        let role = Self::validate_join_request_role(requested_role)?;
+
+        let mut member = RoomMember::new(*room_id, target_user_id, role);
+        member.status = MemberStatus::Active;
+        let options = self.active_member_add_options(room_id).await?;
+        let created = self
+            .member_repo
+            .add_with_options_tx(&member, &options, tx)
+            .await?;
+        let resolved = Self::resolve_pending_join_request_by_id_as_approved_tx(
+            tx,
+            request_id,
+            room_id,
+            reviewed_by,
+        )
+        .await?;
+        if resolved == 0 {
+            return Err(Error::NotFound(
+                "Pending join request not found".to_string(),
+            ));
+        }
+
+        Ok((target_user_id, created))
     }
 
     async fn ensure_target_user_can_join(&self, target_user_id: &UserId) -> Result<()> {
@@ -2424,21 +2639,9 @@ impl RoomService {
             .check_permission_no_cache(&room_id, &actor_id, PermissionBits::APPROVE_MEMBER)
             .await?;
 
-        let (target_user_id, requested_role) = self
-            .load_pending_join_request_by_id(&room_id, request_id)
-            .await?;
-        self.ensure_target_user_can_join(&target_user_id).await?;
-        let role = Self::validate_join_request_role(requested_role)?;
         let mut tx = self.pool.begin().await?;
-        let updated = self
-            .add_active_member_and_resolve_join_review_tx(
-                &mut tx,
-                &room_id,
-                &target_user_id,
-                role,
-                Some(&actor_id),
-                true,
-            )
+        let (target_user_id, updated) = self
+            .approve_pending_join_request_tx(&mut tx, &room_id, request_id, Some(&actor_id))
             .await?;
         let snapshot = self
             .permission_changed_snapshot_tx(
@@ -2502,22 +2705,19 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
         let (target_user_id, _) =
             Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
-        sqlx::query!(
-            r#"
-            UPDATE room_join_requests
-            SET status = $2,
-                reviewed_at = CURRENT_TIMESTAMP,
-                reviewed_by = $3,
-                rejection_reason = $4
-            WHERE id = $1
-            "#,
-            request_id.as_i64(),
-            i16::from(ROOM_JOIN_REQUEST_REJECTED),
-            actor_id.as_i64(),
+        let rejected = ReviewRepository::reject_room_join_with_executor(
+            &mut *tx,
+            request_id,
+            room_id,
+            Some(actor_id),
             reason,
         )
-        .execute(&mut *tx)
         .await?;
+        if rejected == 0 {
+            return Err(Error::NotFound(
+                "Pending join request not found".to_string(),
+            ));
+        }
         let snapshot = self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await?;
@@ -2691,21 +2891,9 @@ impl RoomService {
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        let (target_user_id, requested_role) = self
-            .load_pending_join_request_by_id(&room_id, request_id)
-            .await?;
-        self.ensure_target_user_can_join(&target_user_id).await?;
-        let role = Self::validate_join_request_role(requested_role)?;
         let mut tx = self.pool.begin().await?;
-        let updated = self
-            .add_active_member_and_resolve_join_review_tx(
-                &mut tx,
-                &room_id,
-                &target_user_id,
-                role,
-                reviewed_by,
-                true,
-            )
+        let (target_user_id, updated) = self
+            .approve_pending_join_request_tx(&mut tx, &room_id, request_id, reviewed_by)
             .await?;
         let snapshot = self
             .permission_changed_snapshot_tx(
@@ -2794,22 +2982,19 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
         let (target_user_id, _) =
             Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
-        sqlx::query!(
-            r#"
-            UPDATE room_join_requests
-            SET status = $2,
-                reviewed_at = CURRENT_TIMESTAMP,
-                reviewed_by = $3,
-                rejection_reason = $4
-            WHERE id = $1
-            "#,
-            request_id.as_i64(),
-            i16::from(ROOM_JOIN_REQUEST_REJECTED),
-            reviewed_by.map(UserId::as_i64),
+        let rejected = ReviewRepository::reject_room_join_with_executor(
+            &mut *tx,
+            request_id,
+            room_id,
+            reviewed_by.copied(),
             reason,
         )
-        .execute(&mut *tx)
         .await?;
+        if rejected == 0 {
+            return Err(Error::NotFound(
+                "Pending join request not found".to_string(),
+            ));
+        }
         let snapshot = self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await?;
@@ -3139,8 +3324,24 @@ impl RoomService {
                 ))
             })?;
 
-        self.enforce_room_ownership_limit(&request.requested_by, None)
+        self.ensure_user_can_create_room_now_tx(&mut tx, &request.requested_by)
             .await?;
+        self.enforce_current_room_creation_policy(
+            &request.requested_by,
+            &request.settings,
+            RoomCreationPolicy {
+                enforce_creation_toggle: true,
+            },
+        )?;
+        self.enforce_room_ownership_limit_tx(&mut tx, &request.requested_by, None)
+            .await?;
+        self.ensure_room_name_available_for_creator_excluding_pending_tx(
+            &mut tx,
+            &request.requested_by,
+            &request.name,
+            Some(request_id),
+        )
+        .await?;
 
         let room = Room::new_with_description(
             request.name.clone(),
@@ -3164,18 +3365,17 @@ impl RoomService {
             .create_or_get_with_executor(&updated.id, &mut tx)
             .await?;
 
-        sqlx::query!(
-            r#"
-            UPDATE room_creation_requests
-            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
-            WHERE id = $1
-            "#,
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Approved),
-            admin_id.map(UserId::as_i64),
+        let approved = ReviewRepository::approve_room_creation_with_executor(
+            &mut *tx,
+            request_id,
+            admin_id.copied(),
         )
-        .execute(&mut *tx)
         .await?;
+        if approved == 0 {
+            return Err(Error::NotFound(format!(
+                "Pending room creation request {request_id} not found"
+            )));
+        }
 
         tx.commit().await?;
 
@@ -3239,19 +3439,18 @@ impl RoomService {
                 Error::NotFound(format!("Pending room creation request {room_id} not found"))
             })?;
 
-        sqlx::query!(
-            r#"
-            UPDATE room_creation_requests
-            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
-            WHERE id = $1
-            "#,
-            room_id.as_i64(),
-            i16::from(ReviewStatus::Rejected),
-            admin_id.map(UserId::as_i64),
+        let rejected = ReviewRepository::reject_room_creation_with_executor(
+            &mut *tx,
+            room_id,
+            admin_id.copied(),
             reason.as_deref(),
         )
-        .execute(&mut *tx)
         .await?;
+        if rejected == 0 {
+            return Err(Error::NotFound(format!(
+                "Pending room creation request {room_id} not found"
+            )));
+        }
         tx.commit().await?;
 
         let mut updated =
@@ -3694,51 +3893,26 @@ impl RoomService {
         RoomSettingsRegistry::validate_setting(key, value)?;
 
         // 3. CAS update with retry
-        let mut previous_settings = None;
-        let mut final_settings = None;
-        let mut final_version = None;
-        for attempt in 0..Self::MAX_RETRIES {
-            let (mut settings, version) = self.room_settings_repo.get_with_version(room_id).await?;
-            let current = settings.clone();
-            settings.set_by_key(key, value)?;
-            settings.validate_permissions()?;
+        let (previous_settings, settings, version) =
+            super::optimistic_retry::retry_with_optimistic_lock(
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                "Settings update failed after maximum retry attempts",
+                || async {
+                    let (mut settings, version) =
+                        self.room_settings_repo.get_with_version(room_id).await?;
+                    let current = settings.clone();
+                    settings.set_by_key(key, value)?;
+                    settings.validate_permissions()?;
 
-            match self
-                .room_settings_repo
-                .set_settings_with_version(room_id, &settings, version)
-                .await
-            {
-                Ok(new_version) => {
-                    previous_settings = Some(current);
-                    final_settings = Some(settings);
-                    final_version = Some(new_version);
-                    break;
-                }
-                Err(Error::OptimisticLockConflict) => {
-                    if attempt + 1 < Self::MAX_RETRIES {
-                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter))
-                            .await;
-                        continue;
-                    }
-                    return Err(Error::Internal(
-                        "Settings update failed after maximum retry attempts".to_string(),
-                    ));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        let previous_settings = previous_settings.ok_or_else(|| {
-            Error::Internal("Settings update failed after maximum retry attempts".to_string())
-        })?;
-        let settings = final_settings.ok_or_else(|| {
-            Error::Internal("Settings update failed after maximum retry attempts".to_string())
-        })?;
-        let version = final_version.ok_or_else(|| {
-            Error::Internal("Settings update failed after maximum retry attempts".to_string())
-        })?;
+                    let new_version = self
+                        .room_settings_repo
+                        .set_settings_with_version(room_id, &settings, version)
+                        .await?;
+                    Ok((current, settings, new_version))
+                },
+            )
+            .await?;
 
         let snapshot = self
             .finalize_room_settings_update(
@@ -4104,82 +4278,82 @@ impl RoomService {
         password_hash: Option<String>,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
     ) -> Result<()> {
-        for attempt in 0..Self::MAX_RETRIES {
-            // Read current settings and version
-            let (mut settings, version) = self.room_settings_repo.get_with_version(room_id).await?;
+        super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Password update failed after maximum retry attempts",
+            || async {
+                // Read current settings and version
+                let (mut settings, version) =
+                    self.room_settings_repo.get_with_version(room_id).await?;
 
-            // Update password hash in a transaction (separate key row, not version-checked)
-            let mut tx = self.pool.begin().await?;
-            if let Some(ref pwd_hash) = password_hash {
-                self.room_settings_repo
-                    .set_with_executor(room_id, "password", pwd_hash, &mut *tx)
-                    .await?;
-                settings.require_password = crate::models::room_settings::RequirePassword(true);
-            } else {
-                self.room_settings_repo
-                    .delete_with_executor(room_id, "password", &mut *tx)
-                    .await?;
-                settings.require_password = crate::models::room_settings::RequirePassword(false);
-            }
+                // Update password hash in a transaction (separate key row, not version-checked)
+                let mut tx = self.pool.begin().await?;
+                if let Some(ref pwd_hash) = password_hash {
+                    self.room_settings_repo
+                        .set_with_executor(room_id, "password", pwd_hash, &mut *tx)
+                        .await?;
+                    settings.require_password = crate::models::room_settings::RequirePassword(true);
+                } else {
+                    self.room_settings_repo
+                        .delete_with_executor(room_id, "password", &mut *tx)
+                        .await?;
+                    settings.require_password =
+                        crate::models::room_settings::RequirePassword(false);
+                }
 
-            // CAS update for the _settings row within the same transaction
-            let json_value = serde_json::to_string(&settings)
-                .internal_with_err("Failed to serialize room settings")?;
+                // CAS update for the _settings row within the same transaction
+                let json_value = serde_json::to_string(&settings)
+                    .internal_with_err("Failed to serialize room settings")?;
 
-            let cas_result = if version == 0 {
-                sqlx::query_scalar!(
-                    r#"
+                let cas_result = if version == 0 {
+                    sqlx::query_scalar!(
+                        r#"
                     INSERT INTO room_settings (room_id, key, value, version)
                     VALUES ($1, '_settings', $2, 1)
                     ON CONFLICT (room_id, key) DO NOTHING
                     RETURNING version AS "version!"
                     "#,
-                    room_id.as_i64(),
-                    &json_value,
-                )
-                .fetch_optional(&mut *tx)
-                .await?
-            } else {
-                sqlx::query_scalar!(
-                    r#"
+                        room_id.as_i64(),
+                        &json_value,
+                    )
+                    .fetch_optional(&mut *tx)
+                    .await?
+                } else {
+                    sqlx::query_scalar!(
+                        r#"
                     UPDATE room_settings
                     SET value = $2, version = version + 1, updated_at = NOW()
                     WHERE room_id = $1 AND key = '_settings' AND version = $3
                     RETURNING version AS "version!"
                     "#,
-                    room_id.as_i64(),
-                    &json_value,
-                    version,
-                )
-                .fetch_optional(&mut *tx)
-                .await?
-            };
+                        room_id.as_i64(),
+                        &json_value,
+                        version,
+                    )
+                    .fetch_optional(&mut *tx)
+                    .await?
+                };
 
-            if let Some(new_version) = cas_result {
-                let outbox_event = outbox_event_factory
-                    .as_ref()
-                    .and_then(|factory| factory(&settings, new_version));
-                if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                    outbox.insert_with_executor(event, &mut *tx).await?;
+                if let Some(new_version) = cas_result {
+                    let outbox_event = outbox_event_factory
+                        .as_ref()
+                        .and_then(|factory| factory(&settings, new_version));
+                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
+                        outbox.insert_with_executor(event, &mut *tx).await?;
+                    }
+                    tx.commit().await?;
+                    return Ok(());
                 }
-                tx.commit().await?;
-                return Ok(());
-            }
 
-            // Version mismatch -- explicit rollback before retry.
-            // This is necessary to release locks immediately and allow the next
-            // iteration to acquire a fresh snapshot.
-            tx.rollback().await?;
-            if attempt + 1 < Self::MAX_RETRIES {
-                let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-            }
-        }
-
-        Err(Error::Internal(
-            "Password update failed after maximum retry attempts".to_string(),
-        ))
+                // Version mismatch -- explicit rollback before retry.
+                // This is necessary to release locks immediately and allow the next
+                // iteration to acquire a fresh snapshot.
+                tx.rollback().await?;
+                Err(Error::OptimisticLockConflict)
+            },
+        )
+        .await
     }
 
     /// Update room description.
@@ -4219,6 +4393,13 @@ impl RoomService {
     pub async fn list_rooms(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         query.pagination.validate()?;
         self.room_repo.list(query).await
+    }
+
+    pub async fn list_active_unbanned_rooms_by_ids(
+        &self,
+        room_ids: &[RoomId],
+    ) -> Result<Vec<Room>> {
+        self.room_repo.list_active_unbanned_by_ids(room_ids).await
     }
 
     pub async fn list_accessible_rooms(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
@@ -5902,7 +6083,7 @@ impl RoomService {
             room_id,
             user_id: Some(user_id),
             content,
-            message_type: 1, // text message
+            message_type: ChatMessageType::Text,
             created_at: Utc::now(),
         };
         self.chat_repo.create(&message).await
@@ -5973,7 +6154,38 @@ impl RoomService {
         _actor: &AuthorizedAdminActor,
     ) -> Result<Room> {
         let old_version = room.version;
-        let updated = self.room_repo.update(room, old_version).await?;
+
+        crate::validation::RoomNameValidator::new()
+            .validate(&room.name)
+            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        if room.description.chars().count() > crate::validation::ROOM_DESCRIPTION_MAX {
+            return Err(Error::InvalidInput(format!(
+                "Room description too long (max {} characters)",
+                crate::validation::ROOM_DESCRIPTION_MAX
+            )));
+        }
+
+        let current = self
+            .room_repo
+            .get_by_id(&room.id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let mut tx = self.pool.begin().await?;
+        if current.name != room.name {
+            self.ensure_room_name_available_for_creator_tx(
+                &mut tx,
+                &current.created_by,
+                &room.name,
+            )
+            .await?;
+        }
+        let updated = self
+            .room_repo
+            .update_with_executor(room, old_version, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
         self.notify_room_invalidation(&room.id).await;
         Ok(updated)
     }
@@ -6834,7 +7046,7 @@ fn has_room_permission_from_base(
 ) -> bool {
     if !member.has_permission(permission, PermissionBits(PermissionBits::ALL)) {
         return false;
-    };
+    }
 
     effective_room_permissions_from_base(settings, member, global_default).has(permission)
 }

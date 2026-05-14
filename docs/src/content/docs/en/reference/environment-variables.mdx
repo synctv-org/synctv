@@ -246,6 +246,16 @@ The list below mirrors the environment variable names used by the runtime.
 | `SYNCTV_WEBRTC_STUN_HOST` | `webrtc.stun_host` |
 | `SYNCTV_WEBRTC_STUN_PORT` | `webrtc.stun_port` |
 
+## Standalone Media Provider Server
+
+These variables are read by the `media-provider-server` binary, not by the main SyncTV config loader.
+
+| Environment variable | Meaning |
+| --- | --- |
+| `PROVIDER_AUTH_SECRET` | Required shared secret for `x-provider-secret` gRPC metadata |
+| `PROVIDER_LISTEN_ADDR` | Provider gRPC listen address, default `[::]:50051` |
+| `PROVIDER_GRPC_COMPRESSION_ENABLED` | Allow provider server gzip compression negotiation, default `true` |
+
 ## Continue Reading
 
 - [How Configuration Works](../../configuration/how-configuration-works/)

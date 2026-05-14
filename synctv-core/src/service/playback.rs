@@ -20,7 +20,6 @@ use crate::{
     Error, Result,
 };
 use rand::prelude::IteratorRandom;
-use rand::RngExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -950,186 +949,18 @@ impl PlaybackService {
             return Ok(None);
         }
 
-        // Retry loop: re-fetch state + playlist on each attempt so that
-        // concurrent playlist/state changes are correctly reflected.
-        for attempt in 0..Self::MAX_RETRIES {
-            // Get current state (fresh on every retry)
-            let state = match self.playback_repo.get(room_id).await? {
-                Some(s) => s,
-                None => self.playback_repo.create_or_get(room_id).await?,
-            };
-
-            let next_target = if let Some(ref playlist_id) = state.playing_playlist_id {
-                let playlist = self
-                    .media_service
-                    .get_room_playlist(room_id, playlist_id)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-                match self
-                    .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(Error::Authorization(_)) => {
-                        return self
-                            .stop_playback_for_unavailable_creator(room_id, "playlist")
-                            .await;
-                    }
-                    Err(error) => return Err(error),
-                }
-                self.media_service
-                    .next_dynamic_playlist_item(room_id, playlist_id, &state.target, mode)
-                    .await
-                    .and_then(|item| {
-                        item.map(|item| {
-                            Ok(NextTarget::Dynamic {
-                                playlist_id: playlist.id,
-                                target: item.target,
-                            })
-                        })
-                        .transpose()
-                    })?
-            } else {
-                let playlist = if let Some(ref current_id) = state.playing_media_id {
-                    let current_media = self
-                        .media_service
-                        .get_room_media(room_id, current_id)
-                        .await?
-                        .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
-
-                    match self
-                        .ensure_creator_is_active(current_media.creator_id.as_ref(), "Media")
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(Error::Authorization(_)) => {
-                            return self
-                                .stop_playback_for_unavailable_creator(room_id, "media")
-                                .await;
-                        }
-                        Err(error) => return Err(error),
-                    }
-
-                    if let Some(ref playlist_id) = current_media.playlist_id {
-                        self.media_service
-                            .get_room_playlist_media(room_id, playlist_id)
-                            .await?
-                    } else {
-                        self.media_service.get_room_root_media(room_id).await?
-                    }
-                } else {
-                    self.media_service.get_room_root_media(room_id).await?
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "play_next failed after maximum retry attempts",
+            || async {
+                // Get current state (fresh on every retry)
+                let state = match self.playback_repo.get(room_id).await? {
+                    Some(s) => s,
+                    None => self.playback_repo.create_or_get(room_id).await?,
                 };
 
-                if playlist.is_empty() {
-                    return Ok(None);
-                }
-
-                let next_media = match mode {
-                    PlayMode::Sequential => {
-                        if let Some(ref current_id) = state.playing_media_id {
-                            match playlist.iter().position(|m| &m.id == current_id) {
-                                Some(pos) if pos + 1 < playlist.len() => Some(&playlist[pos + 1]),
-                                Some(_) => None,
-                                None => {
-                                    tracing::warn!(
-                                        room_id = %room_id,
-                                        media_id = %current_id,
-                                        "Sequential: current media no longer present, falling back to first available item"
-                                    );
-                                    playlist.first()
-                                }
-                            }
-                        } else {
-                            playlist.first()
-                        }
-                    }
-                    PlayMode::RepeatOne => {
-                        if let Some(ref current_id) = state.playing_media_id {
-                            playlist
-                                .iter()
-                                .find(|m| &m.id == current_id)
-                                .or_else(|| {
-                                    tracing::warn!(
-                                        room_id = %room_id,
-                                        media_id = %current_id,
-                                        "RepeatOne: current media no longer present, falling back to first available item"
-                                    );
-                                    playlist.first()
-                                })
-                        } else {
-                            playlist.first()
-                        }
-                    }
-                    PlayMode::RepeatAll => {
-                        if let Some(ref current_id) = state.playing_media_id {
-                            if let Some(pos) = playlist.iter().position(|m| &m.id == current_id) {
-                                Some(&playlist[(pos + 1) % playlist.len()])
-                            } else {
-                                tracing::warn!(
-                                    room_id = %room_id,
-                                    media_id = %current_id,
-                                    "RepeatAll: current media no longer present, falling back to first available item"
-                                );
-                                playlist.first()
-                            }
-                        } else {
-                            playlist.first()
-                        }
-                    }
-                    PlayMode::Shuffle => {
-                        if let Some(ref current_id) = state.playing_media_id {
-                            let other_media = playlist
-                                .iter()
-                                .filter(|m| &m.id != current_id)
-                                .collect::<Vec<_>>();
-                            if other_media.is_empty() {
-                                playlist.iter().find(|m| &m.id == current_id)
-                            } else {
-                                other_media.into_iter().choose(&mut rand::rng())
-                            }
-                        } else {
-                            playlist.first()
-                        }
-                    }
-                };
-
-                next_media.cloned().map(NextTarget::Static)
-            };
-
-            let Some(next_target) = next_target else {
-                tracing::info!(
-                    room_id = %room_id,
-                    mode = ?mode,
-                    "Playlist ended"
-                );
-                return Ok(None);
-            };
-
-            // Apply update to the fetched state and try to save with optimistic locking
-            let mut updated_state = state;
-            match &next_target {
-                NextTarget::Static(next) => {
-                    match self
-                        .ensure_creator_is_active(next.creator_id.as_ref(), "Media")
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(Error::Authorization(_)) => {
-                            return self
-                                .stop_playback_for_unavailable_creator(room_id, "media")
-                                .await;
-                        }
-                        Err(error) => return Err(error),
-                    }
-                    updated_state.playing_media_id = Some(next.id);
-                    updated_state.playing_playlist_id = None;
-                    updated_state.target = Vec::new();
-                }
-                NextTarget::Dynamic {
-                    playlist_id,
-                    target,
-                } => {
+                let next_target = if let Some(ref playlist_id) = state.playing_playlist_id {
                     let playlist = self
                         .media_service
                         .get_room_playlist(room_id, playlist_id)
@@ -1147,60 +978,207 @@ impl PlaybackService {
                         }
                         Err(error) => return Err(error),
                     }
-                    updated_state.playing_media_id = None;
-                    updated_state.playing_playlist_id = Some(*playlist_id);
-                    updated_state.target = target.clone();
-                }
-            }
-            updated_state.current_time = 0.0;
-            updated_state.is_playing = true;
-            updated_state.updated_at = chrono::Utc::now();
+                    self.media_service
+                        .next_dynamic_playlist_item(room_id, playlist_id, &state.target, mode)
+                        .await
+                        .and_then(|item| {
+                            item.map(|item| {
+                                Ok(NextTarget::Dynamic {
+                                    playlist_id: playlist.id,
+                                    target: item.target,
+                                })
+                            })
+                            .transpose()
+                        })?
+                } else {
+                    let playlist = if let Some(ref current_id) = state.playing_media_id {
+                        let current_media = self
+                            .media_service
+                            .get_room_media(room_id, current_id)
+                            .await?
+                            .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
 
-            match self.playback_repo.update(&updated_state).await {
-                Ok(saved_state) => {
-                    // Invalidate local cache
-                    let cache_key = room_id.to_string();
-                    self.playback_cache.invalidate(&cache_key).await;
+                        match self
+                            .ensure_creator_is_active(current_media.creator_id.as_ref(), "Media")
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(Error::Authorization(_)) => {
+                                return self
+                                    .stop_playback_for_unavailable_creator(room_id, "media")
+                                    .await;
+                            }
+                            Err(error) => return Err(error),
+                        }
 
-                    // Broadcast to other replicas with retry
-                    self.broadcast_invalidation_with_retry(room_id, &saved_state, "play_next")
-                        .await;
+                        if let Some(ref playlist_id) = current_media.playlist_id {
+                            self.media_service
+                                .get_room_playlist_media(room_id, playlist_id)
+                                .await?
+                        } else {
+                            self.media_service.get_room_root_media(room_id).await?
+                        }
+                    } else {
+                        self.media_service.get_room_root_media(room_id).await?
+                    };
 
+                    if playlist.is_empty() {
+                        return Ok(None);
+                    }
+
+                    let next_media = match mode {
+                        PlayMode::Sequential => {
+                            if let Some(ref current_id) = state.playing_media_id {
+                                match playlist.iter().position(|m| &m.id == current_id) {
+                                    Some(pos) if pos + 1 < playlist.len() => {
+                                        Some(&playlist[pos + 1])
+                                    }
+                                    Some(_) => None,
+                                    None => {
+                                        tracing::warn!(
+                                            room_id = %room_id,
+                                            media_id = %current_id,
+                                            "Sequential: current media no longer present, falling back to first available item"
+                                        );
+                                        playlist.first()
+                                    }
+                                }
+                            } else {
+                                playlist.first()
+                            }
+                        }
+                        PlayMode::RepeatOne => {
+                            if let Some(ref current_id) = state.playing_media_id {
+                                playlist.iter().find(|m| &m.id == current_id).or_else(|| {
+                                    tracing::warn!(
+                                        room_id = %room_id,
+                                        media_id = %current_id,
+                                        "RepeatOne: current media no longer present, falling back to first available item"
+                                    );
+                                    playlist.first()
+                                })
+                            } else {
+                                playlist.first()
+                            }
+                        }
+                        PlayMode::RepeatAll => {
+                            if let Some(ref current_id) = state.playing_media_id {
+                                if let Some(pos) = playlist.iter().position(|m| &m.id == current_id)
+                                {
+                                    Some(&playlist[(pos + 1) % playlist.len()])
+                                } else {
+                                    tracing::warn!(
+                                        room_id = %room_id,
+                                        media_id = %current_id,
+                                        "RepeatAll: current media no longer present, falling back to first available item"
+                                    );
+                                    playlist.first()
+                                }
+                            } else {
+                                playlist.first()
+                            }
+                        }
+                        PlayMode::Shuffle => {
+                            if let Some(ref current_id) = state.playing_media_id {
+                                let other_media = playlist
+                                    .iter()
+                                    .filter(|m| &m.id != current_id)
+                                    .collect::<Vec<_>>();
+                                if other_media.is_empty() {
+                                    playlist.iter().find(|m| &m.id == current_id)
+                                } else {
+                                    other_media.into_iter().choose(&mut rand::rng())
+                                }
+                            } else {
+                                playlist.first()
+                            }
+                        }
+                    };
+
+                    next_media.cloned().map(NextTarget::Static)
+                };
+
+                let Some(next_target) = next_target else {
                     tracing::info!(
                         room_id = %room_id,
-                        target = ?next_target,
                         mode = ?mode,
-                        "Auto-played next media"
+                        "Playlist ended"
                     );
+                    return Ok(None);
+                };
 
-                    self.broadcast_state_change(&saved_state);
-                    return Ok(Some(saved_state));
-                }
-                Err(Error::OptimisticLockConflict) => {
-                    if attempt + 1 < Self::MAX_RETRIES {
-                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                        let delay = backoff + jitter;
-                        tracing::debug!(
-                            room_id = %room_id,
-                            attempt = attempt + 1,
-                            delay_ms = delay,
-                            "play_next version conflict, re-fetching state and retrying"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        continue;
+                // Apply update to the fetched state and try to save with optimistic locking
+                let mut updated_state = state;
+                match &next_target {
+                    NextTarget::Static(next) => {
+                        match self
+                            .ensure_creator_is_active(next.creator_id.as_ref(), "Media")
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(Error::Authorization(_)) => {
+                                return self
+                                    .stop_playback_for_unavailable_creator(room_id, "media")
+                                    .await;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                        updated_state.playing_media_id = Some(next.id);
+                        updated_state.playing_playlist_id = None;
+                        updated_state.target = Vec::new();
                     }
-                    return Err(Error::Internal(
-                        "play_next failed after maximum retry attempts".to_string(),
-                    ));
+                    NextTarget::Dynamic {
+                        playlist_id,
+                        target,
+                    } => {
+                        let playlist = self
+                            .media_service
+                            .get_room_playlist(room_id, playlist_id)
+                            .await?
+                            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+                        match self
+                            .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(Error::Authorization(_)) => {
+                                return self
+                                    .stop_playback_for_unavailable_creator(room_id, "playlist")
+                                    .await;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                        updated_state.playing_media_id = None;
+                        updated_state.playing_playlist_id = Some(*playlist_id);
+                        updated_state.target = target.clone();
+                    }
                 }
-                Err(e) => return Err(e),
-            }
-        }
+                updated_state.current_time = 0.0;
+                updated_state.is_playing = true;
+                updated_state.updated_at = chrono::Utc::now();
 
-        Err(Error::Internal(
-            "play_next failed after maximum retry attempts".to_string(),
-        ))
+                let saved_state = self.playback_repo.update(&updated_state).await?;
+
+                // Invalidate local cache
+                let cache_key = room_id.to_string();
+                self.playback_cache.invalidate(&cache_key).await;
+
+                // Broadcast to other replicas with retry
+                self.broadcast_invalidation_with_retry(room_id, &saved_state, "play_next")
+                    .await;
+
+                tracing::info!(
+                    room_id = %room_id,
+                    target = ?next_target,
+                    mode = ?mode,
+                    "Auto-played next media"
+                );
+
+                self.broadcast_state_change(&saved_state);
+                Ok(Some(saved_state))
+            },
+        )
+        .await
     }
 
     /// Check if media has ended and auto-play next if needed

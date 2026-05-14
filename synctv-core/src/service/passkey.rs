@@ -1,11 +1,6 @@
-use std::{
-    future::Future,
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use webauthn_rs::prelude::{
@@ -18,7 +13,7 @@ use crate::{
     config::WebAuthnConfig,
     models::{SignupMethod, User, UserId},
     repository::{PasswordCredentialMaterial, WebAuthnCredential, WebAuthnCredentialRepository},
-    service::RegistrationMode,
+    service::{session_store::RedisJsonSessionStore, RegistrationMode},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -26,18 +21,7 @@ const PASSKEY_SESSION_TTL_SECS: u64 = 300;
 const PASSKEY_SESSION_CAPACITY: u64 = 10_000;
 const PASSKEY_USER_HANDLE_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x4f5b_14fc_3148_5d64_9e5a_4f6d_9af9_b0f2);
-
-static CONSUME_PASSKEY_SESSION_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
-    redis::Script::new(
-        r#"
-        local value = redis.call("GET", KEYS[1])
-        if value then
-            redis.call("DEL", KEYS[1])
-        end
-        return value
-        "#,
-    )
-});
+const PASSKEY_SESSION_REDIS_NAMESPACE: &str = "auth:passkey:session";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PasskeySession {
@@ -175,8 +159,7 @@ impl PasskeySessionStore for InMemoryPasskeySessionStore {
 }
 
 pub struct RedisPasskeySessionStore {
-    runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    store: RedisJsonSessionStore,
 }
 
 impl RedisPasskeySessionStore {
@@ -185,67 +168,36 @@ impl RedisPasskeySessionStore {
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
-        let key_prefix = key_prefix.into();
-        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        };
         Self {
-            runtime,
-            key_prefix,
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
         }
-    }
-
-    fn redis_key(&self, session_id: &str) -> String {
-        format!("{}auth:passkey:session:{session_id}", self.key_prefix)
-    }
-
-    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
-    where
-        F: Future<Output = std::result::Result<T, redis::RedisError>>,
-    {
-        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
-            .await
-            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
-            .internal_with_err(&format!("Failed to {operation}"))
     }
 }
 
 #[async_trait::async_trait]
 impl PasskeySessionStore for RedisPasskeySessionStore {
     async fn store(&self, session_id: &str, session: &PasskeySession, ttl: Duration) -> Result<()> {
-        let key = self.redis_key(session_id);
-        let value = serde_json::to_string(session)
-            .internal_with_err("Failed to serialize WebAuthn session")?;
-        let mut conn = self.runtime.snapshot().await;
-        let _: () = self
-            .run_redis_op(
+        self.store
+            .store(
+                PASSKEY_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize WebAuthn session",
                 "store WebAuthn session in Redis",
-                conn.set_ex(key, value, ttl.as_secs()),
             )
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn consume(&self, session_id: &str) -> Result<Option<PasskeySession>> {
-        let key = self.redis_key(session_id);
-        let mut conn = self.runtime.snapshot().await;
-        let value: Option<String> = self
-            .run_redis_op(
+        self.store
+            .consume(
+                PASSKEY_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize WebAuthn session",
                 "consume WebAuthn session from Redis",
-                CONSUME_PASSKEY_SESSION_SCRIPT
-                    .key(key)
-                    .invoke_async(&mut conn),
             )
-            .await?;
-
-        value
-            .map(|json| {
-                serde_json::from_str(&json)
-                    .internal_with_err("Failed to deserialize WebAuthn session")
-            })
-            .transpose()
+            .await
     }
 
     fn supports_cross_node_single_use(&self) -> bool {

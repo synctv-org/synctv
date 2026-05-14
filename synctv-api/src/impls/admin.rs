@@ -61,7 +61,8 @@ use crate::realtime_lifecycle::{
 };
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
-    default_room_lifecycle_fanout_service, RoomLifecycleFanoutService,
+    default_room_lifecycle_fanout_service, default_room_lifecycle_fanout_service_with_realtime,
+    RoomLifecycleFanoutService,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
@@ -373,6 +374,11 @@ fn user_registration_review_row_to_proto(
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
         rejection_reason: row.rejection_reason.clone().unwrap_or_default(),
         oauth2_provider: row.oauth2_provider.clone().unwrap_or_default(),
+        oauth2_provider_instance_name: row
+            .oauth2_provider_instance_name
+            .clone()
+            .unwrap_or_default(),
+        oauth2_provider_issuer: row.oauth2_provider_issuer.clone().unwrap_or_default(),
         oauth2_provider_user_id: row.oauth2_provider_user_id.clone().unwrap_or_default(),
         oauth2_provider_username: row.oauth2_provider_username.clone().unwrap_or_default(),
         oauth2_avatar_url: row.oauth2_avatar_url.clone().unwrap_or_default(),
@@ -1463,7 +1469,10 @@ impl AdminApiImpl {
             self.live_streaming_infrastructure.clone(),
             realtime_fanout.clone(),
         );
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            realtime_fanout.clone(),
+            self.realtime_event_service.clone(),
+        );
         self.realtime_fanout = realtime_fanout;
         self
     }
@@ -1485,6 +1494,10 @@ impl AdminApiImpl {
         );
         self.media_fanout =
             default_media_fanout_service(self.realtime_fanout.clone(), Some(event_service.clone()));
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            self.realtime_fanout.clone(),
+            Some(event_service.clone()),
+        );
         self.realtime_event_service = Some(event_service);
         self
     }
@@ -10384,7 +10397,7 @@ mod tests {
             Some(owner.id),
             "Broken Playback Provider".to_string(),
             serde_json::json!({ "opaque": true }),
-            "missing_provider",
+            "live_proxy",
             None,
             0.0,
         );

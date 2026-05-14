@@ -365,11 +365,12 @@ impl From<synctv_core::Error> for ApiError {
             ),
             synctv_core::Error::Authorization(msg) => Self::Authorization(msg),
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
-            synctv_core::Error::Conflict(msg) => Self::Conflict(msg),
+            synctv_core::Error::Conflict(msg) | synctv_core::Error::LockConflict(msg) => {
+                Self::Conflict(msg)
+            }
             synctv_core::Error::OptimisticLockConflict => {
                 Self::Conflict("Resource modified concurrently".to_string())
             }
-            synctv_core::Error::LockConflict(msg) => Self::Conflict(msg),
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
             synctv_core::Error::RateLimited(msg) => Self::RateLimited(msg),
             synctv_core::Error::ServiceUnavailable(msg) => Self::ServiceUnavailable(msg),

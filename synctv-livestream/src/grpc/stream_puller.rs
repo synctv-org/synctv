@@ -9,6 +9,7 @@ use synctv_xiu::streamhub::{
     utils::Uuid,
 };
 use tokio::sync::oneshot;
+use tonic::codec::CompressionEncoding;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::Request;
 use tracing::{error, info, warn};
@@ -69,6 +70,10 @@ pub struct GrpcStreamPuller {
     cluster_secret: Option<String>,
     /// Shared connection pool for reusing gRPC channels to publisher nodes
     connection_pool: GrpcConnectionPool,
+    /// Maximum gRPC message size for relay stream messages.
+    grpc_max_message_size_bytes: usize,
+    /// Whether relay stream clients should negotiate gzip compression.
+    grpc_compression_enabled: bool,
 }
 
 impl GrpcStreamPuller {
@@ -93,6 +98,8 @@ impl GrpcStreamPuller {
             stream_hub_event_sender,
             cluster_secret: None,
             connection_pool,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
         }
     }
 
@@ -100,6 +107,20 @@ impl GrpcStreamPuller {
     #[must_use]
     pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
         self.cluster_secret = secret;
+        self
+    }
+
+    /// Set the maximum gRPC message size for relay stream messages.
+    #[must_use]
+    pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
+        self.grpc_max_message_size_bytes = max_message_size_bytes;
+        self
+    }
+
+    /// Enable or disable gzip compression negotiation for relay stream calls.
+    #[must_use]
+    pub const fn with_grpc_compression(mut self, enabled: bool) -> Self {
+        self.grpc_compression_enabled = enabled;
         self
     }
 
@@ -257,7 +278,16 @@ impl GrpcStreamPuller {
                 anyhow::anyhow!("Failed to connect to publisher: {e}")
             })?;
 
-        let mut client = StreamRelayServiceClient::new(channel);
+        let client = StreamRelayServiceClient::new(channel)
+            .max_decoding_message_size(self.grpc_max_message_size_bytes)
+            .max_encoding_message_size(self.grpc_max_message_size_bytes);
+        let mut client = if self.grpc_compression_enabled {
+            client
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip)
+        } else {
+            client
+        };
 
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: self.room_id.clone(),

@@ -1,4 +1,4 @@
-use sqlx::{postgres::PgRow, PgPool, Row};
+use sqlx::{PgPool, Row};
 
 use crate::{
     models::{
@@ -18,6 +18,7 @@ pub struct RoomMemberRepository {
     pool: PgPool,
 }
 
+#[derive(Debug, sqlx::FromRow)]
 struct RoomMemberWithUserRow {
     room_id: RoomId,
     user_id: UserId,
@@ -210,6 +211,14 @@ impl RoomMemberRepository {
             MyRoomListSortBy::LastActivityAt => {
                 format!("r.last_activity_at {direction} NULLS LAST, r.id {direction}")
             }
+        }
+    }
+
+    fn member_status_from_left_at(left_at: Option<chrono::DateTime<chrono::Utc>>) -> MemberStatus {
+        if left_at.is_some() {
+            MemberStatus::Left
+        } else {
+            MemberStatus::Active
         }
     }
 
@@ -764,6 +773,16 @@ impl RoomMemberRepository {
                       AND rmb.revoked_at IS NULL
                       AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
                 ) AS is_banned,
+                (rm.left_at IS NULL) AS is_active,
+                (
+                    SELECT rmb.starts_at FROM room_member_bans rmb
+                    WHERE rmb.room_id = rm.room_id
+                      AND rmb.user_id = rm.user_id
+                      AND rmb.revoked_at IS NULL
+                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                    ORDER BY rmb.starts_at DESC
+                    LIMIT 1
+                ) AS banned_at,
                 (
                     SELECT rmb.reason FROM room_member_bans rmb
                     WHERE rmb.room_id = rm.room_id
@@ -810,10 +829,13 @@ impl RoomMemberRepository {
         list_builder.push(" OFFSET ");
         list_builder.push_bind(offset);
 
-        let rows = list_builder.build().fetch_all(&self.pool).await?;
+        let rows = list_builder
+            .build_query_as::<RoomMemberWithUserRow>()
+            .fetch_all(&self.pool)
+            .await?;
         let members: Result<Vec<RoomMemberWithUser>> = rows
             .into_iter()
-            .map(|row| Self::row_to_member_with_user(&row))
+            .map(Self::typed_row_to_member_with_user)
             .collect();
 
         Ok((members?, total_count))
@@ -1398,11 +1420,15 @@ impl RoomMemberRepository {
         now: chrono::DateTime<chrono::Utc>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<RoomMember> {
-        let inserted = sqlx::query!(
+        let lock_key = format!("room-member-ban:{room_id}:{user_id}");
+        let inserted = sqlx::query(
             r"
+            WITH _lock AS (
+                SELECT pg_advisory_xact_lock(hashtextextended($6, 0))
+            )
             INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
             SELECT rm.room_id, rm.user_id, $3, $4, $5
-            FROM room_members rm
+            FROM room_members rm, _lock
             WHERE rm.room_id = $1 AND rm.user_id = $2
               AND NOT EXISTS (
                   SELECT 1 FROM room_member_bans rmb
@@ -1412,12 +1438,13 @@ impl RoomMemberRepository {
                     AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
                   )
             ",
-            room_id as &RoomId,
-            user_id as &UserId,
-            banned_by.map(UserId::as_i64),
-            reason,
-            now,
         )
+        .bind(room_id.as_i64())
+        .bind(user_id.as_i64())
+        .bind(banned_by.map(UserId::as_i64))
+        .bind(reason)
+        .bind(now)
+        .bind(lock_key)
         .execute(&mut **tx)
         .await?;
 
@@ -1662,8 +1689,9 @@ impl RoomMemberRepository {
             SELECT
                 r.id, r.name, r.description, r.created_by, r.closed_at,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
-                CASE WHEN rm.left_at IS NULL THEN 'active' ELSE 'left' END as user_status,
+                rm.left_at as user_left_at,
                 COUNT(rm2.user_id)::int as member_count,
                 COUNT(*) OVER() as total_count
             FROM room_members rm
@@ -1714,7 +1742,7 @@ impl RoomMemberRepository {
                     } else {
                         crate::models::RoomStatus::Active
                     },
-                    is_banned: false,
+                    is_banned: row.try_get("is_banned")?,
                     closed_at: row.try_get("closed_at")?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
@@ -1726,10 +1754,7 @@ impl RoomMemberRepository {
                 Ok((
                     room,
                     row.try_get("user_role")?,
-                    match row.try_get::<String, _>("user_status")?.as_str() {
-                        "left" => MemberStatus::Left,
-                        _ => MemberStatus::Active,
-                    },
+                    Self::member_status_from_left_at(row.try_get("user_left_at")?),
                     row.try_get("member_count")?,
                 ))
             })
@@ -1755,8 +1780,9 @@ impl RoomMemberRepository {
             SELECT
                 r.id, r.name, r.description, r.created_by, r.closed_at,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
-                CASE WHEN rm.left_at IS NULL THEN 'active' ELSE 'left' END as user_status,
+                rm.left_at as user_left_at,
                 COUNT(rm2.user_id)::int as member_count,
                 COUNT(*) OVER() as total_count
             FROM room_members rm
@@ -1807,7 +1833,7 @@ impl RoomMemberRepository {
                     } else {
                         crate::models::RoomStatus::Active
                     },
-                    is_banned: false,
+                    is_banned: row.try_get("is_banned")?,
                     closed_at: row.try_get("closed_at")?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
@@ -1819,10 +1845,7 @@ impl RoomMemberRepository {
                 Ok((
                     room,
                     row.try_get("user_role")?,
-                    match row.try_get::<String, _>("user_status")?.as_str() {
-                        "left" => MemberStatus::Left,
-                        _ => MemberStatus::Active,
-                    },
+                    Self::member_status_from_left_at(row.try_get("user_left_at")?),
                     row.try_get("member_count")?,
                 ))
             })
@@ -1959,11 +1982,15 @@ impl RoomMemberRepository {
         now: chrono::DateTime<chrono::Utc>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<RoomMember> {
-        let inserted = sqlx::query!(
+        let lock_key = format!("room-member-ban:{room_id}:{target_id}");
+        let inserted = sqlx::query(
             r"
+            WITH _lock AS (
+                SELECT pg_advisory_xact_lock(hashtextextended($6, 0))
+            )
             INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
             SELECT target.room_id, target.user_id, $3, $4, $5
-            FROM room_members AS target
+            FROM room_members AS target, _lock
             WHERE target.room_id = $1
               AND target.user_id = $2
               AND target.left_at IS NULL
@@ -1982,12 +2009,13 @@ impl RoomMemberRepository {
                     AND actor.role < target.role
                   )
             ",
-            room_id as &RoomId,
-            target_id as &UserId,
-            actor_id as &UserId,
-            reason,
-            now,
         )
+        .bind(room_id.as_i64())
+        .bind(target_id.as_i64())
+        .bind(actor_id.as_i64())
+        .bind(reason)
+        .bind(now)
+        .bind(lock_key)
         .execute(&mut **tx)
         .await?;
 
@@ -2061,11 +2089,7 @@ impl RoomMemberRepository {
 
     /// Convert database row to `RoomMemberWithUser`
     fn typed_row_to_member_with_user(row: RoomMemberWithUserRow) -> Result<RoomMemberWithUser> {
-        let status = if row.left_at.is_some() {
-            MemberStatus::Left
-        } else {
-            MemberStatus::Active
-        };
+        let status = Self::member_status_from_left_at(row.left_at);
 
         Ok(RoomMemberWithUser {
             room_id: row.room_id,
@@ -2096,51 +2120,6 @@ impl RoomMemberRepository {
             is_banned: row.is_banned,
             banned_at: row.banned_at,
             banned_reason: row.banned_reason,
-        })
-    }
-
-    /// Convert database row to `RoomMemberWithUser`
-    fn row_to_member_with_user(row: &PgRow) -> Result<RoomMemberWithUser> {
-        let role: RoomRole = row.try_get("role")?;
-        let left_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("left_at")?;
-        let status = if left_at.is_some() {
-            MemberStatus::Left
-        } else {
-            MemberStatus::Active
-        };
-
-        Ok(RoomMemberWithUser {
-            room_id: row.try_get("room_id")?,
-            user_id: row.try_get("user_id")?,
-            username: row.try_get("username")?,
-            role,
-            status,
-            added_permissions: db_permission_i64_to_u64(
-                row.try_get::<i64, _>("added_permissions")?,
-                "added_permissions",
-            )?,
-            removed_permissions: db_permission_i64_to_u64(
-                row.try_get::<i64, _>("removed_permissions")?,
-                "removed_permissions",
-            )?,
-            admin_added_permissions: db_permission_i64_to_u64(
-                row.try_get::<i64, _>("admin_added_permissions")?,
-                "admin_added_permissions",
-            )?,
-            admin_removed_permissions: db_permission_i64_to_u64(
-                row.try_get::<i64, _>("admin_removed_permissions")?,
-                "admin_removed_permissions",
-            )?,
-            joined_at: row.try_get("joined_at")?,
-            left_at,
-            is_online: false, // Will be populated by connection tracking
-            is_active: left_at.is_none(),
-            is_banned: row.try_get("is_banned")?,
-            banned_at: row
-                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("banned_at")
-                .ok()
-                .flatten(),
-            banned_reason: row.try_get("banned_reason")?,
         })
     }
 }

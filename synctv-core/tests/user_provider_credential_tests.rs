@@ -9,7 +9,7 @@
 use chrono::{Duration, Utc};
 use serde_json::json;
 use synctv_core::{
-    models::{ProviderInstance, SignupMethod, User, UserId, UserProviderCredential},
+    models::{ProviderInstance, ProviderType, SignupMethod, User, UserId, UserProviderCredential},
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
     service::CredentialEncryption,
 };
@@ -29,6 +29,10 @@ fn make_user(username: &str) -> User {
 
 fn bilibili_server_id() -> String {
     UserProviderCredential::bilibili_server_id()
+}
+
+fn provider_code(provider: ProviderType) -> i16 {
+    provider.as_i16()
 }
 
 fn make_credential(user_id: UserId, provider: &str, server_id: &str) -> UserProviderCredential {
@@ -484,7 +488,7 @@ async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomic
         "SELECT COUNT(*) FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2 AND server_id = $3",
     )
     .bind(user.id)
-    .bind("bilibili")
+    .bind(provider_code(ProviderType::Bilibili))
     .bind(&server_id)
     .fetch_one(&pool)
     .await

@@ -9,11 +9,6 @@ CREATE TABLE IF NOT EXISTS user_bans (
     revoked_by BIGINT REFERENCES users(id) ON DELETE RESTRICT
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_user_bans_active_unique
-    ON user_bans(user_id)
-    WHERE revoked_at IS NULL
-      AND ends_at IS NULL;
-
 CREATE INDEX IF NOT EXISTS idx_user_bans_user
     ON user_bans(user_id, starts_at DESC);
 

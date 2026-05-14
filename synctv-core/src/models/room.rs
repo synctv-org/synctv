@@ -184,7 +184,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Room {
         use sqlx::Row;
 
         let closed_at: Option<DateTime<Utc>> = row.try_get("closed_at")?;
-        let is_banned = row.try_get("is_banned").unwrap_or(false);
+        let is_banned = row.try_get("is_banned")?;
 
         Ok(Self {
             id: row.try_get("id")?,

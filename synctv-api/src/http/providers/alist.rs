@@ -52,7 +52,13 @@ pub fn alist_read_routes() -> Router<AppState> {
         responses(
             (status = 200, description = "Alist login succeeded", body = crate::proto::providers::alist::LoginResponse),
             (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -91,9 +97,8 @@ pub(crate) async fn login(
         tracing::error!("Alist login failed: {}", e);
         e
     })
-    .map(|resp| {
+    .inspect(|_| {
         tracing::info!("Alist login successful");
-        resp
     })
 }
 
@@ -109,7 +114,13 @@ pub(crate) async fn login(
         responses(
             (status = 200, description = "Alist directory listing", body = crate::proto::providers::alist::ListResponse),
             (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -162,7 +173,13 @@ pub(crate) async fn list(
         responses(
             (status = 200, description = "Alist search results", body = crate::proto::providers::alist::SearchResponse),
             (status = 400, description = "Invalid search request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -215,7 +232,13 @@ pub(crate) async fn search(
         responses(
             (status = 200, description = "Alist account info", body = crate::proto::providers::alist::GetMeResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -268,7 +291,13 @@ pub(crate) async fn me(
         responses(
             (status = 200, description = "Alist credential removed", body = crate::proto::providers::alist::LogoutResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -308,6 +337,10 @@ pub(crate) async fn logout(
         responses(
             (status = 200, description = "Saved Alist credentials", body = GetBindsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider bind request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(

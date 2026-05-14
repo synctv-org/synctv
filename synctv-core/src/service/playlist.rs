@@ -19,7 +19,7 @@ use crate::{
     repository::PlaylistRepository,
     repository::{UserProviderCredentialRepository, UserRepository},
     service::{
-        permission::PermissionService,
+        optimistic_retry, permission::PermissionService,
         provider_binding::resolve_credential_provider_instance_binding, ProvidersManager,
     },
     Error, Result,
@@ -61,9 +61,6 @@ pub trait PlaylistBroadcaster: Send + Sync {
         username: &str,
     );
 }
-
-const OPTIMISTIC_LOCK_MAX_RETRIES: u32 = 3;
-const OPTIMISTIC_LOCK_BACKOFF_BASE_MS: u64 = 5;
 
 fn normalize_dynamic_playlist_fields(
     source_provider: Option<String>,
@@ -634,99 +631,92 @@ impl PlaylistService {
         bypass_room_permissions: bool,
         outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
-        for attempt in 0..OPTIMISTIC_LOCK_MAX_RETRIES {
-            if !bypass_room_permissions {
-                self.permission_service
-                    .check_permission_no_cache(&room_id, &user_id, PermissionBits::VIEW_PLAYLIST)
-                    .await?;
-            }
-
-            // Get existing playlist (re-fetch on each retry to get latest version)
-            let mut playlist = self
-                .playlist_repo
-                .get_by_room_and_id(&room_id, &request.playlist_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            if !bypass_room_permissions {
-                ensure_playlist_creator_can_edit(&playlist, &user_id)?;
-            }
-
-            // Store original version for optimistic locking
-            let expected_version = playlist.version;
-
-            // Update fields
-            if let Some(ref name) = request.name {
-                if name.chars().count() > 255 {
-                    return Err(Error::InvalidInput(
-                        "Playlist name cannot exceed 255 characters".to_string(),
-                    ));
+        let playlist_id = request.playlist_id;
+        let updated_playlist = optimistic_retry::retry_with_optimistic_lock(
+            optimistic_retry::DEFAULT_MAX_RETRIES,
+            optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            "Playlist update failed after maximum retry attempts",
+            || async {
+                if !bypass_room_permissions {
+                    self.permission_service
+                        .check_permission_no_cache(
+                            &room_id,
+                            &user_id,
+                            PermissionBits::VIEW_PLAYLIST,
+                        )
+                        .await?;
                 }
-                playlist.name = name.clone();
-            }
-            // Save with optimistic locking
-            let mut tx = self.playlist_repo.pool().begin().await?;
-            match self
-                .playlist_repo
-                .update_with_version_with_executor(&playlist, expected_version, &mut *tx)
-                .await
-            {
-                Ok(updated_playlist) => {
-                    if let Some(event) = outbox_event_factory
-                        .as_ref()
-                        .and_then(|factory| factory(&updated_playlist))
-                    {
-                        if let Some(outbox) = &self.realtime_outbox {
-                            outbox.insert_with_executor(&event, &mut *tx).await?;
+
+                // Get existing playlist (re-fetch on each retry to get latest version)
+                let mut playlist = self
+                    .playlist_repo
+                    .get_by_room_and_id(&room_id, &request.playlist_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+                if !bypass_room_permissions {
+                    ensure_playlist_creator_can_edit(&playlist, &user_id)?;
+                }
+
+                // Store original version for optimistic locking
+                let expected_version = playlist.version;
+
+                // Update fields
+                if let Some(ref name) = request.name {
+                    if name.chars().count() > 255 {
+                        return Err(Error::InvalidInput(
+                            "Playlist name cannot exceed 255 characters".to_string(),
+                        ));
+                    }
+                    playlist.name = name.clone();
+                }
+                // Save with optimistic locking
+                let mut tx = self.playlist_repo.pool().begin().await?;
+                match self
+                    .playlist_repo
+                    .update_with_version_with_executor(&playlist, expected_version, &mut *tx)
+                    .await
+                {
+                    Ok(updated_playlist) => {
+                        if let Some(event) = outbox_event_factory
+                            .as_ref()
+                            .and_then(|factory| factory(&updated_playlist))
+                        {
+                            if let Some(outbox) = &self.realtime_outbox {
+                                outbox.insert_with_executor(&event, &mut *tx).await?;
+                            }
                         }
+                        tx.commit().await?;
+                        Ok(updated_playlist)
                     }
-                    tx.commit().await?;
-                    tracing::info!(
-                        room_id = %room_id,
-                        playlist_id = %request.playlist_id,
-                        "Playlist updated"
-                    );
-                    let actor_username = self.resolve_actor_username(&user_id).await;
-                    if outbox_event_factory.is_none() {
-                        if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
-                            broadcaster.broadcast_playlist_updated(
-                                &room_id,
-                                &updated_playlist,
-                                &user_id,
-                                &actor_username,
-                            );
-                        }
+                    Err(Error::OptimisticLockConflict) => {
+                        tx.rollback().await?;
+                        Err(Error::OptimisticLockConflict)
                     }
-                    return Ok(updated_playlist);
+                    Err(e) => Err(e),
                 }
-                Err(Error::OptimisticLockConflict) => {
-                    tx.rollback().await?;
-                    if attempt + 1 < OPTIMISTIC_LOCK_MAX_RETRIES {
-                        // Exponential backoff with jitter
-                        let backoff = OPTIMISTIC_LOCK_BACKOFF_BASE_MS * (1 << attempt);
-                        let jitter = rand::random_range(0..OPTIMISTIC_LOCK_BACKOFF_BASE_MS);
-                        let delay = backoff + jitter;
-                        tracing::debug!(
-                            room_id = %room_id,
-                            playlist_id = %request.playlist_id,
-                            attempt = attempt + 1,
-                            delay_ms = delay,
-                            "Playlist version conflict, retrying with backoff"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        continue;
-                    }
-                    return Err(Error::Internal(
-                        "Playlist update failed after maximum retry attempts".to_string(),
-                    ));
-                }
-                Err(e) => return Err(e),
+            },
+        )
+        .await?;
+
+        tracing::info!(
+            room_id = %room_id,
+            playlist_id = %playlist_id,
+            "Playlist updated"
+        );
+        let actor_username = self.resolve_actor_username(&user_id).await;
+        if outbox_event_factory.is_none() {
+            if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
+                broadcaster.broadcast_playlist_updated(
+                    &room_id,
+                    &updated_playlist,
+                    &user_id,
+                    &actor_username,
+                );
             }
         }
 
-        Err(Error::Internal(
-            "Playlist update failed after maximum retry attempts".to_string(),
-        ))
+        Ok(updated_playlist)
     }
 
     pub async fn move_playlist(
@@ -1568,21 +1558,19 @@ mod tests {
 
     #[test]
     fn test_set_playlist_retry_constants() {
-        // MAX_RETRIES = 3 to match optimistic_retry::DEFAULT_MAX_RETRIES
-        const MAX_RETRIES: u32 = 3;
-        const BACKOFF_BASE_MS: u64 = 5;
-        assert_eq!(MAX_RETRIES, 3);
-        assert_eq!(BACKOFF_BASE_MS, 5);
+        assert_eq!(optimistic_retry::DEFAULT_MAX_RETRIES, 3);
+        assert_eq!(optimistic_retry::DEFAULT_BACKOFF_BASE_MS, 5);
     }
 
     #[test]
     fn test_set_playlist_backoff_increases_exponentially() {
-        const BACKOFF_BASE_MS: u64 = 5;
         // Verify exponential backoff calculation:
         // attempt 0: base * 1 = 5ms
         // attempt 1: base * 2 = 10ms
         // attempt 2: base * 4 = 20ms
-        let delays: Vec<u64> = (0..3).map(|a| BACKOFF_BASE_MS * (1 << a)).collect();
+        let delays: Vec<u64> = (0..3)
+            .map(|a| optimistic_retry::DEFAULT_BACKOFF_BASE_MS * (1 << a))
+            .collect();
         assert_eq!(delays, vec![5, 10, 20]);
     }
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE rooms\n            SET created_by = $2, updated_at = CURRENT_TIMESTAMP, version = version + 1\n            WHERE id = $1 AND deleted_at IS NULL\n            RETURNING id AS \"id: RoomId\",\n                      name,\n                      description,\n                      created_by AS \"created_by: UserId\",\n                      closed_at,\n                      false AS \"is_banned!\",\n                      created_at,\n                      updated_at,\n                      deleted_at,\n                      version,\n                      last_activity_at\n            ",
+  "query": "\n            WITH updated AS (\n                UPDATE rooms\n                SET created_by = $2, updated_at = CURRENT_TIMESTAMP, version = version + 1\n                WHERE id = $1 AND deleted_at IS NULL\n                RETURNING id,\n                          name,\n                          description,\n                          created_by,\n                          closed_at,\n                          created_at,\n                          updated_at,\n                          deleted_at,\n                          version,\n                          last_activity_at\n            )\n            SELECT u.id AS \"id: RoomId\",\n                   u.name,\n                   u.description,\n                   u.created_by AS \"created_by: UserId\",\n                   u.closed_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = u.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\",\n                   u.created_at,\n                   u.updated_at,\n                   u.deleted_at,\n                   u.version,\n                   u.last_activity_at\n            FROM updated u\n            ",
   "describe": {
     "columns": [
       {
@@ -79,5 +79,5 @@
       false
     ]
   },
-  "hash": "37ede8935df6f921a35700f05481c4c2227375d0d04567ad2164eb2da37feacb"
+  "hash": "448f149356a95fe455a568cd1353ebbf53f5ee1bc0fbd635a600514b874bcccf"
 }

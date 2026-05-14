@@ -854,11 +854,15 @@ impl UserRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
-        let inserted = sqlx::query!(
+        let lock_key = format!("user-ban:{user_id}");
+        let inserted = sqlx::query(
             r"
+            WITH _lock AS (
+                SELECT pg_advisory_xact_lock(hashtextextended($5, 0))
+            )
             INSERT INTO user_bans (user_id, banned_by, reason, starts_at)
             SELECT u.id, $2, $3, $4
-            FROM users u
+            FROM users u, _lock
             WHERE u.id = $1 AND u.deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM user_bans ub
@@ -867,11 +871,12 @@ impl UserRepository {
                     AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
                   )
             ",
-            user_id as &UserId,
-            banned_by.map(UserId::as_i64),
-            reason,
-            now,
         )
+        .bind(user_id.as_i64())
+        .bind(banned_by.map(UserId::as_i64))
+        .bind(reason)
+        .bind(now)
+        .bind(lock_key)
         .execute(executor)
         .await?;
 
@@ -1108,13 +1113,13 @@ impl UserRepository {
     /// Check if username exists
     pub async fn username_exists(&self, username: &str) -> Result<bool> {
         let exists = sqlx::query_scalar::<_, bool>(
-            r#"
+            r"
             SELECT EXISTS(
                 SELECT 1
                 FROM users
                 WHERE LOWER(username) = LOWER($1) AND deleted_at IS NULL
             )
-            "#,
+            ",
         )
         .bind(username)
         .fetch_one(&self.pool)

@@ -13,7 +13,7 @@
         "Varchar",
         "Bool",
         "Bool",
-        "TextArray",
+        "Int2Array",
         "Bool"
       ]
     },

@@ -117,7 +117,7 @@ async fn test_redis_ticket_room_mismatch_rejected() {
     // Try to consume with wrong room
     let result = service.validate_and_consume(&ticket, &room_b).await;
     assert!(
-        result.is_err(),
+        matches!(result, Err(Error::Authorization(_))),
         "Ticket for room A should not work for room B"
     );
 
@@ -207,7 +207,7 @@ async fn test_redis_ticket_user_validation_failure_does_not_consume_ticket() {
         .validate_and_consume_checked(&ticket, &rid, &rejecting_validator)
         .await;
     assert!(
-        matches!(first_result, Err(Error::Authorization(_))),
+        matches!(first_result, Err(Error::Authentication(_))),
         "user validation failure should reject the ticket"
     );
 
@@ -248,7 +248,7 @@ async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
         .validate_and_consume_checked(&ticket, &rid, &allow_validator)
         .await;
     assert!(
-        matches!(second_result, Err(Error::Authorization(_))),
+        matches!(second_result, Err(Error::Authentication(_))),
         "checked validation must still enforce one-time use"
     );
 }
@@ -353,7 +353,7 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
 
     let mut redis_conn = conn.read().await.clone();
     let payload: Option<String> = redis_conn
-        .get(format!("tenant-a:ws_ticket:{rid}:{ticket}"))
+        .get(format!("tenant-a:ws_ticket:{ticket}"))
         .await
         .unwrap();
     assert!(
@@ -362,7 +362,7 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
     );
 
     let old_key_payload: Option<String> = redis_conn
-        .get(format!("synctv:ws_ticket:{rid}:{ticket}"))
+        .get(format!("synctv:ws_ticket:{ticket}"))
         .await
         .unwrap();
     assert!(

@@ -194,6 +194,10 @@ pub trait ConnectionRuntime: Send + Sync {
         room_ids: &[&RoomId],
     ) -> std::result::Result<Vec<usize>, String>;
 
+    async fn hot_room_online_user_counts_distributed(
+        &self,
+    ) -> std::result::Result<Vec<(RoomId, usize)>, String>;
+
     fn connection_count(&self) -> usize;
 
     fn room_connection_count(&self, room_id: &RoomId) -> usize;
@@ -344,6 +348,12 @@ impl ConnectionRuntime for ConnectionManager {
         room_ids: &[&RoomId],
     ) -> std::result::Result<Vec<usize>, String> {
         ConnectionManager::room_online_user_count_distributed_batch(self, room_ids).await
+    }
+
+    async fn hot_room_online_user_counts_distributed(
+        &self,
+    ) -> std::result::Result<Vec<(RoomId, usize)>, String> {
+        ConnectionManager::hot_room_online_user_counts_distributed(self).await
     }
 
     fn connection_count(&self) -> usize {

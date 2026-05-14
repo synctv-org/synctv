@@ -721,105 +721,95 @@ impl MediaService {
         request: EditMediaRequest,
         outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
     ) -> Result<Media> {
-        for attempt in 0..Self::EDIT_MAX_RETRIES {
-            // Get existing media (fresh on every retry)
-            let mut media = self
-                .media_repo
-                .get_by_room_and_id(&room_id, &request.media_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        let updated_media = crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::EDIT_MAX_RETRIES,
+            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            &format!(
+                "Media edit failed after maximum retry attempts for media_id={}",
+                request.media_id
+            ),
+            || async {
+                // Get existing media (fresh on every retry)
+                let mut media = self
+                    .media_repo
+                    .get_by_room_and_id(&room_id, &request.media_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
-            ensure_media_creator_can_edit(&media, &user_id)?;
+                ensure_media_creator_can_edit(&media, &user_id)?;
 
-            // Check permission: client media edits are creator-owned. Global
-            // administrators use admin_edit_media_with_outbox instead of this
-            // member-facing path.
-            // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
-            // This prevents a race condition where:
-            // 1. Permission is granted and cached on first attempt
-            // 2. Permission is revoked by admin before retry
-            // 3. Retry would succeed with stale cached permission
-            // By bypassing cache, we ensure each retry checks current permission state.
-            self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, PermissionBits::EDIT_MEDIA_SELF)
-                .await?;
+                // Check permission: client media edits are creator-owned. Global
+                // administrators use admin_edit_media_with_outbox instead of this
+                // member-facing path.
+                // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
+                // This prevents a race condition where:
+                // 1. Permission is granted and cached on first attempt
+                // 2. Permission is revoked by admin before retry
+                // 3. Retry would succeed with stale cached permission
+                // By bypassing cache, we ensure each retry checks current permission state.
+                self.permission_service
+                    .check_permission_no_cache(&room_id, &user_id, PermissionBits::EDIT_MEDIA_SELF)
+                    .await?;
 
-            // Capture the version before applying changes to detect concurrent edits
-            let expected_version = media.version;
+                // Capture the version before applying changes to detect concurrent edits
+                let expected_version = media.version;
 
-            // Update fields
-            if let Some(ref name) = request.name {
-                validate_media_name(name)?;
-                media.name = name.clone();
-            }
-            let mut tx = self.media_repo.pool().begin().await?;
-            // Conditional update: only succeed if no other edit changed the row
-            match self
-                .media_repo
-                .update_with_version_with_executor(&media, expected_version, &mut *tx)
-                .await
-            {
-                Ok(Some(updated_media)) => {
-                    let outbox_event = outbox_event_factory
-                        .as_ref()
-                        .and_then(|factory| factory(&updated_media));
-                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        outbox.insert_with_executor(event, &mut *tx).await?;
+                // Update fields
+                if let Some(ref name) = request.name {
+                    validate_media_name(name)?;
+                    media.name = name.clone();
+                }
+                let mut tx = self.media_repo.pool().begin().await?;
+                // Conditional update: only succeed if no other edit changed the row
+                match self
+                    .media_repo
+                    .update_with_version_with_executor(&media, expected_version, &mut *tx)
+                    .await
+                {
+                    Ok(Some(updated_media)) => {
+                        let outbox_event = outbox_event_factory
+                            .as_ref()
+                            .and_then(|factory| factory(&updated_media));
+                        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
+                        {
+                            outbox.insert_with_executor(event, &mut *tx).await?;
+                        }
+                        tx.commit().await?;
+                        Ok(updated_media)
                     }
-                    tx.commit().await?;
-
-                    tracing::info!(
-                        room_id = %room_id,
-                        media_id = %request.media_id,
-                        "Media edited"
-                    );
-                    let actor_username = self.resolve_actor_username(&user_id).await;
-
-                    if let Err(e) = self.notification_service.notify_media_updated(
-                        &room_id,
-                        &user_id,
-                        &actor_username,
-                        updated_media.id,
-                        &updated_media.name,
-                        updated_media.position,
-                    ) {
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id,
-                            "Failed to broadcast media updated event"
-                        );
+                    Ok(None) => {
+                        tx.rollback().await?;
+                        Err(Error::OptimisticLockConflict)
                     }
+                    Err(e) => Err(e),
+                }
+            },
+        )
+        .await?;
 
-                    return Ok(updated_media);
-                }
-                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {
-                    tx.rollback().await?;
-                    // Concurrent modification detected, retry with fresh data
-                    tracing::debug!(
-                        media_id = %request.media_id,
-                        attempt = attempt + 1,
-                        "Concurrent media edit detected, retrying"
-                    );
-                }
-                Ok(None) => {
-                    tx.rollback().await?;
-                    return Err(Error::Internal(
-                        format!(
-                            "Media edit failed: concurrent modification after {} retries for media_id={}",
-                            attempt + 1,
-                            request.media_id
-                        ),
-                    ));
-                }
-                Err(e) => return Err(e),
-            }
+        tracing::info!(
+            room_id = %room_id,
+            media_id = %request.media_id,
+            "Media edited"
+        );
+        let actor_username = self.resolve_actor_username(&user_id).await;
+
+        if let Err(e) = self.notification_service.notify_media_updated(
+            &room_id,
+            &user_id,
+            &actor_username,
+            updated_media.id,
+            &updated_media.name,
+            updated_media.position,
+        ) {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                "Failed to broadcast media updated event"
+            );
         }
 
-        Err(Error::Internal(format!(
-            "Media edit failed after {} attempts for media_id={}",
-            Self::EDIT_MAX_RETRIES,
-            request.media_id
-        )))
+        Ok(updated_media)
     }
 
     /// Edit media item as a global admin.
@@ -842,77 +832,75 @@ impl MediaService {
         request: EditMediaRequest,
         outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
     ) -> Result<Media> {
-        for attempt in 0..Self::EDIT_MAX_RETRIES {
-            let mut media = self
-                .media_repo
-                .get_by_room_and_id(&room_id, &request.media_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        let updated_media = crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::EDIT_MAX_RETRIES,
+            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            &format!(
+                "Media edit failed after maximum retry attempts for media_id={}",
+                request.media_id
+            ),
+            || async {
+                let mut media = self
+                    .media_repo
+                    .get_by_room_and_id(&room_id, &request.media_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
-            let expected_version = media.version;
+                let expected_version = media.version;
 
-            if let Some(ref name) = request.name {
-                validate_media_name(name)?;
-                media.name = name.clone();
-            }
-            let mut tx = self.media_repo.pool().begin().await?;
-            match self
-                .media_repo
-                .update_with_version_with_executor(&media, expected_version, &mut *tx)
-                .await
-            {
-                Ok(Some(updated_media)) => {
-                    let outbox_event = outbox_event_factory
-                        .as_ref()
-                        .and_then(|factory| factory(&updated_media));
-                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        outbox.insert_with_executor(event, &mut *tx).await?;
+                if let Some(ref name) = request.name {
+                    validate_media_name(name)?;
+                    media.name = name.clone();
+                }
+                let mut tx = self.media_repo.pool().begin().await?;
+                match self
+                    .media_repo
+                    .update_with_version_with_executor(&media, expected_version, &mut *tx)
+                    .await
+                {
+                    Ok(Some(updated_media)) => {
+                        let outbox_event = outbox_event_factory
+                            .as_ref()
+                            .and_then(|factory| factory(&updated_media));
+                        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
+                        {
+                            outbox.insert_with_executor(event, &mut *tx).await?;
+                        }
+                        tx.commit().await?;
+                        Ok(updated_media)
                     }
-                    tx.commit().await?;
-
-                    tracing::info!(
-                        room_id = %room_id,
-                        admin_user_id = %admin_user_id,
-                        media_id = %request.media_id,
-                        "Media edited by admin"
-                    );
-                    if let Err(e) = self.notification_service.notify_media_updated(
-                        &room_id,
-                        &admin_user_id,
-                        actor_username,
-                        updated_media.id,
-                        &updated_media.name,
-                        updated_media.position,
-                    ) {
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id,
-                            "Failed to broadcast media updated event"
-                        );
+                    Ok(None) => {
+                        tx.rollback().await?;
+                        Err(Error::OptimisticLockConflict)
                     }
+                    Err(e) => Err(e),
+                }
+            },
+        )
+        .await?;
 
-                    return Ok(updated_media);
-                }
-                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {
-                    tx.rollback().await?;
-                }
-                Ok(None) => {
-                    tx.rollback().await?;
-                    return Err(Error::Internal(format!(
-                        "Media edit failed: concurrent modification after {} retries for media_id={}",
-                        attempt + 1,
-                        request.media_id
-                    )));
-                }
-                Err(e) => return Err(e),
-            }
+        tracing::info!(
+            room_id = %room_id,
+            admin_user_id = %admin_user_id,
+            media_id = %request.media_id,
+            "Media edited by admin"
+        );
+        if let Err(e) = self.notification_service.notify_media_updated(
+            &room_id,
+            &admin_user_id,
+            actor_username,
+            updated_media.id,
+            &updated_media.name,
+            updated_media.position,
+        ) {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                "Failed to broadcast media updated event"
+            );
         }
 
-        Err(Error::Internal(format!(
-            "Media edit failed after {} attempts for media_id={}",
-            Self::EDIT_MAX_RETRIES,
-            request.media_id
-        )))
+        Ok(updated_media)
     }
 
     /// Get media by ID
@@ -2025,40 +2013,17 @@ mod tests {
     fn test_edit_media_error_message_contains_media_id() {
         // Test that optimistic lock error messages include media_id for debugging
         let media_id = MediaId::new();
-        let max_retries = super::MediaService::EDIT_MAX_RETRIES;
 
-        // Expected error format should include media_id and max_retries
         let expected_msg =
-            format!("Media edit failed after {max_retries} attempts for media_id={media_id}");
-
-        // Verify the format includes the key debugging information
-        assert!(
-            expected_msg.contains(&media_id.to_string()),
-            "Error message should contain media_id"
-        );
-        assert!(
-            expected_msg.contains(&max_retries.to_string()),
-            "Error message should contain retry count"
-        );
-    }
-
-    #[test]
-    fn test_edit_media_concurrent_modification_error_message() {
-        // Test that concurrent modification error message includes context
-        let media_id = MediaId::new();
-        let attempts = 3;
-
-        let expected_msg = format!(
-            "Media edit failed: concurrent modification after {attempts} retries for media_id={media_id}"
-        );
+            format!("Media edit failed after maximum retry attempts for media_id={media_id}");
 
         assert!(
             expected_msg.contains(&media_id.to_string()),
             "Error message should contain media_id"
         );
         assert!(
-            expected_msg.contains(&attempts.to_string()),
-            "Error message should contain attempt count"
+            expected_msg.contains("maximum retry attempts"),
+            "Error message should identify retry exhaustion"
         );
     }
 }

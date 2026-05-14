@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT username,\n                   email,\n                   legacy_password_hash,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_verified\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
+  "query": "SELECT username,\n                   email,\n                   legacy_password_hash,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider_type AS \"oauth2_provider: crate::models::OAuth2ProviderTypeName\",\n                   oauth2_provider_instance_name,\n                   oauth2_provider_issuer,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_verified\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
@@ -45,26 +45,36 @@
       },
       {
         "ordinal": 8,
-        "name": "oauth2_provider",
-        "type_info": "Varchar"
+        "name": "oauth2_provider: crate::models::OAuth2ProviderTypeName",
+        "type_info": "Int2"
       },
       {
         "ordinal": 9,
-        "name": "oauth2_provider_user_id",
+        "name": "oauth2_provider_instance_name",
         "type_info": "Varchar"
       },
       {
         "ordinal": 10,
+        "name": "oauth2_provider_issuer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "oauth2_provider_user_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
         "name": "oauth2_provider_username",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "oauth2_avatar_url",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "oauth2_email_verified",
         "type_info": "Bool"
       }
@@ -88,8 +98,10 @@
       true,
       true,
       true,
+      true,
+      true,
       false
     ]
   },
-  "hash": "e8c41fe07823285fa98e4654e1e86363c95dc2774a53990eff23f714b962d040"
+  "hash": "2c6c03e5591f1a9b756a31614630040758a24c19e34a873c4321e6732b7014c7"
 }

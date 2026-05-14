@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{ChatMessage, RoomId, UserId},
+    models::{ChatMessage, ChatMessageType, RoomId, UserId},
     Result,
 };
 
@@ -29,13 +29,13 @@ impl ChatRepository {
                       room_id as "room_id: RoomId",
                       user_id as "user_id: UserId",
                       content,
-                      message_type,
+                      message_type AS "message_type: ChatMessageType",
                       created_at
             "#,
             message.room_id as RoomId,
             message.user_id as Option<UserId>,
             message.content.as_str(),
-            message.message_type,
+            i16::from(message.message_type),
             message.created_at,
         )
         .fetch_one(&self.pool)
@@ -71,7 +71,7 @@ impl ChatRepository {
                        room_id as "room_id: RoomId",
                        user_id as "user_id: UserId",
                        content,
-                       message_type,
+                       message_type AS "message_type: ChatMessageType",
                        created_at
                 FROM chat_messages
                 WHERE room_id = $1 AND (created_at, id) < ($2, $3)
@@ -95,7 +95,7 @@ impl ChatRepository {
                        room_id as "room_id: RoomId",
                        user_id as "user_id: UserId",
                        content,
-                       message_type,
+                       message_type AS "message_type: ChatMessageType",
                        created_at
                 FROM chat_messages
                 WHERE room_id = $1
@@ -139,7 +139,7 @@ impl ChatRepository {
                    room_id as "room_id: RoomId",
                    user_id as "user_id: UserId",
                    content,
-                   message_type,
+                   message_type AS "message_type: ChatMessageType",
                    created_at
             FROM chat_messages
             WHERE id = $1

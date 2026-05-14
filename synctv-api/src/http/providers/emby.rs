@@ -307,7 +307,13 @@ pub fn emby_read_routes() -> Router<AppState> {
         responses(
             (status = 200, description = "Emby login succeeded", body = crate::proto::providers::emby::LoginResponse),
             (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -360,7 +366,13 @@ pub(crate) async fn login(
         responses(
             (status = 200, description = "Emby library listing", body = crate::proto::providers::emby::ListResponse),
             (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -413,7 +425,13 @@ pub(crate) async fn list(
         responses(
             (status = 200, description = "Emby account info", body = crate::proto::providers::emby::GetMeResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -466,7 +484,13 @@ pub(crate) async fn me(
         responses(
             (status = 200, description = "Emby credential removed", body = crate::proto::providers::emby::LogoutResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -506,6 +530,10 @@ pub(crate) async fn logout(
         responses(
             (status = 200, description = "Saved Emby credentials", body = GetBindsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider bind request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
@@ -553,7 +581,11 @@ pub(crate) async fn binds(
             (status = 200, description = "Proxied Emby thumbnail"),
             (status = 400, description = "Invalid thumbnail request", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Emby credential not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Emby credential not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Thumbnail request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])

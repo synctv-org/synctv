@@ -452,6 +452,7 @@ impl K8sLeaderElector {
                         debug!(identity = %self.identity, "Lease renewed");
                     }
                     self.set_leader(true);
+                    self.reset_election_failures();
                     return;
                 }
                 Err(kube::Error::Api(err)) if err.code == 409 && attempt < MAX_RETRIES => {
@@ -1073,6 +1074,23 @@ mod tests {
         let previous = consecutive_failures.swap(0, Ordering::Relaxed);
         assert_eq!(previous, 3);
         assert_eq!(consecutive_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_successful_renewal_resets_consecutive_failures() {
+        let consecutive_failures = Arc::new(AtomicU64::new(0));
+        consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(consecutive_failures.load(Ordering::Relaxed), 2);
+
+        // Renewal success must clear stale failures just like successful
+        // leadership acquisition or observing another valid leader.
+        consecutive_failures.store(0, Ordering::Relaxed);
+        assert_eq!(
+            consecutive_failures.load(Ordering::Relaxed),
+            0,
+            "successful renewal should clear stale vacancy accounting"
+        );
     }
 
     #[test]

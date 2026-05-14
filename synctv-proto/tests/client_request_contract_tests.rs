@@ -457,11 +457,28 @@ fn test_unlink_provider_request_rejects_invalid_provider_type() {
     let request = UnlinkProviderRequest {
         provider: "custom".to_string(),
         provider_user_id: String::new(),
+        provider_instance_name: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_unlink_provider_request_requires_instance_for_specific_identity() {
+    let request = UnlinkProviderRequest {
+        provider: "github".to_string(),
+        provider_user_id: "remote-user-1".to_string(),
+        provider_instance_name: String::new(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(
+        message.contains("oauth2.unlink_provider.instance_for_specific_identity"),
+        "{message}"
+    );
 }
 
 #[test]

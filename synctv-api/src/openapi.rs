@@ -538,6 +538,7 @@ mod tests {
             ("/api/public/settings", "get"),
             ("/api/auth/login", "post"),
             ("/api/auth/register", "post"),
+            ("/api/rooms", "get"),
         ] {
             assert!(
                 doc["paths"][path][method].get("security").is_none(),
@@ -551,6 +552,41 @@ mod tests {
         assert!(
             !notifications_security.is_empty(),
             "authenticated endpoints should keep bearer auth requirements"
+        );
+    }
+
+    #[test]
+    fn openapi_matches_public_room_error_contracts() {
+        let doc = openapi_json();
+
+        assert!(
+            doc["paths"]["/api/rooms/hot"]["get"]["responses"]["400"].is_object(),
+            "hot rooms should document validation errors"
+        );
+        assert!(
+            doc["paths"]["/api/rooms/{room_id}/check"]["get"]["responses"]["400"].is_object(),
+            "check room should document invalid room IDs"
+        );
+        assert!(
+            doc["paths"]["/api/rooms/{room_id}/check"]["get"]["responses"]
+                .get("404")
+                .is_none(),
+            "check room returns 200 with exists=false for missing rooms"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_oauth2_unconfigured_as_service_unavailable() {
+        let doc = openapi_json();
+        let responses = &doc["paths"]["/api/oauth2/providers"]["get"]["responses"];
+
+        assert!(
+            responses["503"].is_object(),
+            "OAuth2 provider listing should document the unconfigured case as 503"
+        );
+        assert!(
+            responses.get("400").is_none(),
+            "OAuth2 provider listing should not document missing service as a bad request"
         );
     }
 
@@ -610,6 +646,73 @@ mod tests {
         assert!(
             path["options"].is_object(),
             "provider proxy OPTIONS route should be documented"
+        );
+    }
+
+    fn assert_response_codes(doc: &Value, path: &str, method: &str, expected: &[&str]) {
+        let responses = doc["paths"][path][method]["responses"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{method} {path} should document responses"));
+
+        for code in expected {
+            assert!(
+                responses.get(*code).is_some_and(Value::is_object),
+                "{method} {path} should document HTTP {code}; responses were {:?}",
+                responses.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn openapi_documents_provider_endpoint_error_contracts() {
+        let doc = openapi_json();
+
+        let provider_operation_errors = ["400", "401", "403", "404", "408", "409", "429", "503"];
+        for (path, method) in [
+            ("/api/providers/alist/login", "post"),
+            ("/api/providers/alist/list", "post"),
+            ("/api/providers/bilibili/parse", "post"),
+            ("/api/providers/bilibili/login/qr/generate", "post"),
+            ("/api/providers/emby/login", "post"),
+            ("/api/providers/emby/list", "post"),
+        ] {
+            assert_response_codes(&doc, path, method, &provider_operation_errors);
+        }
+
+        let provider_binds_errors = ["400", "401", "403", "408", "429", "503"];
+        for path in [
+            "/api/providers/alist/binds",
+            "/api/providers/bilibili/binds",
+            "/api/providers/emby/binds",
+        ] {
+            assert_response_codes(&doc, path, "get", &provider_binds_errors);
+        }
+
+        let admin_provider_errors = ["400", "401", "403", "408", "429", "503"];
+        for (path, method) in [
+            ("/api/providers/instances", "get"),
+            ("/api/providers/instances", "post"),
+        ] {
+            assert_response_codes(&doc, path, method, &admin_provider_errors);
+        }
+
+        let admin_provider_mutation_errors =
+            ["400", "401", "403", "404", "408", "409", "429", "503"];
+        for (path, method) in [
+            ("/api/providers/instances/{name}", "put"),
+            ("/api/providers/instances/{name}", "delete"),
+            ("/api/providers/instances/{name}/reconnect", "post"),
+            ("/api/providers/instances/{name}/enable", "post"),
+            ("/api/providers/instances/{name}/disable", "post"),
+        ] {
+            assert_response_codes(&doc, path, method, &admin_provider_mutation_errors);
+        }
+
+        assert_response_codes(
+            &doc,
+            "/api/providers/emby/thumbnail/{item_id}",
+            "get",
+            &["400", "401", "403", "404", "408", "429", "503"],
         );
     }
 

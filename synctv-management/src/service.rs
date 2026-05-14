@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use tonic::codec::CompressionEncoding;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status};
@@ -49,7 +50,7 @@ use crate::proto::{
     UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
     UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
-use synctv_api::grpc::map_api_error_ref as map_api_error;
+use synctv_api::grpc_support::map_api_error_ref as map_api_error;
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
     AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl,
@@ -573,8 +574,8 @@ impl ManagementServiceImpl {
     }
 
     fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
-        let ip_address =
-            synctv_api::grpc::extract_client_ip(request, &self.config).map(|ip| ip.to_string());
+        let ip_address = synctv_api::grpc_support::extract_client_ip(request, &self.config)
+            .map(|ip| ip.to_string());
         let user_agent = request
             .metadata()
             .get("user-agent")
@@ -704,11 +705,17 @@ impl ManagementServiceImpl {
         let channel: Channel = endpoint.connect().await.map_err(|error| {
             Status::unavailable(format!("failed to connect to {address}: {error}"))
         })?;
-        Ok(
-            synctv_proxy::grpc::ProxySliceCacheServiceClient::new(channel)
-                .max_decoding_message_size(self.config.server.grpc_max_message_size_bytes)
-                .max_encoding_message_size(self.config.server.grpc_max_message_size_bytes),
-        )
+        let client = synctv_proxy::grpc::ProxySliceCacheServiceClient::new(channel)
+            .max_decoding_message_size(self.config.server.grpc_max_message_size_bytes)
+            .max_encoding_message_size(self.config.server.grpc_max_message_size_bytes);
+        let client = if self.config.server.grpc_compression_enabled {
+            client
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip)
+        } else {
+            client
+        };
+        Ok(client)
     }
 
     fn attach_cluster_secret<T>(&self, request: &mut Request<T>) -> Result<(), Status> {

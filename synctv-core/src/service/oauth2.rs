@@ -17,20 +17,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use synctv_common::ExecutionControl;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::{
-    models::{oauth2_client::OAuth2Provider, ReviewStatus, SignupMethod, User, UserId},
+    models::{oauth2_client::OAuth2Provider, SignupMethod, User, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
     service::{
-        user::{
-            PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS, PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS,
-            PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS,
-        },
-        OAuth2SignupPolicy, SettingsRegistry, UserService,
+        user::PendingRegistrationConflict, OAuth2SignupPolicy, SettingsRegistry, UserService,
     },
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
@@ -147,7 +144,7 @@ impl RedisOAuthStateStore {
     where
         F: Future<Output = std::result::Result<T, redis::RedisError>>,
     {
-        run_oauth_state_redis_op(operation, future).await
+        run_oauth_state_redis_op(self.conn.operation_timeout(), operation, future).await
     }
 
     fn normalize_key_prefix(prefix: impl Into<String>) -> String {
@@ -171,8 +168,8 @@ impl RedisOAuthStateStore {
     }
 
     /// Acquire a fresh ConnectionManager clone from the shared handle.
-    async fn get_conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.snapshot().await
+    async fn get_conn(&self, operation: &'static str) -> Result<redis::aio::ConnectionManager> {
+        crate::redis_runtime_snapshot(&*self.conn, operation).await
     }
 
     fn redis_key(&self, token_id: &str) -> String {
@@ -184,11 +181,15 @@ impl RedisOAuthStateStore {
     }
 }
 
-async fn run_oauth_state_redis_op<T, F>(operation: &'static str, future: F) -> Result<T>
+async fn run_oauth_state_redis_op<T, F>(
+    timeout: Duration,
+    operation: &'static str,
+    future: F,
+) -> Result<T>
 where
     F: Future<Output = std::result::Result<T, redis::RedisError>>,
 {
-    tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+    tokio::time::timeout(timeout, future)
         .await
         .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
         .internal_with_err(&format!("Failed to {operation}"))
@@ -210,7 +211,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
         let value =
             serde_json::to_string(state).internal_with_err("Failed to serialize OAuth2 state")?;
 
-        let mut conn = self.get_conn().await;
+        let mut conn = self.get_conn("store OAuth2 state in Redis").await?;
         let _: () = self
             .run_redis_op(
                 "store OAuth2 state in Redis",
@@ -227,7 +228,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
         let key = self.redis_key(token_id);
-        let mut conn = self.get_conn().await;
+        let mut conn = self.get_conn("consume OAuth2 state from Redis").await?;
 
         let value: Option<String> = self
             .run_redis_op(
@@ -374,6 +375,8 @@ pub struct OAuth2State {
 #[derive(Debug, Clone)]
 pub struct OAuth2UserInfo {
     pub provider: OAuth2Provider,
+    pub provider_instance_name: String,
+    pub provider_issuer: Option<String>,
     pub provider_user_id: String,
     pub username: String,
     pub email: Option<String>,
@@ -939,7 +942,7 @@ impl OAuth2Service {
         instance_name: &str,
         code: &str,
         pkce_verifier: &str,
-    ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
+    ) -> Result<OAuth2UserInfo> {
         self.exchange_code_for_user_info_with_control(instance_name, code, pkce_verifier, None)
             .await
     }
@@ -950,7 +953,7 @@ impl OAuth2Service {
         code: &str,
         pkce_verifier: &str,
         control: Option<&ExecutionControl>,
-    ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
+    ) -> Result<OAuth2UserInfo> {
         let entry = self.provider_entry(instance_name).await?;
         let provider = entry.provider;
         let provider_type = entry.provider_type;
@@ -969,6 +972,8 @@ impl OAuth2Service {
         // Convert provider user info to service user info
         let service_user_info = OAuth2UserInfo {
             provider: provider_type.clone(),
+            provider_instance_name: instance_name.to_string(),
+            provider_issuer: None,
             provider_user_id: user_info.provider_user_id,
             username: user_info.username,
             email: user_info.email,
@@ -976,20 +981,20 @@ impl OAuth2Service {
             email_verified: user_info.email_verified,
         };
 
-        Ok((service_user_info, provider_type))
+        Ok(service_user_info)
     }
 
     /// Create or update user-OAuth2 provider mapping
     pub async fn upsert_user_provider(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
-        provider_user_id: &str,
         user_info: &OAuth2UserInfo,
     ) -> Result<()> {
         // Convert service user info to repository format
         let repo_user_info = crate::models::oauth2_client::OAuth2UserInfo {
-            provider: provider.clone(),
+            provider: user_info.provider.clone(),
+            provider_instance_name: user_info.provider_instance_name.clone(),
+            provider_issuer: user_info.provider_issuer.clone(),
             provider_user_id: user_info.provider_user_id.clone(),
             username: user_info.username.clone(),
             email: user_info.email.clone(),
@@ -997,7 +1002,13 @@ impl OAuth2Service {
         };
 
         self.repository
-            .upsert(user_id, provider, provider_user_id, &repo_user_info)
+            .upsert(
+                user_id,
+                &user_info.provider,
+                &user_info.provider_instance_name,
+                &user_info.provider_user_id,
+                &repo_user_info,
+            )
             .await
     }
 
@@ -1005,8 +1016,6 @@ impl OAuth2Service {
     pub async fn upsert_user_provider_with_executor<'e, E>(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
-        provider_user_id: &str,
         user_info: &OAuth2UserInfo,
         executor: E,
     ) -> Result<()>
@@ -1014,7 +1023,9 @@ impl OAuth2Service {
         E: sqlx::PgExecutor<'e>,
     {
         let repo_user_info = crate::models::oauth2_client::OAuth2UserInfo {
-            provider: provider.clone(),
+            provider: user_info.provider.clone(),
+            provider_instance_name: user_info.provider_instance_name.clone(),
+            provider_issuer: user_info.provider_issuer.clone(),
             provider_user_id: user_info.provider_user_id.clone(),
             username: user_info.username.clone(),
             email: user_info.email.clone(),
@@ -1024,23 +1035,24 @@ impl OAuth2Service {
         self.repository
             .upsert_with_executor(
                 user_id,
-                provider,
-                provider_user_id,
+                &user_info.provider,
+                &user_info.provider_instance_name,
+                &user_info.provider_user_id,
                 &repo_user_info,
                 executor,
             )
             .await
     }
 
-    /// Find user by `OAuth2` provider
-    pub async fn find_user_by_provider(
+    /// Find user by `OAuth2` provider instance
+    pub async fn find_user_by_provider_instance(
         &self,
-        provider: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
     ) -> Result<Option<UserId>> {
         match self
             .repository
-            .find_by_provider(provider, provider_user_id)
+            .find_by_provider_instance(provider_instance_name, provider_user_id)
             .await?
         {
             Some(mapping) => Ok(Some(mapping.user_id)),
@@ -1065,18 +1077,17 @@ impl OAuth2Service {
     ///
     /// ## Arguments
     /// * `user_service` — used to create the new user inside the transaction
-    /// * `provider` — the `OAuth2` provider enum
+    /// * `instance_name` — the configured provider instance that owns the external identity namespace
     /// * `user_info` — user info fetched from the provider
     pub async fn find_or_create_and_link(
         &self,
         user_service: &UserService,
         instance_name: &str,
-        provider: &OAuth2Provider,
         user_info: &OAuth2UserInfo,
     ) -> Result<OAuth2LinkResult> {
         // Fast path: user already linked — no transaction needed.
         if let Some(user_id) = self
-            .find_user_by_provider(provider, &user_info.provider_user_id)
+            .find_user_by_provider_instance(instance_name, &user_info.provider_user_id)
             .await?
         {
             return Ok(OAuth2LinkResult::Linked {
@@ -1096,11 +1107,7 @@ impl OAuth2Service {
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
 
-        let advisory_lock_key = format!(
-            "oauth2:{}:{}",
-            provider.as_str(),
-            user_info.provider_user_id
-        );
+        let advisory_lock_key = format!("oauth2:{instance_name}:{}", user_info.provider_user_id);
         // Serialize creation for a single external identity so concurrent logins
         // cannot race on local username/email creation before the winning mapping
         // becomes visible.
@@ -1116,7 +1123,11 @@ impl OAuth2Service {
         // concurrent request created the user between our initial lookup and here.
         let existing = self
             .repository
-            .find_by_provider_with_executor(provider, &user_info.provider_user_id, &mut *tx)
+            .find_by_provider_instance_with_executor(
+                instance_name,
+                &user_info.provider_user_id,
+                &mut *tx,
+            )
             .await?;
 
         if let Some(mapping) = existing {
@@ -1135,51 +1146,8 @@ impl OAuth2Service {
         let user_email = user_info.email.clone();
 
         if signup_policy.signup_need_review {
-            let existing_pending_identity = sqlx::query_scalar!(
-                r#"
-                SELECT id AS "id: UserId"
-                FROM user_registration_requests
-                WHERE reviewed_at IS NULL
-                  AND status = $1
-                  AND oauth2_provider = $2
-                  AND oauth2_provider_user_id = $3
-                "#,
-                i16::from(ReviewStatus::Pending),
-                provider.as_str(),
-                user_info.provider_user_id.as_str()
-            )
-            .fetch_optional(&mut *tx)
-            .await?;
-            if let Some(request_id) = existing_pending_identity {
-                tx.rollback().await?;
-                return Ok(OAuth2LinkResult::PendingReview(OAuth2PendingRegistration {
-                    request_id,
-                }));
-            }
-
             if let Some(email) = user_email.as_deref() {
                 if user_service.get_by_email(email).await?.is_some() {
-                    tx.rollback().await?;
-                    return Err(Error::AlreadyExists(
-                        synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                    ));
-                }
-                let pending_email_exists = sqlx::query_scalar!(
-                    r#"
-                    SELECT EXISTS(
-                        SELECT 1
-                        FROM user_registration_requests
-                        WHERE reviewed_at IS NULL
-                          AND status = $1
-                          AND email = $2
-                    ) AS "exists!"
-                    "#,
-                    i16::from(ReviewStatus::Pending),
-                    email
-                )
-                .fetch_one(&mut *tx)
-                .await?;
-                if pending_email_exists {
                     tx.rollback().await?;
                     return Err(Error::AlreadyExists(
                         synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
@@ -1188,16 +1156,16 @@ impl OAuth2Service {
             }
 
             let mut pending_request_id = None;
-            for (attempt, candidate) in candidates.iter().enumerate() {
+            for candidate in &candidates {
                 let username_in_use = sqlx::query_scalar::<_, bool>(
-                    r#"
+                    r"
                     SELECT EXISTS(
                         SELECT 1
                         FROM users
                         WHERE LOWER(username) = LOWER($1)
                           AND deleted_at IS NULL
                     )
-                    "#,
+                    ",
                 )
                 .bind(candidate)
                 .fetch_one(&mut *tx)
@@ -1206,17 +1174,52 @@ impl OAuth2Service {
                     continue;
                 }
 
-                let savepoint = format!("oauth2_review_create_{attempt}");
-                sqlx::query(&format!("SAVEPOINT {savepoint}"))
-                    .execute(&mut *tx)
+                UserService::lock_oauth2_pending_registration_identity(
+                    &mut tx,
+                    candidate,
+                    user_email.as_deref(),
+                    instance_name,
+                    &user_info.provider_user_id,
+                )
+                .await
+                .internal_with_err("Failed to acquire OAuth2 pending-registration locks")?;
+
+                match user_service
+                    .pending_oauth2_registration_conflict(
+                        candidate,
+                        user_email.as_deref(),
+                        instance_name,
+                        &user_info.provider_user_id,
+                        &mut *tx,
+                    )
                     .await
-                    .internal_with_err("Failed to create OAuth2 review savepoint")?;
+                {
+                    Ok(Some(PendingRegistrationConflict::OAuth2Identity(request_id))) => {
+                        tx.rollback().await?;
+                        return Ok(OAuth2LinkResult::PendingReview(OAuth2PendingRegistration {
+                            request_id,
+                        }));
+                    }
+                    Ok(Some(PendingRegistrationConflict::Username)) => {
+                        continue;
+                    }
+                    Ok(Some(PendingRegistrationConflict::Email)) => {
+                        tx.rollback().await?;
+                        return Err(Error::AlreadyExists(
+                            synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        tx.rollback().await?;
+                        return Err(err);
+                    }
+                }
 
                 match user_service
                     .create_oauth2_registration_request_with_executor(
                         candidate,
                         user_email.as_deref(),
-                        provider,
                         &user_info.provider_user_id,
                         user_info,
                         &mut *tx,
@@ -1224,70 +1227,15 @@ impl OAuth2Service {
                     .await
                 {
                     Ok(request_id) => {
-                        sqlx::query(&format!("RELEASE SAVEPOINT {savepoint}"))
-                            .execute(&mut *tx)
-                            .await
-                            .internal_with_err("Failed to release OAuth2 review savepoint")?;
                         pending_request_id = Some(request_id);
                         break;
                     }
                     Err(Error::AlreadyExists(message)) => {
-                        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
-                            .execute(&mut *tx)
-                            .await
-                            .internal_with_err(
-                                "Failed to roll back OAuth2 review savepoint after collision",
-                            )?;
-                        match message.as_str() {
-                            PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS => {}
-                            PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS => {
-                                let request_id = sqlx::query_scalar!(
-                                    r#"
-                                    SELECT id AS "id: UserId"
-                                    FROM user_registration_requests
-                                    WHERE reviewed_at IS NULL
-                                      AND status = $1
-                                      AND oauth2_provider = $2
-                                      AND oauth2_provider_user_id = $3
-                                    "#,
-                                    i16::from(ReviewStatus::Pending),
-                                    provider.as_str(),
-                                    user_info.provider_user_id.as_str()
-                                )
-                                .fetch_optional(&mut *tx)
-                                .await?;
-                                if let Some(request_id) = request_id {
-                                    tx.rollback().await?;
-                                    return Ok(OAuth2LinkResult::PendingReview(
-                                        OAuth2PendingRegistration { request_id },
-                                    ));
-                                }
-                                tx.rollback().await?;
-                                return Err(Error::AlreadyExists(
-                                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
-                                        .to_string(),
-                                ));
-                            }
-                            PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS => {
-                                tx.rollback().await?;
-                                return Err(Error::AlreadyExists(
-                                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
-                                        .to_string(),
-                                ));
-                            }
-                            _ => {
-                                tx.rollback().await?;
-                                return Err(Error::AlreadyExists(message));
-                            }
-                        }
+                        tx.rollback().await?;
+                        return Err(Error::AlreadyExists(message));
                     }
                     Err(err) => {
-                        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
-                            .execute(&mut *tx)
-                            .await
-                            .internal_with_err(
-                                "Failed to roll back OAuth2 review savepoint after create error",
-                            )?;
+                        tx.rollback().await?;
                         return Err(err);
                     }
                 }
@@ -1342,7 +1290,7 @@ impl OAuth2Service {
                             created_user.id,
                             candidate,
                             user_info.username,
-                            provider.as_str(),
+                            user_info.provider.as_str(),
                             user_info.provider_user_id
                         );
                     } else {
@@ -1352,7 +1300,7 @@ impl OAuth2Service {
                             created_user.id,
                             candidate,
                             user_info.username,
-                            provider.as_str(),
+                            user_info.provider.as_str(),
                             user_info.provider_user_id
                         );
                     }
@@ -1392,13 +1340,7 @@ impl OAuth2Service {
 
         // Link the OAuth2 provider mapping inside the same transaction.
         match self
-            .upsert_user_provider_with_executor(
-                &new_user.id,
-                provider,
-                &user_info.provider_user_id,
-                user_info,
-                &mut *tx,
-            )
+            .upsert_user_provider_with_executor(&new_user.id, user_info, &mut *tx)
             .await
         {
             Ok(()) => {}
@@ -1409,7 +1351,7 @@ impl OAuth2Service {
                 tx.rollback().await?;
                 let existing = self
                     .repository
-                    .find_by_provider(provider, &user_info.provider_user_id)
+                    .find_by_provider_instance(instance_name, &user_info.provider_user_id)
                     .await?
                     .ok_or_else(|| {
                         Error::Internal(
@@ -1439,7 +1381,8 @@ impl OAuth2Service {
 
         info!(
             user_id = %new_user.id,
-            provider = %provider.as_str(),
+            provider = %user_info.provider.as_str(),
+            provider_instance = %instance_name,
             "Created new user via OAuth2 and linked provider in single transaction"
         );
 
@@ -1492,11 +1435,11 @@ impl OAuth2Service {
     pub async fn unlink_provider(
         &self,
         user_id: &UserId,
-        provider: &OAuth2Provider,
+        provider_instance_name: &str,
         provider_user_id: &str,
     ) -> Result<bool> {
         self.repository
-            .delete(user_id, provider, provider_user_id)
+            .delete_instance(user_id, provider_instance_name, provider_user_id)
             .await
     }
 
@@ -2292,7 +2235,7 @@ mod tests {
             )
             .await;
 
-        let (user_info, provider_type) = service
+        let user_info = service
             .exchange_code_for_user_info("github", "auth_code_123", "pkce_verifier_abc")
             .await
             .unwrap();
@@ -2305,7 +2248,8 @@ mod tests {
             Some("https://avatar.example.com/42.png")
         );
         assert_eq!(user_info.provider, OAuth2Provider::GitHub);
-        assert_eq!(provider_type, OAuth2Provider::GitHub);
+        assert_eq!(user_info.provider_instance_name, "github");
+        assert!(user_info.provider_issuer.is_none());
     }
 
     #[tokio::test]
@@ -2373,12 +2317,13 @@ mod tests {
         assert_eq!(state.redirect_url.as_deref(), Some("/dashboard"));
 
         // Step 3: Exchange code with PKCE verifier from stored state
-        let (user_info, provider_type) = service
+        let user_info = service
             .exchange_code_for_user_info("github", "callback_code", &state.pkce_verifier)
             .await
             .unwrap();
         assert_eq!(user_info.username, "testuser");
-        assert_eq!(provider_type, OAuth2Provider::GitHub);
+        assert_eq!(user_info.provider, OAuth2Provider::GitHub);
+        assert_eq!(user_info.provider_instance_name, "github");
 
         // Step 4: State cannot be replayed
         let replay = service.verify_state(&state_token).await;
@@ -3138,11 +3083,15 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_redis_state_store_timeout_maps_to_timeout_error() {
-        let timeout_future = run_oauth_state_redis_op("store OAuth2 state in Redis", async {
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), redis::RedisError>(())
-        });
+        let timeout_future = run_oauth_state_redis_op(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            "store OAuth2 state in Redis",
+            async {
+                std::future::pending::<()>().await;
+                #[allow(unreachable_code)]
+                Ok::<(), redis::RedisError>(())
+            },
+        );
 
         tokio::pin!(timeout_future);
         tokio::task::yield_now().await;

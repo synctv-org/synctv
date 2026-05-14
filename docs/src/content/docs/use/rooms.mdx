@@ -12,7 +12,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 <Tabs syncKey="join-room-user">
   <TabItem label="公开或可加入房间" icon="rocket">
     <Steps>
-    1. 从房间列表或邀请入口打开房间。
+    1. 从房间列表或已有房间入口打开房间。
     2. 如果房间不需要密码和审核，直接加入。
     3. 进入房间后，按你的房间角色获得聊天、播放列表和播放控制权限。
     </Steps>
@@ -58,6 +58,6 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | 一直等待审核 | 房间启用了加入审核 | 等待处理，或联系房间管理员 |
 | 提示无权限 | 账号未登录、游客关闭、被房间封禁 | 登录账号或联系房间管理员 |
 | 房间人数已满 | 达到 `max_members` | 等待成员退出或请求管理员调整上限 |
-| 找不到房间 | 房间不可见、已删除或被封禁 | 使用有效邀请入口或联系管理员 |
+| 找不到房间 | 房间不可见、已删除或被封禁 | 确认房间入口是否有效，或联系管理员 |
 
 理解房间对象和角色边界，读 [房间概念](../../concepts/rooms/) 和 [权限模型](../../concepts/permissions/)。

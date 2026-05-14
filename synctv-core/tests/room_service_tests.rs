@@ -19,8 +19,8 @@ use synctv_core::{
         User, UserId, UserRole, UserStatus,
     },
     repository::{
-        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
-        RoomSettingsRepository, SettingsRepository, UserRepository,
+        MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
+        RoomRepository, RoomSettingsRepository, SettingsRepository, UserRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
@@ -622,6 +622,192 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .await
         .unwrap();
     assert_eq!(pending_again.status, MemberStatus::Active);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_review_approval_transition_does_not_touch_new_pending_request_for_stale_id() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let review_repo = ReviewRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("stale_join_approval_creator"))
+        .await
+        .unwrap();
+    let joiner = user_repo
+        .create(&make_user("stale_join_approval_joiner"))
+        .await
+        .unwrap();
+
+    let settings = RoomSettings {
+        require_approval: RequireApproval(true),
+        ..Default::default()
+    };
+
+    let (room, _) = room_service
+        .create_room(
+            "Stale Join Approval Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, joiner.id, None)
+        .await
+        .unwrap();
+    let old_request_id = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT id
+        FROM room_join_requests
+        WHERE room_id = $1
+          AND user_id = $2
+          AND reviewed_at IS NULL
+        ",
+    )
+    .bind(room.id)
+    .bind(joiner.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let old_request_id = ReviewRequestId::expect_positive(old_request_id);
+
+    room_service
+        .reject_join_request(room.id, creator.id, old_request_id, Some("try later"))
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, joiner.id, None)
+        .await
+        .unwrap();
+    let new_request_id = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT id
+        FROM room_join_requests
+        WHERE room_id = $1
+          AND user_id = $2
+          AND reviewed_at IS NULL
+        ",
+    )
+    .bind(room.id)
+    .bind(joiner.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let new_request_id = ReviewRequestId::expect_positive(new_request_id);
+    assert_ne!(
+        old_request_id, new_request_id,
+        "reapply must create a distinct pending review row"
+    );
+
+    let mut tx = pool.begin().await.unwrap();
+    let stale_approval = ReviewRepository::approve_room_join_with_executor(
+        &mut *tx,
+        old_request_id,
+        room.id,
+        Some(creator.id),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        stale_approval, 0,
+        "approving a stale review id must not approve another pending request for the same member"
+    );
+
+    let new_status = review_repo
+        .load_room_join_in_room(new_request_id, room.id)
+        .await
+        .unwrap()
+        .expect("new pending join request should still exist");
+    assert_eq!(
+        new_status.status,
+        synctv_core::models::ReviewStatus::Pending,
+        "new request must remain pending when the stale id is approved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_approve_join_request_rejects_room_banned_after_request() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("join_approval_banned_room_creator"))
+        .await
+        .unwrap();
+    let joiner = user_repo
+        .create(&make_user("join_approval_banned_room_joiner"))
+        .await
+        .unwrap();
+
+    let settings = RoomSettings {
+        require_approval: RequireApproval(true),
+        ..Default::default()
+    };
+    let (room, _) = room_service
+        .create_room(
+            "Join Approval Banned Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, joiner.id, None)
+        .await
+        .unwrap();
+    let request_id = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT id
+        FROM room_join_requests
+        WHERE room_id = $1
+          AND user_id = $2
+          AND reviewed_at IS NULL
+        ",
+    )
+    .bind(room.id)
+    .bind(joiner.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    room_service.ban_room(&room.id, &creator.id).await.unwrap();
+
+    let err = room_service
+        .approve_join_request(
+            room.id,
+            creator.id,
+            ReviewRequestId::expect_positive(request_id),
+        )
+        .await
+        .expect_err("approval must re-check current room ban state");
+
+    assert!(matches!(
+        err,
+        Error::Authorization(ref msg) if msg.contains("Room is banned")
+    ));
+    assert!(
+        member_repo
+            .get(&room.id, &joiner.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "failed approval must not create an active membership"
+    );
 }
 
 #[tokio::test]
@@ -1409,6 +1595,60 @@ async fn test_same_user_cannot_create_duplicate_room_name() {
         result,
         Err(Error::AlreadyExists(ref msg)) if msg == "You already have a room with this name"
     ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_same_user_duplicate_room_name_is_service_prevented() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+
+    let user = user_repo
+        .create(&make_user("same_user_duplicate_concurrent"))
+        .await
+        .unwrap();
+    let room_name = "Repeated Concurrent Name".to_string();
+
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let room_service = room_service.clone();
+        let room_name = room_name.clone();
+        let user_id = user.id;
+        handles.push(tokio::spawn(async move {
+            room_service
+                .create_room(room_name, format!("Desc {i}"), user_id, None, None)
+                .await
+        }));
+    }
+
+    let mut success_count = 0;
+    let mut already_exists_count = 0;
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(_) => success_count += 1,
+            Err(Error::AlreadyExists(msg)) => {
+                assert_eq!(msg, "You already have a room with this name");
+                already_exists_count += 1;
+            }
+            Err(err) => panic!("unexpected create_room error: {err:?}"),
+        }
+    }
+
+    assert_eq!(success_count, 1, "only one service create should succeed");
+    assert_eq!(
+        already_exists_count, 4,
+        "all competing creates should hit service policy"
+    );
+    let persisted_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM rooms WHERE created_by = $1 AND name = $2 AND deleted_at IS NULL",
+    )
+    .bind(user.id.as_i64())
+    .bind(&room_name)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted_count, 1);
 }
 
 /// Test that the same user can still create multiple rooms when the names differ.
@@ -6603,6 +6843,60 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    room_service.set_settings_registry(registry);
+
+    let old_owner = user_repo
+        .create(&make_user("room_transfer_dup_owner"))
+        .await
+        .unwrap();
+    let new_owner = user_repo
+        .create(&make_user("room_transfer_dup_target"))
+        .await
+        .unwrap();
+
+    let (room_to_transfer, _) = room_service
+        .create_room(
+            "Shared Transfer Name".to_string(),
+            String::new(),
+            old_owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .create_room(
+            "Shared Transfer Name".to_string(),
+            String::new(),
+            new_owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .join_room(room_to_transfer.id, new_owner.id, None)
+        .await
+        .unwrap();
+
+    let err = room_service
+        .transfer_room_ownership(room_to_transfer.id, old_owner.id, new_owner.id)
+        .await
+        .expect_err("ownership transfer should fail when new owner has same room name");
+
+    assert!(matches!(
+        err,
+        Error::AlreadyExists(ref msg) if msg == "You already have a room with this name"
+    ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -6641,6 +6935,326 @@ async fn test_create_room_respects_max_rooms_per_user() {
     assert!(
         matches!(err, Error::InvalidInput(ref msg) if msg.contains("maximum number of rooms")),
         "error should explain room creation limit, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_create_room_respects_max_rooms_per_user() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.max_rooms_per_user.set(2).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("room_create_concurrent_limit_owner"))
+        .await
+        .unwrap();
+
+    room_service
+        .create_room(
+            "Existing Limited Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let room_service = Arc::new(room_service);
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for name in ["Concurrent Limited Room A", "Concurrent Limited Room B"] {
+        let room_service = room_service.clone();
+        let barrier = barrier.clone();
+        let owner_id = owner.id;
+        let name = name.to_string();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            room_service
+                .create_room(name, String::new(), owner_id, None, None)
+                .await
+        }));
+    }
+
+    let results = futures::future::join_all(handles).await;
+    let mut success_count = 0;
+    let mut limit_error_count = 0;
+    for result in results {
+        match result.expect("concurrent create task should not panic") {
+            Ok(_) => success_count += 1,
+            Err(Error::InvalidInput(msg)) if msg.contains("maximum number of rooms") => {
+                limit_error_count += 1;
+            }
+            Err(err) => panic!("unexpected concurrent create result: {err:?}"),
+        }
+    }
+
+    assert_eq!(
+        success_count, 1,
+        "only one concurrent room should fit the limit"
+    );
+    assert_eq!(
+        limit_error_count, 1,
+        "the losing concurrent create should be rejected by max_rooms_per_user"
+    );
+
+    let (_rooms, total) = room_service
+        .list_rooms_by_creator(&owner.id, PageParams::new(Some(1), Some(10)))
+        .await
+        .unwrap();
+    assert_eq!(
+        total, 2,
+        "final room count must not exceed max_rooms_per_user"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_room_rejects_banned_creator_in_service_layer() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(&pool);
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("room_create_banned_owner"))
+        .await
+        .unwrap();
+    user_service
+        .ban_user_and_cleanup_memberships(&owner.id, None, Some("test ban".to_string()))
+        .await
+        .unwrap();
+
+    let err = room_service
+        .create_room(
+            "Banned Creator Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect_err("service layer must reject banned room creators");
+
+    assert!(matches!(
+        err,
+        Error::Authorization(ref msg) if msg.contains("cannot create rooms")
+    ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.create_room_need_review.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pending_room_dup_owner"))
+        .await
+        .unwrap();
+
+    room_service
+        .create_room(
+            "Pending Duplicate Name".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("first request should create a pending room");
+
+    sqlx::query(
+        r"
+        UPDATE room_creation_requests
+        SET status = $2, reviewed_at = CURRENT_TIMESTAMP
+        WHERE requested_by = $1
+        ",
+    )
+    .bind(owner.id.as_i64())
+    .bind(i16::from(synctv_core::models::ReviewStatus::Approved))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let room_repo = RoomRepository::new(pool.clone());
+    let approved_room = synctv_core::models::Room::new_with_description(
+        "Pending Duplicate Name".to_string(),
+        String::new(),
+        owner.id,
+    );
+    room_repo.create(&approved_room).await.unwrap();
+
+    let err = room_service
+        .create_room(
+            "Pending Duplicate Name".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect_err("new pending request should fail when active room already has this name");
+
+    assert!(matches!(
+        err,
+        Error::AlreadyExists(ref msg) if msg == "You already have a room with this name"
+    ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.create_room_need_review.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pending_room_same_name_owner"))
+        .await
+        .unwrap();
+
+    room_service
+        .create_room(
+            "Duplicate Pending Name".to_string(),
+            "first".to_string(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("first request should create a pending room");
+
+    let err = room_service
+        .create_room(
+            "Duplicate Pending Name".to_string(),
+            "second".to_string(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect_err("second same-name pending request should be rejected");
+
+    assert!(matches!(
+        err,
+        Error::AlreadyExists(ref msg) if msg == "You already have a room with this name"
+    ));
+
+    let pending_count: i64 = sqlx::query_scalar(
+        r"
+        SELECT COUNT(*)
+        FROM room_creation_requests
+        WHERE requested_by = $1
+          AND name = $2
+          AND reviewed_at IS NULL
+        ",
+    )
+    .bind(owner.id.as_i64())
+    .bind("Duplicate Pending Name")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pending_count, 1,
+        "service policy should keep only one pending request for this creator/name"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_approve_pending_room_allows_the_request_itself_while_checking_name_policy() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.create_room_need_review.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pending_room_self_exclusion_owner"))
+        .await
+        .unwrap();
+
+    let (pending_room, _) = room_service
+        .create_room(
+            "Self Exclusion Pending Name".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("pending room request should be created");
+
+    let approved = room_service
+        .approve_pending_room(pending_room.id, None)
+        .await
+        .expect("approval should not treat the current pending row as a duplicate");
+
+    assert_eq!(approved.name, "Self Exclusion Pending Name");
+    assert_eq!(approved.created_by, owner.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_approve_pending_room_rejects_creator_banned_after_request() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(&pool);
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.create_room_need_review.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pending_room_banned_after_request_owner"))
+        .await
+        .unwrap();
+
+    let (pending_room, _) = room_service
+        .create_room(
+            "Pending Room Banned Later".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("request should be accepted while creator is active");
+
+    user_service
+        .ban_user_and_cleanup_memberships(&owner.id, None, Some("test ban".to_string()))
+        .await
+        .unwrap();
+
+    let err = room_service
+        .approve_pending_room(pending_room.id, None)
+        .await
+        .expect_err("approval must re-check creator current status");
+
+    assert!(matches!(
+        err,
+        Error::Authorization(ref msg) if msg.contains("cannot create rooms")
+    ));
+    let room_exists = RoomRepository::new(pool.clone())
+        .get_by_id(&pending_room.id)
+        .await
+        .unwrap()
+        .is_some();
+    assert!(
+        !room_exists,
+        "failed approval must not create an active room row"
     );
 }
 

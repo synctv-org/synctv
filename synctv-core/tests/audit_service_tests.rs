@@ -94,8 +94,9 @@ async fn test_audit_query_filter_by_action() {
 
     // Query filtered by action
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT target_id FROM audit_logs WHERE actor_id = '100002' AND action = 'user_banned' ORDER BY created_at",
+        "SELECT target_id FROM audit_logs WHERE actor_id = '100002' AND action = $1 ORDER BY created_at",
     )
+    .bind(i16::from(AuditAction::UserBanned))
     .fetch_all(&pool)
     .await
     .unwrap();
@@ -217,8 +218,8 @@ async fn test_log_stream_kicked_writes_audit_log() {
     // Verify the audit log was written correctly
     #[allow(clippy::type_complexity)]
     let row: (
-        String,
-        Option<String>,
+        i16,
+        Option<i16>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -227,17 +228,22 @@ async fn test_log_stream_kicked_writes_audit_log() {
         r"
         SELECT action, target_type, target_id, ip_address, user_agent, details::text
         FROM audit_logs
-        WHERE actor_id = '100004' AND action = 'stream_kicked'
+        WHERE actor_id = '100004' AND action = $1
         ",
     )
+    .bind(i16::from(AuditAction::StreamKicked))
     .fetch_one(&pool)
     .await
     .expect("Query should succeed");
 
-    assert_eq!(row.0, "stream_kicked", "Action should be stream_kicked");
     assert_eq!(
-        row.1,
-        Some("stream".to_string()),
+        AuditAction::try_from(row.0).unwrap(),
+        AuditAction::StreamKicked,
+        "Action should be stream_kicked"
+    );
+    assert_eq!(
+        row.1.map(|value| AuditTargetType::try_from(value).unwrap()),
+        Some(AuditTargetType::Stream),
         "Target type should be stream"
     );
     assert_eq!(
@@ -285,18 +291,23 @@ async fn test_log_stream_kicked_without_reason() {
         .expect("log_stream_kicked should succeed");
 
     // Verify the audit log was written correctly
-    let row: (String, Option<String>) = sqlx::query_as(
+    let row: (i16, Option<String>) = sqlx::query_as(
         r"
         SELECT action, details::text
         FROM audit_logs
-        WHERE actor_id = '100005' AND action = 'stream_kicked'
+        WHERE actor_id = '100005' AND action = $1
         ",
     )
+    .bind(i16::from(AuditAction::StreamKicked))
     .fetch_one(&pool)
     .await
     .expect("Query should succeed");
 
-    assert_eq!(row.0, "stream_kicked", "Action should be stream_kicked");
+    assert_eq!(
+        AuditAction::try_from(row.0).unwrap(),
+        AuditAction::StreamKicked,
+        "Action should be stream_kicked"
+    );
 
     // Verify details JSON contains empty reason
     let details: serde_json::Value = serde_json::from_str(&row.1.unwrap_or_default()).unwrap();
@@ -331,8 +342,9 @@ async fn test_log_stream_kicked_records_actor_username() {
 
     // Verify actor_username was recorded
     let row: (String,) = sqlx::query_as(
-        "SELECT actor_username FROM audit_logs WHERE actor_id = '100006' AND action = 'stream_kicked'",
+        "SELECT actor_username FROM audit_logs WHERE actor_id = '100006' AND action = $1",
     )
+    .bind(i16::from(AuditAction::StreamKicked))
     .fetch_one(&pool)
     .await
     .expect("Query should succeed");
@@ -378,19 +390,20 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
         .expect("Second log_stream_kicked should succeed");
 
     // Verify both events were logged
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100007' AND action = 'stream_kicked'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100007' AND action = $1")
+            .bind(i16::from(AuditAction::StreamKicked))
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(count.0, 2, "Both stream kick events should be logged");
 
     // Verify they have different target_ids
     let targets: Vec<(String,)> = sqlx::query_as(
-        "SELECT target_id FROM audit_logs WHERE actor_id = '100007' AND action = 'stream_kicked' ORDER BY target_id",
+        "SELECT target_id FROM audit_logs WHERE actor_id = '100007' AND action = $1 ORDER BY target_id",
     )
+    .bind(i16::from(AuditAction::StreamKicked))
     .fetch_all(&pool)
     .await
     .expect("Query should succeed");

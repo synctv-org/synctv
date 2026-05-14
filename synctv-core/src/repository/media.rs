@@ -3,14 +3,14 @@
 //! Design reference: external design doc 04-database-design.md §2.4.2
 
 use super::query_builder::escape_ilike;
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{postgres::PgRow, PgPool, Row};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use crate::{
     models::{
-        normalize_provider_instance_name, Media, MediaId, MediaListQuery, PageParams, PlaylistId,
-        RoomId,
+        normalize_provider_instance_name, provider_type_code_from_name, Media, MediaId,
+        MediaListQuery, PageParams, PlaylistId, ProviderTypeName, RoomId,
     },
     Result,
 };
@@ -23,7 +23,7 @@ struct MediaRow {
     creator_id: Option<crate::models::UserId>,
     name: String,
     position: f64,
-    source_provider: String,
+    source_provider: ProviderTypeName,
     source_config: serde_json::Value,
     provider_instance_name: Option<String>,
     added_at: chrono::DateTime<chrono::Utc>,
@@ -40,7 +40,7 @@ impl From<MediaRow> for Media {
             creator_id: row.creator_id,
             name: row.name,
             position: row.position,
-            source_provider: row.source_provider,
+            source_provider: row.source_provider.0,
             source_config: row.source_config,
             provider_instance_name: row.provider_instance_name,
             added_at: row.added_at,
@@ -48,6 +48,23 @@ impl From<MediaRow> for Media {
             version: row.version,
         }
     }
+}
+
+fn media_from_pg_row(row: &PgRow) -> Result<Media> {
+    Ok(Media {
+        id: row.try_get("id")?,
+        playlist_id: row.try_get("playlist_id")?,
+        room_id: row.try_get("room_id")?,
+        creator_id: row.try_get("creator_id")?,
+        name: row.try_get("name")?,
+        position: row.try_get("position")?,
+        source_provider: row.try_get::<ProviderTypeName, _>("source_provider")?.0,
+        source_config: row.try_get("source_config")?,
+        provider_instance_name: row.try_get("provider_instance_name")?,
+        added_at: row.try_get("added_at")?,
+        updated_at: row.try_get("updated_at")?,
+        version: row.try_get("version")?,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -125,12 +142,16 @@ impl MediaRepository {
         normalize_provider_instance_name(provider_instance_name)
     }
 
+    fn provider_type_code(provider: &str) -> Result<i16> {
+        provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
+    }
+
     fn push_media_scope_filters(
         builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
         room_id: &RoomId,
         playlist_id: Option<&PlaylistId>,
         query: &MediaListQuery,
-    ) {
+    ) -> Result<()> {
         builder.push(" FROM media m LEFT JOIN users u ON m.creator_id = u.id AND u.deleted_at IS NULL WHERE m.room_id = ");
         builder.push_bind(room_id.as_i64());
         match playlist_id {
@@ -151,7 +172,7 @@ impl MediaRepository {
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND m.source_provider = ");
-            builder.push_bind(source_provider.clone());
+            builder.push_bind(Self::provider_type_code(source_provider)?);
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
             if let Some(trimmed) = normalize_provider_instance_name(Some(provider_instance_name)) {
@@ -184,6 +205,7 @@ impl MediaRepository {
             }
             None => {}
         }
+        Ok(())
     }
 
     pub async fn count_filtered_by_scope(
@@ -193,7 +215,7 @@ impl MediaRepository {
         query: &MediaListQuery,
     ) -> Result<i64> {
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
-        Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query);
+        Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query)?;
         builder
             .build_query_scalar()
             .fetch_one(&self.pool)
@@ -224,7 +246,7 @@ impl MediaRepository {
                       ELSE FALSE
                     END AS is_available",
         );
-        Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query);
+        Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query)?;
         let order_by = Self::build_media_list_order_by(query);
         builder.push(format!(" ORDER BY {order_by} LIMIT "));
         builder.push_bind(limit);
@@ -235,7 +257,7 @@ impl MediaRepository {
         rows.into_iter()
             .map(|row| {
                 Ok(MediaListItem {
-                    media: Media::from_row(&row)?,
+                    media: media_from_pg_row(&row)?,
                     is_available: row.try_get("is_available")?,
                 })
             })
@@ -254,36 +276,39 @@ impl MediaRepository {
     {
         let source_config_json = serde_json::to_value(&media.source_config)?;
 
-        let row = sqlx::query_as!(
-            MediaRow,
-            r#"
+        let row = sqlx::query_as::<_, MediaRow>(
+            r"
             INSERT INTO media (playlist_id, room_id, creator_id, name, position,
                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 0)
-             RETURNING id AS "id: MediaId",
-                       playlist_id AS "playlist_id?: PlaylistId",
-                       room_id AS "room_id: RoomId",
-                       creator_id AS "creator_id?: crate::models::UserId",
+             RETURNING id,
+                       playlist_id,
+                       room_id,
+                       creator_id,
                        name,
                        position,
                        source_provider,
-                       source_config AS "source_config!: serde_json::Value",
+                       source_config,
                        NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
-            "#,
-            media.playlist_id.as_ref().map(PlaylistId::as_i64),
-            media.room_id.as_i64(),
+            ",
+        )
+        .bind(media.playlist_id.as_ref().map(PlaylistId::as_i64))
+        .bind(media.room_id.as_i64())
+        .bind(
             media
                 .creator_id
                 .as_ref()
                 .map(super::super::models::id::UserId::as_i64),
-            &media.name,
-            media.position,
-            media.source_provider.as_str(),
-            &source_config_json,
-            Self::normalize_provider_instance_name_for_db(media.provider_instance_name.as_deref()),
-            media.added_at,
         )
+        .bind(&media.name)
+        .bind(media.position)
+        .bind(Self::provider_type_code(&media.source_provider)?)
+        .bind(&source_config_json)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            media.provider_instance_name.as_deref(),
+        ))
+        .bind(media.added_at)
         .fetch_one(executor)
         .await?;
 
@@ -396,7 +421,7 @@ impl MediaRepository {
                 )
                 .bind(&item.name)
                 .bind(item.position)
-                .bind(item.source_provider.as_str())
+                .bind(Self::provider_type_code(&item.source_provider)?)
                 .bind(&binds[i])
                 .bind(Self::normalize_provider_instance_name_for_db(
                     item.provider_instance_name.as_deref(),
@@ -406,7 +431,7 @@ impl MediaRepository {
 
         let rows = query.fetch_all(executor).await?;
         for row in rows {
-            results.push(Media::from_row(&row)?);
+            results.push(media_from_pg_row(&row)?);
         }
 
         Ok(results)
@@ -1911,7 +1936,7 @@ mod tests {
         };
         let room_id = RoomId::expect_positive(123_456_678);
 
-        MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query);
+        MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query).unwrap();
 
         let built = builder.build();
         assert!(built

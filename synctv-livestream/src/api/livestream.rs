@@ -501,10 +501,11 @@ impl HlsStreamingApi {
             // segment URL template so signed query strings and disguised
             // extensions survive playlist generation on the publisher node.
             let sample_url = url_generator("__PLACEHOLDER__");
-            let (segment_url_base, segment_url_suffix) = sample_url
-                .rsplit_once("__PLACEHOLDER__")
-                .map(|(base, suffix)| (base.to_string(), suffix.to_string()))
-                .unwrap_or_else(|| (String::new(), String::new()));
+            let (segment_url_base, segment_url_suffix) =
+                sample_url.rsplit_once("__PLACEHOLDER__").map_or_else(
+                    || (String::new(), String::new()),
+                    |(base, suffix)| (base.to_string(), suffix.to_string()),
+                );
 
             let playlist = hls_proxy
                 .get_playlist(

@@ -13647,6 +13647,11 @@ pub struct UnlinkProviderRequest {
     #[prost(string, tag = "2")]
     #[serde(default)]
     pub provider_user_id: ::prost::alloc::string::String,
+    /// Required when provider_user_id is set: the configured provider instance namespace.
+    /// Empty with empty provider_user_id unlinks every binding for provider type.
+    #[prost(string, tag = "3")]
+    #[serde(default)]
+    pub provider_instance_name: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.UnlinkProviderResponse")]
@@ -13706,6 +13711,12 @@ pub struct LinkedProvider {
     /// NOTE: Changed from string to int64 for consistency with all other timestamp fields.
     #[prost(int64, tag = "3")]
     pub linked_at: i64,
+    /// Provider instance name that owns this external identity namespace.
+    #[prost(string, tag = "4")]
+    pub provider_instance_name: ::prost::alloc::string::String,
+    /// Optional issuer metadata when known for OIDC-like providers.
+    #[prost(string, tag = "5")]
+    pub provider_issuer: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.OAuth2UserInfo")]

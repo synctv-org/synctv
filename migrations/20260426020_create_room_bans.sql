@@ -9,11 +9,6 @@ CREATE TABLE IF NOT EXISTS room_bans (
     revoked_by BIGINT REFERENCES users(id) ON DELETE RESTRICT
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_room_bans_active_unique
-    ON room_bans(room_id)
-    WHERE revoked_at IS NULL
-      AND ends_at IS NULL;
-
 CREATE INDEX IF NOT EXISTS idx_room_bans_room
     ON room_bans(room_id, starts_at DESC);
 

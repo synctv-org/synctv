@@ -23,6 +23,10 @@ pub struct PullStreamManager {
     /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
     /// Shared across all `PullStream`/`GrpcStreamPuller` instances managed by this manager.
     connection_pool: GrpcConnectionPool,
+    /// Maximum gRPC message size for relay calls created by this manager.
+    grpc_max_message_size_bytes: usize,
+    /// Whether relay calls created by this manager negotiate gzip compression.
+    grpc_compression_enabled: bool,
     /// Handle for the background gRPC connection pool cleanup task.
     /// Kept alive for the lifetime of the manager and rebuilt if the pool is replaced.
     pool_cleanup_handle: tokio::task::JoinHandle<()>,
@@ -65,6 +69,20 @@ impl PullStreamManager {
         self
     }
 
+    /// Set the maximum gRPC message size for relay calls created by this manager.
+    #[must_use]
+    pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
+        self.grpc_max_message_size_bytes = max_message_size_bytes;
+        self
+    }
+
+    /// Enable or disable gzip compression negotiation for relay calls created by this manager.
+    #[must_use]
+    pub const fn with_grpc_compression(mut self, enabled: bool) -> Self {
+        self.grpc_compression_enabled = enabled;
+        self
+    }
+
     /// Set the HLS proxy client for cache invalidation on stale epoch detection.
     #[must_use]
     pub fn with_hls_proxy(mut self, hls_proxy: HlsProxyClient) -> Self {
@@ -101,6 +119,8 @@ impl PullStreamManager {
             registry,
             stream_hub_event_sender,
             connection_pool,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             pool_cleanup_handle,
             pool_cleanup_cancel: cleanup_token,
             cluster_secret: None,
@@ -229,6 +249,8 @@ impl PullStreamManager {
                 epoch,
                 self.connection_pool.clone(),
             )
+            .with_grpc_max_message_size(self.grpc_max_message_size_bytes)
+            .with_grpc_compression(self.grpc_compression_enabled)
             .with_cluster_secret(self.cluster_secret.clone())
             .with_hls_proxy(self.hls_proxy.clone()),
         );

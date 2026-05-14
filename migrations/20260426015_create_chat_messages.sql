@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     room_id BIGINT NOT NULL,
     user_id BIGINT,
     content TEXT NOT NULL,
-    message_type SMALLINT NOT NULL DEFAULT 1,
+    message_type SMALLINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE RESTRICT

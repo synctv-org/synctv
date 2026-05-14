@@ -19,7 +19,6 @@
 //! - Background refresh: Refreshes before expiration
 //! - Write-through: Updates database and cache atomically
 
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -95,10 +94,6 @@ impl Clone for RoomSettingsService {
 impl RoomSettingsService {
     const CACHE_TTL_SECS: u64 = 300; // 5 minutes
     const CACHE_MAX_CAPACITY: u64 = 10_000;
-    /// Maximum retry attempts for optimistic lock conflicts
-    const MAX_RETRIES: u32 = 3;
-    /// Base backoff in milliseconds (exponential: 5ms, 10ms, 20ms)
-    const BACKOFF_BASE_MS: u64 = 5;
     /// Maximum time to wait for the invalidation listener to stop.
     const INVALIDATION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -374,47 +369,38 @@ impl RoomSettingsService {
     /// - Publishes invalidation via Redis Streams (if configured)
     /// - Sends WebSocket notification to connected clients
     pub async fn set(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<()> {
-        for attempt in 0..Self::MAX_RETRIES {
-            // Get current version (bypass cache).
-            // NOTE: We only read the version here, not the current settings, because
-            // `set` performs whole-object replacement. On retry after a version conflict
-            // we re-read the version but intentionally write the caller's `settings`
-            // unchanged. For partial (merge) updates, use `update_field` instead.
-            let (_current, version) = self.repo.get_with_version(room_id).await?;
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
+            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            "Settings update failed after maximum retry attempts",
+            || async {
+                // Get current version (bypass cache).
+                // NOTE: We only read the version here, not the current settings, because
+                // `set` performs whole-object replacement. On retry after a version conflict
+                // we re-read the version but intentionally write the caller's `settings`
+                // unchanged. For partial (merge) updates, use `update_field` instead.
+                let (_current, version) = self.repo.get_with_version(room_id).await?;
 
-            // CAS write
-            match self
-                .repo
-                .set_settings_with_version(room_id, settings, version)
-                .await
-            {
-                Ok(new_version) => {
-                    // Update local cache
-                    self.cache
-                        .insert(
-                            *room_id,
-                            RoomSettingsSnapshot {
-                                settings: settings.clone(),
-                                version: new_version,
-                            },
-                        )
-                        .await;
-                    self.publish_and_notify(room_id, settings, new_version)
-                        .await;
-                    return Ok(());
-                }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+                let new_version = self
+                    .repo
+                    .set_settings_with_version(room_id, settings, version)
+                    .await?;
 
-        Err(Error::Internal(
-            "Settings update failed after maximum retry attempts".to_string(),
-        ))
+                self.cache
+                    .insert(
+                        *room_id,
+                        RoomSettingsSnapshot {
+                            settings: settings.clone(),
+                            version: new_version,
+                        },
+                    )
+                    .await;
+                self.publish_and_notify(room_id, settings, new_version)
+                    .await;
+                Ok(())
+            },
+        )
+        .await
     }
 
     /// Update a single setting field with optimistic locking (CAS).
@@ -425,21 +411,23 @@ impl RoomSettingsService {
     where
         F: Fn(&mut RoomSettings) + Send,
     {
-        for attempt in 0..Self::MAX_RETRIES {
-            // Read current settings with version (bypass cache for freshness)
-            let (mut settings, version) = self.repo.get_with_version(room_id).await?;
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
+            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            "Settings update failed after maximum retry attempts",
+            || {
+                let updater = &updater;
+                async move {
+                    // Read current settings with version (bypass cache for freshness)
+                    let (mut settings, version) = self.repo.get_with_version(room_id).await?;
 
-            // Apply update
-            updater(&mut settings);
+                    updater(&mut settings);
 
-            // CAS write with version check
-            match self
-                .repo
-                .set_settings_with_version(room_id, &settings, version)
-                .await
-            {
-                Ok(new_version) => {
-                    // Update local cache after successful write
+                    let new_version = self
+                        .repo
+                        .set_settings_with_version(room_id, &settings, version)
+                        .await?;
+
                     self.cache
                         .insert(
                             *room_id,
@@ -451,20 +439,11 @@ impl RoomSettingsService {
                         .await;
                     self.publish_and_notify(room_id, &settings, new_version)
                         .await;
-                    return Ok(settings);
+                    Ok(settings)
                 }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Err(Error::Internal(
-            "Settings update failed after maximum retry attempts".to_string(),
-        ))
+            },
+        )
+        .await
     }
 
     /// Reset room settings to default
@@ -539,16 +518,16 @@ impl RoomSettingsService {
 
         // Bulk insert into cache
         for room_id in room_ids {
-            let snapshot = versioned_batch
-                .get(room_id)
-                .map(|(settings, version)| RoomSettingsSnapshot {
-                    settings: settings.clone(),
-                    version: *version,
-                })
-                .unwrap_or(RoomSettingsSnapshot {
+            let snapshot = versioned_batch.get(room_id).map_or(
+                RoomSettingsSnapshot {
                     settings: RoomSettings::default(),
                     version: 0,
-                });
+                },
+                |(settings, version)| RoomSettingsSnapshot {
+                    settings: settings.clone(),
+                    version: *version,
+                },
+            );
             self.cache.insert(*room_id, snapshot).await;
         }
 

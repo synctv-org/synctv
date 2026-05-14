@@ -50,6 +50,7 @@ impl OAuth2ApiImpl {
     fn oauth2_identity_unlink_counts(
         linked_mappings: &[synctv_core::models::oauth2_client::UserOAuthProviderMapping],
         provider_type: &synctv_core::models::OAuth2Provider,
+        provider_instance_name: Option<&str>,
         provider_user_id: Option<&str>,
     ) -> (usize, usize) {
         linked_mappings
@@ -60,7 +61,10 @@ impl OAuth2ApiImpl {
                 let will_unlink = same_provider
                     && match provider_user_id {
                         Some(target_provider_user_id) => {
-                            mapping.provider_user_id == target_provider_user_id
+                            provider_instance_name.is_some_and(|target_instance_name| {
+                                mapping.provider_instance_name == target_instance_name
+                                    && mapping.provider_user_id == target_provider_user_id
+                            })
                         }
                         None => true,
                     };
@@ -274,7 +278,7 @@ impl OAuth2ApiImpl {
         }
 
         // 2. Exchange code for user info using PKCE verifier from stored state
-        let (user_info, provider_type) = self
+        let user_info = self
             .oauth2_service
             .exchange_code_for_user_info_with_control(
                 provider,
@@ -301,7 +305,7 @@ impl OAuth2ApiImpl {
             // Silently reassigning would steal the linkage from the other user.
             if let Some(existing_user_id) = self
                 .oauth2_service
-                .find_user_by_provider(&provider_type, &user_info.provider_user_id)
+                .find_user_by_provider_instance(provider, &user_info.provider_user_id)
                 .await
                 .map_err(ApiError::from)?
             {
@@ -314,12 +318,7 @@ impl OAuth2ApiImpl {
 
             // Bind flow: associate provider with existing user
             self.oauth2_service
-                .upsert_user_provider(
-                    &bind_user_id,
-                    &provider_type,
-                    &user_info.provider_user_id,
-                    &user_info,
-                )
+                .upsert_user_provider(&bind_user_id, &user_info)
                 .await
                 .map_err(ApiError::from)?;
 
@@ -338,7 +337,7 @@ impl OAuth2ApiImpl {
         // Login flow: find or create user
         let user_id = self
             .oauth2_service
-            .find_user_by_provider(&provider_type, &user_info.provider_user_id)
+            .find_user_by_provider_instance(provider, &user_info.provider_user_id)
             .await
             .map_err(ApiError::from)?;
 
@@ -357,7 +356,7 @@ impl OAuth2ApiImpl {
         } else {
             match self
                 .oauth2_service
-                .find_or_create_and_link(&self.user_service, provider, &provider_type, &user_info)
+                .find_or_create_and_link(&self.user_service, provider, &user_info)
                 .await
                 .map_err(ApiError::from)?
             {
@@ -493,11 +492,21 @@ impl OAuth2ApiImpl {
         &self,
         user_id: &UserId,
         provider: &str,
+        provider_instance_name: Option<&str>,
         provider_user_id: Option<&str>,
     ) -> Result<UnlinkResult, ApiError> {
         use synctv_core::models::OAuth2Provider;
         let provider_type = OAuth2Provider::from_str_name(provider)
             .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
+        let provider_instance_name = provider_instance_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        if provider_user_id.is_some() && provider_instance_name.is_none() {
+            return Err(ApiError::InvalidInput(
+                "provider_instance_name is required when provider_user_id is set".to_string(),
+            ));
+        }
 
         let user = self
             .user_service
@@ -511,7 +520,12 @@ impl OAuth2ApiImpl {
             .map_err(ApiError::from)?;
 
         let (target_oauth2_identities, remaining_oauth2_identities) =
-            Self::oauth2_identity_unlink_counts(&linked_mappings, &provider_type, provider_user_id);
+            Self::oauth2_identity_unlink_counts(
+                &linked_mappings,
+                &provider_type,
+                provider_instance_name,
+                provider_user_id,
+            );
 
         if target_oauth2_identities == 0 {
             return Err(ApiError::NotFound(
@@ -530,7 +544,11 @@ impl OAuth2ApiImpl {
         let removed = if let Some(provider_user_id) = provider_user_id {
             // Unlink specific binding
             self.oauth2_service
-                .unlink_provider(user_id, &provider_type, provider_user_id)
+                .unlink_provider(
+                    user_id,
+                    provider_instance_name.expect("validated above"),
+                    provider_user_id,
+                )
                 .await
                 .map_err(ApiError::from)?
         } else {
@@ -560,8 +578,14 @@ impl OAuth2ApiImpl {
     ) -> Result<UnlinkProviderResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let provider_user_id = Self::optional_non_empty_trimmed(&req.provider_user_id);
+        let provider_instance_name = Self::optional_non_empty_trimmed(&req.provider_instance_name);
         let result = self
-            .unlink_provider(user_id, &req.provider, provider_user_id.as_deref())
+            .unlink_provider(
+                user_id,
+                &req.provider,
+                provider_instance_name.as_deref(),
+                provider_user_id.as_deref(),
+            )
             .await?;
 
         Ok(UnlinkProviderResponse {
@@ -586,6 +610,8 @@ impl OAuth2ApiImpl {
             .into_iter()
             .map(|mapping| LinkedProviderInfo {
                 provider_type: mapping.provider,
+                provider_instance_name: mapping.provider_instance_name,
+                provider_issuer: mapping.provider_issuer.unwrap_or_default(),
                 provider_username: mapping.username,
                 linked_at: mapping.created_at.timestamp(),
             })
@@ -638,6 +664,8 @@ pub struct UnlinkResult {
 /// Linked `OAuth2` provider information
 pub struct LinkedProviderInfo {
     pub provider_type: String,
+    pub provider_instance_name: String,
+    pub provider_issuer: String,
     pub provider_username: String,
     pub linked_at: i64, // Unix timestamp (seconds)
 }
@@ -689,6 +717,8 @@ impl From<LinkedProviderInfo> for LinkedProvider {
             provider_type: info.provider_type,
             provider_username: info.provider_username,
             linked_at: info.linked_at,
+            provider_instance_name: info.provider_instance_name,
+            provider_issuer: info.provider_issuer,
         }
     }
 }
@@ -841,6 +871,7 @@ mod tests {
         let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
             provider: "github".to_string(),
             provider_user_id: "a".repeat(257),
+            provider_instance_name: "github-main".to_string(),
         })
         .expect_err("overlong provider_user_id must be rejected");
 
@@ -857,6 +888,8 @@ mod tests {
             UserOAuthProviderMapping {
                 id: 1,
                 provider: "github".to_string(),
+                provider_instance_name: "github-main".to_string(),
+                provider_issuer: Some("https://github.com".to_string()),
                 provider_user_id: "github-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-a".to_string(),
@@ -868,6 +901,8 @@ mod tests {
             UserOAuthProviderMapping {
                 id: 2,
                 provider: "github".to_string(),
+                provider_instance_name: "github-backup".to_string(),
+                provider_issuer: Some("https://github.example.com".to_string()),
                 provider_user_id: "github-b".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-b".to_string(),
@@ -881,6 +916,7 @@ mod tests {
         let (target, remaining) = super::OAuth2ApiImpl::oauth2_identity_unlink_counts(
             &mappings,
             &OAuth2Provider::GitHub,
+            Some("github-main"),
             Some("github-a"),
         );
 
@@ -898,6 +934,8 @@ mod tests {
             UserOAuthProviderMapping {
                 id: 1,
                 provider: "github".to_string(),
+                provider_instance_name: "github-main".to_string(),
+                provider_issuer: Some("https://github.com".to_string()),
                 provider_user_id: "github-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-a".to_string(),
@@ -909,6 +947,8 @@ mod tests {
             UserOAuthProviderMapping {
                 id: 2,
                 provider: "github".to_string(),
+                provider_instance_name: "github-backup".to_string(),
+                provider_issuer: Some("https://github.example.com".to_string()),
                 provider_user_id: "github-b".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "github-b".to_string(),
@@ -920,6 +960,8 @@ mod tests {
             UserOAuthProviderMapping {
                 id: 3,
                 provider: "google".to_string(),
+                provider_instance_name: "google".to_string(),
+                provider_issuer: Some("https://accounts.google.com".to_string()),
                 provider_user_id: "google-a".to_string(),
                 user_id: UserId::expect_positive(42),
                 username: "google-a".to_string(),
@@ -933,6 +975,7 @@ mod tests {
         let (target, remaining) = super::OAuth2ApiImpl::oauth2_identity_unlink_counts(
             &mappings,
             &OAuth2Provider::GitHub,
+            None,
             None,
         );
 

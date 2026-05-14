@@ -263,6 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.ExchangeAuthorizationCodeRequest.provider",
         ".synctv.client.UnlinkProviderRequest.provider",
         ".synctv.client.UnlinkProviderRequest.provider_user_id",
+        ".synctv.client.UnlinkProviderRequest.provider_instance_name",
         ".synctv.admin.ListUsersRequest.page",
         ".synctv.admin.ListUsersRequest.page_size",
         ".synctv.admin.ListUsersRequest.status",

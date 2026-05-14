@@ -99,8 +99,8 @@ pub struct AuditEventParams {
 struct AuditRecord {
     actor_id: String,
     actor_username: String,
-    action_str: &'static str,
-    target_str: &'static str,
+    action: AuditAction,
+    target_type: AuditTargetType,
     target_id: Option<String>,
     details: serde_json::Value,
     ip_address: Option<String>,
@@ -203,6 +203,108 @@ impl AuditAction {
             Self::SettingsGroupViewed => "settings_group_viewed",
         }
     }
+
+    #[must_use]
+    pub const fn as_i16(self) -> i16 {
+        match self {
+            Self::UserCreated => 1,
+            Self::UserDeleted => 2,
+            Self::UserBanned => 3,
+            Self::UserUnbanned => 4,
+            Self::UserPasswordUpdated => 5,
+            Self::UserUsernameUpdated => 6,
+            Self::UserPreferencesUpdated => 7,
+            Self::UserRoleUpdated => 8,
+            Self::RoomCreated => 9,
+            Self::RoomDeleted => 10,
+            Self::RoomBanned => 11,
+            Self::RoomUnbanned => 12,
+            Self::RoomPasswordUpdated => 13,
+            Self::RoomOwnershipTransferred => 14,
+            Self::PermissionGranted => 15,
+            Self::PermissionRevoked => 16,
+            Self::ProviderInstanceCreated => 17,
+            Self::ProviderInstanceUpdated => 18,
+            Self::ProviderInstanceDeleted => 19,
+            Self::ProviderInstanceReconnected => 20,
+            Self::SettingsUpdated => 21,
+            Self::MemberKicked => 22,
+            Self::MemberBanned => 23,
+            Self::MemberUnbanned => 24,
+            Self::MemberRoleUpdated => 25,
+            Self::MemberPermissionUpdated => 26,
+            Self::MemberStatusUpdated => 27,
+            Self::RoomSettingsUpdated => 28,
+            Self::UserApproved => 29,
+            Self::RoomApproved => 30,
+            Self::RoomRejected => 31,
+            Self::StreamKicked => 32,
+            Self::RateLimitResetFailed => 33,
+            Self::UserLogin => 34,
+            Self::UserLogout => 35,
+            Self::TokenIssued => 36,
+            Self::TokenRefreshed => 37,
+            Self::TokenFamilyRevoked => 38,
+            Self::SettingsViewed => 39,
+            Self::SettingsGroupViewed => 40,
+        }
+    }
+}
+
+impl From<AuditAction> for i16 {
+    fn from(value: AuditAction) -> Self {
+        value.as_i16()
+    }
+}
+
+impl TryFrom<i16> for AuditAction {
+    type Error = String;
+
+    fn try_from(value: i16) -> std::result::Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::UserCreated),
+            2 => Ok(Self::UserDeleted),
+            3 => Ok(Self::UserBanned),
+            4 => Ok(Self::UserUnbanned),
+            5 => Ok(Self::UserPasswordUpdated),
+            6 => Ok(Self::UserUsernameUpdated),
+            7 => Ok(Self::UserPreferencesUpdated),
+            8 => Ok(Self::UserRoleUpdated),
+            9 => Ok(Self::RoomCreated),
+            10 => Ok(Self::RoomDeleted),
+            11 => Ok(Self::RoomBanned),
+            12 => Ok(Self::RoomUnbanned),
+            13 => Ok(Self::RoomPasswordUpdated),
+            14 => Ok(Self::RoomOwnershipTransferred),
+            15 => Ok(Self::PermissionGranted),
+            16 => Ok(Self::PermissionRevoked),
+            17 => Ok(Self::ProviderInstanceCreated),
+            18 => Ok(Self::ProviderInstanceUpdated),
+            19 => Ok(Self::ProviderInstanceDeleted),
+            20 => Ok(Self::ProviderInstanceReconnected),
+            21 => Ok(Self::SettingsUpdated),
+            22 => Ok(Self::MemberKicked),
+            23 => Ok(Self::MemberBanned),
+            24 => Ok(Self::MemberUnbanned),
+            25 => Ok(Self::MemberRoleUpdated),
+            26 => Ok(Self::MemberPermissionUpdated),
+            27 => Ok(Self::MemberStatusUpdated),
+            28 => Ok(Self::RoomSettingsUpdated),
+            29 => Ok(Self::UserApproved),
+            30 => Ok(Self::RoomApproved),
+            31 => Ok(Self::RoomRejected),
+            32 => Ok(Self::StreamKicked),
+            33 => Ok(Self::RateLimitResetFailed),
+            34 => Ok(Self::UserLogin),
+            35 => Ok(Self::UserLogout),
+            36 => Ok(Self::TokenIssued),
+            37 => Ok(Self::TokenRefreshed),
+            38 => Ok(Self::TokenFamilyRevoked),
+            39 => Ok(Self::SettingsViewed),
+            40 => Ok(Self::SettingsGroupViewed),
+            other => Err(format!("Unknown audit action code: {other}")),
+        }
+    }
 }
 
 impl FromStr for AuditAction {
@@ -287,6 +389,44 @@ impl AuditTargetType {
             Self::System => "system",
             Self::Stream => "stream",
             Self::Token => "token",
+        }
+    }
+
+    #[must_use]
+    pub const fn as_i16(self) -> i16 {
+        match self {
+            Self::User => 1,
+            Self::Room => 2,
+            Self::Member => 3,
+            Self::ProviderInstance => 4,
+            Self::Settings => 5,
+            Self::System => 6,
+            Self::Stream => 7,
+            Self::Token => 8,
+        }
+    }
+}
+
+impl From<AuditTargetType> for i16 {
+    fn from(value: AuditTargetType) -> Self {
+        value.as_i16()
+    }
+}
+
+impl TryFrom<i16> for AuditTargetType {
+    type Error = String;
+
+    fn try_from(value: i16) -> std::result::Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::User),
+            2 => Ok(Self::Room),
+            3 => Ok(Self::Member),
+            4 => Ok(Self::ProviderInstance),
+            5 => Ok(Self::Settings),
+            6 => Ok(Self::System),
+            7 => Ok(Self::Stream),
+            8 => Ok(Self::Token),
+            other => Err(format!("Unknown audit target type code: {other}")),
         }
     }
 }
@@ -406,8 +546,8 @@ impl AuditService {
             let record = AuditRecord {
                 actor_id: actor_id.clone(),
                 actor_username: actor_username.clone(),
-                action_str,
-                target_str,
+                action,
+                target_type,
                 target_id: target_id.clone(),
                 details: details.clone(),
                 ip_address: ip_address.clone(),
@@ -424,8 +564,8 @@ impl AuditService {
                 );
                 if let Err(db_err) = Self::write_single(
                     &self.pool,
-                    action_str,
-                    target_str,
+                    action,
+                    target_type,
                     &actor_id,
                     &actor_username,
                     target_id.as_deref(),
@@ -459,8 +599,8 @@ impl AuditService {
         // Unbuffered mode: write directly to DB
         Self::write_single(
             &self.pool,
-            action_str,
-            target_str,
+            action,
+            target_type,
             &actor_id,
             &actor_username,
             target_id.as_deref(),
@@ -485,8 +625,8 @@ impl AuditService {
     #[allow(clippy::too_many_arguments)]
     async fn write_single(
         pool: &PgPool,
-        action_str: &str,
-        target_str: &str,
+        action: AuditAction,
+        target_type: AuditTargetType,
         actor_id: &str,
         actor_username: &str,
         target_id: Option<&str>,
@@ -495,23 +635,23 @@ impl AuditService {
         user_agent: Option<&str>,
         created_at: DateTime<Utc>,
     ) -> Result<()> {
-        sqlx::query!(
-            r#"
+        sqlx::query(
+            r"
             INSERT INTO audit_logs (
                 actor_id, actor_username, action, target_type, target_id,
                 details, ip_address, user_agent, created_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            "#,
-            parse_actor_id_for_storage(actor_id),
-            actor_username,
-            action_str,
-            target_str,
-            target_id,
-            details,
-            ip_address,
-            user_agent,
-            created_at,
+            ",
         )
+        .bind(parse_actor_id_for_storage(actor_id))
+        .bind(actor_username)
+        .bind(action.as_i16())
+        .bind(target_type.as_i16())
+        .bind(target_id)
+        .bind(details)
+        .bind(ip_address)
+        .bind(user_agent)
+        .bind(created_at)
         .execute(pool)
         .await?;
 
@@ -987,8 +1127,8 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     for record in buffer.iter() {
         actor_ids.push(parse_actor_id_for_storage(&record.actor_id));
         actor_usernames.push(record.actor_username.clone());
-        actions.push(record.action_str.to_string());
-        target_types.push(record.target_str.to_string());
+        actions.push(record.action.as_i16());
+        target_types.push(record.target_type.as_i16());
         target_ids.push(record.target_id.clone());
         details_list.push(record.details.clone());
         ip_addresses.push(record.ip_address.clone());
@@ -1004,8 +1144,8 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
             )
             SELECT actor_id::bigint,
                    actor_username::text,
-                   action::text,
-                   target_type::text,
+                   action::smallint,
+                   target_type::smallint,
                    target_id::text,
                    details::jsonb,
                    ip_address::text,
@@ -1014,8 +1154,8 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
             FROM UNNEST(
                 $1::bigint[],
                 $2::text[],
-                $3::text[],
-                $4::text[],
+                $3::smallint[],
+                $4::smallint[],
                 $5::text[],
                 $6::jsonb[],
                 $7::text[],
@@ -1354,8 +1494,8 @@ mod tests {
         let record = AuditRecord {
             actor_id: "a1".to_string(),
             actor_username: "admin".to_string(),
-            action_str: AuditAction::RoomDeleted.as_str(),
-            target_str: AuditTargetType::Room.as_str(),
+            action: AuditAction::RoomDeleted,
+            target_type: AuditTargetType::Room,
             target_id: Some("r1".to_string()),
             details: serde_json::json!({"reason": "test"}),
             ip_address: Some("127.0.0.1".to_string()),
@@ -1363,8 +1503,10 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        assert_eq!(record.action_str, "room_deleted");
-        assert_eq!(record.target_str, "room");
+        assert_eq!(record.action.as_str(), "room_deleted");
+        assert_eq!(record.target_type.as_str(), "room");
+        assert_eq!(record.action.as_i16(), 10);
+        assert_eq!(record.target_type.as_i16(), 2);
         assert_eq!(record.actor_id, "a1");
     }
 

@@ -1,6 +1,7 @@
 //! Room operations: list, create, get, join, leave, delete, settings, chat, hot rooms, public settings
 
 use crate::impls::ApiError;
+use std::collections::HashMap;
 use synctv_core::models::{PermissionBits, UserId};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
@@ -21,11 +22,7 @@ const DEFAULT_ROOM_PAGE: u32 = 1;
 const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
 const MAX_ROOM_PAGE_SIZE: u32 = 100;
 const DEFAULT_HOT_ROOM_LIMIT: i64 = 10;
-const DEFAULT_HOT_ROOM_LIMIT_U32: u32 = 10;
 const DEFAULT_HOT_ROOM_LIMIT_USIZE: usize = 10;
-const MAX_HOT_ROOM_LIMIT_I32: i32 = 50;
-const HOT_ROOM_FETCH_MULTIPLIER: u32 = 4;
-const HOT_ROOM_FETCH_LIMIT_CAP: u32 = 200;
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
 
 fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
@@ -34,10 +31,6 @@ fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
     } else {
         default
     }
-}
-
-fn positive_i64_to_u32(value: i64, default: u32) -> u32 {
-    u32::try_from(value).unwrap_or(default)
 }
 
 fn positive_i64_to_usize(value: i64, default: usize) -> usize {
@@ -1037,58 +1030,75 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::GetHotRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let limit = if req.limit <= 0 || req.limit > MAX_HOT_ROOM_LIMIT_I32 {
+        let limit = if req.limit == 0 {
             DEFAULT_HOT_ROOM_LIMIT
         } else {
             i64::from(req.limit)
         };
+        let limit_usize = positive_i64_to_usize(limit, DEFAULT_HOT_ROOM_LIMIT_USIZE);
 
-        // Query for active, non-banned rooms.
-        // Fetch a bounded set (4x the requested limit, capped at 200) to reduce DB
-        // and memory overhead while still providing a reasonable candidate pool for
-        // sorting by online count.
-        let fetch_limit = positive_i64_to_u32(limit, DEFAULT_HOT_ROOM_LIMIT_U32)
-            .saturating_mul(HOT_ROOM_FETCH_MULTIPLIER)
-            .min(HOT_ROOM_FETCH_LIMIT_CAP);
-        let query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(Some(1), Some(fetch_limit)),
-            search: None,
-            status: Some(synctv_core::models::RoomStatus::Active),
-            is_banned: Some(false),
-            creator_id: None,
-            ..Default::default()
-        };
-
-        let (rooms, _total) = self
-            .room_service
-            .list_rooms(&query)
-            .await
-            .map_err(ApiError::from)?;
-        let availability_map = self
-            .room_service
-            .room_availability_batch(&rooms)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Fetch distributed connection counts for all candidate rooms (single Redis MGET),
-        // then sort by distributed count to get a globally correct ranking.
-        let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
-        let distributed_counts = self
+        let room_online_counts = self
             .connection_service
-            .room_online_user_count_distributed_batch(&room_id_refs)
+            .hot_room_online_user_counts_distributed()
             .await
             .map_err(ApiError::Internal)?;
+        let room_ids: Vec<synctv_core::models::RoomId> = room_online_counts
+            .iter()
+            .map(|(room_id, _)| *room_id)
+            .collect();
+        let rooms = self
+            .room_service
+            .list_active_unbanned_rooms_by_ids(&room_ids)
+            .await
+            .map_err(ApiError::from)?;
 
+        let mut online_by_room: HashMap<synctv_core::models::RoomId, usize> =
+            room_online_counts.into_iter().collect();
         let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
             .into_iter()
-            .zip(distributed_counts)
-            .map(|(room, count)| (room, usize_to_i32_saturating(count)))
+            .filter_map(|room| {
+                let count = online_by_room.remove(&room.id).unwrap_or(0);
+                (count > 0).then_some((room, usize_to_i32_saturating(count)))
+            })
             .collect();
-        room_online.sort_by_key(|item| std::cmp::Reverse(item.1));
-        let top_rooms: Vec<_> = room_online
-            .into_iter()
-            .take(positive_i64_to_usize(limit, DEFAULT_HOT_ROOM_LIMIT_USIZE))
-            .collect();
+        room_online.sort_by_key(|(room, count)| (std::cmp::Reverse(*count), room.id));
+        let mut top_rooms: Vec<_> = room_online.into_iter().take(limit_usize).collect();
+
+        if top_rooms.len() < limit_usize {
+            let fallback_query = synctv_core::models::RoomListQuery {
+                pagination: synctv_core::models::PageParams::new(
+                    Some(1),
+                    Some(u32::try_from(limit_usize).unwrap_or(u32::MAX)),
+                ),
+                search: None,
+                status: Some(synctv_core::models::RoomStatus::Active),
+                is_banned: Some(false),
+                creator_id: None,
+                sort_by: synctv_core::models::RoomListSortBy::CreatedAt,
+                sort_direction: synctv_core::models::SortDirection::Desc,
+            };
+            let (fallback_rooms, _) = self
+                .room_service
+                .list_rooms(&fallback_query)
+                .await
+                .map_err(ApiError::from)?;
+            for room in fallback_rooms {
+                if top_rooms.iter().all(|(existing, _)| existing.id != room.id) {
+                    top_rooms.push((room, 0));
+                }
+                if top_rooms.len() >= limit_usize {
+                    break;
+                }
+            }
+        }
+
+        let selected_rooms: Vec<synctv_core::models::Room> =
+            top_rooms.iter().map(|(room, _)| room.clone()).collect();
+        let availability_map = self
+            .room_service
+            .room_availability_batch(&selected_rooms)
+            .await
+            .map_err(ApiError::from)?;
 
         // Batch-fetch member counts for the top N rooms (single SQL query instead of N+1)
         let top_room_id_refs: Vec<&synctv_core::models::RoomId> =
@@ -1490,6 +1500,30 @@ mod tests {
             }
             other => panic!("expected invalid input, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hot_rooms_validation_rejects_out_of_range_limit() {
+        let error =
+            crate::impls::validate_proto_request(&crate::proto::client::GetHotRoomsRequest {
+                limit: 51,
+            })
+            .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("limit"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hot_rooms_validation_allows_default_limit_sentinel() {
+        crate::impls::validate_proto_request(&crate::proto::client::GetHotRoomsRequest {
+            limit: 0,
+        })
+        .expect("zero should request the default hot-room limit");
     }
 
     #[test]

@@ -613,3 +613,63 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
 
     fixture.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn hot_rooms_considers_online_rooms_outside_newest_page() {
+    let fixture = create_client_api_fixture().await;
+    let ClientApiFixture {
+        client_api,
+        room,
+        owner,
+        ..
+    } = &fixture;
+
+    let connection_id = format!("conn_{}", uuid::Uuid::new_v4().simple());
+    client_api
+        .connection_service
+        .register(connection_id.clone(), owner.id)
+        .await
+        .unwrap();
+    client_api
+        .connection_service
+        .join_room(&connection_id, room.id)
+        .await
+        .unwrap();
+
+    for index in 0..5 {
+        client_api
+            .room_service
+            .create_room(
+                format!("newer-empty-room-{index}"),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    let response = client_api
+        .get_hot_rooms(synctv_api::proto::client::GetHotRoomsRequest { limit: 1 })
+        .await
+        .unwrap();
+
+    let top_room = response
+        .rooms
+        .first()
+        .and_then(|entry| entry.room.as_ref())
+        .expect("hot rooms should return one room");
+    assert_eq!(
+        top_room.id,
+        public_id_codec().encode_room_id(room.id).unwrap()
+    );
+    assert_eq!(response.rooms[0].online_count, 1);
+
+    client_api
+        .connection_service
+        .unregister(&connection_id)
+        .await;
+    fixture.cleanup().await;
+}

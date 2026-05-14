@@ -9,8 +9,8 @@ use serde_json::json;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        Media, MediaId, Playlist, PlaylistId, Room, RoomId, RoomStatus, User, UserId, UserRole,
-        UserStatus,
+        Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId, RoomStatus, User, UserId,
+        UserRole, UserStatus,
     },
     repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
 };
@@ -343,7 +343,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     .bind(owner.id)
     .bind("root-media.mp4")
     .bind(0.0)
-    .bind("direct_url")
+    .bind(ProviderType::DirectUrl.as_i16())
     .bind(json!({"url": "https://example.com/root.mp4"}))
     .bind(Option::<String>::None)
     .execute(&pool)

@@ -117,20 +117,18 @@ impl RoomRepository {
         Self { pool }
     }
 
-    /// Create a new room
+    /// Create a new room.
     ///
-    /// Relies on the database UNIQUE constraint on `(created_by, name)` to
-    /// reject duplicate active room names for the same creator atomically (no
-    /// TOCTOU race condition).
+    /// Product policies such as duplicate-name handling belong in the service
+    /// layer; this repository method only persists a validated room row.
     pub async fn create(&self, room: &Room) -> Result<Room> {
         self.create_with_executor(room, &self.pool).await
     }
 
-    /// Create a new room using a provided executor (pool or transaction)
+    /// Create a new room using a provided executor (pool or transaction).
     ///
-    /// Relies on the database UNIQUE constraint on `(created_by, name)` to
-    /// reject duplicate active room names for the same creator atomically (no
-    /// TOCTOU race condition).
+    /// Product policies such as duplicate-name handling belong in the service
+    /// layer; this repository method only persists a validated room row.
     pub async fn create_with_executor<'e, E>(&self, room: &Room, executor: E) -> Result<Room>
     where
         E: sqlx::PgExecutor<'e>,
@@ -162,24 +160,44 @@ impl RoomRepository {
             room.last_activity_at,
         )
             .fetch_one(executor)
-            .await
-            .map_err(|e| match e {
-                sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
-                    let constraint = db_err.constraint().unwrap_or("");
-                    if constraint.contains("idx_rooms_created_by_name")
-                        || constraint.contains("rooms_created_by_name")
-                    {
-                        crate::Error::AlreadyExists(
-                            "You already have a room with this name".to_string(),
-                        )
-                    } else {
-                        crate::Error::Database(e)
-                    }
-                }
-                _ => crate::Error::Database(e),
-            })?;
+            .await?;
 
         Ok(created.into())
+    }
+
+    pub async fn active_name_exists_for_creator(
+        &self,
+        creator_id: &UserId,
+        name: &str,
+    ) -> Result<bool> {
+        Self::active_name_exists_for_creator_with_executor(creator_id, name, &self.pool).await
+    }
+
+    pub async fn active_name_exists_for_creator_with_executor<'e, E>(
+        creator_id: &UserId,
+        name: &str,
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS(
+                SELECT 1
+                FROM rooms
+                WHERE created_by = $1
+                  AND name = $2
+                  AND deleted_at IS NULL
+            )
+            ",
+        )
+        .bind(creator_id.as_i64())
+        .bind(name)
+        .fetch_one(executor)
+        .await?;
+
+        Ok(exists)
     }
 
     /// Get room by ID
@@ -214,6 +232,30 @@ impl RoomRepository {
         Ok(room.map(Into::into))
     }
 
+    /// Get active, non-banned rooms by ID.
+    pub async fn list_active_unbanned_by_ids(&self, room_ids: &[RoomId]) -> Result<Vec<Room>> {
+        if room_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let ids: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
+        let rows = sqlx::query_as::<_, RoomRow>(&format!(
+            r"
+            SELECT {ROOM_SELECT_COLUMNS}
+            FROM rooms r
+            WHERE r.id = ANY($1)
+              AND r.deleted_at IS NULL
+              AND r.closed_at IS NULL
+              AND {ACTIVE_ROOM_BAN_NOT_EXISTS_SQL}
+            "
+        ))
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     /// Update room with optimistic locking.
     ///
     /// The caller must pass the `version` value from the previously-read room.
@@ -231,23 +273,54 @@ impl RoomRepository {
     /// Note: `updated_at` is set automatically by the `update_rooms_updated_at`
     /// BEFORE UPDATE trigger, so we omit it from the SET clause.
     pub async fn update(&self, room: &Room, old_version: i32) -> Result<Room> {
+        self.update_with_executor(room, old_version, &self.pool)
+            .await
+    }
+
+    pub async fn update_with_executor<'e, E>(
+        &self,
+        room: &Room,
+        old_version: i32,
+        executor: E,
+    ) -> Result<Room>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let updated = sqlx::query_as!(
             RoomRow,
             r#"
-             UPDATE rooms
-             SET name = $2, description = $3, closed_at = $4, version = version + 1
-             WHERE id = $1 AND deleted_at IS NULL AND version = $5
-             RETURNING id AS "id: RoomId",
-                       name,
-                       description,
-                       created_by AS "created_by: UserId",
-                       closed_at,
-                       false AS "is_banned!",
-                       created_at,
-                       updated_at,
-                       deleted_at,
-                       version,
-                       last_activity_at
+             WITH updated AS (
+                 UPDATE rooms
+                 SET name = $2, description = $3, closed_at = $4, version = version + 1
+                 WHERE id = $1 AND deleted_at IS NULL AND version = $5
+                 RETURNING id,
+                           name,
+                           description,
+                           created_by,
+                           closed_at,
+                           created_at,
+                           updated_at,
+                           deleted_at,
+                           version,
+                           last_activity_at
+             )
+             SELECT u.id AS "id: RoomId",
+                    u.name,
+                    u.description,
+                    u.created_by AS "created_by: UserId",
+                    u.closed_at,
+                    EXISTS (
+                        SELECT 1 FROM room_bans rb
+                        WHERE rb.room_id = u.id
+                          AND rb.revoked_at IS NULL
+                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                    ) AS "is_banned!",
+                    u.created_at,
+                    u.updated_at,
+                    u.deleted_at,
+                    u.version,
+                    u.last_activity_at
+             FROM updated u
             "#,
             room.id.as_i64(),
             &room.name,
@@ -255,7 +328,7 @@ impl RoomRepository {
             room.closed_at,
             old_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?;
 
         if let Some(updated) = updated {
@@ -750,20 +823,38 @@ impl RoomRepository {
         let room = sqlx::query_as!(
             RoomRow,
             r#"
-            UPDATE rooms
-            SET closed_at = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id AS "id: RoomId",
-                      name,
-                      description,
-                      created_by AS "created_by: UserId",
-                      closed_at,
-                      false AS "is_banned!",
-                      created_at,
-                      updated_at,
-                      deleted_at,
-                      version,
-                      last_activity_at
+            WITH updated AS (
+                UPDATE rooms
+                SET closed_at = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
+                WHERE id = $2 AND deleted_at IS NULL
+                RETURNING id,
+                          name,
+                          description,
+                          created_by,
+                          closed_at,
+                          created_at,
+                          updated_at,
+                          deleted_at,
+                          version,
+                          last_activity_at
+            )
+            SELECT u.id AS "id: RoomId",
+                   u.name,
+                   u.description,
+                   u.created_by AS "created_by: UserId",
+                   u.closed_at,
+                   EXISTS (
+                       SELECT 1 FROM room_bans rb
+                       WHERE rb.room_id = u.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS "is_banned!",
+                   u.created_at,
+                   u.updated_at,
+                   u.deleted_at,
+                   u.version,
+                   u.last_activity_at
+            FROM updated u
             "#,
             closed_at,
             room_id.as_i64(),
@@ -776,47 +867,9 @@ impl RoomRepository {
 
     /// Update room ban policy using `room_bans`.
     pub async fn update_ban_status(&self, room_id: &RoomId, is_banned: bool) -> Result<Room> {
-        if is_banned {
-            sqlx::query!(
-                r"
-                INSERT INTO room_bans (room_id, starts_at)
-                SELECT r.id, CURRENT_TIMESTAMP
-                FROM rooms r
-                WHERE r.id = $1 AND r.deleted_at IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM room_bans rb
-                      WHERE rb.room_id = r.id
-                        AND rb.revoked_at IS NULL
-                        AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                      )
-                ",
-                room_id as &RoomId,
-            )
-            .execute(&self.pool)
-            .await?;
-        } else {
-            sqlx::query!(
-                r"
-                UPDATE room_bans rb
-                SET revoked_at = CURRENT_TIMESTAMP
-                FROM rooms r
-                WHERE rb.room_id = r.id
-                  AND r.id = $1
-                  AND r.deleted_at IS NULL
-                  AND rb.revoked_at IS NULL
-                  AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                ",
-                room_id as &RoomId,
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        let room = self
-            .get_by_id(room_id)
-            .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
-
+        let mut tx = self.pool.begin().await?;
+        let room = Self::update_ban_status_with_executor(room_id, is_banned, &mut tx).await?;
+        tx.commit().await?;
         Ok(room)
     }
 
@@ -826,21 +879,26 @@ impl RoomRepository {
         executor: &mut PgConnection,
     ) -> Result<Room> {
         if is_banned {
-            sqlx::query!(
+            let lock_key = format!("room-ban:{room_id}");
+            sqlx::query(
                 r"
+                WITH _lock AS (
+                    SELECT pg_advisory_xact_lock(hashtextextended($2, 0))
+                )
                 INSERT INTO room_bans (room_id, starts_at)
                 SELECT r.id, CURRENT_TIMESTAMP
-                FROM rooms r
+                FROM rooms r, _lock
                 WHERE r.id = $1 AND r.deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM room_bans rb
                       WHERE rb.room_id = r.id
                         AND rb.revoked_at IS NULL
                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                      )
+                  )
                 ",
-                room_id as &RoomId,
             )
+            .bind(room_id.as_i64())
+            .bind(lock_key)
             .execute(&mut *executor)
             .await?;
         } else {
@@ -896,20 +954,38 @@ impl RoomRepository {
         let room = sqlx::query_as!(
             RoomRow,
             r#"
-            UPDATE rooms
-            SET description = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id AS "id: RoomId",
-                      name,
-                      description,
-                      created_by AS "created_by: UserId",
-                      closed_at,
-                      false AS "is_banned!",
-                      created_at,
-                      updated_at,
-                      deleted_at,
-                      version,
-                      last_activity_at
+            WITH updated AS (
+                UPDATE rooms
+                SET description = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
+                WHERE id = $2 AND deleted_at IS NULL
+                RETURNING id,
+                          name,
+                          description,
+                          created_by,
+                          closed_at,
+                          created_at,
+                          updated_at,
+                          deleted_at,
+                          version,
+                          last_activity_at
+            )
+            SELECT u.id AS "id: RoomId",
+                   u.name,
+                   u.description,
+                   u.created_by AS "created_by: UserId",
+                   u.closed_at,
+                   EXISTS (
+                       SELECT 1 FROM room_bans rb
+                       WHERE rb.room_id = u.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS "is_banned!",
+                   u.created_at,
+                   u.updated_at,
+                   u.deleted_at,
+                   u.version,
+                   u.last_activity_at
+            FROM updated u
             "#,
             description,
             room_id.as_i64(),
@@ -931,20 +1007,38 @@ impl RoomRepository {
         let room = sqlx::query_as!(
             RoomRow,
             r#"
-            UPDATE rooms
-            SET created_by = $2, updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id AS "id: RoomId",
-                      name,
-                      description,
-                      created_by AS "created_by: UserId",
-                      closed_at,
-                      false AS "is_banned!",
-                      created_at,
-                      updated_at,
-                      deleted_at,
-                      version,
-                      last_activity_at
+            WITH updated AS (
+                UPDATE rooms
+                SET created_by = $2, updated_at = CURRENT_TIMESTAMP, version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL
+                RETURNING id,
+                          name,
+                          description,
+                          created_by,
+                          closed_at,
+                          created_at,
+                          updated_at,
+                          deleted_at,
+                          version,
+                          last_activity_at
+            )
+            SELECT u.id AS "id: RoomId",
+                   u.name,
+                   u.description,
+                   u.created_by AS "created_by: UserId",
+                   u.closed_at,
+                   EXISTS (
+                       SELECT 1 FROM room_bans rb
+                       WHERE rb.room_id = u.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS "is_banned!",
+                   u.created_at,
+                   u.updated_at,
+                   u.deleted_at,
+                   u.version,
+                   u.last_activity_at
+            FROM updated u
             "#,
             room_id.as_i64(),
             new_owner_id.as_i64(),
@@ -1261,7 +1355,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_create_room_duplicate_name_for_same_owner_returns_already_exists() {
+    async fn test_create_room_duplicate_name_for_same_owner_is_repository_allowed() {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
@@ -1286,11 +1380,9 @@ mod tests {
             .build();
         let result = room_repo.create(&room2).await;
 
-        assert!(matches!(
-            result,
-            Err(crate::Error::AlreadyExists(ref msg))
-                if msg == "You already have a room with this name"
-        ));
+        let created = result.expect("repository should not enforce room-name product policy");
+        assert_eq!(created.name, "Duplicate Room Name");
+        assert_eq!(created.created_by, owner.id);
     }
 
     #[tokio::test]
@@ -1555,6 +1647,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.status, RoomStatus::Closed);
+
+        let banned = room_repo
+            .update_ban_status(&created.id, true)
+            .await
+            .unwrap();
+        assert!(banned.is_banned);
+
+        let reopened = room_repo
+            .update_status(&created.id, RoomStatus::Active)
+            .await
+            .unwrap();
+        assert_eq!(reopened.status, RoomStatus::Active);
+        assert!(
+            reopened.is_banned,
+            "status updates must preserve the derived active room-ban state"
+        );
     }
 
     /// Integration test: Update room ban status
@@ -1622,6 +1730,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.description, "New description");
+
+        room_repo
+            .update_ban_status(&created.id, true)
+            .await
+            .unwrap();
+        let updated = room_repo
+            .update_description(&created.id, "Another description")
+            .await
+            .unwrap();
+        assert_eq!(updated.description, "Another description");
+        assert!(
+            updated.is_banned,
+            "description updates must preserve the derived active room-ban state"
+        );
     }
 
     /// Integration test: List rooms with pagination

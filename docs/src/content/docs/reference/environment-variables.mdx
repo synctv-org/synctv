@@ -72,6 +72,16 @@ description: 常用 SYNCTV_ 环境变量速查。
 | `SYNCTV_REDIS_SENTINEL_MASTER_NAME` | `redis.sentinel_master_name` |
 | `SYNCTV_REDIS_SENTINEL_ADDRESSES` | `redis.sentinel_addresses` |
 
+## 独立 Media Provider Server
+
+这些变量由 `media-provider-server` 二进制读取，不经过主 SyncTV 配置加载器。
+
+| 环境变量 | 含义 |
+| --- | --- |
+| `PROVIDER_AUTH_SECRET` | 必填，用于 `x-provider-secret` gRPC metadata 的共享密钥 |
+| `PROVIDER_LISTEN_ADDR` | Provider gRPC 监听地址，默认 `[::]:50051` |
+| `PROVIDER_GRPC_COMPRESSION_ENABLED` | 是否允许 provider server 协商 gzip 压缩，默认 `true` |
+
 ## 安全
 
 | 环境变量 | 对应配置 |

@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
+use super::node_registry::ClusterMode;
 use super::runtime::{ClusterHealthRuntime, ClusterNodeDirectory};
 use crate::error::Result;
 #[allow(unused_imports)]
@@ -64,6 +65,37 @@ struct ProbeState {
     success_count: AtomicU32,
     /// Consecutive failed probes
     failure_count: AtomicU32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistryRefreshState {
+    Authoritative,
+    LocalOnly,
+    DegradedFallback,
+}
+
+const fn classify_registry_refresh(mode: ClusterMode) -> RegistryRefreshState {
+    match mode {
+        ClusterMode::Normal => RegistryRefreshState::Authoritative,
+        ClusterMode::Degraded => RegistryRefreshState::DegradedFallback,
+        ClusterMode::Standalone => RegistryRefreshState::LocalOnly,
+    }
+}
+
+fn update_registry_failure_tracking(
+    mode: ClusterMode,
+    consecutive_registry_failures: &mut u32,
+) -> RegistryRefreshState {
+    let state = classify_registry_refresh(mode);
+    match state {
+        RegistryRefreshState::Authoritative | RegistryRefreshState::LocalOnly => {
+            *consecutive_registry_failures = 0;
+        }
+        RegistryRefreshState::DegradedFallback => {
+            *consecutive_registry_failures = consecutive_registry_failures.saturating_add(1);
+        }
+    }
+    state
 }
 
 /// Health monitor for cluster nodes
@@ -289,18 +321,38 @@ impl HealthMonitor {
                         // Passive heartbeat check with backoff on registry failures
                         match registry.get_all_nodes().await {
                             Ok(nodes) => {
-                                if consecutive_registry_failures > 0 {
-                                    tracing::info!(
-                                        previous_failures = consecutive_registry_failures,
-                                        "Health monitor reconnected to registry"
-                                    );
-                                }
-                                consecutive_registry_failures = 0;
-                                if registry.cluster_mode() == super::node_registry::ClusterMode::Normal {
-                                    last_successful_refresh_at.store(
-                                        current_unix_timestamp_secs(),
-                                        Ordering::Relaxed,
-                                    );
+                                let previous_failures = consecutive_registry_failures;
+                                let refresh_state = update_registry_failure_tracking(
+                                    registry.cluster_mode(),
+                                    &mut consecutive_registry_failures,
+                                );
+                                match refresh_state {
+                                    RegistryRefreshState::Authoritative => {
+                                        if previous_failures > 0 {
+                                            tracing::info!(
+                                                previous_failures,
+                                                "Health monitor reconnected to registry"
+                                            );
+                                        }
+                                        last_successful_refresh_at.store(
+                                            current_unix_timestamp_secs(),
+                                            Ordering::Relaxed,
+                                        );
+                                    }
+                                    RegistryRefreshState::LocalOnly => {
+                                        if previous_failures > 0 {
+                                            tracing::info!(
+                                                previous_failures,
+                                                "Health monitor using local-only registry"
+                                            );
+                                        }
+                                    }
+                                    RegistryRefreshState::DegradedFallback => {
+                                        tracing::warn!(
+                                            consecutive_failures = consecutive_registry_failures,
+                                            "Health monitor using degraded local node cache while registry is unavailable"
+                                        );
+                                    }
                                 }
                                 Self::process_heartbeats(&health_status, &nodes, timeout_secs).await;
                             }
@@ -323,7 +375,7 @@ impl HealthMonitor {
                         }
                     }
                     _ = probe_timer.tick() => {
-                        // Active TCP probe -- skip if registry is unreachable
+                        // Active TCP probe -- skip if registry is unreachable or serving degraded fallback data.
                         if consecutive_registry_failures == 0 {
                             Self::probe_nodes(&registry, &health_status, &probe_config, &probe_states).await;
                         }
@@ -884,6 +936,63 @@ mod tests {
         assert!(
             monitor.is_snapshot_stale(),
             "health snapshot should be stale after exceeding one monitor interval"
+        );
+    }
+
+    #[test]
+    fn test_degraded_registry_refresh_counts_as_failure_for_backoff() {
+        let mut failures = 0;
+
+        assert_eq!(
+            update_registry_failure_tracking(
+                super::super::node_registry::ClusterMode::Degraded,
+                &mut failures,
+            ),
+            RegistryRefreshState::DegradedFallback
+        );
+        assert_eq!(
+            failures, 1,
+            "degraded local-cache fallback must keep registry failure backoff active"
+        );
+
+        assert_eq!(
+            update_registry_failure_tracking(
+                super::super::node_registry::ClusterMode::Degraded,
+                &mut failures,
+            ),
+            RegistryRefreshState::DegradedFallback
+        );
+        assert_eq!(failures, 2);
+    }
+
+    #[test]
+    fn test_normal_registry_refresh_clears_degraded_backoff() {
+        let mut failures = 3;
+
+        assert_eq!(
+            update_registry_failure_tracking(
+                super::super::node_registry::ClusterMode::Normal,
+                &mut failures,
+            ),
+            RegistryRefreshState::Authoritative
+        );
+        assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn test_standalone_registry_refresh_is_local_only_not_failure() {
+        let mut failures = 2;
+
+        assert_eq!(
+            update_registry_failure_tracking(
+                super::super::node_registry::ClusterMode::Standalone,
+                &mut failures,
+            ),
+            RegistryRefreshState::LocalOnly
+        );
+        assert_eq!(
+            failures, 0,
+            "local-only deployments should not inherit degraded Redis backoff"
         );
     }
 }

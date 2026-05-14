@@ -14,8 +14,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        Media, MediaId, MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomStatus,
-        SignupMethod, User, UserId, UserRole, UserStatus,
+        Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
+        RoomMember, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -525,9 +525,12 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .expect("create playback state");
 
     sqlx::query(
-        "INSERT INTO auth_oauth2_identities (provider, provider_user_id, user_id, username, email)
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO auth_oauth2_identities (
+             provider_type, provider_instance_name, provider_user_id, user_id, username, email
+         )
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
+    .bind(2_i16)
     .bind("github")
     .bind("delete-owner-gh")
     .bind(doomed_user.id)
@@ -544,7 +547,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind(doomed_user.id)
     .bind("title")
     .bind("body")
-    .bind("system")
+    .bind(i16::from(NotificationType::SystemAnnouncement))
     .execute(&pool)
     .await
     .expect("create notification");

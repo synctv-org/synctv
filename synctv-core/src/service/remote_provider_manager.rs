@@ -85,6 +85,9 @@ pub struct RemoteProviderManager {
 
     /// Global SSRF policy for remote provider gRPC endpoints.
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
+
+    /// Whether remote provider gRPC clients should negotiate gzip compression.
+    grpc_compression_enabled: bool,
 }
 
 impl std::fmt::Debug for RemoteProviderManager {
@@ -276,9 +279,10 @@ impl RemoteProviderManager {
                     LoadError::Provider(Self::map_remote_resolution_error(error))
                 })?;
                 let connection =
-                    Self::build_remote_connection(&config, channel).map_err(|error| {
-                        LoadError::Provider(Self::map_remote_resolution_error(error))
-                    })?;
+                    self.build_remote_connection(&config, channel)
+                        .map_err(|error| {
+                            LoadError::Provider(Self::map_remote_resolution_error(error))
+                        })?;
 
                 tracing::debug!(
                     "Lazily created and cached channel for instance '{}'",
@@ -350,6 +354,12 @@ impl RemoteProviderManager {
         )
     }
 
+    #[must_use]
+    pub fn with_grpc_compression(mut self, enabled: bool) -> Self {
+        self.grpc_compression_enabled = enabled;
+        self
+    }
+
     fn new_with_options(
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
@@ -375,6 +385,7 @@ impl RemoteProviderManager {
             invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
             address_overrides: Arc::new(address_overrides),
             ssrf_guard,
+            grpc_compression_enabled: true,
         }
     }
 
@@ -402,7 +413,7 @@ impl RemoteProviderManager {
             Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
             match self.create_grpc_channel(&config).await {
-                Ok(channel) => match Self::build_remote_connection(&config, channel) {
+                Ok(channel) => match self.build_remote_connection(&config, channel) {
                     Ok(connection) => {
                         self.channel_cache
                             .insert(config.name.clone(), connection)
@@ -771,12 +782,17 @@ impl RemoteProviderManager {
     }
 
     fn build_remote_connection(
+        &self,
         config: &ProviderInstance,
         channel: Channel,
     ) -> crate::Result<RemoteProviderConnection> {
         let auth_secret = validate_auth_secret(Some(Self::required_auth_secret(config)?))
             .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
-        Ok(RemoteProviderConnection::new(channel, auth_secret))
+        Ok(RemoteProviderConnection::new_with_grpc_compression(
+            channel,
+            auth_secret,
+            self.grpc_compression_enabled,
+        ))
     }
 
     async fn build_management_validated_remote_connection_with_control(
@@ -789,7 +805,7 @@ impl RemoteProviderManager {
             self.create_grpc_channel(config),
         ))
         .await?;
-        let connection = Self::build_remote_connection(config, channel)?;
+        let connection = self.build_remote_connection(config, channel)?;
         self.validate_management_connection_with_control(config, &connection, control)
             .await?;
         Ok(connection)

@@ -661,9 +661,26 @@ impl LeaderElector {
     /// Uses Redis TIME command to get authoritative server-side timestamp,
     /// avoiding clock skew issues when multiple nodes have NTP drift.
     async fn get_redis_time(&self) -> Result<u64, redis::RedisError> {
-        let mut conn = self.redis_runtime.snapshot().await;
+        let mut conn = tokio::time::timeout(
+            self.redis_runtime.operation_timeout(),
+            self.redis_runtime.snapshot(),
+        )
+        .await
+        .map_err(|_| {
+            redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "Redis timeout: acquire leader time connection",
+            ))
+        })?;
         // TIME returns: [seconds, microseconds]
-        let time_result: (u64, u64) = redis::cmd("TIME").query_async(&mut conn).await?;
+        let time_result: (u64, u64) = tokio::time::timeout(
+            self.redis_runtime.operation_timeout(),
+            redis::cmd("TIME").query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| {
+            redis::RedisError::from((redis::ErrorKind::Io, "Redis timeout: read leader time"))
+        })??;
         Ok(time_result.0)
     }
 

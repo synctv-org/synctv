@@ -56,7 +56,13 @@ pub fn bilibili_read_routes() -> Router<AppState> {
         responses(
             (status = 200, description = "Bilibili media parsed", body = crate::proto::providers::bilibili::ParseResponse),
             (status = 400, description = "Invalid parse request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -107,7 +113,14 @@ pub(crate) async fn parse(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Bilibili login QR code generated", body = crate::proto::providers::bilibili::QrCodeResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 400, description = "Invalid QR login request", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -155,7 +168,13 @@ pub(crate) async fn login_qr(
         responses(
             (status = 200, description = "Bilibili QR login status", body = crate::proto::providers::bilibili::QrStatusResponse),
             (status = 400, description = "Invalid QR check request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -206,7 +225,14 @@ pub(crate) async fn qr_check(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Bilibili captcha challenge", body = crate::proto::providers::bilibili::CaptchaResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 400, description = "Invalid captcha request", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -254,7 +280,13 @@ pub(crate) async fn new_captcha(
         responses(
             (status = 200, description = "Bilibili SMS sent", body = crate::proto::providers::bilibili::SendSmsResponse),
             (status = 400, description = "Invalid SMS request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -302,7 +334,13 @@ pub(crate) async fn sms_send(
         responses(
             (status = 200, description = "Bilibili SMS login succeeded", body = crate::proto::providers::bilibili::LoginSmsResponse),
             (status = 400, description = "Invalid SMS login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -355,7 +393,13 @@ pub(crate) async fn sms_login(
         responses(
             (status = 200, description = "Bilibili account info", body = crate::proto::providers::bilibili::UserInfoResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -406,6 +450,10 @@ pub(crate) async fn user_info(
         responses(
             (status = 200, description = "Saved Bilibili credentials", body = GetBindsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider bind request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
@@ -448,7 +496,13 @@ pub(crate) async fn binds(
         responses(
             (status = 200, description = "Bilibili credential removed", body = crate::proto::providers::bilibili::LogoutResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])

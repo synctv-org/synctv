@@ -255,7 +255,7 @@ pub async fn get_bind_authorize_url(
 
 /// Unlink `OAuth2` provider from authenticated user
 ///
-/// DELETE /`api/oauth2/type/:provider/unlink?provider_user_id`=<optional>
+/// DELETE /`api/oauth2/type/:provider/unlink?provider_instance_name`=<optional>&`provider_user_id`=<optional>
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -264,6 +264,7 @@ pub async fn get_bind_authorize_url(
         tag = "OAuth2",
         params(
             ("provider" = String, Path, description = "OAuth2 provider type"),
+            ("provider_instance_name" = Option<String>, Query, description = "Required when provider_user_id is set; OAuth2 provider instance namespace"),
             ("provider_user_id" = Option<String>, Query, description = "Optional provider user ID to unlink")
         ),
         responses(
@@ -324,7 +325,7 @@ pub async fn unlink_provider(
         tag = "OAuth2",
         responses(
             (status = 200, description = "Available OAuth2 providers", body = ListAvailableProvidersResponse),
-            (status = 400, description = "OAuth2 is not configured", body = crate::openapi::ErrorResponseDoc)
+            (status = 503, description = "OAuth2 is not configured", body = crate::openapi::ErrorResponseDoc)
         )
     )
 )]
@@ -438,6 +439,7 @@ mod tests {
                 .expect("unlink query should not require provider");
         assert!(unlink.provider.is_empty());
         assert_eq!(unlink.provider_user_id, "remote-user-1");
+        assert!(unlink.provider_instance_name.is_empty());
     }
 
     #[test]

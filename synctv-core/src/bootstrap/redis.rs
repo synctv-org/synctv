@@ -12,8 +12,8 @@ use tracing::info;
 use crate::config::RedisDeploymentMode;
 use crate::Config;
 use crate::{
-    redis_connection_manager_config, ManagedRedisRuntime, RedisConnectionRuntime,
-    RedisCoordinationRuntime,
+    redis_connection_manager_config, redis_operation_timeout_from_config, ManagedRedisRuntime,
+    RedisConnectionRuntime, RedisCoordinationRuntime,
 };
 
 type SentinelNodeConnectionInfo = redis::sentinel::SentinelNodeConnectionInfo;
@@ -244,7 +244,11 @@ async fn init_standalone(
         build_redis_connection_manager_config(config),
     )
     .await?;
-    let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
+    let runtime = ManagedRedisRuntime::new_with_operation_timeout(
+        client,
+        Arc::new(RwLock::new(conn)),
+        redis_operation_timeout_from_config(config),
+    );
     Ok(Arc::new(runtime))
 }
 
@@ -426,7 +430,11 @@ async fn init_sentinel(
         );
 
         Ok(RedisInit {
-            runtime: Some(Arc::new(ManagedRedisRuntime::new(client, shared_conn))),
+            runtime: Some(Arc::new(ManagedRedisRuntime::new_with_operation_timeout(
+                client,
+                shared_conn,
+                redis_operation_timeout_from_config(config),
+            ))),
             sentinel_health_check_task: Some(health_check_task),
         })
     }

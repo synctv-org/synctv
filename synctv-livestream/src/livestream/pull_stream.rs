@@ -37,6 +37,10 @@ pub struct PullStream {
     stopped: AtomicBool,
     /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
     connection_pool: GrpcConnectionPool,
+    /// Maximum gRPC message size for relay calls.
+    grpc_max_message_size_bytes: usize,
+    /// Whether relay calls negotiate gzip compression.
+    grpc_compression_enabled: bool,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
     /// Optional HLS proxy client for cache invalidation on stale epoch detection.
@@ -97,9 +101,25 @@ impl PullStream {
             cancel_token: CancellationToken::new(),
             stopped: AtomicBool::new(false),
             connection_pool,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             cluster_secret: None,
             hls_proxy: None,
         }
+    }
+
+    /// Set the maximum gRPC message size for relay calls.
+    #[must_use]
+    pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
+        self.grpc_max_message_size_bytes = max_message_size_bytes;
+        self
+    }
+
+    /// Enable or disable gzip compression negotiation for relay calls.
+    #[must_use]
+    pub const fn with_grpc_compression(mut self, enabled: bool) -> Self {
+        self.grpc_compression_enabled = enabled;
+        self
     }
 
     /// Set the cluster authentication secret for inter-node gRPC requests.
@@ -172,6 +192,8 @@ impl PullStream {
         let hub_sender = self.stream_hub_event_sender.clone();
         let pool = self.connection_pool.clone();
         let cluster_secret = self.cluster_secret.clone();
+        let grpc_max_message_size_bytes = self.grpc_max_message_size_bytes;
+        let grpc_compression_enabled = self.grpc_compression_enabled;
         let epoch = self.epoch;
         let registry = Arc::clone(&self.registry);
         let hls_proxy = self.hls_proxy.clone();
@@ -197,7 +219,9 @@ impl PullStream {
                     hub_sender.clone(),
                     pool.clone(),
                 )
-                .with_cluster_secret(cluster_secret.clone());
+                .with_cluster_secret(cluster_secret.clone())
+                .with_grpc_max_message_size(grpc_max_message_size_bytes)
+                .with_grpc_compression(grpc_compression_enabled);
 
                 // Track relay duration via histogram (stream_type = "rtmp" for gRPC RTMP relay)
                 let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION

@@ -48,8 +48,8 @@ async fn test_audit_log_integrity_all_fields() {
         i64,
         i64,
         String,
-        String,
-        Option<String>,
+        i16,
+        Option<i16>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -67,8 +67,16 @@ async fn test_audit_log_integrity_all_fields() {
     assert!(row.0 > 0, "ID should be generated");
     assert_eq!(row.1, 100_101, "Actor ID should match");
     assert_eq!(row.2, "test_admin", "Actor username should match");
-    assert_eq!(row.3, "user_banned", "Action should match");
-    assert_eq!(row.4, Some("user".to_string()), "Target type should match");
+    assert_eq!(
+        AuditAction::try_from(row.3).unwrap(),
+        AuditAction::UserBanned,
+        "Action should match"
+    );
+    assert_eq!(
+        row.4.map(|value| AuditTargetType::try_from(value).unwrap()),
+        Some(AuditTargetType::User),
+        "Target type should match"
+    );
     assert_eq!(
         row.5,
         Some("target_user_002".to_string()),
@@ -455,8 +463,8 @@ async fn test_all_audit_actions_are_logged() {
             .expect("Log should succeed");
     }
 
-    // Verify all actions are logged with correct action strings
-    let logged_actions: Vec<(String,)> = sqlx::query_as(
+    // Verify all actions are logged with stable numeric action codes.
+    let logged_actions: Vec<(i16,)> = sqlx::query_as(
         "SELECT action FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at",
     )
     .fetch_all(&pool)
@@ -465,22 +473,12 @@ async fn test_all_audit_actions_are_logged() {
 
     assert_eq!(logged_actions.len(), actions.len());
 
-    // Verify action names match expected format
-    let expected_names: Vec<&str> = vec![
-        "user_created",
-        "user_banned",
-        "user_unbanned",
-        "user_deleted",
-        "room_created",
-        "room_banned",
-        "room_unbanned",
-        "room_deleted",
-        "settings_updated",
-        "stream_kicked",
-    ];
-
-    for ((logged,), expected) in logged_actions.iter().zip(expected_names.iter()) {
-        assert_eq!(logged, expected, "Action name should match");
+    for ((logged,), expected) in logged_actions.iter().zip(actions.iter()) {
+        assert_eq!(
+            AuditAction::try_from(*logged).unwrap(),
+            *expected,
+            "Action code should match"
+        );
     }
 }
 
@@ -492,13 +490,13 @@ async fn test_all_target_types_are_logged() {
     let service = AuditService::new_unbuffered(pool.clone());
 
     let target_types = [
-        (AuditTargetType::User, "user"),
-        (AuditTargetType::Room, "room"),
-        (AuditTargetType::Stream, "stream"),
-        (AuditTargetType::Settings, "settings"),
+        AuditTargetType::User,
+        AuditTargetType::Room,
+        AuditTargetType::Stream,
+        AuditTargetType::Settings,
     ];
 
-    for (i, (target_type, _expected)) in target_types.iter().enumerate() {
+    for (i, target_type) in target_types.iter().enumerate() {
         service
             .log(
                 format!("tgt_actr_{i}"),
@@ -514,8 +512,8 @@ async fn test_all_target_types_are_logged() {
             .expect("Log should succeed");
     }
 
-    // Verify all target types are logged correctly
-    let logged_types: Vec<(Option<String>,)> = sqlx::query_as(
+    // Verify all target types are logged with stable numeric target codes.
+    let logged_types: Vec<(Option<i16>,)> = sqlx::query_as(
         "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at",
     )
     .fetch_all(&pool)
@@ -524,11 +522,11 @@ async fn test_all_target_types_are_logged() {
 
     assert_eq!(logged_types.len(), target_types.len());
 
-    for ((logged,), (_, expected)) in logged_types.iter().zip(target_types.iter()) {
+    for ((logged,), expected) in logged_types.iter().zip(target_types.iter()) {
         assert_eq!(
-            logged,
-            &Some(expected.to_string()),
-            "Target type should match"
+            logged.map(|value| AuditTargetType::try_from(value).unwrap()),
+            Some(*expected),
+            "Target type code should match"
         );
     }
 }
@@ -620,7 +618,7 @@ async fn test_log_stream_kicked_helper() {
         .await
         .expect("Stream kick log should succeed");
 
-    let row: (String, String, Option<String>, String, serde_json::Value) = sqlx::query_as(
+    let row: (i16, i16, Option<String>, String, serde_json::Value) = sqlx::query_as(
         r"
         SELECT action, target_type, target_id, actor_username, details
         FROM audit_logs
@@ -631,8 +629,14 @@ async fn test_log_stream_kicked_helper() {
     .await
     .expect("Query should succeed");
 
-    assert_eq!(row.0, "stream_kicked");
-    assert_eq!(row.1, "stream");
+    assert_eq!(
+        AuditAction::try_from(row.0).unwrap(),
+        AuditAction::StreamKicked
+    );
+    assert_eq!(
+        AuditTargetType::try_from(row.1).unwrap(),
+        AuditTargetType::Stream
+    );
     assert_eq!(row.2, Some("room_123:media_456".to_string()));
     assert_eq!(row.3, "stream_kicker");
     assert_eq!(row.4["room_id"], "room_123");
@@ -696,13 +700,7 @@ async fn test_settings_viewed_audit_log() {
         .await
         .expect("Settings viewed log should succeed");
 
-    let row: (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        serde_json::Value,
-    ) = sqlx::query_as(
+    let row: (i16, i16, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
         r"
         SELECT action, target_type, ip_address, user_agent, details
         FROM audit_logs
@@ -713,8 +711,14 @@ async fn test_settings_viewed_audit_log() {
     .await
     .expect("Query should succeed");
 
-    assert_eq!(row.0, "settings_viewed");
-    assert_eq!(row.1, "settings");
+    assert_eq!(
+        AuditAction::try_from(row.0).unwrap(),
+        AuditAction::SettingsViewed
+    );
+    assert_eq!(
+        AuditTargetType::try_from(row.1).unwrap(),
+        AuditTargetType::Settings
+    );
     assert_eq!(row.2, Some("192.168.1.50".to_string()));
     assert_eq!(row.3, Some("Mozilla/5.0 AdminClient/1.0".to_string()));
     assert_eq!(row.4["group_count"], 5);
@@ -745,7 +749,7 @@ async fn test_settings_group_viewed_audit_log() {
         .await
         .expect("Settings group viewed log should succeed");
 
-    let row: (String, String, serde_json::Value) = sqlx::query_as(
+    let row: (i16, i16, serde_json::Value) = sqlx::query_as(
         r"
         SELECT action, target_type, details
         FROM audit_logs
@@ -756,7 +760,13 @@ async fn test_settings_group_viewed_audit_log() {
     .await
     .expect("Query should succeed");
 
-    assert_eq!(row.0, "settings_group_viewed");
-    assert_eq!(row.1, "settings");
+    assert_eq!(
+        AuditAction::try_from(row.0).unwrap(),
+        AuditAction::SettingsGroupViewed
+    );
+    assert_eq!(
+        AuditTargetType::try_from(row.1).unwrap(),
+        AuditTargetType::Settings
+    );
     assert_eq!(row.2["group"], "security");
 }

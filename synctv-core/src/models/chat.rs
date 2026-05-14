@@ -4,6 +4,51 @@ use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(i16)]
+pub enum ChatMessageType {
+    Text = 1,
+    System = 2,
+    Action = 3,
+}
+
+impl ChatMessageType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::System => "system",
+            Self::Action => "action",
+        }
+    }
+}
+
+impl std::fmt::Display for ChatMessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ChatMessageType {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "text" => Ok(Self::Text),
+            "system" => Ok(Self::System),
+            "action" => Ok(Self::Action),
+            other => Err(format!("Unknown chat message type: {other}")),
+        }
+    }
+}
+
+sqlx_i16_enum!(ChatMessageType, "Invalid chat message type", {
+    Text = 1,
+    System = 2,
+    Action = 3,
+});
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChatMessage {
     pub id: i64,
@@ -13,8 +58,7 @@ pub struct ChatMessage {
     /// `None` when the original author has been deleted (`ON DELETE SET NULL`).
     pub user_id: Option<UserId>,
     pub content: String,
-    /// Message type: 1=text, 2=system, 3=action
-    pub message_type: i16,
+    pub message_type: ChatMessageType,
     pub created_at: DateTime<Utc>,
 }
 
@@ -26,7 +70,7 @@ impl ChatMessage {
             room_id,
             user_id: Some(user_id),
             content,
-            message_type: 1, // default: text
+            message_type: ChatMessageType::Text,
             created_at: Utc::now(),
         }
     }
@@ -133,5 +177,18 @@ mod tests {
             DanmakuPosition::Scroll
         );
         assert!("middle".parse::<DanmakuPosition>().is_err());
+    }
+
+    #[test]
+    fn chat_message_type_display_parse_and_code_roundtrip() {
+        assert_eq!(ChatMessageType::Text.to_string(), "text");
+        assert_eq!(
+            " SYSTEM ".parse::<ChatMessageType>().unwrap(),
+            ChatMessageType::System
+        );
+        assert_eq!(i16::from(ChatMessageType::Action), 3);
+        assert_eq!(ChatMessageType::try_from(1).unwrap(), ChatMessageType::Text);
+        assert!(ChatMessageType::try_from(99).is_err());
+        assert!("notice".parse::<ChatMessageType>().is_err());
     }
 }

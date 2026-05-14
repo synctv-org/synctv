@@ -8,14 +8,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMPTZ NULL,
     version INTEGER NOT NULL DEFAULT 0,
-    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT rooms_description_length_check
-        CHECK (char_length(description) <= 500)
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_created_by_name
-    ON rooms(created_by, name)
-    WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
 CREATE INDEX IF NOT EXISTS idx_rooms_closed_at ON rooms(closed_at) WHERE closed_at IS NOT NULL;

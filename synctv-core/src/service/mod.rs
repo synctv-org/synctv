@@ -33,6 +33,7 @@ pub mod remote_provider_manager;
 pub mod review;
 pub mod room;
 pub mod room_settings;
+mod session_store;
 pub mod settings;
 pub mod settings_vars;
 pub mod stun_server;

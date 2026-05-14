@@ -4,10 +4,14 @@
 
 use super::query_builder::escape_ilike;
 use crate::{
-    models::{normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery, RoomId},
+    models::{
+        normalize_provider_instance_name, provider_type_code_from_name,
+        provider_type_name_from_code, Playlist, PlaylistId, PlaylistListQuery, ProviderTypeName,
+        RoomId,
+    },
     Result,
 };
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{postgres::PgRow, PgPool, Row};
 use std::collections::BTreeMap;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -18,7 +22,7 @@ struct PlaylistRow {
     name: String,
     parent_id: Option<PlaylistId>,
     position: f64,
-    source_provider: Option<String>,
+    source_provider: Option<i16>,
     source_config: Option<serde_json::Value>,
     provider_instance_name: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -35,7 +39,12 @@ impl From<PlaylistRow> for Playlist {
             name: row.name,
             parent_id: row.parent_id,
             position: row.position,
-            source_provider: row.source_provider,
+            source_provider: row
+                .source_provider
+                .map(provider_type_name_from_code)
+                .transpose()
+                .map_err(crate::Error::InvalidInput)
+                .unwrap_or_default(),
             source_config: row.source_config,
             provider_instance_name: row.provider_instance_name,
             created_at: row.created_at,
@@ -43,6 +52,25 @@ impl From<PlaylistRow> for Playlist {
             version: row.version,
         }
     }
+}
+
+fn playlist_from_pg_row(row: &PgRow) -> Result<Playlist> {
+    Ok(Playlist {
+        id: row.try_get("id")?,
+        room_id: row.try_get("room_id")?,
+        creator_id: row.try_get("creator_id")?,
+        name: row.try_get("name")?,
+        parent_id: row.try_get("parent_id")?,
+        position: row.try_get("position")?,
+        source_provider: row
+            .try_get::<Option<ProviderTypeName>, _>("source_provider")?
+            .map(|provider| provider.0),
+        source_config: row.try_get("source_config")?,
+        provider_instance_name: row.try_get("provider_instance_name")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        version: row.try_get("version")?,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -92,12 +120,16 @@ impl PlaylistRepository {
         }
     }
 
+    fn provider_type_code(provider: &str) -> Result<i16> {
+        provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
+    }
+
     fn push_playlist_scope_filters(
         builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
         room_id: &RoomId,
         parent_id: Option<&PlaylistId>,
         query: &PlaylistListQuery,
-    ) {
+    ) -> Result<()> {
         builder.push(" FROM playlists p LEFT JOIN users u ON p.creator_id = u.id AND u.deleted_at IS NULL WHERE p.room_id = ");
         builder.push_bind(room_id.as_i64());
         match parent_id {
@@ -118,7 +150,7 @@ impl PlaylistRepository {
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND p.source_provider = ");
-            builder.push_bind(source_provider.clone());
+            builder.push_bind(Self::provider_type_code(source_provider)?);
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
             if let Some(trimmed) = normalize_provider_instance_name(Some(provider_instance_name)) {
@@ -158,6 +190,7 @@ impl PlaylistRepository {
             }
             None => {}
         }
+        Ok(())
     }
 
     pub async fn count_filtered_by_parent(
@@ -167,7 +200,7 @@ impl PlaylistRepository {
         query: &PlaylistListQuery,
     ) -> Result<i64> {
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
-        Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query);
+        Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query)?;
         builder
             .build_query_scalar()
             .fetch_one(&self.pool)
@@ -198,7 +231,7 @@ impl PlaylistRepository {
                       ELSE FALSE
                     END AS is_available",
         );
-        Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query);
+        Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query)?;
         let order_by = Self::build_playlist_list_order_by(query);
         builder.push(format!(" ORDER BY {order_by} LIMIT "));
         builder.push_bind(limit);
@@ -209,7 +242,7 @@ impl PlaylistRepository {
         rows.into_iter()
             .map(|row| {
                 Ok(PlaylistListItem {
-                    playlist: Playlist::from_row(&row)?,
+                    playlist: playlist_from_pg_row(&row)?,
                     is_available: row.try_get("is_available")?,
                 })
             })
@@ -758,7 +791,11 @@ impl PlaylistRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let source_provider_str = playlist.source_provider.as_deref();
+        let source_provider_code = playlist
+            .source_provider
+            .as_deref()
+            .map(Self::provider_type_code)
+            .transpose()?;
         let parent_id = playlist.parent_id;
 
         let row = sqlx::query_as!(
@@ -786,7 +823,7 @@ impl PlaylistRepository {
             &playlist.name,
             parent_id.as_ref().map(PlaylistId::as_i64),
             playlist.position,
-            source_provider_str,
+            source_provider_code,
             playlist.source_config.as_ref(),
             Self::normalize_provider_instance_name_for_db(
                 playlist.provider_instance_name.as_deref(),
@@ -1242,23 +1279,28 @@ impl PlaylistRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| Playlist {
-                id: row.id,
-                room_id: row.room_id,
-                creator_id: row.creator_id,
-                name: row.name,
-                parent_id: row.parent_id,
-                position: row.position,
-                source_provider: row.source_provider,
-                source_config: row.source_config,
-                provider_instance_name: row.provider_instance_name,
-                created_at: row.created_at,
-                updated_at: row.updated_at,
-                version: row.version,
+        rows.into_iter()
+            .map(|row| {
+                Ok(Playlist {
+                    id: row.id,
+                    room_id: row.room_id,
+                    creator_id: row.creator_id,
+                    name: row.name,
+                    parent_id: row.parent_id,
+                    position: row.position,
+                    source_provider: row
+                        .source_provider
+                        .map(provider_type_name_from_code)
+                        .transpose()
+                        .map_err(crate::Error::InvalidInput)?,
+                    source_config: row.source_config,
+                    provider_instance_name: row.provider_instance_name,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                    version: row.version,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Get playlist path (breadcrumbs), scoped to a room.
@@ -1424,7 +1466,8 @@ mod tests {
         };
         let room_id = RoomId::expect_positive(80_008);
 
-        PlaylistRepository::push_playlist_scope_filters(&mut builder, &room_id, None, &query);
+        PlaylistRepository::push_playlist_scope_filters(&mut builder, &room_id, None, &query)
+            .unwrap();
 
         let built = builder.build();
         assert!(built

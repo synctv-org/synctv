@@ -353,12 +353,6 @@ fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
 }
 
 fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError {
-    if let synctv_core::Error::Authorization(message) = &error {
-        if message.eq_ignore_ascii_case("Invalid or expired ticket") {
-            return AppError::invalid_or_expired_ticket();
-        }
-    }
-
     match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::invalid_or_expired_ticket(),
         AuthErrorCategory::Authorization => {
@@ -1220,15 +1214,8 @@ fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
 }
 
 fn map_websocket_pre_join_error(error: RealtimeJoinError) -> AppError {
-    match error {
-        RealtimeJoinError::RateLimited(message) => AppError::too_many_requests(message),
-        RealtimeJoinError::ServiceUnavailable(_) => AppError::service_unavailable(),
-        RealtimeJoinError::PermissionDenied(message) => AppError::forbidden(message),
-        RealtimeJoinError::Internal(message) => {
-            tracing::error!("Unexpected WebSocket pre_join failure: {message}");
-            AppError::internal_server_error("Failed to establish WebSocket connection")
-        }
-    }
+    error.log_if_internal("websocket_pre_join");
+    AppError::from(ApiError::from(error))
 }
 
 async fn handle_socket(
@@ -1935,12 +1922,22 @@ mod tests {
 
     #[test]
     fn test_map_websocket_ticket_validation_error_keeps_invalid_ticket_as_401() {
-        let err = map_websocket_ticket_validation_error(synctv_core::Error::Authorization(
+        let err = map_websocket_ticket_validation_error(synctv_core::Error::Authentication(
             "Invalid or expired ticket".to_string(),
         ));
 
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.message, "Invalid or expired ticket");
+    }
+
+    #[test]
+    fn test_map_websocket_ticket_validation_error_keeps_room_mismatch_as_403() {
+        let err = map_websocket_ticket_validation_error(synctv_core::Error::Authorization(
+            "Ticket not valid for this room".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "Ticket not valid for this room");
     }
 
     #[test]
@@ -2146,7 +2143,7 @@ mod tests {
         ));
 
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(err.message, "Failed to establish WebSocket connection");
+        assert_eq!(err.message, "Internal error");
     }
 
     // These tests verify that the RateLimitConfig used for WebSocket message handling

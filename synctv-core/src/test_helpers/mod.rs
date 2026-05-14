@@ -277,7 +277,7 @@ impl ChatMessageFixture {
             room_id: self.room_id,
             user_id: Some(self.user_id),
             content: self.content,
-            message_type: 1,
+            message_type: crate::models::ChatMessageType::Text,
             created_at: Utc::now(),
         }
     }

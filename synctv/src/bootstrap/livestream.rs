@@ -178,6 +178,7 @@ pub async fn init_livestream(
                 None
             },
             grpc_max_message_size_bytes: config.server.grpc_max_message_size_bytes,
+            grpc_compression_enabled: config.server.grpc_compression_enabled,
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
             max_flv_tag_size_bytes: config.livestream.max_flv_tag_size_bytes,
             api_address: config.advertise_api_address(),

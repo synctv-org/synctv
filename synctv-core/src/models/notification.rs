@@ -18,30 +18,38 @@ sort_field_enum! {
 }
 
 /// Notification type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[repr(i16)]
 pub enum NotificationType {
     /// Room invitation from another user
-    RoomInvitation,
+    RoomInvitation = 1,
     /// System announcement from administrators
-    SystemAnnouncement,
+    SystemAnnouncement = 2,
     /// Room event (e.g., user joined, media added)
-    RoomEvent,
+    RoomEvent = 3,
     /// Password reset notification
-    PasswordReset,
+    PasswordReset = 4,
     /// Email verification reminder
-    EmailVerification,
+    EmailVerification = 5,
+}
+
+impl NotificationType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RoomInvitation => "room_invitation",
+            Self::SystemAnnouncement => "system_announcement",
+            Self::RoomEvent => "room_event",
+            Self::PasswordReset => "password_reset",
+            Self::EmailVerification => "email_verification",
+        }
+    }
 }
 
 impl std::fmt::Display for NotificationType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RoomInvitation => write!(f, "room_invitation"),
-            Self::SystemAnnouncement => write!(f, "system_announcement"),
-            Self::RoomEvent => write!(f, "room_event"),
-            Self::PasswordReset => write!(f, "password_reset"),
-            Self::EmailVerification => write!(f, "email_verification"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -60,35 +68,13 @@ impl std::str::FromStr for NotificationType {
     }
 }
 
-// Database mapping: NotificationType <-> VARCHAR
-impl sqlx::Type<sqlx::Postgres> for NotificationType {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("varchar")
-    }
-
-    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        *ty == Self::type_info() || *ty == <String as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for NotificationType {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        let s = self.to_string();
-        <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&s, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for NotificationType {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        s.parse().map_err(|e: anyhow::Error| e.into())
-    }
-}
+sqlx_i16_enum!(NotificationType, "Invalid notification type", {
+    RoomInvitation = 1,
+    SystemAnnouncement = 2,
+    RoomEvent = 3,
+    PasswordReset = 4,
+    EmailVerification = 5,
+});
 
 /// Notification model
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

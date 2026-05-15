@@ -28,7 +28,10 @@ use synctv_common::ExecutionControl;
 
 pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
 pub(crate) use error::{classify_reqwest_body_error, ProxyError};
-pub use error::{proxy_error_kind, proxy_error_kind_from_std_error, ProxyErrorKind};
+pub use error::{
+    proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
+    ProxyErrorKind,
+};
 pub use manifest::{
     default_proxy_url, make_absolute, percent_encode, rewrite_m3u8, rewrite_m3u8_with_limit,
     rewrite_m3u8_with_url_mapper, rewrite_uri_attribute_with_count, MAX_M3U8_URLS,
@@ -947,6 +950,14 @@ mod tests {
             ProxyErrorKind::InvalidRequest
         );
         assert_eq!(
+            ProxyError::RangeNotSatisfiable {
+                message: "x".into(),
+                total_size: 42,
+            }
+            .kind(),
+            ProxyErrorKind::RangeNotSatisfiable
+        );
+        assert_eq!(
             ProxyError::Upstream("x".into()).kind(),
             ProxyErrorKind::Upstream
         );
@@ -961,6 +972,21 @@ mod tests {
         .context("outer context");
 
         assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::BodyTooLarge));
+    }
+
+    #[test]
+    fn test_proxy_range_not_satisfiable_total_size_from_error_chain() {
+        let err = anyhow::Error::from(ProxyError::RangeNotSatisfiable {
+            message: "range start beyond total size".to_string(),
+            total_size: 4096,
+        })
+        .context("outer context");
+
+        assert_eq!(
+            proxy_error_kind(&err),
+            Some(ProxyErrorKind::RangeNotSatisfiable)
+        );
+        assert_eq!(proxy_range_not_satisfiable_total_size(&err), Some(4096));
     }
 
     #[tokio::test]

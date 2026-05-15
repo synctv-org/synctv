@@ -23,7 +23,17 @@ use crate::{
 use super::etag::CachedResourceMeta;
 use super::range::parse_content_range;
 use super::status::CacheStatus;
-use super::store::{HeadResourceResult, SliceCache, SliceFetchResult};
+use super::store::{CachedSlice, HeadResourceResult, SliceCache, SliceFetchResult};
+
+const PASSTHROUGH_RESPONSE_HEADERS: &[&str] = &[
+    "content-length",
+    "content-type",
+    "content-range",
+    "accept-ranges",
+    "cache-control",
+    "etag",
+    "last-modified",
+];
 
 // HEAD helper
 
@@ -100,12 +110,15 @@ fn range_bounds_for_total(
     plan: ClientRangePlan,
     total_size: u64,
 ) -> Result<(u64, u64), ProxyError> {
+    let unsatisfiable = |message: &str| ProxyError::RangeNotSatisfiable {
+        message: message.to_string(),
+        total_size,
+    };
+
     match plan {
         ClientRangePlan::Explicit { start, mut end } => {
             if start >= total_size {
-                return Err(ProxyError::InvalidRequest(
-                    "Range start beyond total size".to_string(),
-                ));
+                return Err(unsatisfiable("Range start beyond total size"));
             }
             if end >= total_size {
                 end = total_size - 1;
@@ -114,17 +127,13 @@ fn range_bounds_for_total(
         }
         ClientRangePlan::OpenEnded { start } => {
             if start >= total_size {
-                return Err(ProxyError::InvalidRequest(
-                    "Range start beyond total size".to_string(),
-                ));
+                return Err(unsatisfiable("Range start beyond total size"));
             }
             Ok((start, total_size - 1))
         }
         ClientRangePlan::Suffix { suffix_len } => {
             if suffix_len == 0 || suffix_len > total_size {
-                return Err(ProxyError::InvalidRequest(
-                    "Suffix range out of bounds".to_string(),
-                ));
+                return Err(unsatisfiable("Suffix range out of bounds"));
             }
             Ok((total_size - suffix_len, total_size - 1))
         }
@@ -398,10 +407,26 @@ pub async fn proxy_with_cache_enabled_with_control(
     };
 
     let plan = parse_client_range_plan(range_str)?;
-    let known_total_size = cache
-        .get_resource_meta(url, provider_headers)
-        .await
-        .and_then(|meta| meta.total_size);
+    let cached_meta = cache.get_resource_meta(url, provider_headers).await;
+    if cached_meta
+        .as_ref()
+        .is_some_and(|meta| !meta.supports_ranges)
+    {
+        return stream_through_with_status(
+            cache.client(),
+            cache.ssrf_guard(),
+            url,
+            provider_headers,
+            None,
+            CacheStatus::Bypass,
+            request_control,
+        )
+        .await;
+    }
+    let known_total_size = cached_meta.and_then(|meta| meta.total_size);
+    if let Some(total_size) = known_total_size {
+        range_bounds_for_total(plan, total_size)?;
+    }
 
     match plan {
         ClientRangePlan::Explicit { .. } | ClientRangePlan::OpenEnded { .. } => {}
@@ -542,6 +567,13 @@ async fn range_slice_cache_path(
 
     let first_status = first_slice.status;
     let total_size = first_slice.slice.total_size;
+    let response_header_slice = CachedSlice {
+        total_size,
+        content_type: first_slice.slice.content_type.clone(),
+        etag: first_slice.slice.etag.clone(),
+        last_modified: first_slice.slice.last_modified.clone(),
+        data: Bytes::new(),
+    };
     let (range_start, range_end) = range_bounds_for_total(plan, total_size)?;
     if range_start > range_end {
         return Err(ProxyError::InvalidRequest("Invalid range".to_string()).into());
@@ -627,7 +659,7 @@ async fn range_slice_cache_path(
         },
     );
 
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
         .header(
             "Content-Range",
@@ -635,7 +667,10 @@ async fn range_slice_cache_path(
         )
         .header("Content-Length", content_length.to_string())
         .header("Accept-Ranges", "bytes")
-        .header("X-Cache-Status", first_status.as_str())
+        .header("X-Cache-Status", first_status.as_str());
+    builder = apply_cached_slice_response_headers(builder, &response_header_slice);
+
+    builder
         .body(Body::from_stream(stream))
         .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
 }
@@ -759,12 +794,7 @@ fn stream_existing_response_with_status(
         .status(status)
         .header("X-Cache-Status", cache_status.as_str());
 
-    for name in &[
-        "content-length",
-        "content-type",
-        "content-range",
-        "accept-ranges",
-    ] {
+    for name in PASSTHROUGH_RESPONSE_HEADERS {
         if let Some(val) = resp.headers().get(*name) {
             if let Ok(v) = val.to_str() {
                 builder = builder.header(*name, v);
@@ -779,6 +809,22 @@ fn stream_existing_response_with_status(
     builder
         .body(Body::from_stream(stream))
         .map_err(|e| anyhow::anyhow!("Failed to build stream-through response: {e}"))
+}
+
+fn apply_cached_slice_response_headers(
+    mut builder: axum::http::response::Builder,
+    slice: &CachedSlice,
+) -> axum::http::response::Builder {
+    if let Some(ref ct) = slice.content_type {
+        builder = builder.header("Content-Type", ct.as_str());
+    }
+    if let Some(ref etag) = slice.etag {
+        builder = builder.header("ETag", etag.as_str());
+    }
+    if let Some(ref last_modified) = slice.last_modified {
+        builder = builder.header("Last-Modified", last_modified.as_str());
+    }
+    builder
 }
 
 /// Stream an upstream response through without caching, attaching the given

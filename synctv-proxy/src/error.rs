@@ -6,6 +6,7 @@ pub enum ProxyErrorKind {
     BodyTooLarge,
     Ssrf,
     InvalidRequest,
+    RangeNotSatisfiable,
     Upstream,
     Other,
 }
@@ -19,6 +20,7 @@ impl ProxyErrorKind {
             Self::BodyTooLarge => "body_too_large",
             Self::Ssrf => "ssrf",
             Self::InvalidRequest => "invalid_request",
+            Self::RangeNotSatisfiable => "range_not_satisfiable",
             Self::Upstream => "upstream",
             Self::Other => "other",
         }
@@ -33,6 +35,7 @@ pub(crate) enum ProxyError {
     BodyTooLarge(String),
     Ssrf(String),
     InvalidRequest(String),
+    RangeNotSatisfiable { message: String, total_size: u64 },
     Upstream(String),
     Other(String),
 }
@@ -46,8 +49,16 @@ impl ProxyError {
             Self::BodyTooLarge(_) => ProxyErrorKind::BodyTooLarge,
             Self::Ssrf(_) => ProxyErrorKind::Ssrf,
             Self::InvalidRequest(_) => ProxyErrorKind::InvalidRequest,
+            Self::RangeNotSatisfiable { .. } => ProxyErrorKind::RangeNotSatisfiable,
             Self::Upstream(_) => ProxyErrorKind::Upstream,
             Self::Other(_) => ProxyErrorKind::Other,
+        }
+    }
+
+    pub(crate) const fn range_not_satisfiable_total_size(&self) -> Option<u64> {
+        match self {
+            Self::RangeNotSatisfiable { total_size, .. } => Some(*total_size),
+            _ => None,
         }
     }
 }
@@ -61,6 +72,9 @@ impl std::fmt::Display for ProxyError {
             Self::BodyTooLarge(message) => write!(f, "Proxy response body too large: {message}"),
             Self::Ssrf(message) => write!(f, "SSRF protection blocked request: {message}"),
             Self::InvalidRequest(message) => write!(f, "Invalid proxy request: {message}"),
+            Self::RangeNotSatisfiable { message, .. } => {
+                write!(f, "Range not satisfiable: {message}")
+            }
             Self::Upstream(message) => write!(f, "Upstream rejected request: {message}"),
             Self::Other(message) => write!(f, "Proxy request failed: {message}"),
         }
@@ -73,6 +87,15 @@ impl std::error::Error for ProxyError {}
 pub fn proxy_error_kind(err: &anyhow::Error) -> Option<ProxyErrorKind> {
     err.chain()
         .find_map(|cause| cause.downcast_ref::<ProxyError>().map(ProxyError::kind))
+}
+
+#[must_use]
+pub fn proxy_range_not_satisfiable_total_size(err: &anyhow::Error) -> Option<u64> {
+    err.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<ProxyError>()
+            .and_then(ProxyError::range_not_satisfiable_total_size)
+    })
 }
 
 #[must_use]

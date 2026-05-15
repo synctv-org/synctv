@@ -1,7 +1,7 @@
 // HTTP error handling
 
 use axum::{
-    http::{header::RETRY_AFTER, HeaderValue, StatusCode},
+    http::{header, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -21,6 +21,7 @@ pub struct AppError {
     /// When set, this is included in the JSON error response for programmatic handling.
     pub error_code: Option<i32>,
     pub retry_after_seconds: Option<u64>,
+    extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl AppError {
@@ -30,6 +31,7 @@ impl AppError {
             message: message.into(),
             error_code: None,
             retry_after_seconds: None,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -53,6 +55,12 @@ impl AppError {
         let mut error = Self::new(StatusCode::TOO_MANY_REQUESTS, message);
         error.retry_after_seconds = Some(retry_after);
         error
+    }
+
+    #[must_use]
+    pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.extra_headers.push((name, value));
+        self
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
@@ -174,6 +182,7 @@ impl IntoResponse for AppError {
             message,
             error_code,
             retry_after_seconds,
+            extra_headers,
         } = self;
 
         // For server-side failures, sanitize details while preserving retryability /
@@ -212,8 +221,11 @@ impl IntoResponse for AppError {
         let mut response = (status, body).into_response();
         if let Some(retry_after_seconds) = retry_after_seconds {
             if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
-                response.headers_mut().insert(RETRY_AFTER, value);
+                response.headers_mut().insert(header::RETRY_AFTER, value);
             }
+        }
+        for (name, value) in extra_headers {
+            response.headers_mut().insert(name, value);
         }
 
         response
@@ -361,6 +373,7 @@ pub(crate) fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
         message,
         error_code,
         retry_after_seconds,
+        extra_headers: _,
     } = err;
 
     match status {
@@ -902,7 +915,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
-            response.headers().get(RETRY_AFTER).unwrap(),
+            response.headers().get(header::RETRY_AFTER).unwrap(),
             &HeaderValue::from_static("17")
         );
     }

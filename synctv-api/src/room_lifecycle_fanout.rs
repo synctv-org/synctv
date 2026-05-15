@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
@@ -98,7 +97,6 @@ impl PreparedRoomLifecycleOutboxFanout {
     }
 }
 
-#[async_trait]
 pub trait RoomLifecycleFanoutService: Send + Sync {
     fn prepare_room_created_outbox_fanout(
         &self,
@@ -158,7 +156,6 @@ impl std::fmt::Debug for DefaultRoomLifecycleFanoutService {
     }
 }
 
-#[async_trait]
 impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
     fn prepare_room_created_outbox_fanout(
         &self,

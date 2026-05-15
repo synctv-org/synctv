@@ -779,7 +779,7 @@ fn playback_url_to_proto(
     crate::proto::client::PlaybackUrl {
         name: url.name.clone(),
         url: url.url.clone(),
-        headers: url.headers.clone(),
+        headers: client_visible_headers(&url.url, &url.headers),
         expire_at: url.expire_at.map(|dt| dt.timestamp()),
         metadata: url.metadata.as_ref().map(playback_url_metadata_to_proto),
     }
@@ -823,7 +823,7 @@ fn subtitle_url_to_proto(
     crate::proto::client::SubtitleUrl {
         name: url.name.clone(),
         url: url.url.clone(),
-        headers: url.headers.clone(),
+        headers: client_visible_headers(&url.url, &url.headers),
         format: url.format.clone(),
     }
 }
@@ -836,16 +836,32 @@ fn danmaku_to_proto(
         name: danmaku.name.clone(),
         url: danmaku.url.clone(),
         format: danmaku.format.clone(),
-        headers: danmaku.headers.clone(),
+        headers: client_visible_headers(&danmaku.url, &danmaku.headers),
     }
+}
+
+fn client_visible_headers(
+    url: &str,
+    headers: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    if is_provider_proxy_url(url) {
+        std::collections::HashMap::new()
+    } else {
+        headers.clone()
+    }
+}
+
+fn is_provider_proxy_url(url: &str) -> bool {
+    url.starts_with("/api/providers/proxy/")
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         bilibili_live_danmaku_for_static_media, media_to_proto, media_to_proto_for_viewer,
-        normalize_created_room_settings, playback_client_profile_from_proto, playlist_to_proto,
-        playlist_to_proto_for_viewer, provider_playback_info_to_model, room_to_proto_basic,
+        normalize_created_room_settings, playback_client_profile_from_proto,
+        playback_snapshot_to_proto, playlist_to_proto, playlist_to_proto_for_viewer,
+        provider_playback_info_to_model, room_to_proto_basic,
     };
     use std::collections::HashMap;
     use synctv_core::models::{Media, MediaId, PlaylistId, Room, RoomId, UserId};
@@ -907,6 +923,111 @@ mod tests {
     #[test]
     fn playback_client_profile_from_proto_returns_none_when_absent() {
         assert_eq!(playback_client_profile_from_proto(None), None);
+    }
+
+    #[test]
+    fn playback_snapshot_to_proto_clears_proxy_headers_but_preserves_raw_headers() {
+        use synctv_core::models::media::{
+            Danmaku, PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
+        };
+
+        let result = PlaybackResult::builder(
+            None,
+            RoomId::expect_positive(1),
+            "Headered media".to_string(),
+            0.0,
+        )
+        .default_mode("direct".to_string())
+        .add_mode(
+            "direct".to_string(),
+            PlaybackInfo {
+                urls: vec![PlaybackUrl {
+                    name: "main".to_string(),
+                    url: "https://cdn.example.com/video.mp4".to_string(),
+                    headers: HashMap::from([(
+                        "Authorization".to_string(),
+                        "Bearer stream-token".to_string(),
+                    )]),
+                    expire_at: None,
+                    metadata: None,
+                }, PlaybackUrl {
+                    name: "proxy".to_string(),
+                    url: "/api/providers/proxy/direct_url/ver-1/stream?sig=s&uid=u&rid=r&exp=1".to_string(),
+                    headers: HashMap::from([(
+                        "Authorization".to_string(),
+                        "Bearer proxy-owned-token".to_string(),
+                    )]),
+                    expire_at: None,
+                    metadata: None,
+                }],
+                default_url_index: 0,
+                subtitles: vec![Subtitle {
+                    name: "Chinese".to_string(),
+                    language: "zh-CN".to_string(),
+                    urls: vec![SubtitleUrl {
+                        name: "main".to_string(),
+                        url: "https://cdn.example.com/subtitle.ass".to_string(),
+                        headers: HashMap::from([(
+                            "X-Subtitle-Token".to_string(),
+                            "subtitle-token".to_string(),
+                        )]),
+                        format: "ass".to_string(),
+                    }, SubtitleUrl {
+                        name: "proxy".to_string(),
+                        url: "/api/providers/proxy/direct_url/ver-1/subtitle%2Fdirect%2F0?sig=s&uid=u&rid=r&exp=1".to_string(),
+                        headers: HashMap::from([(
+                            "X-Subtitle-Token".to_string(),
+                            "proxy-subtitle-token".to_string(),
+                        )]),
+                        format: "ass".to_string(),
+                    }],
+                    default_url_index: 0,
+                }],
+                default_subtitle_index: Some(0),
+                danmakus: vec![Danmaku {
+                    name: "Danmaku".to_string(),
+                    url: "https://cdn.example.com/danmaku.xml".to_string(),
+                    format: Some("xml".to_string()),
+                    headers: HashMap::from([("Cookie".to_string(), "sid=secret".to_string())]),
+                }, Danmaku {
+                    name: "Proxy Danmaku".to_string(),
+                    url: "/api/providers/proxy/bilibili/room_1/media_1/danmaku?sig=s&uid=u&rid=r&exp=1".to_string(),
+                    format: Some("xml".to_string()),
+                    headers: HashMap::from([("Cookie".to_string(), "proxy-owned".to_string())]),
+                }],
+                format: "mp4".to_string(),
+            },
+        )
+        .build()
+        .expect("playback result should build");
+
+        let proto = playback_snapshot_to_proto(&result, &crate::PublicIdCodec::default_for_tests());
+        let direct = proto
+            .playback_infos
+            .get("direct")
+            .expect("direct mode should be converted");
+
+        assert_eq!(
+            direct.urls[0]
+                .headers
+                .get("Authorization")
+                .map(String::as_str),
+            Some("Bearer stream-token")
+        );
+        assert!(direct.urls[1].headers.is_empty());
+        assert_eq!(
+            direct.subtitles[0].urls[0]
+                .headers
+                .get("X-Subtitle-Token")
+                .map(String::as_str),
+            Some("subtitle-token")
+        );
+        assert!(direct.subtitles[0].urls[1].headers.is_empty());
+        assert_eq!(
+            direct.danmakus[0].headers.get("Cookie").map(String::as_str),
+            Some("sid=secret")
+        );
+        assert!(direct.danmakus[1].headers.is_empty());
     }
 
     #[test]

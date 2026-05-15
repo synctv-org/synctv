@@ -3,11 +3,13 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 postgres_env="$root/.env.postgres"
+redis_env="$root/.env.redis"
 synctv_env="$root/.env.synctv"
 postgres_example="$root/.env.postgres.example"
+redis_example="$root/.env.redis.example"
 synctv_example="$root/.env.synctv.example"
 
-for file in "$postgres_env" "$synctv_env"; do
+for file in "$postgres_env" "$redis_env" "$synctv_env"; do
   if [ -e "$file" ]; then
     echo "$(basename "$file") already exists; refusing to overwrite it." >&2
     exit 1
@@ -39,6 +41,7 @@ EOF
 fi
 
 cp "$postgres_example" "$postgres_env"
+cp "$redis_example" "$redis_env"
 cp "$synctv_example" "$synctv_env"
 
 set_env() {
@@ -63,16 +66,20 @@ PY
 
 postgres_password="$(openssl rand -hex 32)"
 postgres_password_encoded="$(url_encode "$postgres_password")"
+redis_password="$(openssl rand -hex 32)"
+redis_password_encoded="$(url_encode "$redis_password")"
 set_env "$postgres_env" POSTGRES_PASSWORD "$postgres_password"
+set_env "$redis_env" REDIS_PASSWORD "$redis_password"
 set_env "$synctv_env" SYNCTV_DATABASE_URL "postgresql://synctv:${postgres_password_encoded}@postgres:5432/synctv"
+set_env "$synctv_env" SYNCTV_REDIS_URL "redis://:${redis_password_encoded}@redis:6379"
 set_env "$synctv_env" SYNCTV_JWT_SECRET "$(openssl rand -base64 32)"
 set_env "$synctv_env" SYNCTV_CLUSTER_SECRET "$(openssl rand -hex 32)"
 set_env "$synctv_env" SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY "$(openssl rand -hex 32)"
 set_env "$synctv_env" SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET "$(openssl rand -base64 48)"
-rm -f "$postgres_env.bak" "$synctv_env.bak"
+rm -f "$postgres_env.bak" "$redis_env.bak" "$synctv_env.bak"
 
 cat <<'EOF'
-Created .env.postgres and .env.synctv with generated production secrets.
+Created .env.postgres, .env.redis, and .env.synctv with generated production secrets.
 
 Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting production Compose:
 
@@ -82,5 +89,5 @@ Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting production Co
 For local development, use docker-compose.dev.yml directly; it has built-in
 local-only settings and does not read these production env files.
 
-Keep both files backed up and stable across restarts, host reboots, and upgrades.
+Keep all three files backed up and stable across restarts, host reboots, and upgrades.
 EOF

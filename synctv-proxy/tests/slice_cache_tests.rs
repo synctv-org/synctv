@@ -348,7 +348,10 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
                 .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
-                .insert_header("Content-Length", "2097152"),
+                .insert_header("Content-Length", "2097152")
+                .insert_header("Content-Type", "video/mp4")
+                .insert_header("ETag", "\"range-etag\"")
+                .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
         )
         .mount(&mock_server)
         .await;
@@ -378,6 +381,18 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
     assert!(
         headers.get("Accept-Ranges").is_some(),
         "Response must include Accept-Ranges"
+    );
+    assert_eq!(
+        headers.get("Content-Type").map(|v| v.to_str().unwrap()),
+        Some("video/mp4")
+    );
+    assert_eq!(
+        headers.get("ETag").map(|v| v.to_str().unwrap()),
+        Some("\"range-etag\"")
+    );
+    assert_eq!(
+        headers.get("Last-Modified").map(|v| v.to_str().unwrap()),
+        Some("Wed, 01 Jan 2025 00:00:00 GMT")
     );
 }
 
@@ -677,6 +692,14 @@ async fn test_head_without_accept_ranges_stores_length_without_range_support() {
     Mock::given(method("GET"))
         .and(path("/head-no-range.bin"))
         .and(header("Range", "bytes=0-1023"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/head-no-range.bin"))
+        .and(HeaderAbsent("Range"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(full_body.clone())
@@ -805,6 +828,72 @@ async fn test_range_with_head_metadata_bypasses_when_upstream_returns_200() {
     assert_eq!(
         response.into_body().collect().await.unwrap().to_bytes(),
         full_body
+    );
+}
+
+#[tokio::test]
+async fn test_disabled_slice_cache_passthrough_preserves_representation_headers() {
+    let mock_server = MockServer::start().await;
+    let body = Bytes::from(vec![0x4D; 128]);
+
+    Mock::given(method("GET"))
+        .and(path("/passthrough.bin"))
+        .and(header("Range", "bytes=0-127"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Range", "bytes 0-127/128")
+                .insert_header("Content-Length", "128")
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("Content-Type", "video/mp4")
+                .insert_header("Cache-Control", "public, max-age=60")
+                .insert_header("ETag", "\"passthrough-etag\"")
+                .insert_header("Last-Modified", "Fri, 03 Jan 2025 00:00:00 GMT"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/passthrough.bin");
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-127"),
+        &url,
+        &HashMap::new(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("Cache-Control")
+            .map(|v| v.to_str().unwrap()),
+        Some("public, max-age=60")
+    );
+    assert_eq!(
+        response.headers().get("ETag").map(|v| v.to_str().unwrap()),
+        Some("\"passthrough-etag\"")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("Last-Modified")
+            .map(|v| v.to_str().unwrap()),
+        Some("Fri, 03 Jan 2025 00:00:00 GMT")
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        body
     );
 }
 
@@ -1895,6 +1984,14 @@ async fn test_suffix_range_with_head_length_bypasses_when_origin_ignores_aligned
     Mock::given(method("GET"))
         .and(path("/suffix-no-ranges.bin"))
         .and(header("Range", "bytes=3072-4095"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-no-ranges.bin"))
+        .and(HeaderAbsent("Range"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(full_body.clone())
@@ -3540,6 +3637,55 @@ async fn test_proxy_with_cache_marks_multi_range_as_invalid_request() {
         err.to_string()
             .contains("Multi-range requests are not supported"),
         "error should preserve the invalid range reason: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_marks_start_beyond_total_as_range_not_satisfiable() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 1024;
+    let slice_data = Bytes::from(vec![0xAB; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/range-oob.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data)
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/range-oob.bin");
+    let headers = HashMap::new();
+
+    synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-1"), &url, &headers)
+        .await
+        .expect("first satisfiable range should populate resource metadata");
+
+    let err =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=1024-"), &url, &headers)
+            .await
+            .expect_err("range starting at total size must be reported as unsatisfiable");
+
+    assert_eq!(
+        synctv_proxy::proxy_error_kind(&err),
+        Some(synctv_proxy::ProxyErrorKind::RangeNotSatisfiable)
+    );
+    assert_eq!(
+        synctv_proxy::proxy_range_not_satisfiable_total_size(&err),
+        Some(total_size)
     );
 }
 

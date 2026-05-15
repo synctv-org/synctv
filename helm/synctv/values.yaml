@@ -144,18 +144,39 @@ image:
 headlessService:
   enabled: false
 
-## Service Configuration
+## HTTP API Service Configuration
 service:
   type: ClusterIP
   annotations: {}
-  # Set to LoadBalancer if you need external access to RTMP
-  # type: LoadBalancer
   loadBalancerIP: ""
   loadBalancerSourceRanges: []
   sessionAffinity: ""
-  nodePorts:
-    rtmp: 31935
-    stun: 31478
+
+## RTMP ingest Service Configuration
+## Expose this Service separately when publishers need to connect from outside
+## the cluster. Keeping RTMP independent from the API avoids coupling public
+## livestream ingest to API exposure.
+rtmpService:
+  enabled: true
+  type: ClusterIP
+  annotations: {}
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  sessionAffinity: ""
+  nodePort: 31935
+
+## Built-in STUN Service Configuration
+## Rendered only when config.webrtc.enableBuiltinStun=true. Many cloud
+## providers handle UDP load balancers differently from TCP load balancers, so
+## STUN has its own Service rather than sharing the API/RTMP Service.
+stunService:
+  enabled: true
+  type: ClusterIP
+  annotations: {}
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  sessionAffinity: ""
+  nodePort: 31478
 
 ## gRPC Service Configuration
 ## gRPC uses the same container port as HTTP, but is exposed through an
@@ -773,20 +794,28 @@ networkPolicy:
   ## Adjust this when your Prometheus/vmagent runs outside the default monitoring namespace.
   metricsSourceNamespaces:
     - monitoring
-  ## CIDR ranges allowed to send RTMP traffic. Defaults to 0.0.0.0/0 (all) if empty.
+  ## Allow RTMP traffic from any IPv4 source. Keep false in production unless
+  ## the RTMP Service is intentionally internet-facing.
+  allowAnyRtmpSource: false
+  ## CIDR ranges allowed to send RTMP traffic.
   rtmpSourceCIDRs: []
   # rtmpSourceCIDRs:
   #   - "10.0.0.0/8"
   #   - "192.168.0.0/16"
+  ## Allow built-in STUN traffic from any IPv4 source. Set true when the STUN
+  ## Service is intentionally reachable by arbitrary clients.
+  allowAnyStunSource: false
+  stunSourceCIDRs: []
   ## CIDR ranges allowed for external PostgreSQL/Redis egress when the matching
-  ## dependency mode is "external". Defaults to 0.0.0.0/0 so external mode keeps
-  ## working when NetworkPolicy is enabled; restrict these ranges in production.
+  ## dependency mode is "external". Set allowAnyExternalDatabaseEgress=true for
+  ## dynamic externally hosted databases, or provide explicit CIDRs.
+  allowAnyExternalDatabaseEgress: false
   externalPostgresqlCIDRs: []
   externalRedisCIDRs: []
   ## CIDR ranges allowed for outbound HTTP/HTTPS calls such as OAuth providers,
-  ## metadata endpoints, and media-provider APIs. Defaults to 0.0.0.0/0 so these
-  ## integrations keep working when NetworkPolicy is enabled; restrict in
-  ## production and add ::/0 explicitly for IPv6-only external destinations.
+  ## metadata endpoints, and media-provider APIs. Set allowAnyExternalHttpEgress
+  ## when providers cannot be represented by stable CIDR ranges.
+  allowAnyExternalHttpEgress: false
   externalHttpCIDRs: []
 
 ## Extra Environment Variables

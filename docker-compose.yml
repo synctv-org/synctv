@@ -23,14 +23,17 @@ services:
   redis:
     image: redis:8.4.0-bookworm
     container_name: synctv-redis
+    env_file:
+      - path: .env.redis
+        required: true
     ports:
       # Keep cache access local to the host; the app uses the internal Docker network.
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: sh -ec 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 5

@@ -29,24 +29,35 @@ Ingress is enabled. Access the application at:
   Watch status with:
     kubectl get svc --namespace {{ .Release.Namespace }} -w {{ include "synctv.fullname" . }}
   export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "synctv.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo "API: http://$SERVICE_IP:{{ .Values.config.server.port }} (HTTP/1 REST, HTTP/2 gRPC)"
-  echo "RTMP Ingest: rtmp://$SERVICE_IP:{{ .Values.config.livestream.rtmpPort }}"
+  echo "API: http://$SERVICE_IP:{{ .Values.config.server.port }}"
 {{- else }}
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "synctv.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.config.server.port }}:{{ .Values.config.server.port }}
-  echo "API: http://127.0.0.1:{{ .Values.config.server.port }} (HTTP/1 REST, HTTP/2 gRPC)"
+  echo "API: http://127.0.0.1:{{ .Values.config.server.port }}"
+{{- end }}
+{{- if and .Values.rtmpService.enabled (contains "LoadBalancer" .Values.rtmpService.type) }}
+  export RTMP_SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "synctv.rtmpServiceName" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo "RTMP Ingest: rtmp://$RTMP_SERVICE_IP:{{ .Values.config.livestream.rtmpPort }}"
+{{- end }}
+{{- if and .Values.config.webrtc.enableBuiltinStun .Values.stunService.enabled (contains "LoadBalancer" .Values.stunService.type) }}
+  export STUN_SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "synctv.stunServiceName" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo "STUN: $STUN_SERVICE_IP:{{ .Values.config.webrtc.stunPort }}"
 {{- end }}
 
 ## Services
 
-  - API:         port {{ .Values.config.server.port }}
+  - API:         service {{ include "synctv.fullname" . }} port {{ .Values.config.server.port }}
   - gRPC:        service {{ include "synctv.grpcServiceName" . }} port {{ .Values.grpcService.port | default .Values.config.server.port }}
 {{- if .Values.metrics.enabled }}
   - Metrics:     service {{ include "synctv.metricsServiceName" . }} port {{ .Values.metrics.port | default 9090 }}
 {{- end }}
-  - RTMP Ingest: port {{ .Values.config.livestream.rtmpPort }}
+{{- if .Values.rtmpService.enabled }}
+  - RTMP Ingest: service {{ include "synctv.rtmpServiceName" . }} port {{ .Values.config.livestream.rtmpPort }}
+{{- end }}
 {{- if .Values.config.webrtc.enableBuiltinStun }}
-  - STUN (UDP):  port {{ .Values.config.webrtc.stunPort }}
+{{- if .Values.stunService.enabled }}
+  - STUN (UDP):  service {{ include "synctv.stunServiceName" . }} port {{ .Values.config.webrtc.stunPort }}
+{{- end }}
 {{- if not .Values.config.webrtc.stunExternalAddr }}
     Built-in STUN is enabled, but config.webrtc.stunExternalAddr is empty.
     SyncTV will start the STUN server only if it can discover a public address

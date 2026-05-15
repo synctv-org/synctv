@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
@@ -66,7 +65,6 @@ impl PreparedPlaylistDeletedFanout {
     }
 }
 
-#[async_trait]
 pub trait PlaylistFanoutService: Send + Sync {
     fn prepare_created_outbox_fanout(
         &self,
@@ -113,7 +111,6 @@ impl std::fmt::Debug for DefaultPlaylistFanoutService {
     }
 }
 
-#[async_trait]
 impl PlaylistFanoutService for DefaultPlaylistFanoutService {
     fn prepare_created_outbox_fanout(
         &self,

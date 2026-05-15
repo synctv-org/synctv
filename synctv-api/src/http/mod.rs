@@ -1295,9 +1295,7 @@ mod tests {
             .await
             .expect("realtime manager"),
         );
-        router_config.event_service = Some(Arc::new(
-            crate::runtime::ClusterRealtimeEventService::new(realtime_manager),
-        ));
+        router_config.event_service = Some(realtime_manager);
         build_app_state(router_config)
     }
 

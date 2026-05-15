@@ -447,15 +447,10 @@ impl ClientApiImpl {
             jwt_service.clone(),
         )));
         let realtime_fanout = default_realtime_fanout_service(None, false);
-        let room_settings_fanout =
-            default_room_settings_fanout_service(realtime_fanout.clone(), None);
-        let membership_event_fanout = default_membership_event_fanout_service(
-            realtime_fanout.clone(),
-            room_service.clone(),
-            user_service.clone(),
-            None,
-        );
-        let media_fanout = default_media_fanout_service(realtime_fanout.clone(), None);
+        let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
+        let membership_event_fanout =
+            default_membership_event_fanout_service(realtime_fanout.clone(), None);
+        let media_fanout = default_media_fanout_service(realtime_fanout.clone());
         let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -512,15 +507,10 @@ impl ClientApiImpl {
             config.jwt_service.clone(),
         )));
         let realtime_fanout = default_realtime_fanout_service(None, false);
-        let room_settings_fanout =
-            default_room_settings_fanout_service(realtime_fanout.clone(), None);
-        let membership_event_fanout = default_membership_event_fanout_service(
-            realtime_fanout.clone(),
-            config.room_service.clone(),
-            config.user_service.clone(),
-            None,
-        );
-        let media_fanout = default_media_fanout_service(realtime_fanout.clone(), None);
+        let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
+        let membership_event_fanout =
+            default_membership_event_fanout_service(realtime_fanout.clone(), None);
+        let media_fanout = default_media_fanout_service(realtime_fanout.clone());
         let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -575,20 +565,12 @@ impl ClientApiImpl {
         mut self,
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
     ) -> Self {
-        self.room_settings_fanout = default_room_settings_fanout_service(
-            realtime_fanout.clone(),
-            self.realtime_event_service.clone(),
-        );
+        self.room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
         self.membership_event_fanout = default_membership_event_fanout_service(
             realtime_fanout.clone(),
-            self.room_service.clone(),
-            self.user_service.clone(),
             self.realtime_event_service.clone(),
         );
-        self.media_fanout = default_media_fanout_service(
-            realtime_fanout.clone(),
-            self.realtime_event_service.clone(),
-        );
+        self.media_fanout = default_media_fanout_service(realtime_fanout.clone());
         self.playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
         self.room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         self.realtime_lifecycle = default_realtime_lifecycle_service(
@@ -635,16 +617,11 @@ impl ClientApiImpl {
     ) -> Self {
         self.membership_event_fanout = default_membership_event_fanout_service(
             self.realtime_fanout.clone(),
-            self.room_service.clone(),
-            self.user_service.clone(),
             Some(event_service.clone()),
         );
-        self.room_settings_fanout = default_room_settings_fanout_service(
-            self.realtime_fanout.clone(),
-            Some(event_service.clone()),
-        );
-        self.media_fanout =
-            default_media_fanout_service(self.realtime_fanout.clone(), Some(event_service.clone()));
+        self.room_settings_fanout =
+            default_room_settings_fanout_service(self.realtime_fanout.clone());
+        self.media_fanout = default_media_fanout_service(self.realtime_fanout.clone());
         self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
             self.realtime_fanout.clone(),
             Some(event_service.clone()),

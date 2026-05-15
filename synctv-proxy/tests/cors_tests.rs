@@ -36,8 +36,8 @@ async fn test_cors_origin_in_allowed_list_returns_headers() {
         "Origin in allowed list should be echoed back"
     );
     assert!(
-        headers.get("Access-Control-Allow-Credentials").is_some(),
-        "Should include Allow-Credentials when origin is allowed"
+        headers.get("Access-Control-Allow-Credentials").is_none(),
+        "Proxy preflight should match the main CORS policy and avoid credentialed browser requests by default"
     );
     assert!(
         headers.get("Access-Control-Allow-Methods").is_some(),

@@ -233,7 +233,9 @@ The application currently uses split database/Redis configuration rather than re
 
 The chart creates separate Services for application traffic:
 
-- `{{ release-name }}` exposes HTTP/REST plus RTMP/STUN ports.
+- `{{ release-name }}` exposes HTTP/REST.
+- `{{ release-name }}-rtmp` exposes RTMP ingest when `rtmpService.enabled=true`.
+- `{{ release-name }}-stun` exposes the built-in UDP STUN listener when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true`.
 - `{{ release-name }}-metrics` exposes metrics when `metrics.enabled=true`.
 - `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
 
@@ -350,10 +352,14 @@ networkPolicy:
     - ingress-nginx
   metricsSourceNamespaces:
     - monitoring
+  allowAnyRtmpSource: false
   rtmpSourceCIDRs:
     - "203.0.113.0/24"
+  allowAnyStunSource: false
+  allowAnyExternalHttpEgress: false
   externalHttpCIDRs:
     - "203.0.113.0/24"
+  allowAnyExternalDatabaseEgress: false
   externalPostgresqlCIDRs: []
   externalRedisCIDRs: []
 ```
@@ -363,7 +369,8 @@ Notes:
 - `ingressControllerNamespaces` controls which namespaces may reach the SyncTV API through an ingress controller
 - `metricsSourceNamespaces` controls which namespaces may scrape the metrics port
 - The template matches namespaces using the standard Kubernetes namespace label `kubernetes.io/metadata.name`
-- Empty `rtmpSourceCIDRs`, `externalHttpCIDRs`, `externalPostgresqlCIDRs`, or `externalRedisCIDRs` render broad `0.0.0.0/0` rules for compatibility. Set them explicitly in production.
+- Empty CIDR lists do not create broad allow rules. Use explicit CIDRs, or set `allowAnyRtmpSource`, `allowAnyStunSource`, `allowAnyExternalHttpEgress`, or `allowAnyExternalDatabaseEgress` when that traffic is intentionally unrestricted.
+- When `postgresql.mode=external` or `redis.mode=external`, enabling NetworkPolicy requires explicit external database CIDRs or `allowAnyExternalDatabaseEgress=true`.
 
 ## Upgrading
 
@@ -485,8 +492,8 @@ alerting:
 ## Architecture
 
 ```
-                    Service (ClusterIP)
-                   optional Ingress
+                    API Service (ClusterIP)
+                    optional Ingress
                          |
               +----------v-----------+
               |  SyncTV Deployment   |
@@ -498,6 +505,9 @@ alerting:
               |  RTMP:      1935     |
               |  STUN:      3478/udp |
               +----+----------+------+
+                   ^          ^
+                   |          |
+              RTMP Service  STUN Service
                    |          |
            +-------+    +----+-----+
            |             |          |

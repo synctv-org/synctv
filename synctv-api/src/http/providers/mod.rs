@@ -19,7 +19,7 @@ pub mod rtmp;
 
 use axum::{
     extract::{Path, RawQuery, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
 };
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -548,6 +548,15 @@ fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
         Some(synctv_proxy::ProxyErrorKind::Ssrf) => {
             AppError::forbidden("Proxy target is not allowed by SSRF policy")
         }
+        Some(synctv_proxy::ProxyErrorKind::RangeNotSatisfiable) => {
+            let mut app_error = AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, err.to_string());
+            if let Some(total_size) = synctv_proxy::proxy_range_not_satisfiable_total_size(&err) {
+                if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total_size}")) {
+                    app_error = app_error.with_header(header::CONTENT_RANGE, value);
+                }
+            }
+            app_error
+        }
         Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
             AppError::bad_request(err.to_string())
         }
@@ -560,6 +569,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
     use bytes::Bytes;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -849,6 +859,76 @@ mod tests {
         .expect("raw client Range should be ignored unless provider selects it");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_maps_unsatisfiable_range_to_416() {
+        let Some(mock_server) = start_mock_server_or_skip().await else {
+            return;
+        };
+        let total_size: u64 = 1024;
+
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .and(header("Range", "bytes=0-1023"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(vec![0xCD; 1024])
+                    .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                    .insert_header("Content-Length", "1024")
+                    .insert_header("Accept-Ranges", "bytes"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let state = test_app_state_with_proxy_cache(
+            None,
+            Arc::new(test_slice_cache_for_mock(
+                SliceCacheConfig {
+                    slice_size: 1024,
+                    ..Default::default()
+                },
+                &mock_server,
+            )),
+        );
+        let action = ProxyAction::FetchAndForward {
+            url: mock_public_url(&mock_server, "/video.mp4"),
+            headers: HashMap::new(),
+            range_header: Some("bytes=0-1".to_string()),
+        };
+        execute_proxy_action_with_state_for_method(
+            &state,
+            action,
+            &HeaderMap::new(),
+            None,
+            Method::GET,
+        )
+        .await
+        .expect("first satisfiable range should populate resource metadata");
+
+        let action = ProxyAction::FetchAndForward {
+            url: mock_public_url(&mock_server, "/video.mp4"),
+            headers: HashMap::new(),
+            range_header: Some("bytes=1024-".to_string()),
+        };
+
+        let err = execute_proxy_action_with_state_for_method(
+            &state,
+            action,
+            &HeaderMap::new(),
+            None,
+            Method::GET,
+        )
+        .await
+        .expect_err("unsatisfiable range should map to HTTP 416");
+
+        assert_eq!(err.status, StatusCode::RANGE_NOT_SATISFIABLE);
+        let response = err.into_response();
+        assert_eq!(
+            response.headers().get(header::CONTENT_RANGE).unwrap(),
+            &axum::http::HeaderValue::from_static("bytes */1024")
+        );
     }
 
     #[tokio::test]
@@ -1459,6 +1539,13 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_METHODS)
                 .and_then(|value| value.to_str().ok()),
             Some("GET, HEAD, OPTIONS")
+        );
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .is_none(),
+            "provider proxy preflight should match the main router and avoid credentialed browser requests by default"
         );
     }
 

@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::models::Media;
 use synctv_core::models::{MediaId, RoomId, UserId};
@@ -12,7 +11,7 @@ use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 use crate::realtime_fanout::{
     publish_best_effort, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
 };
-use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
+use crate::runtime::RealtimeDeliveryRequirement;
 
 type MediaBatchEventsBuilder = Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>;
 type MediaIdsEventsBuilder = Arc<dyn Fn(&[MediaId]) -> Vec<RealtimeEvent> + Send + Sync>;
@@ -159,7 +158,6 @@ impl PreparedMediaIdsOutboxFanout {
     }
 }
 
-#[async_trait]
 pub trait MediaFanoutService: Send + Sync {
     fn publish_added(
         &self,
@@ -254,10 +252,7 @@ pub struct DefaultMediaFanoutService {
 
 impl DefaultMediaFanoutService {
     #[must_use]
-    pub fn new(
-        realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        _event_service: Option<Arc<dyn RealtimeEventService>>,
-    ) -> Self {
+    pub fn new(realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
         Self { realtime_fanout }
     }
 }
@@ -273,7 +268,6 @@ impl std::fmt::Debug for DefaultMediaFanoutService {
     }
 }
 
-#[async_trait]
 impl MediaFanoutService for DefaultMediaFanoutService {
     fn publish_added(
         &self,
@@ -618,12 +612,8 @@ fn move_media_events(
 #[must_use]
 pub fn default_media_fanout_service(
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
 ) -> Arc<dyn MediaFanoutService> {
-    Arc::new(DefaultMediaFanoutService::new(
-        realtime_fanout,
-        event_service,
-    ))
+    Arc::new(DefaultMediaFanoutService::new(realtime_fanout))
 }
 
 #[cfg(test)]
@@ -731,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn test_media_fanout_publishes_media_added_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_media_fanout_service(channel_realtime_fanout_service(tx), None);
+        let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         service.publish_added(&room_id(), &user_id(), "tester", &media_id(), "demo");
 
         let request = rx.recv().await.expect("publish request should be queued");
@@ -758,10 +748,7 @@ mod tests {
     async fn test_cluster_media_fanout_does_not_broadcast_locally_and_publishes_once() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_media_fanout_service(
-            channel_realtime_fanout_service(tx),
-            Some(event_service.clone()),
-        );
+        let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         service.publish_added(&room_id(), &user_id(), "tester", &media_id(), "demo");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
@@ -781,10 +768,7 @@ mod tests {
     #[tokio::test]
     async fn test_standalone_media_fanout_does_not_broadcast_locally() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_media_fanout_service(
-            default_realtime_fanout_service(None, false),
-            Some(event_service.clone()),
-        );
+        let service = default_media_fanout_service(default_realtime_fanout_service(None, false));
         service.publish_reordered(&room_id(), &user_id(), "tester", vec![media_id()]);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
@@ -806,10 +790,7 @@ mod tests {
     async fn test_cluster_media_fanout_publishes_playlist_reordered_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_media_fanout_service(
-            channel_realtime_fanout_service(tx),
-            Some(event_service.clone()),
-        );
+        let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         service.publish_reordered(&room_id(), &user_id(), "tester", vec![media_id()]);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
@@ -828,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn test_prepared_media_added_fanout_publishes_committed_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_media_fanout_service(channel_realtime_fanout_service(tx), None);
+        let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         let prepared =
             service.prepare_added_outbox_fanout(room_id(), user_id(), "tester".to_string());
         let factory = prepared

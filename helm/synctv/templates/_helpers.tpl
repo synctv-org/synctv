@@ -140,6 +140,20 @@ Return the gRPC service name
 {{- end }}
 
 {{/*
+Return the RTMP service name
+*/}}
+{{- define "synctv.rtmpServiceName" -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "rtmp") }}
+{{- end }}
+
+{{/*
+Return the STUN service name
+*/}}
+{{- define "synctv.stunServiceName" -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "stun") }}
+{{- end }}
+
+{{/*
 Return the headless service name
 */}}
 {{- define "synctv.headlessServiceName" -}}

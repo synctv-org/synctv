@@ -1,16 +1,14 @@
-use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::service::{
     PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory,
-    RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot, UserService,
+    RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
 };
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::RealtimeEventService;
 
-#[async_trait]
 pub trait MembershipEventFanoutService: Send + Sync {
     fn prepare_permission_changed_outbox_fanout(
         &self,
@@ -141,8 +139,6 @@ impl PreparedUserLeftFanout {
 
 pub struct DefaultMembershipEventFanoutService {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    room_service: Arc<RoomService>,
-    user_service: Arc<UserService>,
     event_service: Option<Arc<dyn RealtimeEventService>>,
 }
 
@@ -150,20 +146,12 @@ impl DefaultMembershipEventFanoutService {
     #[must_use]
     pub fn new(
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        room_service: Arc<RoomService>,
-        user_service: Arc<UserService>,
         event_service: Option<Arc<dyn RealtimeEventService>>,
     ) -> Self {
         Self {
             realtime_fanout,
-            room_service,
-            user_service,
             event_service,
         }
-    }
-
-    fn touch_dependencies(&self) {
-        let _ = (&self.room_service, &self.user_service);
     }
 }
 
@@ -178,14 +166,12 @@ impl std::fmt::Debug for DefaultMembershipEventFanoutService {
     }
 }
 
-#[async_trait]
 impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
     fn prepare_permission_changed_outbox_fanout(
         &self,
         target_user_id: UserId,
         changed_by: UserId,
     ) -> PreparedPermissionChangedFanout {
-        self.touch_dependencies();
         PreparedPermissionChangedFanout::new(
             self.realtime_fanout.clone(),
             self.event_service.clone(),
@@ -195,7 +181,6 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
     }
 
     fn prepare_user_left_outbox_fanout(&self) -> PreparedUserLeftFanout {
-        self.touch_dependencies();
         PreparedUserLeftFanout::new(self.realtime_fanout.clone())
     }
 }
@@ -203,14 +188,10 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
 #[must_use]
 pub fn default_membership_event_fanout_service(
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    room_service: Arc<RoomService>,
-    user_service: Arc<UserService>,
     event_service: Option<Arc<dyn RealtimeEventService>>,
 ) -> Arc<dyn MembershipEventFanoutService> {
     Arc::new(DefaultMembershipEventFanoutService::new(
         realtime_fanout,
-        room_service,
-        user_service,
         event_service,
     ))
 }
@@ -224,12 +205,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
-    use synctv_core::service::{
-        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
-    };
-    use synctv_core::KeyBuilder;
     use synctv_realtime::sync::{BroadcastResult, ConnectionId, RealtimeEvent};
     use tokio::sync::{broadcast, mpsc};
 
@@ -331,34 +307,6 @@ mod tests {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = super::DefaultMembershipEventFanoutService::new(
             default_realtime_fanout_service(None, false),
-            Arc::new(RoomService::new(
-                sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgresql://127.0.0.1:1/synctv")
-                    .unwrap(),
-                UserService::new(
-                    &sqlx::postgres::PgPoolOptions::new()
-                        .connect_lazy("postgresql://127.0.0.1:1/synctv")
-                        .unwrap(),
-                    JwtService::new("membership-fanout-test-secret-key-minimum-32-chars")
-                        .expect("jwt"),
-                    UsernameCache::local_only("membership:username:".to_string(), 128, 60),
-                    synctv_core::config::PasswordComplexityConfig::default(),
-                    Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
-                    KeyBuilder::new("membership-fanout-test"),
-                    BruteForceProtection::in_memory("membership-fanout-test".to_string()),
-                ),
-            )),
-            Arc::new(UserService::new(
-                &sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgresql://127.0.0.1:1/synctv")
-                    .unwrap(),
-                JwtService::new("membership-fanout-test-secret-key-minimum-32-chars").expect("jwt"),
-                UsernameCache::local_only("membership:username:".to_string(), 128, 60),
-                synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
-                KeyBuilder::new("membership-fanout-test"),
-                BruteForceProtection::in_memory("membership-fanout-test".to_string()),
-            )),
             Some(event_service.clone()),
         );
         let user = user_id("self-joiner");

@@ -39,9 +39,7 @@ use synctv_api::realtime_fanout::{
     default_realtime_fanout_service, required_realtime_fanout_service_with_realtime,
     RealtimeFanoutService,
 };
-use synctv_api::runtime::{
-    ClusterRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
-};
+use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 use crate::bootstrap::cluster::{
     build_cluster_coordination_provider, init_cluster_discovery, ClusterCoordinationProvider,
@@ -1236,9 +1234,7 @@ impl Application {
             return Ok(ClusterState {
                 realtime_fanout_service: default_realtime_fanout_service(None, false),
                 realtime_connection_service: realtime_connection_service.clone(),
-                realtime_event_service: Some(Arc::new(ClusterRealtimeEventService::new(
-                    realtime_manager,
-                ))),
+                realtime_event_service: Some(realtime_manager),
                 node_registry: None,
                 health_monitor: None,
                 cluster_activation: None,
@@ -1328,8 +1324,7 @@ impl Application {
             monitor: discovery.health_monitor.clone(),
         });
 
-        let realtime_event_service =
-            Arc::new(ClusterRealtimeEventService::new(realtime_manager.clone()));
+        let realtime_event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
         let outbox = runtime_plan.require_realtime_outbox()?;
         let outbox_cancel = shutdown.register_token("realtime_outbox_dispatcher");
         shutdown.register_task(

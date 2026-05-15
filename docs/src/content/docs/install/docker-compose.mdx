@@ -7,6 +7,7 @@ import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
 import {
   composeInitScriptUrl,
   composePostgresEnvExampleUrl,
+  composeRedisEnvExampleUrl,
   composeSynctvEnvExampleUrl,
   dockerComposeDevFileUrl,
   dockerComposeFileUrl,
@@ -34,7 +35,7 @@ import {
 
 在空目录下载单机生产部署所需的最少文件：
 
-运行初始化脚本前，确认主机已安装 Docker Compose、`openssl` 和 `python3`。脚本使用 `openssl` 生成 PostgreSQL、JWT、cluster、credential-encryption 和 OPAQUE secret，并用 `python3` 安全地 URL-encode 数据库密码。
+运行初始化脚本前，确认主机已安装 Docker Compose、`openssl` 和 `python3`。脚本使用 `openssl` 生成 PostgreSQL、Redis、JWT、cluster、credential-encryption 和 OPAQUE secret，并用 `python3` 安全地 URL-encode 数据库密码。
 
 <Code
   code={[
@@ -42,6 +43,7 @@ import {
     'cd synctv-compose',
     `curl -fsSLO ${dockerComposeFileUrl}`,
     `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+    `curl -fsSLO ${composeRedisEnvExampleUrl}`,
     `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
     'mkdir -p scripts',
     `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
@@ -84,7 +86,7 @@ curl -fsS http://localhost:8080/health/ready
 
 浏览器打开 `http://localhost:8080`。默认 root 用户名是 `root`，密码来自 `.env.synctv` 里的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
 
-Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。请备份这两个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
+Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres`、`.env.redis` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，Redis 只读取 `REDIS_PASSWORD`，`synctv` 只读取 `SYNCTV_*` 应用配置。初始化脚本会把同一个 Redis 密码写入 `.env.redis` 的 `REDIS_PASSWORD`，并写入 `.env.synctv` 中带认证信息的 `SYNCTV_REDIS_URL`。请备份这三个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
 
 升级镜像时，在运行 Compose 前将 `SYNCTV_IMAGE_TAG` 设置为目标发布版本，或在自己的 Compose 覆盖文件中指定镜像版本。示例 Compose 文件默认使用文档对应的应用版本而不是 `latest`，以保证部署可复现。
 

@@ -41,7 +41,7 @@ Development environment from a full repository checkout:
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-Production Compose can run from the repository root or from a directory containing `docker-compose.yml`, `.env.postgres.example`, `.env.synctv.example`, and `scripts/init-compose-env.sh`. It requires explicit secrets:
+Production Compose can run from the repository root or from a directory containing `docker-compose.yml`, `.env.postgres.example`, `.env.redis.example`, `.env.synctv.example`, and `scripts/init-compose-env.sh`. It requires explicit secrets for PostgreSQL, Redis, and application auth/encryption:
 
 ```bash
 # Requires Docker Compose, openssl, and python3.

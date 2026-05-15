@@ -27,28 +27,92 @@ spec:
       targetPort: api
       protocol: TCP
       name: api
-    - port: {{ .Values.config.livestream.rtmpPort }}
-      targetPort: rtmp
-      protocol: TCP
-      name: rtmp
-      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePorts.rtmp }}
-      nodePort: {{ .Values.service.nodePorts.rtmp }}
-      {{- end }}
-    {{- if .Values.config.webrtc.enableBuiltinStun }}
-    - port: {{ .Values.config.webrtc.stunPort }}
-      targetPort: stun
-      protocol: UDP
-      name: stun
-      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePorts.stun }}
-      nodePort: {{ .Values.service.nodePorts.stun }}
-      {{- end }}
-    {{- end }}
   selector:
     {{- include "synctv.selectorLabels" . | nindent 4 }}
   {{- if .Values.service.sessionAffinity }}
   sessionAffinity: {{ .Values.service.sessionAffinity }}
   {{- end }}
 ---
+{{- if .Values.rtmpService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.rtmpServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rtmp
+  {{- with .Values.rtmpService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.rtmpService.type }}
+  {{- if eq .Values.rtmpService.type "LoadBalancer" }}
+  {{- with .Values.rtmpService.loadBalancerIP }}
+  {{- if ne . "" }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.rtmpService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  ports:
+    - port: {{ .Values.config.livestream.rtmpPort }}
+      targetPort: rtmp
+      protocol: TCP
+      name: rtmp
+      {{- if and (or (eq .Values.rtmpService.type "NodePort") (eq .Values.rtmpService.type "LoadBalancer")) .Values.rtmpService.nodePort }}
+      nodePort: {{ .Values.rtmpService.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "synctv.selectorLabels" . | nindent 4 }}
+  {{- if .Values.rtmpService.sessionAffinity }}
+  sessionAffinity: {{ .Values.rtmpService.sessionAffinity }}
+  {{- end }}
+---
+{{- end }}
+{{- if and .Values.config.webrtc.enableBuiltinStun .Values.stunService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.stunServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stun
+  {{- with .Values.stunService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.stunService.type }}
+  {{- if eq .Values.stunService.type "LoadBalancer" }}
+  {{- with .Values.stunService.loadBalancerIP }}
+  {{- if ne . "" }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.stunService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  ports:
+    - port: {{ .Values.config.webrtc.stunPort }}
+      targetPort: stun
+      protocol: UDP
+      name: stun
+      {{- if and (or (eq .Values.stunService.type "NodePort") (eq .Values.stunService.type "LoadBalancer")) .Values.stunService.nodePort }}
+      nodePort: {{ .Values.stunService.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "synctv.selectorLabels" . | nindent 4 }}
+  {{- if .Values.stunService.sessionAffinity }}
+  sessionAffinity: {{ .Values.stunService.sessionAffinity }}
+  {{- end }}
+---
+{{- end }}
 {{- if .Values.metrics.enabled }}
 apiVersion: v1
 kind: Service

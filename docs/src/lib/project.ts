@@ -67,6 +67,7 @@ export const dockerImageReference = `${dockerImage}:${dockerImageTag}`;
 export const dockerComposeFileUrl = `${githubRawBaseUrl}/docker-compose.yml`;
 export const dockerComposeDevFileUrl = `${githubRawBaseUrl}/docker-compose.dev.yml`;
 export const composePostgresEnvExampleUrl = `${githubRawBaseUrl}/.env.postgres.example`;
+export const composeRedisEnvExampleUrl = `${githubRawBaseUrl}/.env.redis.example`;
 export const composeSynctvEnvExampleUrl = `${githubRawBaseUrl}/.env.synctv.example`;
 export const composeInitScriptUrl = `${githubRawBaseUrl}/scripts/init-compose-env.sh`;
 

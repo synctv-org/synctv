@@ -7,6 +7,7 @@ import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
 import {
   composeInitScriptUrl,
   composePostgresEnvExampleUrl,
+  composeRedisEnvExampleUrl,
   composeSynctvEnvExampleUrl,
   dockerComposeDevFileUrl,
   dockerComposeFileUrl,
@@ -34,7 +35,7 @@ If you have not chosen a deployment model yet, start with [Choose a Deployment P
 
 Download the minimum required production files into an empty directory:
 
-Before running the init script, make sure the host has Docker Compose, `openssl`, and `python3` available. The script uses `openssl` to generate PostgreSQL, JWT, cluster, credential-encryption, and OPAQUE secrets, and `python3` to URL-encode the database password safely.
+Before running the init script, make sure the host has Docker Compose, `openssl`, and `python3` available. The script uses `openssl` to generate PostgreSQL, Redis, JWT, cluster, credential-encryption, and OPAQUE secrets, and `python3` to URL-encode the database password safely.
 
 <Code
   code={[
@@ -42,6 +43,7 @@ Before running the init script, make sure the host has Docker Compose, `openssl`
     'cd synctv-compose',
     `curl -fsSLO ${dockerComposeFileUrl}`,
     `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+    `curl -fsSLO ${composeRedisEnvExampleUrl}`,
     `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
     'mkdir -p scripts',
     `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
@@ -84,7 +86,7 @@ curl -fsS http://localhost:8080/health/ready
 
 Open `http://localhost:8080` in a browser. The default root username is `root`; the password comes from `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` in `.env.synctv`.
 
-Docker Compose loads required `.env.postgres` and `.env.synctv` files through `env_file`: PostgreSQL reads only database variables, and `synctv` reads only application settings. Back up both files and reuse them across restarts, new shells, host reboots, and upgrades. If either file is missing, `docker compose config` fails immediately.
+Docker Compose loads required `.env.postgres`, `.env.redis`, and `.env.synctv` files through `env_file`: PostgreSQL reads only database variables, Redis reads only `REDIS_PASSWORD`, and `synctv` reads only `SYNCTV_*` application settings. The init script writes the same generated Redis password into `.env.redis` as `REDIS_PASSWORD` and into `.env.synctv` inside the authenticated `SYNCTV_REDIS_URL`. Back up all three files and reuse them across restarts, new shells, host reboots, and upgrades. If any file is missing, `docker compose config` fails immediately.
 
 When upgrading, set `SYNCTV_IMAGE_TAG` to the desired release before running Compose, or pin the desired image in your own Compose override file. The sample Compose file defaults to the documented app version instead of `latest` so deployments are reproducible. Treat PostgreSQL and Redis image tag changes as separate data-service upgrades: back up the volumes first, review upstream release notes, and keep rollback tags available.
 

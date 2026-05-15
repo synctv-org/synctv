@@ -67,7 +67,7 @@ fn build_forbidden_cors_response() -> Response {
 
 /// Build a CORS preflight response for an allowed origin.
 ///
-/// Returns 204 No Content with the origin echoed back and credentials allowed.
+/// Returns 204 No Content with the origin echoed back.
 fn build_allowed_cors_response(origin: &str) -> Response {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -75,7 +75,6 @@ fn build_allowed_cors_response(origin: &str) -> Response {
         .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
         .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
         .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
-        .header("Access-Control-Allow-Credentials", "true")
         .header("Access-Control-Max-Age", CORS_MAX_AGE)
         .header("Vary", "Origin")
         .body(Body::empty())
@@ -306,13 +305,10 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some(origin)
         );
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Credentials")
-                .map(|v| v.to_str().unwrap()),
-            Some("true")
-        );
+        assert!(response
+            .headers()
+            .get("Access-Control-Allow-Credentials")
+            .is_none());
         assert_eq!(
             response.headers().get("Vary").map(|v| v.to_str().unwrap()),
             Some("Origin")
@@ -368,13 +364,10 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some(allowed_origin)
         );
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Credentials")
-                .map(|v| v.to_str().unwrap()),
-            Some("true")
-        );
+        assert!(response
+            .headers()
+            .get("Access-Control-Allow-Credentials")
+            .is_none());
         assert_eq!(
             response.headers().get("Vary").map(|v| v.to_str().unwrap()),
             Some("Origin")

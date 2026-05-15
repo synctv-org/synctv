@@ -34,24 +34,31 @@ spec:
         - protocol: TCP
           port: {{ .Values.config.server.port }}
     # Allow RTMP ingest (external publishers)
+    {{- if or .Values.networkPolicy.allowAnyRtmpSource .Values.networkPolicy.rtmpSourceCIDRs }}
     - from:
-        {{- if .Values.networkPolicy.rtmpSourceCIDRs }}
+        {{- if .Values.networkPolicy.allowAnyRtmpSource }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
         {{- range .Values.networkPolicy.rtmpSourceCIDRs }}
         - ipBlock:
             cidr: {{ . | quote }}
         {{- end }}
-        {{- else }}
-        - ipBlock:
-            cidr: 0.0.0.0/0
-        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.config.livestream.rtmpPort }}
+    {{- end }}
     # Allow STUN traffic (WebRTC NAT traversal, UDP)
-    {{- if .Values.config.webrtc.enableBuiltinStun }}
+    {{- if and .Values.config.webrtc.enableBuiltinStun (or .Values.networkPolicy.allowAnyStunSource .Values.networkPolicy.stunSourceCIDRs) }}
     - from:
+        {{- if .Values.networkPolicy.allowAnyStunSource }}
         - ipBlock:
             cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.stunSourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: UDP
           port: {{ .Values.config.webrtc.stunPort }}
@@ -84,14 +91,17 @@ spec:
     # Allow PostgreSQL
     - to:
         {{- if eq (include "synctv.postgresql.mode" .) "external" }}
-        {{- if .Values.networkPolicy.externalPostgresqlCIDRs }}
+        {{- if or .Values.networkPolicy.allowAnyExternalDatabaseEgress .Values.networkPolicy.externalPostgresqlCIDRs }}
+        {{- if .Values.networkPolicy.allowAnyExternalDatabaseEgress }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
         {{- range .Values.networkPolicy.externalPostgresqlCIDRs }}
         - ipBlock:
             cidr: {{ . | quote }}
         {{- end }}
         {{- else }}
-        - ipBlock:
-            cidr: 0.0.0.0/0
+        {{- fail "networkPolicy.enabled with postgresql.mode=external requires networkPolicy.externalPostgresqlCIDRs or allowAnyExternalDatabaseEgress=true" }}
         {{- end }}
         {{- else }}
         - podSelector:
@@ -112,14 +122,17 @@ spec:
     # Allow Redis
     - to:
         {{- if eq (include "synctv.redis.mode" .) "external" }}
-        {{- if .Values.networkPolicy.externalRedisCIDRs }}
+        {{- if or .Values.networkPolicy.allowAnyExternalDatabaseEgress .Values.networkPolicy.externalRedisCIDRs }}
+        {{- if .Values.networkPolicy.allowAnyExternalDatabaseEgress }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
         {{- range .Values.networkPolicy.externalRedisCIDRs }}
         - ipBlock:
             cidr: {{ . | quote }}
         {{- end }}
         {{- else }}
-        - ipBlock:
-            cidr: 0.0.0.0/0
+        {{- fail "networkPolicy.enabled with redis.mode=external requires networkPolicy.externalRedisCIDRs or allowAnyExternalDatabaseEgress=true" }}
         {{- end }}
         {{- else }}
         - podSelector:
@@ -145,20 +158,21 @@ spec:
         - protocol: TCP
           port: {{ .Values.config.server.port }}
     # Allow external HTTP/HTTPS (for OAuth2, media providers)
+    {{- if or .Values.networkPolicy.allowAnyExternalHttpEgress .Values.networkPolicy.externalHttpCIDRs }}
     - to:
-        {{- if .Values.networkPolicy.externalHttpCIDRs }}
+        {{- if .Values.networkPolicy.allowAnyExternalHttpEgress }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
         {{- range .Values.networkPolicy.externalHttpCIDRs }}
         - ipBlock:
             cidr: {{ . | quote }}
-        {{- end }}
-        {{- else }}
-        - ipBlock:
-            cidr: 0.0.0.0/0
         {{- end }}
       ports:
         - protocol: TCP
           port: 443
         - protocol: TCP
           port: 80
+    {{- end }}
   {{- end }}
 {{- end }}

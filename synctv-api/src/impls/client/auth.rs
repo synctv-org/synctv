@@ -121,20 +121,7 @@ impl ClientApiImpl {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
-        if req.email_token.is_empty() {
-            return self.login_with_control(req, client_ip, control).await;
-        }
-
         crate::impls::validate_proto_request(&req)?;
-        if !req.password.is_empty()
-            || req.email.trim().is_empty()
-            || !req.username.trim().is_empty()
-        {
-            return Err(ApiError::InvalidInput(
-                "Email login token requires email only and cannot be combined with username or password."
-                    .to_string(),
-            ));
-        }
 
         let email_api = email_api.ok_or_else(|| {
             ApiError::ServiceUnavailable(
@@ -206,97 +193,6 @@ impl ClientApiImpl {
             usage: "Pass this token as Authorization: Bearer <token> for supported room APIs in the bound public room."
                 .to_string(),
         })
-    }
-
-    pub async fn register(
-        &self,
-        req: crate::proto::client::RegisterRequest,
-        client_ip: Option<std::net::IpAddr>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
-        self.register_with_control(req, client_ip, None).await
-    }
-
-    pub async fn register_with_control(
-        &self,
-        mut req: crate::proto::client::RegisterRequest,
-        client_ip: Option<std::net::IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
-        // Validate and sanitize username
-        req.username = crate::impls::validation::validate_username(&req.username)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-
-        crate::impls::validate_proto_request(&req)?;
-
-        let email = if req.email.is_empty() {
-            None
-        } else {
-            Some(req.email.clone())
-        };
-
-        // Register user (returns tuple: (User, Option<access_token>, Option<refresh_token>))
-        // Tokens are None when email verification is required (user is Pending).
-        let (user, access_token, refresh_token) = self
-            .user_service
-            .register_with_control(req.username, email, req.password, client_ip, control)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
-            access_token: access_token.unwrap_or_default(),
-            refresh_token: refresh_token.unwrap_or_default(),
-        })
-    }
-
-    pub async fn login(
-        &self,
-        req: crate::proto::client::LoginRequest,
-        client_ip: Option<std::net::IpAddr>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
-        self.login_with_control(req, client_ip, None).await
-    }
-
-    pub async fn login_with_control(
-        &self,
-        req: crate::proto::client::LoginRequest,
-        client_ip: Option<std::net::IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-
-        let has_username = !req.username.trim().is_empty();
-        let has_email = !req.email.trim().is_empty();
-        if has_username == has_email {
-            return Err(ApiError::InvalidInput(
-                "Provide exactly one of username or email".to_string(),
-            ));
-        }
-        if req.password.is_empty() {
-            return Err(ApiError::InvalidInput("Password is required".to_string()));
-        }
-        if !req.email_token.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "email_token cannot be combined with password login".to_string(),
-            ));
-        }
-
-        let identifier = if has_email {
-            crate::impls::validation::validate_email(&req.email)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-        } else {
-            crate::impls::validation::validate_username(&req.username)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-        };
-
-        // Login user (returns tuple: (User, access_token, refresh_token))
-        let outcome = self
-            .user_service
-            .login_with_control(identifier, req.password, client_ip, control)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
     }
 
     pub async fn start_opaque_login_with_control(
@@ -652,26 +548,6 @@ impl ClientApiImpl {
             control,
         )
         .await
-    }
-
-    pub async fn verify_mfa_password_with_control(
-        &self,
-        req: crate::proto::client::VerifyMfaPasswordRequest,
-        client_ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let outcome = self
-            .user_service
-            .verify_mfa_password_with_control(
-                &req.mfa_session_id,
-                &req.password,
-                client_ip,
-                control,
-            )
-            .await
-            .map_err(ApiError::from)?;
-        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
     }
 
     pub async fn refresh_token(

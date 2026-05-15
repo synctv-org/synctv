@@ -25,6 +25,7 @@ mod resource_change;
 mod room_cache_fanout;
 mod room_lifecycle_fanout;
 pub mod runtime;
+pub mod webrtc_status;
 
 #[doc(hidden)]
 pub mod test_support {

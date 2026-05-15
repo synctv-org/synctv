@@ -18,7 +18,7 @@ use super::proto::{
     stream_relay_service_server, FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse,
     GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
 };
-use crate::livestream::segment_manager::SegmentManager;
+use crate::livestream::SegmentManager;
 use crate::protocols::hls::StreamRegistry as HlsStreamRegistry;
 use crate::relay::StreamRegistryTrait;
 use crate::util::{
@@ -63,6 +63,15 @@ fn validate_relay_segment_url_suffix(segment_url_suffix: &str) -> Result<(), Sta
     validate_hls_segment_url_suffix(segment_url_suffix).map_err(|error| {
         Status::invalid_argument(format!("invalid HLS segment URL suffix: {error}"))
     })
+}
+
+fn require_expected_epoch(expected_epoch: u64) -> Result<(), Status> {
+    if expected_epoch == 0 {
+        return Err(Status::invalid_argument(
+            "expected_epoch is required for stream relay fencing",
+        ));
+    }
+    Ok(())
 }
 
 /// Callback invoked when the relay service forwards frames from a local publisher.
@@ -236,6 +245,41 @@ impl StreamRelayServiceImpl {
             ))
         }
     }
+
+    async fn verify_local_publisher_epoch(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+    ) -> Result<(), Status> {
+        require_expected_epoch(expected_epoch)?;
+
+        let publisher_info = self
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, room_id, media_id, "Failed to get publisher");
+                Status::internal("Failed to get publisher info")
+            })?
+            .ok_or_else(|| Status::not_found("No active publisher for this media"))?;
+
+        if publisher_info.node_id != self.node_id {
+            return Err(Status::failed_precondition(format!(
+                "This node ({}) is not the publisher (publisher is {})",
+                self.node_id, publisher_info.node_id
+            )));
+        }
+
+        if publisher_info.epoch != expected_epoch {
+            return Err(Status::failed_precondition(format!(
+                "Publisher epoch mismatch for {room_id}/{media_id}: expected {}, current {}",
+                expected_epoch, publisher_info.epoch
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -254,30 +298,15 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
 
         let req = request.into_inner();
         validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        self.verify_local_publisher_epoch(&req.room_id, &req.media_id, req.expected_epoch)
+            .await?;
         info!(
             room_id = req.room_id,
             media_id = req.media_id,
             is_reconnect = req.is_reconnect,
+            expected_epoch = req.expected_epoch,
             "PullRtmpStream request (service-to-service internal call)"
         );
-
-        // Check if this node is the publisher
-        let publisher_info = self
-            .registry
-            .get_publisher(&req.room_id, &req.media_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to get publisher: {e}");
-                Status::internal("Failed to get publisher info")
-            })?
-            .ok_or_else(|| Status::not_found("No active publisher for this media"))?;
-
-        if publisher_info.node_id != self.node_id {
-            return Err(Status::failed_precondition(format!(
-                "This node ({}) is not the publisher (publisher is {})",
-                self.node_id, publisher_info.node_id
-            )));
-        }
 
         // Subscribe to StreamHub for live data (GOP is sent automatically by StreamHub)
         let subscriber_id = Uuid::new();
@@ -386,9 +415,12 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         validate_relay_stream_ids(&req.room_id, &req.media_id)?;
         validate_relay_segment_url_base(&req.segment_url_base)?;
         validate_relay_segment_url_suffix(&req.segment_url_suffix)?;
+        self.verify_local_publisher_epoch(&req.room_id, &req.media_id, req.expected_epoch)
+            .await?;
         tracing::debug!(
             room_id = req.room_id,
             media_id = req.media_id,
+            expected_epoch = req.expected_epoch,
             "GetHlsPlaylist request"
         );
 
@@ -433,10 +465,13 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let req = request.into_inner();
         validate_relay_stream_ids(&req.room_id, &req.media_id)?;
         validate_relay_hls_segment_name(&req.segment_name)?;
+        self.verify_local_publisher_epoch(&req.room_id, &req.media_id, req.expected_epoch)
+            .await?;
         tracing::debug!(
             room_id = req.room_id,
             media_id = req.media_id,
             segment_name = req.segment_name,
+            expected_epoch = req.expected_epoch,
             "GetHlsSegment request"
         );
 
@@ -674,6 +709,7 @@ mod tests {
                 room_id: "room1".to_string(),
                 media_id: "media1".to_string(),
                 is_reconnect: false,
+                expected_epoch: 1,
             });
             request
                 .metadata_mut()
@@ -720,6 +756,7 @@ mod tests {
             room_id: "room:1".to_string(),
             media_id: "media1".to_string(),
             is_reconnect: false,
+            expected_epoch: 1,
         });
         request
             .metadata_mut()
@@ -749,6 +786,7 @@ mod tests {
             media_id: "media1".to_string(),
             segment_url_base: "/segments/\n#EXT-X-ENDLIST".to_string(),
             segment_url_suffix: ".ts".to_string(),
+            expected_epoch: 1,
         });
         request
             .metadata_mut()
@@ -778,6 +816,7 @@ mod tests {
             media_id: "media1".to_string(),
             segment_url_base: "/segments/".to_string(),
             segment_url_suffix: ".ts\n#EXT-X-ENDLIST".to_string(),
+            expected_epoch: 1,
         });
         request
             .metadata_mut()
@@ -792,6 +831,10 @@ mod tests {
     #[tokio::test]
     async fn test_relay_preserves_hls_playlist_segment_url_suffix() {
         let registry = crate::relay::local_stream_registry();
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let hls_registry = Arc::new(dashmap::DashMap::new());
         let mut segments = std::collections::VecDeque::new();
@@ -830,6 +873,7 @@ mod tests {
             media_id: "media1".to_string(),
             segment_url_base: "/api/live/segment/".to_string(),
             segment_url_suffix: ".png?sig=abc&rid=room1".to_string(),
+            expected_epoch: 1,
         });
         request
             .metadata_mut()
@@ -872,6 +916,7 @@ mod tests {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
             segment_name: "../secret".to_string(),
+            expected_epoch: 1,
         });
         request
             .metadata_mut()
@@ -881,6 +926,93 @@ mod tests {
             panic!("invalid HLS segment name must be rejected");
         };
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_relay_rejects_stale_expected_epoch_before_streamhub_work() {
+        let registry = crate::relay::local_stream_registry();
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            is_reconnect: false,
+            expected_epoch: 999,
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let Err(status) = service.pull_rtmp_stream(request).await else {
+            panic!("stale epoch must fail closed");
+        };
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            event_rx.try_recv().is_err(),
+            "stale epoch must be rejected before StreamHub subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hls_playlist_rejects_stale_expected_epoch_before_registry_read() {
+        let registry = crate::relay::local_stream_registry();
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        hls_registry.insert(
+            "room1/media1".to_string(),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room1".to_string(),
+                    stream_name: "media1".to_string(),
+                    segments: std::collections::VecDeque::new(),
+                    is_ended: false,
+                    created_at: std::time::Instant::now(),
+                    marked_for_cleanup: false,
+                    cleanup_segment_names: Vec::new(),
+                },
+            )),
+        );
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret")
+        .with_hls_stream_registry(hls_registry);
+
+        let mut request = Request::new(GetHlsPlaylistRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            segment_url_base: "/segments/".to_string(),
+            segment_url_suffix: ".ts".to_string(),
+            expected_epoch: 999,
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let Err(status) = service.get_hls_playlist(request).await else {
+            panic!("stale epoch must fail closed");
+        };
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     }
 
     #[tokio::test]
@@ -914,6 +1046,7 @@ mod tests {
                 room_id: "room1".to_string(),
                 media_id: "media1".to_string(),
                 is_reconnect: false,
+                expected_epoch: 1,
             });
             request
                 .metadata_mut()
@@ -987,6 +1120,7 @@ mod tests {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
             is_reconnect: false,
+            expected_epoch: 1,
         });
         request
             .metadata_mut()
@@ -1021,6 +1155,7 @@ mod tests {
             room_id: "room1".to_string(),
             media_id: "media1".to_string(),
             is_reconnect: false,
+            expected_epoch: 1,
         });
         request
             .metadata_mut()

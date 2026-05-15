@@ -24,7 +24,7 @@ An image rollback is not always a system rollback. If a migration changed the da
 2. Back up PostgreSQL and production secrets.
 3. If the secret management model changes, first use [Security Hardening and Rotation](../security-hardening-and-rotation/) to decide whether direct rotation is safe.
 4. Restore production-like data into a test environment, start the target version, and verify automatic migrations and business reads/writes.
-5. Run `synctv config validate`.
+5. Run `synctv config validate --strict`.
 6. Save `synctv config show --output yaml` as the current effective config snapshot.
 7. Compare against the [Configuration Index](../../reference/configuration-index/) and [Full Configuration Example](../../configuration/full-example/).
 8. If protocol or protobuf behavior changes, confirm [API and Protobuf Evolution](../../reference/api-versioning/) and client examples are updated.
@@ -153,7 +153,7 @@ After rollback:
 
 ```bash
 synctv db status
-synctv config validate
+synctv config validate --strict
 curl -fsS http://localhost:8080/health/ready
 ```
 

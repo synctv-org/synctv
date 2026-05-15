@@ -1199,11 +1199,13 @@ mod tests {
         let auth = make_test_auth_with_registry(local_stream_registry());
 
         assert_eq!(
-            auth.decode_rtmp_room_id("room_42").unwrap(),
+            auth.decode_rtmp_room_id("room_42")
+                .expect("room_42 should decode as a public room id"),
             RoomId::expect_positive(42)
         );
         assert_eq!(
-            auth.decode_rtmp_media_id("med_99").unwrap(),
+            auth.decode_rtmp_media_id("med_99")
+                .expect("med_99 should decode as a public media id"),
             MediaId::expect_positive(99)
         );
         assert!(auth.decode_rtmp_room_id("42").is_err());

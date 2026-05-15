@@ -1,5 +1,4 @@
 pub mod errors;
-pub mod print;
 
 /// Parse a string by a separator into a tuple of typed values.
 /// Returns a tuple of `Option<T>` for each requested type.

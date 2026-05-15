@@ -36,6 +36,7 @@ pub mod room_settings;
 mod session_store;
 pub mod settings;
 pub mod settings_vars;
+mod source_config;
 pub mod stun_server;
 pub mod user;
 pub mod user_notification;
@@ -128,7 +129,10 @@ pub use room::{
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};
 pub use settings_vars::{Setting, SettingsStorage};
-pub use stun_server::{resolve_external_ip, validate_external_addr, StunServer, StunServerConfig};
+pub use stun_server::{
+    resolve_external_ip, validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState,
+    StunServer, StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,
+};
 pub use user::UserService;
 pub use user::{
     local_mfa_session_store, local_opaque_login_session_store,

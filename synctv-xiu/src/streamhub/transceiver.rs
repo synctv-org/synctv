@@ -494,6 +494,11 @@ impl StreamDataTransceiver {
                             tracing::warn!(
                                 "receive_event_loop send_prior_data err (skipping subscriber): {err}"
                             );
+                            if result_sender.send(Err(err)).is_err() {
+                                tracing::error!(
+                                    "receive_event_loop failed to return prior-data error: receiver dropped"
+                                );
+                            }
                             continue;
                         }
                         match sender {
@@ -523,7 +528,7 @@ impl StreamDataTransceiver {
                             }
                         }
 
-                        if let Err(err) = result_sender.send(statistic_sender.clone()) {
+                        if let Err(err) = result_sender.send(Ok(statistic_sender.clone())) {
                             tracing::error!("receive_event_loop:send statistic send err :{err:?} ");
                         }
 

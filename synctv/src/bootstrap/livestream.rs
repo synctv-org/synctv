@@ -90,7 +90,7 @@ pub async fn init_livestream(
 )> {
     info!("Initializing livestream infrastructure...");
 
-    let shared_state_profile = SharedStateProfile::from_runtime(
+    let shared_state_profile = SharedStateProfile::for_cluster_runtime(
         shared_runtime,
         &config.redis.key_prefix,
         config.cluster_runtime_enabled(),
@@ -105,47 +105,6 @@ pub async fn init_livestream(
     // Stream lifecycle event channel (app-level logging)
     let (stream_lifecycle_tx, mut stream_lifecycle_rx) =
         tokio::sync::broadcast::channel::<rtmp_auth::StreamLifecycleEvent>(64);
-
-    let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-
-    // Start periodic cleanup of stale stream tracker entries.
-    // When a publisher crashes without a clean on_unpublish, secondary indexes
-    // can retain orphaned references. This background task cleans them up.
-    let tracker_cleanup_handle =
-        user_stream_tracker.start_periodic_cleanup(std::time::Duration::from_mins(1), cancel);
-    background_handles.push(tracker_cleanup_handle);
-
-    let lifecycle_handle = tokio::spawn(async move {
-        while let Ok(event) = stream_lifecycle_rx.recv().await {
-            match event {
-                rtmp_auth::StreamLifecycleEvent::Started {
-                    room_id,
-                    media_id,
-                    user_id,
-                } => {
-                    info!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        user_id = %user_id,
-                        "Stream started"
-                    );
-                }
-                rtmp_auth::StreamLifecycleEvent::Stopped {
-                    room_id,
-                    media_id,
-                    user_id,
-                } => {
-                    info!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        user_id = %user_id,
-                        "Stream stopped"
-                    );
-                }
-            }
-        }
-    });
-    background_handles.push(lifecycle_handle);
 
     // Pre-bind RTMP listener to catch port-in-use errors before deep initialization.
     // This follows the same pattern as gRPC/HTTP server pre-binding.
@@ -189,7 +148,7 @@ pub async fn init_livestream(
             ssrf_guard: config.security.ssrf_guard(),
         },
         publisher_registry,
-        user_stream_tracker,
+        user_stream_tracker.clone(),
     );
 
     let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
@@ -220,6 +179,46 @@ pub async fn init_livestream(
 
     let live_infra = handle.infrastructure.clone();
     let state = Some(server::LivestreamState { handle });
+
+    let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // Start periodic cleanup of stale stream tracker entries after all fallible
+    // startup work succeeds so the handle is always returned for shutdown.
+    let tracker_cleanup_handle =
+        user_stream_tracker.start_periodic_cleanup(std::time::Duration::from_mins(1), cancel);
+    background_handles.push(tracker_cleanup_handle);
+
+    let lifecycle_handle = tokio::spawn(async move {
+        while let Ok(event) = stream_lifecycle_rx.recv().await {
+            match event {
+                rtmp_auth::StreamLifecycleEvent::Started {
+                    room_id,
+                    media_id,
+                    user_id,
+                } => {
+                    info!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        user_id = %user_id,
+                        "Stream started"
+                    );
+                }
+                rtmp_auth::StreamLifecycleEvent::Stopped {
+                    room_id,
+                    media_id,
+                    user_id,
+                } => {
+                    info!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        user_id = %user_id,
+                        "Stream stopped"
+                    );
+                }
+            }
+        }
+    });
+    background_handles.push(lifecycle_handle);
 
     Ok((state, Some(live_infra), background_handles))
 }

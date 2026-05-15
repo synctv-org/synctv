@@ -55,7 +55,11 @@ const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
 /// Remote Provider Manager
 ///
 /// Manages remote provider instances (gRPC connections).
-/// When no remote instance is found, providers fallback to singleton local clients.
+/// Provider adapters use the local singleton only when no provider instance
+/// name is requested. Explicit instance names are resolved through
+/// `resolve_client_required(_with_context)` so missing, disabled, or
+/// misconfigured remote instances fail closed instead of being masked by local
+/// fallback.
 ///
 /// ## Multi-replica architecture
 ///
@@ -1144,7 +1148,7 @@ impl RemoteProviderManager {
         Ok(channel)
     }
 
-    /// Get a remote provider instance channel by name.
+    /// Get a remote provider instance channel by name for best-effort probes.
     ///
     /// Checks the local moka cache first. On cache miss, loads the instance config
     /// from the database and creates a channel lazily. This ensures that provider
@@ -1153,54 +1157,19 @@ impl RemoteProviderManager {
     ///
     /// Returns:
     /// - `Some(channel)` if the instance exists and is enabled
-    /// - `None` if not found or disabled (caller should fallback to singleton local client)
+    /// - `None` if not found, disabled, or temporarily unavailable
     pub async fn get(&self, name: &str) -> Option<RemoteProviderConnection> {
         match self.get_connection_result(name).await {
             Ok(connection) => connection,
             Err(err) => {
                 tracing::error!(
-                    "Failed to resolve remote provider instance '{}' for optional fallback path: {}",
+                    "Failed to resolve remote provider instance '{}' for best-effort probe: {}",
                     name,
                     err
                 );
                 None
             }
         }
-    }
-
-    /// Resolve a provider client: try remote instance first, fallback to local.
-    ///
-    /// Encapsulates the common pattern used by all provider adapters:
-    /// 1. If `instance_name` is provided and a remote channel exists, call `create_remote`
-    /// 2. Otherwise, call `load_local`
-    pub async fn resolve_client<T>(
-        &self,
-        instance_name: Option<&str>,
-        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
-        load_local: impl FnOnce() -> T,
-    ) -> T {
-        if let Some(name) = instance_name {
-            if let Some(connection) = self.get(name).await {
-                return create_remote(connection);
-            }
-        }
-        load_local()
-    }
-
-    /// Resolve a provider client with a cooperative request context for remote calls.
-    pub async fn resolve_client_with_context<T>(
-        &self,
-        instance_name: Option<&str>,
-        request_context: Option<&crate::provider::ExecutionControl>,
-        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
-        load_local: impl FnOnce() -> T,
-    ) -> T {
-        if let Some(name) = instance_name {
-            if let Some(connection) = self.get(name).await {
-                return create_remote(connection.with_request_context(request_context.cloned()));
-            }
-        }
-        load_local()
     }
 
     /// Resolve a provider client without silently falling back when an explicit

@@ -12,6 +12,7 @@ const CLAIM_BATCH_SIZE: i64 = 100;
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const BUSY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PROCESSING_STALE_AFTER_SECS: i64 = 120;
+const PUBLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn start_realtime_outbox_dispatcher(
     outbox: Arc<RealtimeOutboxRepository>,
@@ -148,31 +149,42 @@ async fn dispatch_event(
         }
     };
 
-    if realtime_manager.publish_only(realtime_event.clone()) {
-        if let Err(error) = outbox.mark_sent(&event.id).await {
-            error!(
-                outbox_id = %event.id,
-                event_type = %realtime_event.event_type(),
-                error = %error,
-                "Realtime outbox event was published but could not be marked sent"
-            );
-        } else {
-            debug!(
-                outbox_id = %event.id,
-                event_type = %realtime_event.event_type(),
-                "Realtime outbox event published"
-            );
+    match realtime_manager
+        .publish_only_confirmed(realtime_event.clone(), PUBLISH_CONFIRMATION_TIMEOUT)
+        .await
+    {
+        Ok(()) => {
+            if let Err(error) = outbox.mark_sent(&event.id).await {
+                error!(
+                    outbox_id = %event.id,
+                    event_type = %realtime_event.event_type(),
+                    error = %error,
+                    "Realtime outbox event was published but could not be marked sent"
+                );
+            } else {
+                debug!(
+                    outbox_id = %event.id,
+                    event_type = %realtime_event.event_type(),
+                    "Realtime outbox event published"
+                );
+            }
         }
-        return;
-    }
-
-    let message = "Realtime publish queue rejected event";
-    if let Err(error) = outbox.mark_failed(&event.id, event.attempts, message).await {
-        error!(
-            outbox_id = %event.id,
-            event_type = %realtime_event.event_type(),
-            error = %error,
-            "Failed to mark realtime outbox event for retry"
-        );
+        Err(error) => {
+            if let Err(mark_error) = outbox.mark_failed(&event.id, event.attempts, &error).await {
+                error!(
+                    outbox_id = %event.id,
+                    event_type = %realtime_event.event_type(),
+                    error = %mark_error,
+                    "Failed to mark realtime outbox event for retry"
+                );
+            } else {
+                warn!(
+                    outbox_id = %event.id,
+                    event_type = %realtime_event.event_type(),
+                    error = %error,
+                    "Realtime outbox event publish was not confirmed; scheduled retry"
+                );
+            }
+        }
     }
 }

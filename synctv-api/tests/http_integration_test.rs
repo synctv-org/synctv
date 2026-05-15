@@ -972,34 +972,16 @@ mod routing_structure {
 
 mod request_format {
     use synctv_proto::client::{
-        CreateRoomRequest, JoinRoomRequest, LoginRequest, RefreshTokenRequest, RegisterRequest,
+        CreateRoomRequest, JoinRoomRequest, LoginRequest, RefreshTokenRequest,
         SetRoomPasswordRequest,
     };
 
     #[test]
-    fn test_register_request_deserializes() {
-        let json = r#"{"username":"test","password":"secret123","email":"test@example.com"}"#;
-        let req: RegisterRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.username, "test");
-        assert_eq!(req.password, "secret123");
-        assert_eq!(req.email, "test@example.com");
-    }
-
-    #[test]
-    fn test_register_request_with_explicit_empty_fields() {
-        let json = r#"{"username":"","password":"","email":""}"#;
-        let req: RegisterRequest = serde_json::from_str(json).unwrap();
-        assert!(req.username.is_empty());
-        assert!(req.password.is_empty());
-        assert!(req.email.is_empty());
-    }
-
-    #[test]
     fn test_login_request_deserializes() {
-        let json = r#"{"username":"test","password":"secret123"}"#;
+        let json = r#"{"email":"test@example.com","email_token":"token123"}"#;
         let req: LoginRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.username, "test");
-        assert_eq!(req.password, "secret123");
+        assert_eq!(req.email, "test@example.com");
+        assert_eq!(req.email_token, "token123");
     }
 
     #[test]
@@ -1084,18 +1066,6 @@ mod request_format {
         let json = r#"{"refresh_token":"some_refresh_token"}"#;
         let req: RefreshTokenRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.refresh_token, "some_refresh_token");
-    }
-
-    #[test]
-    fn test_register_request_roundtrip() {
-        let req = RegisterRequest {
-            username: "alice".to_string(),
-            password: "password123".to_string(),
-            email: "alice@example.com".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let deserialized: RegisterRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(req, deserialized);
     }
 }
 
@@ -1519,17 +1489,6 @@ mod user_request {
         let json = r#"{"username": "newname"}"#;
         let req: UpdateUserRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.username.as_deref(), Some("newname"));
-        assert!(req.password.is_none());
-        assert!(req.old_password.is_none());
-    }
-
-    #[test]
-    fn test_password_change() {
-        let json = r#"{"password": "new_pass", "old_password": "old_pass"}"#;
-        let req: UpdateUserRequest = serde_json::from_str(json).unwrap();
-        assert!(req.username.is_none());
-        assert_eq!(req.password.as_deref(), Some("new_pass"));
-        assert_eq!(req.old_password.as_deref(), Some("old_pass"));
     }
 
     #[test]
@@ -1537,7 +1496,5 @@ mod user_request {
         let json = r"{}";
         let req: UpdateUserRequest = serde_json::from_str(json).unwrap();
         assert!(req.username.is_none());
-        assert!(req.password.is_none());
-        assert!(req.old_password.is_none());
     }
 }

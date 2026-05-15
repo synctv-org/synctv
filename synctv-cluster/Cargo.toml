@@ -12,18 +12,12 @@ tls-aws-lc = [
     "synctv-core/tls-aws-lc",
     "synctv-common/tls-aws-lc",
     "tonic/tls-aws-lc",
-    "synctv-core-testing/tls-aws-lc",
-    "testcontainers/aws-lc-rs",
-    "testcontainers-modules/aws-lc-rs",
     "kube?/aws-lc-rs",
 ]
 tls-ring = [
     "synctv-core/tls-ring",
     "synctv-common/tls-ring",
     "tonic/tls-ring",
-    "synctv-core-testing/tls-ring",
-    "testcontainers/ring",
-    "testcontainers-modules/ring",
     "kube?/ring",
 ]
 tls-webpki-roots = [

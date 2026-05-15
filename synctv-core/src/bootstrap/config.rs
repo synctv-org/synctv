@@ -16,6 +16,7 @@ pub struct LoadConfigOptions {
     pub data_dir: Option<String>,
     pub load_dotenv: bool,
     pub validate: bool,
+    pub strict_unknown: bool,
     pub verbose: bool,
 }
 
@@ -47,6 +48,7 @@ pub fn load_config() -> Result<Config> {
         data_dir: None,
         load_dotenv: true,
         validate: true,
+        strict_unknown: false,
         verbose: false,
     })
 }
@@ -77,10 +79,13 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         if options.verbose {
             eprintln!("Loading config from {display_path}");
         }
-        match Config::load_with_env_map_and_data_dir_override(
+        match Config::load_with_env_map_and_behavior(
             Some(&path),
             &env,
             options.data_dir.as_deref(),
+            crate::config::ConfigLoadBehavior {
+                strict_unknown: options.strict_unknown,
+            },
         ) {
             Ok(cfg) => {
                 if options.verbose {
@@ -116,7 +121,14 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         if options.verbose {
             eprintln!("No config file found, using environment variables");
         }
-        Config::load_with_env_map_and_data_dir_override(None, &env, options.data_dir.as_deref())?
+        Config::load_with_env_map_and_behavior(
+            None,
+            &env,
+            options.data_dir.as_deref(),
+            crate::config::ConfigLoadBehavior {
+                strict_unknown: options.strict_unknown,
+            },
+        )?
     };
 
     set_default_timezone_name(&config.time.timezone).map_err(|error| {
@@ -388,6 +400,7 @@ server:
             data_dir: None,
             load_dotenv: false,
             validate: true,
+            strict_unknown: false,
             verbose: false,
         })
         .expect("explicit CLI config path should load successfully");
@@ -415,11 +428,46 @@ jwt:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            strict_unknown: false,
             verbose: false,
         })
         .expect("loading without validation should succeed");
 
         assert!(config.jwt.secret.is_empty());
+    }
+
+    #[test]
+    fn test_load_config_with_options_strict_unknown_rejects_file_and_env_unknowns() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let _secret_env = clear_secret_env_overrides();
+        let _unknown_env = EnvVarGuard::set("SYNCTV_UNKNOWN_SETTING", "1");
+        let config_path = dir.path().join("unknown.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: "12345678901234567890123456789012"
+metrics:
+  enabled: true
+  obsolete_token: "ignored"
+"#,
+        )
+        .expect("config should be written");
+
+        let err = load_config_with_options(&LoadConfigOptions {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
+            load_dotenv: false,
+            validate: false,
+            strict_unknown: true,
+            verbose: false,
+        })
+        .expect_err("strict unknown mode should reject unsupported inputs");
+        let message = err.to_string();
+
+        assert!(message.contains("metrics.obsolete_token"));
+        assert!(message.contains("SYNCTV_UNKNOWN_SETTING"));
     }
 
     #[test]
@@ -446,6 +494,7 @@ management:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            strict_unknown: false,
             verbose: false,
         })
         .expect("SYNCTV_CONFIG_PATH should be honored when CLI path is absent");
@@ -475,6 +524,7 @@ jwt:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            strict_unknown: false,
             verbose: false,
         })
         .expect("timezone config should load");
@@ -495,6 +545,7 @@ jwt:
             data_dir: Some(data_dir.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: false,
+            strict_unknown: false,
             verbose: false,
         })
         .expect("cli data_dir should be applied to default runtime paths");
@@ -522,6 +573,7 @@ jwt:
             data_dir: Some(cli_data_dir.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: false,
+            strict_unknown: false,
             verbose: false,
         })
         .expect("cli data_dir should override SYNCTV_DATA_DIR");

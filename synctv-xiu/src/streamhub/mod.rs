@@ -205,7 +205,7 @@ impl StreamsHub {
                 value: StreamHubErrorValue::SendError,
             })?;
 
-            return Ok(result_receiver.await?);
+            return result_receiver.await?;
         }
 
         Err(StreamHubError {
@@ -398,6 +398,21 @@ mod tests {
         }
     }
 
+    struct FailingPriorDataHandler;
+
+    #[async_trait]
+    impl TStreamHandler for FailingPriorDataHandler {
+        async fn send_prior_data(
+            &self,
+            _sender: DataSender,
+            _sub_type: SubscribeType,
+        ) -> Result<(), StreamHubError> {
+            Err(StreamHubError {
+                value: StreamHubErrorValue::SubscriberClosed,
+            })
+        }
+    }
+
     fn test_identifier() -> StreamIdentifier {
         StreamIdentifier::Rtmp {
             app_name: "live".to_string(),
@@ -442,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_subscriber_data_channel_uses_unbounded_for_internal_remuxers() {
+    fn test_build_subscriber_data_channel_bounds_internal_remuxers() {
         for sub_type in [
             SubscribeType::RtmpRemux2HttpFlv,
             SubscribeType::RtmpRemux2Hls,
@@ -454,17 +469,17 @@ mod tests {
                 matches!(
                     sender,
                     DataSender::Frame {
-                        sender: FrameDataSender::Unbounded(_)
+                        sender: FrameDataSender::Bounded(_)
                     }
                 ),
-                "internal subscriber {sub_type:?} should use unbounded sender"
+                "internal subscriber {sub_type:?} should use bounded sender"
             );
             assert!(
                 matches!(
                     receiver.frame_receiver,
-                    Some(define::FrameDataReceiver::Unbounded(_))
+                    Some(define::FrameDataReceiver::Bounded(_))
                 ),
-                "internal subscriber {sub_type:?} should use unbounded receiver"
+                "internal subscriber {sub_type:?} should use bounded receiver"
             );
         }
     }
@@ -494,6 +509,51 @@ mod tests {
             .expect("event loop should exit promptly when channel closes");
 
         assert!(join_result.is_ok(), "event loop task should not panic");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_returns_prior_data_error_without_timeout() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let mut hub = StreamsHub::new(hub_sender, hub_receiver);
+        let identifier = test_identifier();
+
+        let (_frame_sender, frame_receiver) = mpsc::channel(8);
+        let receiver = DataReceiver {
+            frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
+            packet_receiver: None,
+        };
+
+        hub.publish(
+            identifier.clone(),
+            define::PublishType::RtmpPush,
+            receiver,
+            Arc::new(FailingPriorDataHandler),
+        )
+        .expect("publish should succeed");
+
+        let (sub_sender, _sub_receiver) = mpsc::channel(8);
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            hub.subscribe(
+                &identifier,
+                test_subscriber(),
+                DataSender::Frame {
+                    sender: FrameDataSender::bounded(sub_sender),
+                },
+            ),
+        )
+        .await
+        .expect("subscribe should complete without caller-side timeout");
+
+        assert!(
+            matches!(
+                result,
+                Err(StreamHubError {
+                    value: StreamHubErrorValue::SubscriberClosed
+                })
+            ),
+            "prior-data failure must be returned to the subscriber"
+        );
     }
 
     #[tokio::test]

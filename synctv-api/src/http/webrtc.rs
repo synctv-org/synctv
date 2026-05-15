@@ -76,7 +76,7 @@ pub async fn get_ice_servers(
 mod tests {
     use crate::http::error::map_api_error;
     use crate::impls::ApiError;
-    use crate::proto::client::IceServer;
+    use crate::proto::client::{GetIceServersResponse, IceServer};
     use axum::http::StatusCode;
 
     #[test]
@@ -117,6 +117,25 @@ mod tests {
         );
         assert_eq!(json["username"], serde_json::Value::Null);
         assert_eq!(json["credential"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_ice_servers_response_includes_webrtc_status() {
+        let response = GetIceServersResponse {
+            servers: Vec::new(),
+            webrtc: Some(crate::webrtc_status::to_proto_status(
+                &synctv_core::service::WebRtcRuntimeStatus::degraded(
+                    synctv_core::service::BuiltinStunRuntimeReason::ExternalAddrInvalid,
+                    "invalid external STUN address",
+                    Some("127.0.0.1:3478".to_string()),
+                ),
+            )),
+        };
+
+        let json = serde_json::to_value(&response).expect("response should serialize");
+        assert_eq!(json["webrtc"]["builtin_stun_state"], "degraded");
+        assert_eq!(json["webrtc"]["reason"], "external_addr_invalid");
+        assert_eq!(json["webrtc"]["external_addr"], "127.0.0.1:3478");
     }
 
     #[test]

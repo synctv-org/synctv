@@ -9,10 +9,11 @@ use synctv_core::service::{
     EmailTokenService, EmailTokenType, RequestRateLimiterService, UserService,
 };
 use synctv_proto::client::{
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
+    FinishOpaquePasswordResetRequest, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
     RequestPasswordResetRequest, RequestPasswordResetResponse, SendVerificationEmailRequest,
-    SendVerificationEmailResponse, VerifyMfaEmailCodeRequest,
+    SendVerificationEmailResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse, VerifyMfaEmailCodeRequest,
 };
 
 use crate::impls::ApiError;
@@ -59,7 +60,12 @@ pub struct RequestPasswordResetResult {
     pub message: String,
 }
 
-/// Confirm password reset result
+pub struct StartOpaquePasswordResetResult {
+    pub session_id: String,
+    pub registration_response: Vec<u8>,
+}
+
+/// Finish password reset result
 pub struct ConfirmPasswordResetResult {
     pub message: String,
     pub user_id: String,
@@ -451,28 +457,25 @@ impl EmailApiImpl {
         })
     }
 
-    /// Confirm a password reset with a token and new password.
-    pub async fn confirm_password_reset(
+    /// Start a password reset by consuming the email token and creating an
+    /// OPAQUE registration session for the replacement password.
+    pub async fn start_opaque_password_reset(
         &self,
         email: &str,
         token: &str,
-        new_password: &str,
-    ) -> Result<ConfirmPasswordResetResult, ApiError> {
-        self.confirm_password_reset_with_control(email, token, new_password, None)
+        registration_request: Vec<u8>,
+    ) -> Result<StartOpaquePasswordResetResult, ApiError> {
+        self.start_opaque_password_reset_with_control(email, token, registration_request, None)
             .await
     }
 
-    pub async fn confirm_password_reset_with_control(
+    pub async fn start_opaque_password_reset_with_control(
         &self,
         email: &str,
         token: &str,
-        new_password: &str,
+        registration_request: Vec<u8>,
         control: Option<&ExecutionControl>,
-    ) -> Result<ConfirmPasswordResetResult, ApiError> {
-        // Password validation (complexity, length) is handled by
-        // UserService::set_password() which uses the full PasswordValidator.
-        // No redundant length-only check here.
-
+    ) -> Result<StartOpaquePasswordResetResult, ApiError> {
         let user = self
             .user_service
             .get_by_email(email)
@@ -504,14 +507,63 @@ impl EmailApiImpl {
             ));
         }
 
-        self.user_service
-            .set_password(&user.id, new_password)
+        self.email_token_service
+            .invalidate_user_tokens_with_control(&user.id, EmailTokenType::PasswordReset, control)
             .await
             .map_err(map_email_mutation_error)?;
 
-        // Invalidate all remaining password reset tokens for this user
-        self.email_token_service
-            .invalidate_user_tokens_with_control(&user.id, EmailTokenType::PasswordReset, control)
+        let challenge = self
+            .user_service
+            .start_opaque_password_reset_after_external_verification(&user.id, registration_request)
+            .await
+            .map_err(map_email_mutation_error)?;
+
+        Ok(StartOpaquePasswordResetResult {
+            session_id: challenge.session_id,
+            registration_response: challenge.registration_response,
+        })
+    }
+
+    pub async fn start_opaque_password_reset_response_with_control(
+        &self,
+        req: StartOpaquePasswordResetRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<StartOpaquePasswordResetResponse, ApiError> {
+        let result = self
+            .start_opaque_password_reset_with_control(
+                &req.email,
+                &req.token,
+                req.registration_request,
+                control,
+            )
+            .await?;
+        Ok(StartOpaquePasswordResetResponse {
+            session_id: result.session_id,
+            registration_response: result.registration_response,
+        })
+    }
+
+    pub async fn finish_opaque_password_reset(
+        &self,
+        session_id: &str,
+        registration_upload: Vec<u8>,
+    ) -> Result<ConfirmPasswordResetResult, ApiError> {
+        self.finish_opaque_password_reset_with_control(session_id, registration_upload, None)
+            .await
+    }
+
+    pub async fn finish_opaque_password_reset_with_control(
+        &self,
+        session_id: &str,
+        registration_upload: Vec<u8>,
+        _control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmPasswordResetResult, ApiError> {
+        let user = self
+            .user_service
+            .finish_opaque_password_reset_after_external_verification(
+                session_id,
+                registration_upload,
+            )
             .await
             .map_err(map_email_mutation_error)?;
 
@@ -523,13 +575,17 @@ impl EmailApiImpl {
         })
     }
 
-    pub async fn confirm_password_reset_response_with_control(
+    pub async fn finish_opaque_password_reset_response_with_control(
         &self,
-        req: ConfirmPasswordResetRequest,
+        req: FinishOpaquePasswordResetRequest,
         control: Option<&ExecutionControl>,
     ) -> Result<ConfirmPasswordResetResponse, ApiError> {
         let result = self
-            .confirm_password_reset_with_control(&req.email, &req.token, &req.new_password, control)
+            .finish_opaque_password_reset_with_control(
+                &req.session_id,
+                req.registration_upload,
+                control,
+            )
             .await?;
         Ok(ConfirmPasswordResetResponse {
             message: result.message,
@@ -754,6 +810,8 @@ mod tests {
             BruteForceProtection::in_memory("test".to_string()),
         );
         user_service.enable_password_registration_for_tests();
+        user_service.enable_legacy_password_login_for_tests();
+        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
 
         EmailApiImpl::new(

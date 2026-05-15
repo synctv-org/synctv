@@ -286,7 +286,7 @@ impl RealtimeFanoutService for ChannelRealtimeFanoutService {
     }
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
-        if let Err(error) = self.sender.try_send(PublishRequest { event }) {
+        if let Err(error) = self.sender.try_send(PublishRequest::new(event)) {
             tracing::error!(error = %error, "Test realtime fanout channel rejected committed outbox event");
         }
     }
@@ -393,13 +393,11 @@ mod tests {
 
         publish_best_effort(
             service,
-            PublishRequest {
-                event: RealtimeEvent::CacheInvalidate {
-                    event_id: "disabled-best-effort".to_string(),
-                    targets: vec![CacheTarget::All],
-                    timestamp: Utc::now(),
-                },
-            },
+            PublishRequest::new(RealtimeEvent::CacheInvalidate {
+                event_id: "disabled-best-effort".to_string(),
+                targets: vec![CacheTarget::All],
+                timestamp: Utc::now(),
+            }),
         );
     }
 

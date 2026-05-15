@@ -208,7 +208,10 @@ synctv stop --force
 ```bash
 synctv config validate
 synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml config validate --strict
 ```
+
+`--strict` 会拒绝不支持的配置文件键和不支持的 `SYNCTV_` 环境变量，而不是只 warning 后忽略。
 
 ### `config show`
 

@@ -149,9 +149,7 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
         } else {
             publish_best_effort(
                 self.realtime_fanout.clone(),
-                PublishRequest {
-                    event: prepared.plan.into_event(),
-                },
+                PublishRequest::new(prepared.plan.into_event()),
             );
         }
     }

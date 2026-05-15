@@ -27,7 +27,7 @@ use synctv_core::{
     repository::{SettingsRepository, UserOAuthProviderRepository, UserRepository},
     service::{
         auth::{jwt::JwtService, TestPasswordHasher},
-        local_oauth_state_store, AuthenticatedLogin, BruteForceProtection,
+        local_oauth_state_store, AuthFactorMethod, AuthenticatedLogin, BruteForceProtection,
         InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs, OAuth2Service,
         RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore, UserService,
     },
@@ -69,6 +69,8 @@ fn create_user_service_with_components(
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
+    svc.enable_legacy_password_login_for_tests();
+    svc.enable_legacy_password_registration_for_tests();
     svc
 }
 
@@ -84,6 +86,28 @@ fn create_user_service(pool: &PgPool) -> UserService {
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     create_user_service_with_blacklist(pool, token_blacklist)
+}
+
+fn create_user_service_without_legacy_login_override(pool: &PgPool) -> UserService {
+    let jwt = create_jwt_service();
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 1000, 0);
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    let mut svc = UserService::new(
+        pool,
+        jwt,
+        username_cache,
+        PasswordComplexityConfig::default(),
+        token_blacklist,
+        key_builder,
+        brute_force,
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc.enable_password_registration_for_tests();
+    svc
 }
 
 fn oauth2_user_info(
@@ -366,10 +390,9 @@ async fn opaque_update_password(
         .await
 }
 
-async fn opaque_update_password_with_plain_password_verification(
+async fn opaque_reset_password_after_external_verification(
     service: &UserService,
     user_id: &UserId,
-    current_password: &str,
     new_password: &str,
 ) -> synctv_core::Result<synctv_core::models::User> {
     let mut rng = OsRng;
@@ -377,9 +400,8 @@ async fn opaque_update_password_with_plain_password_verification(
         ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, new_password.as_bytes())
             .expect("client OPAQUE registration start should succeed");
     let challenge = service
-        .start_opaque_password_update_after_plain_password_verification(
+        .start_opaque_password_reset_after_external_verification(
             user_id,
-            current_password,
             registration_start.message.serialize().to_vec(),
         )
         .await?;
@@ -398,8 +420,7 @@ async fn opaque_update_password_with_plain_password_verification(
         .expect("client OPAQUE registration finish should succeed");
 
     service
-        .finish_opaque_password_update_after_external_verification(
-            user_id,
+        .finish_opaque_password_reset_after_external_verification(
             &challenge.session_id,
             registration_finish.message.serialize().to_vec(),
         )
@@ -446,6 +467,24 @@ async fn opaque_login(
     identifier: String,
     password: &str,
 ) -> synctv_core::Result<(synctv_core::models::User, String, String)> {
+    let login = opaque_login_outcome(service, identifier, password).await?;
+    match login {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        } => Ok((user, access_token, refresh_token)),
+        AuthenticatedLogin::MfaRequired { .. } => Err(Error::Authentication(
+            "Unexpected MFA challenge in opaque_login test helper".to_string(),
+        )),
+    }
+}
+
+async fn opaque_login_outcome(
+    service: &UserService,
+    identifier: String,
+    password: &str,
+) -> synctv_core::Result<AuthenticatedLogin> {
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
         .expect("client OPAQUE login start should succeed");
@@ -478,16 +517,7 @@ async fn opaque_login(
             None,
         )
         .await?;
-    match login {
-        AuthenticatedLogin::Complete {
-            user,
-            access_token,
-            refresh_token,
-        } => Ok((user, access_token, refresh_token)),
-        AuthenticatedLogin::MfaRequired { .. } => Err(Error::Authentication(
-            "Unexpected MFA challenge in opaque_login test helper".to_string(),
-        )),
-    }
+    Ok(login)
 }
 
 fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::User, String, String) {
@@ -889,6 +919,52 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_legacy_password_login_is_disabled_without_test_override() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service_without_legacy_login_override(&pool);
+
+    let username = format!("legacy_disabled_{}", synctv_common::snanoid!(6));
+    service
+        .register(
+            username.clone(),
+            Some(format!(
+                "legacy_disabled_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("legacy test registration should still create a user");
+
+    let created = service
+        .get_user_by_username(&username)
+        .await
+        .expect("registered user should be fetchable");
+    let row = load_password_credential_row(&pool, created.id).await;
+    let legacy_hash: Option<String> = row.try_get("legacy_password_hash").unwrap();
+    assert!(
+        legacy_hash.is_none(),
+        "default password registration must persist OPAQUE-only credentials"
+    );
+
+    let result = service
+        .login(username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        matches!(result, Err(Error::Authentication(_))),
+        "legacy password login must be disabled unless tests explicitly opt in"
+    );
+
+    let opaque_result = opaque_login(&service, username, "StrongPass1").await;
+    assert!(
+        opaque_result.is_ok(),
+        "disabling legacy password login must not disable OPAQUE login"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
@@ -1267,10 +1343,10 @@ async fn test_login_email_verification_no_account_enumeration() {
         .login(email_user, "StrongPass1".to_string(), None)
         .await;
 
-    // OAuth2 user should bypass email verification (pre-verified by provider)
-    let oauth_result = service
-        .login(oauth_user.username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    // OAuth2 user should bypass email verification (pre-verified by provider).
+    // Admin set-password stores OPAQUE-only credentials, so verify through the
+    // OPAQUE login flow rather than legacy password verification.
+    let oauth_result = opaque_login(&service, oauth_user.username.clone(), "StrongPass1").await;
 
     assert!(
         email_result.is_err(),
@@ -1318,9 +1394,7 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
         .login(email_user, "StrongPass1".to_string(), None)
         .await;
 
-    let oauth_result = service
-        .login(oauth_user.username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let oauth_result = opaque_login(&service, oauth_user.username.clone(), "StrongPass1").await;
 
     assert!(
         email_result.is_ok(),
@@ -1409,67 +1483,7 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
     );
 }
 
-// S7: UserService::change_password / set_password
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_change_password_wrong_old_password_rejected() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-
-    // Register
-    let (user, _, _) = service
-        .register(
-            format!("chpw_user_{}", synctv_common::snanoid!(6)),
-            Some(format!("chpw_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    // Try to change with wrong old password
-    let result = service
-        .change_password(&user.id, "WrongOldPass1", "NewStrongPass1")
-        .await;
-    assert!(
-        result.is_err(),
-        "Change password with wrong old password should fail"
-    );
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_change_password_bumps_password_version() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-
-    // Register
-    let (user, _, _) = service
-        .register(
-            format!("pvbump_{}", synctv_common::snanoid!(6)),
-            Some(format!("pvbump_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    let old_version = user.password_version;
-
-    // Change password
-    let updated_user = service
-        .change_password(&user.id, "StrongPass1", "NewStrongPass1")
-        .await
-        .expect("Password change should succeed");
-
-    assert_eq!(
-        updated_user.password_version,
-        old_version + 1,
-        "Password version should be incremented"
-    );
-}
+// S7: UserService::set_password
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1500,6 +1514,18 @@ async fn test_set_password_bumps_password_version() {
         updated_user.password_version,
         old_version + 1,
         "Password version should be incremented by set_password"
+    );
+
+    let row = load_password_credential_row(&pool, user.id).await;
+    let legacy_hash: Option<String> = row.try_get("legacy_password_hash").unwrap();
+    let opaque_record: Option<Vec<u8>> = row.try_get("opaque_record").unwrap();
+    assert!(
+        legacy_hash.is_none(),
+        "admin set_password must not persist a legacy password hash"
+    );
+    assert!(
+        opaque_record.is_some(),
+        "admin set_password must persist OPAQUE credential material"
     );
 }
 
@@ -1564,12 +1590,12 @@ async fn test_opaque_registration_creates_opaque_only_password_credential() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_opaque_only_password_is_not_plaintext_mfa_factor() {
+async fn test_opaque_only_password_counts_as_first_factor_without_plaintext_mfa() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
     let username = format!("opaque_mfa_{}", synctv_common::snanoid!(6));
     let email = format!("opaque_mfa_{}@test.com", synctv_common::snanoid!(6));
-    let (user, _, _) = opaque_register(&service, username, Some(email), "StrongPass1")
+    let (user, _, _) = opaque_register(&service, username.clone(), Some(email), "StrongPass1")
         .await
         .expect("OPAQUE registration should succeed");
     service
@@ -1582,19 +1608,34 @@ async fn test_opaque_only_password_is_not_plaintext_mfa_factor() {
         .await
         .expect("preferences should load");
     assert!(
-        !factors.password,
-        "OPAQUE-only password is not plaintext MFA"
+        factors.password,
+        "OPAQUE-only password should count as a local password first factor"
     );
     assert!(factors.email);
-    assert!(!factors.supports_two_factor());
+    assert!(factors.supports_two_factor());
 
-    let result = service
+    service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect_err("email + OPAQUE-only password must not enable 2FA");
+        .expect("email + OPAQUE-only password should enable 2FA");
+
+    let login = opaque_login_outcome(&service, username, "StrongPass1")
+        .await
+        .expect("OPAQUE password first factor should start MFA");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = login else {
+        panic!("2FA-enabled OPAQUE password login should require a second factor");
+    };
     assert!(
-        matches!(result, Error::InvalidInput(_)),
-        "expected InvalidInput, got {result:?}"
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Email),
+        "email should be available after an OPAQUE password first factor"
+    );
+    assert!(
+        !challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Password),
+        "password must not be offered as a plaintext MFA completion method"
     );
 }
 
@@ -1669,6 +1710,74 @@ async fn test_opaque_password_update_clears_legacy_password_credential() {
     assert!(
         opaque_login_result.is_ok(),
         "OPAQUE login must work with the updated OPAQUE-only password credential"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_opaque_password_reset_clears_legacy_password_credential() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(&pool);
+
+    let username = format!("opaque_reset_{}", synctv_common::snanoid!(6));
+    let (user, _, _) = service
+        .register(
+            username.clone(),
+            Some(format!(
+                "opaque_reset_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("legacy password registration should succeed");
+
+    let before = load_password_credential_row(&pool, user.id).await;
+    let before_legacy_hash: Option<String> = before.try_get("legacy_password_hash").unwrap();
+    let before_version: i32 = before.try_get("password_version").unwrap();
+    assert!(
+        before_legacy_hash.is_some(),
+        "simple password registration should store legacy password hash"
+    );
+
+    let updated_user =
+        opaque_reset_password_after_external_verification(&service, &user.id, "NewStrongPass1")
+            .await
+            .expect("OPAQUE password reset should succeed");
+    assert_eq!(
+        updated_user.password_version,
+        before_version + 1,
+        "OPAQUE password reset must invalidate existing tokens by bumping password_version"
+    );
+
+    let after = load_password_credential_row(&pool, user.id).await;
+    let after_legacy_hash: Option<String> = after.try_get("legacy_password_hash").unwrap();
+    let after_opaque_record: Option<Vec<u8>> = after.try_get("opaque_record").unwrap();
+    assert!(
+        after_legacy_hash.is_none(),
+        "OPAQUE password reset must clear legacy password hash"
+    );
+    assert!(
+        after_opaque_record.is_some(),
+        "OPAQUE password reset must persist the new OPAQUE credential"
+    );
+
+    let old_legacy_login = service
+        .login(username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    let new_legacy_login = service
+        .login(username.clone(), "NewStrongPass1".to_string(), None)
+        .await;
+    assert!(
+        old_legacy_login.is_err() && new_legacy_login.is_err(),
+        "legacy password login must be disabled after an OPAQUE-only password reset"
+    );
+
+    let opaque_login_result = opaque_login(&service, username, "NewStrongPass1").await;
+    assert!(
+        opaque_login_result.is_ok(),
+        "OPAQUE login must work with the reset OPAQUE-only password credential"
     );
 }
 
@@ -1831,113 +1940,6 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_opaque_password_update_accepts_plain_old_password_and_clears_legacy_credential() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-
-    let username = format!("opaque_plain_update_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "opaque_plain_update_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("legacy password registration should succeed");
-
-    let updated_user = opaque_update_password_with_plain_password_verification(
-        &service,
-        &user.id,
-        "StrongPass1",
-        "NewStrongPass1",
-    )
-    .await
-    .expect("plain old-password verification should allow OPAQUE-only password update");
-
-    let before_version: i32 = load_password_credential_row(&pool, user.id)
-        .await
-        .try_get("password_version")
-        .unwrap();
-    assert_eq!(
-        updated_user.password_version, before_version,
-        "loaded row should reflect the updated password_version"
-    );
-
-    let row = load_password_credential_row(&pool, user.id).await;
-    let legacy_hash: Option<String> = row.try_get("legacy_password_hash").unwrap();
-    assert!(
-        legacy_hash.is_none(),
-        "any OPAQUE password update must clear legacy password login"
-    );
-    assert!(
-        service
-            .has_usable_password_authentication(&updated_user)
-            .await
-            .expect("password auth capability check should succeed"),
-        "plain old-password verified OPAQUE update must count as usable password authentication"
-    );
-
-    let legacy_login = service
-        .login(username.clone(), "NewStrongPass1".to_string(), None)
-        .await;
-    assert!(
-        legacy_login.is_err(),
-        "plain old-password verified OPAQUE update must not leave legacy login enabled"
-    );
-    let opaque_login_result = opaque_login(&service, username, "NewStrongPass1").await;
-    assert!(
-        opaque_login_result.is_ok(),
-        "new OPAQUE-only credential must be usable after plain old-password verification"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_opaque_password_update_rejects_wrong_plain_old_password() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-
-    let username = format!("opaque_plain_reject_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "opaque_plain_reject_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("legacy password registration should succeed");
-
-    let result = opaque_update_password_with_plain_password_verification(
-        &service,
-        &user.id,
-        "WrongStrongPass1",
-        "NewStrongPass1",
-    )
-    .await;
-    assert!(
-        matches!(result, Err(Error::Authentication(_))),
-        "wrong plain old_password must not authorize an OPAQUE password update"
-    );
-
-    let legacy_login = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
-    assert!(
-        legacy_login.is_ok(),
-        "failed OPAQUE password update must leave the original legacy password intact"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
@@ -1974,11 +1976,17 @@ async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
     );
 
     let login_new = service
-        .login(username, "AdminNewPass1".to_string(), None)
+        .login(username.clone(), "AdminNewPass1".to_string(), None)
         .await;
     assert!(
-        login_new.is_ok(),
-        "New password must become active even when best-effort family revocation persistence fails"
+        login_new.is_err(),
+        "Admin set_password must not leave legacy password login enabled"
+    );
+
+    let opaque_login_new = opaque_login(&service, username, "AdminNewPass1").await;
+    assert!(
+        opaque_login_new.is_ok(),
+        "New OPAQUE password must become active even when best-effort family revocation persistence fails"
     );
 }
 
@@ -2039,7 +2047,7 @@ async fn test_username_registration_and_login_are_case_insensitive() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_profile_updates_username_and_password_atomically() {
+async fn test_update_profile_updates_username_only() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
 
@@ -2059,20 +2067,14 @@ async fn test_update_profile_updates_username_and_password_atomically() {
         .expect("Registration should succeed");
 
     let updated_user = service
-        .update_profile(
-            &user.id,
-            Some(new_username.to_uppercase()),
-            Some("StrongPass1".to_string()),
-            Some("NewStrongPass1".to_string()),
-        )
+        .update_profile(&user.id, Some(new_username.to_uppercase()))
         .await
-        .expect("Combined profile update should succeed");
+        .expect("Profile username update should succeed");
 
     assert_eq!(updated_user.username, new_username.to_lowercase());
     assert_eq!(
-        updated_user.password_version,
-        user.password_version + 1,
-        "Combined profile update should increment password_version exactly once"
+        updated_user.password_version, user.password_version,
+        "Username-only profile update must not increment password_version"
     );
 
     let login_old = service
@@ -2080,30 +2082,25 @@ async fn test_update_profile_updates_username_and_password_atomically() {
         .await;
     assert!(
         login_old.is_err(),
-        "Old username/password must stop working after a successful atomic profile update"
+        "Old username must stop working after a successful profile update"
     );
 
     let login_new = service
-        .login(
-            new_username.to_uppercase(),
-            "NewStrongPass1".to_string(),
-            None,
-        )
+        .login(new_username.to_uppercase(), "StrongPass1".to_string(), None)
         .await;
     assert!(
         login_new.is_ok(),
-        "New username/password must become active together after a successful atomic profile update"
+        "Existing password must remain active with the new username after profile update"
     );
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_profile_rolls_back_username_when_password_verification_fails() {
+async fn test_update_profile_rejects_empty_update() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
 
     let old_username = format!("profile_rollback_{}", synctv_common::snanoid!(6));
-    let new_username = format!("profile_rollback_new_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             old_username.clone(),
@@ -2117,18 +2114,11 @@ async fn test_update_profile_rolls_back_username_when_password_verification_fail
         .await
         .expect("Registration should succeed");
 
-    let result = service
-        .update_profile(
-            &user.id,
-            Some(new_username.clone()),
-            Some("WrongOldPass1".to_string()),
-            Some("NewStrongPass1".to_string()),
-        )
-        .await;
+    let result = service.update_profile(&user.id, None).await;
 
     assert!(
-        matches!(result, Err(Error::Authentication(_))),
-        "Wrong current password must reject the combined profile update"
+        matches!(result, Err(Error::InvalidInput(_))),
+        "Empty profile update must be rejected"
     );
 
     let persisted = service
@@ -2138,7 +2128,7 @@ async fn test_update_profile_rolls_back_username_when_password_verification_fail
     assert_eq!(
         persisted.username,
         old_username.to_lowercase(),
-        "Username must not be partially committed when password verification fails"
+        "Username must not change when profile update is rejected"
     );
 
     let login_old = service
@@ -2147,14 +2137,6 @@ async fn test_update_profile_rolls_back_username_when_password_verification_fail
     assert!(
         login_old.is_ok(),
         "Original credentials must remain valid after a rejected combined profile update"
-    );
-
-    let login_new = service
-        .login(new_username, "NewStrongPass1".to_string(), None)
-        .await;
-    assert!(
-        login_new.is_err(),
-        "New credentials must not become active when the combined profile update is rejected"
     );
 }
 
@@ -2183,14 +2165,9 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
         .expect("Registration should succeed");
 
     let updated = service
-        .update_profile(
-            &user.id,
-            Some(new_username.clone()),
-            Some("StrongPass1".to_string()),
-            Some("NewStrongPass1".to_string()),
-        )
+        .update_profile(&user.id, Some(new_username.clone()))
         .await
-        .expect("Combined profile update should rely on password_version and commit");
+        .expect("Profile update should commit");
 
     let persisted = service
         .get_user(&user.id)
@@ -2212,11 +2189,11 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
     );
 
     let login_new = service
-        .login(new_username, "NewStrongPass1".to_string(), None)
+        .login(new_username, "StrongPass1".to_string(), None)
         .await;
     assert!(
         login_new.is_ok(),
-        "New credentials must become active after a successful combined profile update"
+        "Existing password must remain active after a successful profile update"
     );
 }
 
@@ -2306,6 +2283,32 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
         .expect("Created admin user must be durable in the database");
     assert_eq!(persisted.id, created.id);
     assert_eq!(persisted.role, synctv_core::models::UserRole::Admin);
+
+    let row = load_password_credential_row(&pool, created.id).await;
+    let legacy_hash: Option<String> = row.try_get("legacy_password_hash").unwrap();
+    let opaque_record: Option<Vec<u8>> = row.try_get("opaque_record").unwrap();
+    assert!(
+        legacy_hash.is_none(),
+        "admin-created users must not persist a legacy password hash"
+    );
+    assert!(
+        opaque_record.is_some(),
+        "admin-created users must persist OPAQUE credential material"
+    );
+
+    let legacy_login = service
+        .login(created.username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        legacy_login.is_err(),
+        "admin-created users must not be able to use legacy password login"
+    );
+
+    let opaque_login_result = opaque_login(&service, created.username.clone(), "StrongPass1").await;
+    assert!(
+        opaque_login_result.is_ok(),
+        "admin-created users must be able to use OPAQUE login"
+    );
 }
 
 #[tokio::test]

@@ -84,6 +84,8 @@ export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 - `redis.url`
 - `redis.password`
 - `jwt.secret`
+- `metrics.auth.bearer_token`
+- `metrics.auth.basic_password`
 - `email.smtp_password`
 - `bootstrap.root_password`
 - `livestream.hls_oss.access_key_id`
@@ -137,6 +139,8 @@ jwt:
 
 ```bash
 synctv config --config synctv.yaml validate
+synctv config --config synctv.yaml validate --strict
 ```
 
 这个命令不会启动完整服务，但会尽量检查配置是否安全、完整、合理。部署前建议总是执行一次。
+`config validate` 默认会把未知配置项和不支持的 `SYNCTV_` 环境变量作为 warning 输出；加 `--strict` 后会直接校验失败。`synctv serve` 启动服务时始终使用严格加载，生产启动不会静默忽略拼错的配置。

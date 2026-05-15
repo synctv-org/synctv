@@ -52,7 +52,7 @@ postgresql:
       tag: "18.1-bookworm"
       pullPolicy: IfNotPresent
     replicas: 2
-    terminationPolicy: Delete
+    terminationPolicy: Retain
     disableExporter: true
     storage:
       size: 20Gi
@@ -94,7 +94,7 @@ redis:
     topology: "replication"
     serviceVersion: ""
     replicas: 2
-    terminationPolicy: Delete
+    terminationPolicy: Retain
     disableExporter: true
     storage:
       size: 20Gi
@@ -173,6 +173,10 @@ ingress:
   className: ""
   annotations: {}
   hosts: []
+    # - host: synctv.example.com
+    #   paths:
+    #     - path: /
+    #       pathType: Prefix
   tls: []
   ## gRPC Ingress (separate Ingress with GRPC backend-protocol annotation)
   grpc:
@@ -180,6 +184,10 @@ ingress:
     className: "" # defaults to ingress.className
     annotations: {}
     hosts: []
+      # - host: synctv.example.com
+      #   paths:
+      #     - path: /
+      #       pathType: Prefix
     tls: [] # defaults to ingress.tls when empty
 
 ## Resource Limits
@@ -264,7 +272,9 @@ topologySpread:
   enabled: true
   maxSkew: 1
   topologyKey: topology.kubernetes.io/zone
-  whenUnsatisfiable: DoNotSchedule
+  ## Prefer spreading across zones, but do not leave pods pending on clusters
+  ## with a single zone or temporarily unavailable topology domains.
+  whenUnsatisfiable: ScheduleAnyway
 
 ## ============================================================================
 ## Application Configuration
@@ -743,9 +753,10 @@ metrics:
     labels: {}
 
 ## Alerting (PrometheusRule)
-## Requires metrics.enabled=true and Prometheus Operator CRDs installed
+## Requires metrics.enabled=true and Prometheus Operator CRDs installed.
+## Disabled by default so enabling metrics does not require CRDs.
 alerting:
-  enabled: true
+  enabled: false
   evaluationInterval: "30s"
 
 ## Network Policy

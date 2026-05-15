@@ -5137,10 +5137,10 @@ fn test_user_joined_event_conversion() {
         username: "carol".to_string(),
         permissions: PermissionBits(PermissionBits::DEFAULT_MEMBER),
         role: 3,
-        added_permissions: PermissionBits(0),
-        removed_permissions: PermissionBits(0),
-        admin_added_permissions: PermissionBits(0),
-        admin_removed_permissions: PermissionBits(0),
+        added_permissions: PermissionBits(PermissionBits::PLAY_CONTROL),
+        removed_permissions: PermissionBits(PermissionBits::ADD_MEDIA),
+        admin_added_permissions: PermissionBits(PermissionBits::KICK_MEMBER),
+        admin_removed_permissions: PermissionBits(PermissionBits::BAN_MEMBER),
         joined_at: now(),
         timestamp: now(),
     };
@@ -5154,6 +5154,10 @@ fn test_user_joined_event_conversion() {
             assert_eq!(member.user_id, public_actor_id());
             assert_eq!(member.username, "carol");
             assert_eq!(member.role, 3);
+            assert_eq!(member.added_permissions, PermissionBits::PLAY_CONTROL);
+            assert_eq!(member.removed_permissions, PermissionBits::ADD_MEDIA);
+            assert_eq!(member.admin_added_permissions, PermissionBits::KICK_MEMBER);
+            assert_eq!(member.admin_removed_permissions, PermissionBits::BAN_MEMBER);
             assert!(member.is_online);
         }
         other => panic!("Expected UserJoined, got: {other:?}"),
@@ -6509,8 +6513,14 @@ fn test_user_left_delivery_uses_local_and_redis_when_user_is_last_presence() {
 }
 
 #[test]
-fn test_user_left_delivery_skips_when_distributed_check_fails() {
+fn test_user_left_delivery_uses_local_fallback_when_distributed_check_fails() {
     let plan = super::should_broadcast_user_left(false, Err(()));
+    assert_eq!(plan, super::UserLeftDeliveryPlan::LocalAndRedis);
+}
+
+#[test]
+fn test_user_left_delivery_local_presence_still_wins_when_distributed_check_fails() {
+    let plan = super::should_broadcast_user_left(true, Err(()));
     assert_eq!(plan, super::UserLeftDeliveryPlan::Skip);
 }
 

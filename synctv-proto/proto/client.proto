@@ -9,11 +9,8 @@ import "proto/common.proto";
 // Authentication: None (public access)
 // Routes: /api/auth/*
 //
-// SECURITY: All RPCs that transmit passwords (Register, Login) send credentials
-// as plaintext in the protobuf payload. Deployments MUST use TLS to protect
-// credentials in transit. Never expose this service over an unencrypted channel.
 service AuthService {
-    rpc Register(RegisterRequest) returns (RegisterResponse);
+    // Local password registration is OPAQUE-only.
     rpc Login(LoginRequest) returns (LoginResponse);
     rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
     rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
@@ -29,7 +26,6 @@ service AuthService {
     rpc VerifyMfaEmailCode(VerifyMfaEmailCodeRequest) returns (LoginResponse);
     rpc StartMfaPasskey(StartMfaPasskeyRequest) returns (StartMfaPasskeyResponse);
     rpc FinishMfaPasskey(FinishMfaPasskeyRequest) returns (LoginResponse);
-    rpc VerifyMfaPassword(VerifyMfaPasswordRequest) returns (LoginResponse);
     rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 }
 
@@ -41,7 +37,6 @@ service UserService {
     rpc Logout(LogoutRequest) returns (LogoutResponse);
     rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
     rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
-    rpc SetPassword(SetPasswordRequest) returns (SetPasswordResponse);
     rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
     rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (FinishOpaquePasswordUpdateResponse);
     rpc StartPasskeyBind(StartPasskeyBindRequest) returns (StartPasskeyBindResponse);
@@ -140,7 +135,8 @@ service EmailService {
 
     // Password reset
     rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
-    rpc ConfirmPasswordReset(ConfirmPasswordResetRequest) returns (ConfirmPasswordResetResponse);
+    rpc StartOpaquePasswordReset(StartOpaquePasswordResetRequest) returns (StartOpaquePasswordResetResponse);
+    rpc FinishOpaquePasswordReset(FinishOpaquePasswordResetRequest) returns (ConfirmPasswordResetResponse);
 }
 
 // ==================== Notification Service ====================
@@ -250,26 +246,6 @@ message PlaybackState {
     bytes target = 9; // Provider-facing playback target payload (empty for static media or cleared state)
 }
 
-// Authentication Messages
-// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
-// for production deployments; the API does not enforce HTTPS because some
-// trusted or local deployments intentionally run over HTTP.
-message RegisterRequest {
-    string username = 1 [(buf.validate.field).string = {
-        min_len: 3,
-        max_len: 50,
-        pattern: "^[\\p{L}\\p{N}_-]+$"
-    }];
-    string password = 2 [(buf.validate.field).string = {
-        min_len: 8,
-        max_len: 128
-    }];
-    string email = 3 [(buf.validate.field).string = {
-        max_len: 254,
-        email: true
-    }];
-}
-
 message RegisterResponse {
     User user = 1;
     string access_token = 2;
@@ -313,22 +289,15 @@ message FinishOpaqueRegistrationRequest {
     }];
 }
 
-// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
-// for production deployments; the API does not enforce HTTPS because some
-// trusted or local deployments intentionally run over HTTP.
-// Provide exactly one login identifier: `username` or `email`.
-// Provide exactly one credential: `password` or `email_token`.
+// Confirm a passwordless email login token. Local password login is OPAQUE-only
+// and uses StartOpaqueLogin / FinishOpaqueLogin.
 message LoginRequest {
-    string username = 1 [(buf.validate.field).string = {
-        max_len: 50
-    }];
-    string password = 2 [(buf.validate.field).string = {
-        max_len: 128
-    }];
     string email = 3 [(buf.validate.field).string = {
+        min_len: 1,
         max_len: 254
     }];
     string email_token = 4 [(buf.validate.field).string = {
+        min_len: 1,
         max_len: 255
     }];
 }
@@ -642,17 +611,6 @@ message FinishMfaPasskeyRequest {
     }];
 }
 
-message VerifyMfaPasswordRequest {
-    string mfa_session_id = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 128
-    }];
-    string password = 2 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 128
-    }];
-}
-
 message RefreshTokenRequest {
     string refresh_token = 1 [(buf.validate.field).string = {
         min_len: 1,
@@ -672,24 +630,10 @@ message GetProfileResponse {
 }
 
 message UpdateUserRequest {
-    option (buf.validate.message).cel = {
-        id: "update_user.password_requires_old_password"
-        message: "old_password is required when password is provided"
-        expression: "!has(this.password) || (has(this.old_password) && this.old_password != '')"
-    };
-
     optional string username = 1 [(buf.validate.field).string = {
         min_len: 3,
         max_len: 50,
         pattern: "^[\\p{L}\\p{N}_-]+$"
-    }];
-    optional string password = 2 [(buf.validate.field).string = {
-        min_len: 8,
-        max_len: 128
-    }];
-    optional string old_password = 3 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 128
     }];
 }
 
@@ -704,9 +648,8 @@ message UpdateUserResponse {
 enum OpaquePasswordUpdateVerificationMethod {
     OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED = 0;
     OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD = 1;
-    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_PLAIN_PASSWORD = 2;
-    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN = 3;
-    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY = 4;
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN = 2;
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY = 3;
 }
 
 message StartOpaquePasswordUpdateRequest {
@@ -718,9 +661,6 @@ message StartOpaquePasswordUpdateRequest {
         max_len: 4096
     }];
     OpaquePasswordUpdateVerificationMethod verification_method = 4;
-    string old_password = 5 [(buf.validate.field).string = {
-        max_len: 128
-    }];
     string email_token = 6 [(buf.validate.field).string = {
         max_len: 128
     }];
@@ -2159,15 +2099,6 @@ message SetUsernameResponse {
 }
 
 // SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
-message SetPasswordRequest {
-    string old_password = 1; // SECURITY: Plaintext credential - requires TLS in transit. Validation: required
-    string new_password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
-}
-
-message SetPasswordResponse {
-    bool success = 1;
-}
-
 message ListMyRoomsRequest {
     option (buf.validate.message).cel = {
         id: "list_my_rooms.page"
@@ -2365,11 +2296,41 @@ message RequestPasswordResetResponse {
     string message = 1;
 }
 
-// SECURITY: new_password is transmitted as plaintext. TLS MUST be used.
-message ConfirmPasswordResetRequest {
-    string email = 1; // Validation: required, email format
-    string token = 2;       // Reset code from email. Validation: required
-    string new_password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
+// Start resetting a password with an email reset token. The reset token is
+// consumed here and exchanged for a short-lived OPAQUE registration session.
+// The server receives only the OPAQUE registration request for the new password.
+message StartOpaquePasswordResetRequest {
+    string email = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 254
+    }];
+    string token = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 255
+    }];
+    bytes registration_request = 3 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+}
+
+message StartOpaquePasswordResetResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes registration_response = 2;
+}
+
+message FinishOpaquePasswordResetRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes registration_upload = 2 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
 }
 
 message ConfirmPasswordResetResponse {
@@ -2513,11 +2474,22 @@ message GetIceServersRequest {}
 
 message GetIceServersResponse {
     repeated IceServer servers = 1;
+    optional WebRtcStatus webrtc = 2;
 }
 
 message MemoryHealth {
     double usage_percent = 1;
     string status = 2;
+}
+
+message WebRtcStatus {
+    string mode = 1;
+    string builtin_stun_state = 2;
+    bool builtin_stun_configured = 3;
+    string reason = 4;
+    optional string local_addr = 5;
+    optional string external_addr = 6;
+    optional string message = 7;
 }
 
 message HealthDetails {
@@ -2529,6 +2501,7 @@ message HealthDetails {
     optional string livestream = 6;
     optional MemoryHealth memory = 7;
     optional string message = 8;
+    optional WebRtcStatus webrtc = 9;
 }
 
 message HealthResponse {

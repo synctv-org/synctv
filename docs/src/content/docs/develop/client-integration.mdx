@@ -41,18 +41,18 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 下面的例子用于说明组合方式。字段的完整结构以 `/api-docs/openapi.json` 和 protobuf 为准。
 
 <Tabs syncKey="client-http-flow">
-  <TabItem label="登录" icon="approve-check-circle">
+  <TabItem label="OPAQUE 登录" icon="approve-check-circle">
 
 ```bash
-curl -sS http://localhost:8080/api/auth/login \
+curl -sS http://localhost:8080/api/auth/opaque/login/start \
   -H 'Content-Type: application/json' \
   -d '{
     "username": "root",
-    "password": "change-this-password"
+    "credential_request": [/* OPAQUE 客户端生成的字节 */]
   }'
 ```
 
-典型成功响应会包含 `access_token`、`refresh_token`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA，不要把这次响应当作已登录。
+继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。典型 finish 响应会包含 `access_token`、`refresh_token`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA，不要把这次响应当作已登录。`/api/auth/login` 只用于无密码邮箱 token 登录。
 
   </TabItem>
   <TabItem label="创建 WebSocket ticket" icon="document">
@@ -116,7 +116,7 @@ Authorization: Bearer <access_token_or_guest_token>
 - refresh token 刷新后应按服务端返回结果更新本地保存的 token；不要继续使用旧 refresh token 做并发刷新。
 - 用户开启 2FA 后，本地登录必须完成 MFA 后才能拿到满足策略的 token。OAuth2 登录不参与本地 2FA，但 OAuth2 登录签发的 token 可用于该登录路径。
 
-生产环境必须用 TLS。登录、注册、改密码、密码找回、MFA password 都必须走 HTTPS 或受信任的加密隧道。
+生产环境必须用 TLS。登录、注册、改密码、密码找回和 MFA 验证都必须走 HTTPS 或受信任的加密隧道。
 
 ## 本地登录和 MFA
 
@@ -131,14 +131,13 @@ Authorization: Bearer <access_token_or_guest_token>
 4. 如果 `required=true`，保存短期 `mfa.session_id`，展示 `available_methods`。
 5. 如果可用方式包含 `MFA_METHOD_EMAIL`，客户端可以直接调用 `RequestMfaEmailCode` 发送第二步验证码。
 6. 如果可用方式包含 `MFA_METHOD_WEBAUTHN`，先调用 `StartMfaPasskey` 获取 WebAuthn options，再调用 `FinishMfaPasskey`。
-7. 如果可用方式包含 `MFA_METHOD_PASSWORD`，调用 `VerifyMfaPassword`。失败会计入暴力破解保护。
-8. 第二因素成功后，最终响应会返回可用 token。
+7. 第二因素成功后，最终响应会返回可用 token。
 </Steps>
 
-`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式；OAuth2 不计入本地 2FA 因素。
+`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式。Password 是通过 OPAQUE 登录完成的第一因素，不是明文密码 MFA 完成方式；OAuth2 不计入本地 2FA 因素。
 
 <Aside type="note">
-OPAQUE 是密码登录协议，但客户端不能自行推断它是否可作为 password MFA。只有服务端在 `available_methods` 中返回 `MFA_METHOD_PASSWORD` 时，客户端才展示 password 第二因素。
+OPAQUE 是本地密码登录协议。当 password 第一因素触发 MFA 时，客户端应使用服务端返回的非 password 方法完成挑战，例如 email 或 WebAuthn。
 </Aside>
 
 ## 邮箱验证码
@@ -196,13 +195,15 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-登录示例：
+本地密码登录只支持 OPAQUE。客户端先生成 credential request，调用 `StartOpaqueLogin`，再用 `FinishOpaqueLogin` 完成登录：
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","password":"change-this-password"}' \
-  localhost:8080 synctv.client.AuthService/Login
+  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
+
+`AuthService/Login` 只用于无密码邮箱 token 登录。
 
 房间内 RPC 需要同时发送用户身份和房间上下文：
 
@@ -262,6 +263,8 @@ Authorization: Bearer <access_token_or_guest_token>
 - 登录成员必须属于该房间并拥有 `use_webrtc`。
 - 游客必须持有该房间的 guest token，且房间允许游客访问并授予 `use_webrtc`。
 - 房间关闭、封禁、要求密码或撤销游客访问后，游客不能继续获取新的 ICE 配置。
+
+响应会包含 `webrtc` 状态对象。客户端在 `builtin_stun_state` 为 `degraded` 或 `servers` 为空时，可以展示非敏感提示；如果 `servers` 里仍有外部 STUN/TURN，则继续按返回值使用。
 
 ## 媒体 URL 与请求头
 

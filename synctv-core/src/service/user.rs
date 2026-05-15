@@ -183,6 +183,10 @@ pub enum OpaqueRegistrationPurpose {
         expected_password_version: i32,
         verification: OpaquePasswordUpdateVerification,
     },
+    PasswordReset {
+        user_id: UserId,
+        expected_password_version: i32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -811,6 +815,8 @@ pub struct UserService {
     /// Explicit registration policy override for tests that exercise public
     /// registration flows without bootstrapping runtime settings.
     password_registration_policy_override_for_tests: Option<RegistrationPolicy>,
+    legacy_password_registration_enabled_for_tests: bool,
+    legacy_password_login_enabled_for_tests: bool,
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
@@ -868,19 +874,6 @@ impl UserService {
         let password_hash = self.password_hasher.hash_password(password).await?;
         let opaque_record = self.opaque_password_service.register_password(
             &Self::opaque_credential_identifier_for_new_user(username),
-            password,
-        )?;
-        Ok((password_hash, opaque_record))
-    }
-
-    async fn build_password_credentials_for_existing_user(
-        &self,
-        user_id: &UserId,
-        password: &str,
-    ) -> Result<(String, OpaquePasswordRecord)> {
-        let password_hash = self.password_hasher.hash_password(password).await?;
-        let opaque_record = self.opaque_password_service.register_password(
-            &Self::opaque_credential_identifier_for_user_id(user_id),
             password,
         )?;
         Ok((password_hash, opaque_record))
@@ -991,9 +984,6 @@ impl UserService {
         first_factor: AuthFactorMethod,
     ) -> Vec<AuthFactorMethod> {
         let mut methods = Vec::with_capacity(3);
-        if auth_factors.password && first_factor != AuthFactorMethod::Password {
-            methods.push(AuthFactorMethod::Password);
-        }
         if auth_factors.webauthn && first_factor != AuthFactorMethod::WebAuthn {
             methods.push(AuthFactorMethod::WebAuthn);
         }
@@ -1204,46 +1194,6 @@ impl UserService {
             access_token,
             refresh_token,
         })
-    }
-
-    pub async fn verify_mfa_password_with_control(
-        &self,
-        session_id: &str,
-        password: &str,
-        client_ip: Option<std::net::IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<AuthenticatedLogin> {
-        let (session, user) = self
-            .get_mfa_session_and_user_for_method(session_id, AuthFactorMethod::Password)
-            .await?;
-        self.brute_force
-            .check_allowed_with_control(&session.brute_force_key, client_ip, control)
-            .await?;
-
-        let hash = if user.password_hash.is_empty() {
-            self.password_hasher.dummy_hash()
-        } else {
-            &user.password_hash
-        };
-        let valid = self.password_hasher.verify_password(password, hash).await?
-            && !user.password_hash.is_empty();
-        if !valid {
-            if let Err(error) = self
-                .brute_force
-                .record_failure_with_control(&session.brute_force_key, client_ip, control)
-                .await
-            {
-                tracing::warn!(error = %error, "Failed to record MFA password failure for brute-force tracking");
-            }
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
-        self.complete_mfa_session_with_control(
-            session_id,
-            AuthFactorMethod::Password,
-            client_ip,
-            control,
-        )
-        .await
     }
 
     async fn query_owned_room_ids_in_tx(
@@ -1850,6 +1800,8 @@ impl UserService {
             realtime_outbox: runtime.realtime_outbox,
             settings_registry: runtime.settings_registry,
             password_registration_policy_override_for_tests: None,
+            legacy_password_registration_enabled_for_tests: false,
+            legacy_password_login_enabled_for_tests: false,
             password_hasher: runtime
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
@@ -1887,6 +1839,21 @@ impl UserService {
             enabled: true,
             need_review: false,
         });
+    }
+
+    /// Allow tests for legacy password-hash behavior to use plaintext login.
+    ///
+    /// Production local password login goes through OPAQUE and must not fall
+    /// back to server-verifiable password hashes.
+    pub const fn enable_legacy_password_login_for_tests(&mut self) {
+        self.legacy_password_login_enabled_for_tests = true;
+    }
+
+    /// Allow tests for legacy password-hash behavior to persist legacy hashes.
+    ///
+    /// Production password registration uses OPAQUE-only credential material.
+    pub const fn enable_legacy_password_registration_for_tests(&mut self) {
+        self.legacy_password_registration_enabled_for_tests = true;
     }
 
     /// Enable email verification requirement for login (call when email service is configured)
@@ -2756,9 +2723,19 @@ impl UserService {
             ));
         }
 
-        let (password_hash, opaque_record) = self
-            .build_password_credentials_for_new_user(&username, &password)
-            .await?;
+        let (legacy_password_hash, opaque_record) =
+            if self.legacy_password_registration_enabled_for_tests {
+                let (password_hash, opaque_record) = self
+                    .build_password_credentials_for_new_user(&username, &password)
+                    .await?;
+                (Some(password_hash), opaque_record)
+            } else {
+                let opaque_record = self.opaque_password_service.register_password(
+                    &Self::opaque_credential_identifier_for_new_user(&username),
+                    &password,
+                )?;
+                (None, opaque_record)
+            };
 
         // Signup review is an approval workflow, not an account lifecycle state.
         // Pending registrations live in `user_registration_requests` and do not
@@ -2770,7 +2747,7 @@ impl UserService {
                 .create_registration_request(
                     &username,
                     email.as_deref(),
-                    Some(&password_hash),
+                    legacy_password_hash.as_deref(),
                     &opaque_record,
                     SignupMethod::Email,
                 )
@@ -2787,16 +2764,18 @@ impl UserService {
         let user = User::new(
             username.clone(),
             email.clone(),
-            password_hash.clone(),
+            legacy_password_hash.clone().unwrap_or_default(),
             SignupMethod::Email,
         );
+        let credential_material = match legacy_password_hash.as_deref() {
+            Some(password_hash) => {
+                PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+            }
+            None => PasswordCredentialMaterial::opaque_only(&opaque_record),
+        };
         let created_user = match self
             .repository
-            .create_with_password_credentials(
-                &user,
-                PasswordCredentialMaterial::legacy_and_opaque(&password_hash, &opaque_record),
-                self.repository.pool(),
-            )
+            .create_with_password_credentials(&user, credential_material, self.repository.pool())
             .await
         {
             Ok(user) => user,
@@ -3004,16 +2983,33 @@ impl UserService {
             Self::validate_email(email)?;
         }
         self.validate_password(&password)?;
-        let (password_hash, opaque_record) = self
-            .build_password_credentials_for_new_user(&username, &password)
-            .await?;
-        let user = User::new(username, email, password_hash.clone(), signup_method);
+        let (legacy_password_hash, opaque_record) =
+            if self.legacy_password_registration_enabled_for_tests {
+                let (password_hash, opaque_record) = self
+                    .build_password_credentials_for_new_user(&username, &password)
+                    .await?;
+                (Some(password_hash), opaque_record)
+            } else {
+                let opaque_record = self.opaque_password_service.register_password(
+                    &Self::opaque_credential_identifier_for_new_user(&username),
+                    &password,
+                )?;
+                (None, opaque_record)
+            };
+        let user = User::new(
+            username,
+            email,
+            legacy_password_hash.clone().unwrap_or_default(),
+            signup_method,
+        );
+        let credential_material = match legacy_password_hash.as_deref() {
+            Some(password_hash) => {
+                PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+            }
+            None => PasswordCredentialMaterial::opaque_only(&opaque_record),
+        };
         self.repository
-            .create_with_password_credentials(
-                &user,
-                PasswordCredentialMaterial::legacy_and_opaque(&password_hash, &opaque_record),
-                executor,
-            )
+            .create_with_password_credentials(&user, credential_material, executor)
             .await
     }
 
@@ -3047,15 +3043,11 @@ impl UserService {
         }
         self.validate_password(&password)?;
 
-        let (password_hash, opaque_record) = self
-            .build_password_credentials_for_new_user(&username, &password)
-            .await?;
-        let mut user = User::new(
-            username.clone(),
-            email,
-            password_hash.clone(),
-            SignupMethod::Email,
-        );
+        let opaque_record = self.opaque_password_service.register_password(
+            &Self::opaque_credential_identifier_for_new_user(&username),
+            &password,
+        )?;
+        let mut user = User::new(username.clone(), email, String::new(), SignupMethod::Email);
         if let Some(role) = role {
             user.role = role;
         }
@@ -3067,7 +3059,7 @@ impl UserService {
             .repository
             .create_with_password_credentials(
                 &user,
-                PasswordCredentialMaterial::legacy_and_opaque(&password_hash, &opaque_record),
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
                 &mut *tx,
             )
             .await?;
@@ -3148,6 +3140,16 @@ impl UserService {
         control: Option<&ExecutionControl>,
     ) -> Result<AuthenticatedLogin> {
         let normalized_identifier = Self::normalize_login_identifier(&identifier);
+
+        if !self.legacy_password_login_enabled_for_tests {
+            self.brute_force
+                .record_ip_failure_with_control(client_ip, control)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(error = %error, "Failed to record disabled legacy password login attempt");
+                });
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
 
         // Check brute-force lockout before expensive Argon2 verification.
         // This applies to all usernames (existing or not) to prevent
@@ -3782,22 +3784,6 @@ impl UserService {
         Ok(updated)
     }
 
-    /// Change user password (requires old password verification)
-    pub async fn change_password(
-        &self,
-        user_id: &UserId,
-        old_password: &str,
-        new_password: &str,
-    ) -> Result<User> {
-        self.update_profile(
-            user_id,
-            None,
-            Some(old_password.to_string()),
-            Some(new_password.to_string()),
-        )
-        .await
-    }
-
     /// Set user password (admin use, no old password required)
     ///
     /// After updating the password, all existing access and refresh tokens for the
@@ -3808,17 +3794,22 @@ impl UserService {
         // Validate new password
         self.validate_password(new_password)?;
 
-        let (password_hash, opaque_record) = self
-            .build_password_credentials_for_existing_user(user_id, new_password)
-            .await?;
+        let opaque_record = self.opaque_password_service.register_password(
+            &Self::opaque_credential_identifier_for_user_id(user_id),
+            new_password,
+        )?;
 
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
 
-        // Update password in database (this also updates password_changed_at,
-        // which invalidates all tokens issued before this moment)
+        // Store only OPAQUE material. This still bumps password_version, which
+        // invalidates tokens without preserving a server-verifiable password hash.
         let updated_user = self
             .repository
-            .update_password_with_executor(user_id, &password_hash, Some(&opaque_record), &mut *tx)
+            .update_password_credentials_with_executor(
+                user_id,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                &mut *tx,
+            )
             .await?;
 
         tx.commit().await?;
@@ -3897,6 +3888,43 @@ impl UserService {
         .await
     }
 
+    pub async fn start_opaque_password_reset_after_external_verification(
+        &self,
+        user_id: &UserId,
+        registration_request: Vec<u8>,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
+        let registration_start = self
+            .opaque_password_service
+            .start_registration(&credential_identifier, &registration_request)?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_registration_session_store
+            .store(
+                &session_id,
+                &OpaqueRegistrationSession {
+                    credential_identifier,
+                    purpose: OpaqueRegistrationPurpose::PasswordReset {
+                        user_id: *user_id,
+                        expected_password_version: user.password_version,
+                    },
+                },
+                Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(OpaqueRegistrationStartChallenge {
+            session_id,
+            credential_response: Vec::new(),
+            registration_response: registration_start.registration_response,
+        })
+    }
+
     pub async fn start_opaque_password_update_pending_passkey_verification(
         &self,
         user_id: &UserId,
@@ -3936,61 +3964,6 @@ impl UserService {
                         user_id: *user_id,
                         expected_password_version: user.password_version,
                         verification,
-                    },
-                },
-                Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
-            )
-            .await?;
-
-        Ok(OpaqueRegistrationStartChallenge {
-            session_id,
-            credential_response: Vec::new(),
-            registration_response: registration_start.registration_response,
-        })
-    }
-
-    pub async fn start_opaque_password_update_after_plain_password_verification(
-        &self,
-        user_id: &UserId,
-        old_password: &str,
-        registration_request: Vec<u8>,
-    ) -> Result<OpaqueRegistrationStartChallenge> {
-        let user = self
-            .repository
-            .get_by_id(user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
-
-        let current_hash = if user.password_hash.is_empty() {
-            self.password_hasher.dummy_hash()
-        } else {
-            &user.password_hash
-        };
-        let is_valid = self
-            .password_hasher
-            .verify_password(old_password, current_hash)
-            .await?
-            && !user.password_hash.is_empty();
-        if !is_valid {
-            return Err(Error::Authentication(
-                "Invalid current password".to_string(),
-            ));
-        }
-
-        let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
-        let registration_start = self
-            .opaque_password_service
-            .start_registration(&credential_identifier, &registration_request)?;
-        let session_id = synctv_common::snanoid!(48);
-        self.opaque_registration_session_store
-            .store(
-                &session_id,
-                &OpaqueRegistrationSession {
-                    credential_identifier,
-                    purpose: OpaqueRegistrationPurpose::PasswordUpdate {
-                        user_id: *user_id,
-                        expected_password_version: user.password_version,
-                        verification: OpaquePasswordUpdateVerification::VerifiedExternal,
                     },
                 },
                 Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
@@ -4114,6 +4087,36 @@ impl UserService {
         .await
     }
 
+    pub async fn finish_opaque_password_reset_after_external_verification(
+        &self,
+        session_id: &str,
+        registration_upload: Vec<u8>,
+    ) -> Result<User> {
+        let Some(session) = self
+            .opaque_registration_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let OpaqueRegistrationPurpose::PasswordReset {
+            user_id,
+            expected_password_version,
+        } = session.purpose
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        self.finish_opaque_password_update_after_verified_session(
+            &user_id,
+            session.credential_identifier,
+            expected_password_version,
+            registration_upload,
+        )
+        .await
+    }
+
     async fn finish_opaque_password_update_after_verified_session(
         &self,
         user_id: &UserId,
@@ -4152,24 +4155,14 @@ impl UserService {
     }
 
     /// Update a user's own profile atomically.
-    ///
-    /// Supports username-only updates, password-only updates, or updating both
-    /// fields in a single transaction so partial commits cannot occur.
-    ///
-    /// When changing password, `old_password` is required and verified inside
-    /// the transaction against the current row version before any mutation is
-    /// committed. Token invalidation is driven by the resulting `password_version`
-    /// change, which becomes visible only after the transaction commits.
     pub async fn update_profile(
         &self,
         user_id: &UserId,
         new_username: Option<String>,
-        old_password: Option<String>,
-        new_password: Option<String>,
     ) -> Result<User> {
-        if new_username.is_none() && new_password.is_none() {
+        if new_username.is_none() {
             return Err(Error::InvalidInput(
-                "No valid update fields provided (username or password)".to_string(),
+                "No valid update fields provided (username)".to_string(),
             ));
         }
 
@@ -4177,17 +4170,8 @@ impl UserService {
             .map(|username| Self::normalize_username_for_storage(&username))
             .transpose()?;
 
-        if new_password.is_some() && old_password.is_none() {
-            return Err(Error::InvalidInput(
-                "old_password is required when changing password".to_string(),
-            ));
-        }
-
         if let Some(ref username) = new_username {
             debug_assert!(Self::validate_username(username).is_ok());
-        }
-        if let Some(ref password) = new_password {
-            self.validate_password(password)?;
         }
 
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
@@ -4198,45 +4182,13 @@ impl UserService {
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         let target_username = new_username.unwrap_or_else(|| current_user.username.clone());
-        let mut new_password_hash: Option<String> = None;
-        let mut new_opaque_record: Option<OpaquePasswordRecord> = None;
-
-        if let Some(new_password) = new_password {
-            let provided_old_password = old_password.expect("old_password validated above");
-            let current_hash = if current_user.password_hash.is_empty() {
-                self.password_hasher.dummy_hash()
-            } else {
-                &current_user.password_hash
-            };
-            let is_valid = self
-                .password_hasher
-                .verify_password(&provided_old_password, current_hash)
-                .await?
-                && !current_user.password_hash.is_empty();
-            if !is_valid {
-                return Err(Error::Authentication(
-                    "Invalid current password".to_string(),
-                ));
-            }
-
-            let (password_hash, opaque_record) = self
-                .build_password_credentials_for_existing_user(user_id, &new_password)
-                .await?;
-            new_password_hash = Some(password_hash);
-            new_opaque_record = Some(opaque_record);
-        }
 
         let updated_user = self
             .repository
             .update_profile_with_executor(
                 user_id,
                 &target_username,
-                new_password_hash
-                    .as_deref()
-                    .zip(new_opaque_record.as_ref())
-                    .map(|(password_hash, opaque_record)| {
-                        PasswordCredentialMaterial::legacy_and_opaque(password_hash, opaque_record)
-                    }),
+                None,
                 current_user.version,
                 &mut *tx,
             )

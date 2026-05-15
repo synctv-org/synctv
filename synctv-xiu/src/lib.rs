@@ -2,7 +2,6 @@
     test,
     allow(
         clippy::cast_possible_truncation,
-        clippy::manual_assert_eq,
         clippy::manual_let_else,
         clippy::unwrap_used
     )

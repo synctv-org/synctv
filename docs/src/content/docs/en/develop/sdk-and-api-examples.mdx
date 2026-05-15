@@ -46,17 +46,17 @@ See [OpenAPI Access](../../reference/openapi/) for details.
 ## Minimal HTTP Flow
 
 <Tabs syncKey="http-api-examples-en">
-  <TabItem label="Login" icon="approve-check-circle">
+  <TabItem label="OPAQUE login" icon="approve-check-circle">
 
 ```bash
 BASE_URL=http://localhost:8080
 
-curl -sS "$BASE_URL/api/auth/login" \
+curl -sS "$BASE_URL/api/auth/opaque/login/start" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"root","password":"change-this-password"}'
+  -d '{"username":"root","credential_request":[/* bytes from your OPAQUE client */]}'
 ```
 
-If `mfa.required=true`, complete MFA before treating the user as logged in.
+Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. If the finish response has `mfa.required=true`, complete MFA before treating the user as logged in. `/api/auth/login` is reserved for passwordless email-token login.
 
   </TabItem>
   <TabItem label="Refresh" icon="random">
@@ -139,13 +139,15 @@ Public gRPC uses the main port:
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-Login:
+Local password login is OPAQUE-only. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","password":"change-this-password"}' \
-  localhost:8080 synctv.client.AuthService/Login
+  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
+
+`AuthService/Login` is reserved for passwordless email-token login.
 
 Room RPCs need room metadata:
 

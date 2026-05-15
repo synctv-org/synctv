@@ -4,12 +4,13 @@
 //! Run with: cargo test --test `auth_flow_integration_tests`
 #![allow(clippy::unwrap_used)]
 
+use sqlx::Row;
 use synctv_core::{
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
-    repository::UserRepository,
+    repository::{PasswordCredentialMaterial, UserRepository},
     service::auth::{
         password::{hash_password, verify_password},
-        TokenType,
+        OpaquePasswordRecord, TokenType,
     },
 };
 use synctv_core_testing::{create_test_jwt_service, create_test_pool};
@@ -237,7 +238,7 @@ async fn test_token_refresh_flow() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_password_change_invalidates_tokens() {
+async fn test_password_credential_update_clears_legacy_hash() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let jwt_service = create_test_jwt_service();
@@ -286,31 +287,58 @@ async fn test_password_change_invalidates_tokens() {
     // Change password
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-    let new_password = "NewPassword123!";
-    let new_password_hash = hash_password(new_password)
-        .await
-        .expect("Failed to hash new password");
+    let opaque_record = OpaquePasswordRecord {
+        record: b"opaque-record-v2".to_vec(),
+        credential_identifier: b"synctv:user-id:password-change".to_vec(),
+        ciphersuite: "opaque-ristretto255-sha512-argon2id".to_string(),
+        server_setup_version: 1,
+    };
 
-    user_repo
-        .update_password(&created_user.id, &new_password_hash)
+    let updated = user_repo
+        .update_password_credentials_with_executor(
+            &created_user.id,
+            PasswordCredentialMaterial::opaque_only(&opaque_record),
+            &pool,
+        )
         .await
-        .expect("Failed to update password");
+        .expect("Failed to update password credentials");
+    assert_eq!(updated.password_version, created_user.password_version + 1);
 
-    // In a real system, old tokens should be invalidated by checking updated_at
-    // against token issued_at (iat) or using a token revocation list
     let fetched_user = user_repo
         .get_by_id(&created_user.id)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
 
-    // Verify password was changed
-    assert!(verify_password(new_password, &fetched_user.password_hash)
-        .await
-        .unwrap());
-    assert!(!verify_password(old_password, &fetched_user.password_hash)
-        .await
-        .unwrap());
+    assert_eq!(
+        fetched_user.password_hash, "",
+        "OPAQUE-only credential updates should clear the exposed legacy hash"
+    );
+
+    let row = sqlx::query(
+        r"
+        SELECT legacy_password_hash, opaque_record, password_version
+        FROM auth_password_credentials
+        WHERE user_id = $1
+        ",
+    )
+    .bind(created_user.id.as_i64())
+    .fetch_one(&pool)
+    .await
+    .expect("password credential row should exist");
+    assert_eq!(
+        row.try_get::<Option<String>, _>("legacy_password_hash")
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        row.try_get::<Option<Vec<u8>>, _>("opaque_record").unwrap(),
+        Some(b"opaque-record-v2".to_vec())
+    );
+    assert_eq!(
+        row.try_get::<i32, _>("password_version").unwrap(),
+        created_user.password_version + 1
+    );
 }
 
 #[tokio::test]

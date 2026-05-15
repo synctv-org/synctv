@@ -192,7 +192,14 @@ pub fn room_event_to_realtime_event(
             deleted_by: system_user_id(),
             timestamp,
         }),
-        _ => None,
+        synctv_core::service::RoomEvent::UserJoined { .. }
+        | synctv_core::service::RoomEvent::ChatMessage { .. }
+        | synctv_core::service::RoomEvent::Danmaku { .. }
+        | synctv_core::service::RoomEvent::PlaybackStateChanged { .. }
+        | synctv_core::service::RoomEvent::MemberKicked { .. }
+        | synctv_core::service::RoomEvent::GuestKicked { .. }
+        | synctv_core::service::RoomEvent::StreamStarted { .. }
+        | synctv_core::service::RoomEvent::StreamStopped { .. } => None,
     }
 }
 
@@ -586,6 +593,77 @@ mod tests {
                 assert_eq!(playlist_id, PlaylistId::expect_positive(120_012));
             }
             other => panic!("expected PlaylistDeleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_room_event_bridge_keeps_direct_realtime_events_explicitly_unmapped() {
+        let room_id = RoomId::expect_positive(120_013);
+        let user_id = UserId::expect_positive(120_014);
+
+        let events = [
+            synctv_core::service::RoomEvent::UserJoined {
+                user_id,
+                username: "joiner".to_string(),
+            },
+            synctv_core::service::RoomEvent::ChatMessage {
+                message_id: "chat-1".to_string(),
+                user_id,
+                username: "chat-user".to_string(),
+                content: "hello".to_string(),
+                timestamp: chrono::Utc::now(),
+            },
+            synctv_core::service::RoomEvent::Danmaku {
+                user_id,
+                username: "danmaku-user".to_string(),
+                content: "bullet".to_string(),
+                position: "top".to_string(),
+                timestamp: chrono::Utc::now(),
+            },
+            synctv_core::service::RoomEvent::PlaybackStateChanged {
+                playing: true,
+                position: 12.0,
+                speed: 1.0,
+                media_id: Some(MediaId::expect_positive(120_015)),
+            },
+        ];
+
+        for event in events {
+            assert!(
+                room_event_to_realtime_event(&room_id, &event).is_none(),
+                "{} has a direct realtime broadcaster and must not be bridged twice",
+                event.event_type()
+            );
+        }
+    }
+
+    #[test]
+    fn test_room_event_bridge_keeps_non_protocol_events_explicitly_unmapped() {
+        let room_id = RoomId::expect_positive(120_016);
+        let user_id = UserId::expect_positive(120_017);
+
+        let events = [
+            synctv_core::service::RoomEvent::MemberKicked { user_id },
+            synctv_core::service::RoomEvent::GuestKicked {
+                reason: synctv_core::service::notification::GuestKickReason::AdminKick,
+                message: "guest removed".to_string(),
+            },
+            synctv_core::service::RoomEvent::StreamStarted {
+                media_id: MediaId::expect_positive(120_018),
+                user_id,
+            },
+            synctv_core::service::RoomEvent::StreamStopped {
+                media_id: MediaId::expect_positive(120_019),
+                user_id,
+            },
+        ];
+
+        for event in events {
+            assert!(
+                room_event_to_realtime_event(&room_id, &event).is_none(),
+                "{} has no stable ServerMessage protocol mapping yet",
+                event.event_type()
+            );
         }
     }
 }

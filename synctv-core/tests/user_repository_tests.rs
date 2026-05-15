@@ -8,7 +8,8 @@
 use chrono::Utc;
 use synctv_core::{
     models::{User, UserId, UserRole, UserStatus},
-    repository::UserRepository,
+    repository::{PasswordCredentialMaterial, UserRepository},
+    service::auth::OpaquePasswordRecord,
     Error,
 };
 use synctv_core_testing::create_test_pool;
@@ -101,9 +102,20 @@ async fn test_update_password_deleted_user_returns_not_found() {
     // Soft delete
     repo.delete(&user.id).await.unwrap();
 
-    // Trying to update password on deleted user should return NotFound
+    let opaque_record = OpaquePasswordRecord {
+        record: b"opaque-record".to_vec(),
+        credential_identifier: b"synctv:user-id:1".to_vec(),
+        ciphersuite: "opaque-ristretto255-sha512-argon2id".to_string(),
+        server_setup_version: 1,
+    };
+
+    // Trying to update password credentials on deleted user should return NotFound
     let err = repo
-        .update_password(&user.id, "new_hash")
+        .update_password_credentials_with_executor(
+            &user.id,
+            PasswordCredentialMaterial::opaque_only(&opaque_record),
+            &pool,
+        )
         .await
         .unwrap_err();
     assert!(

@@ -8,7 +8,7 @@
 // This component only maintains heartbeat for already-registered publishers.
 // Based on design doc 17-data-flow-design.md §11.1
 
-use super::registry::HEARTBEAT_INTERVAL_SECS;
+use super::registry::{RedisOperationTimeout, HEARTBEAT_INTERVAL_SECS};
 use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -176,8 +176,7 @@ fn is_redis_unreachable_error(error: &anyhow::Error) -> bool {
         return true;
     }
 
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("redis operation timed out") || message.contains("redis timeout")
+    error.downcast_ref::<RedisOperationTimeout>().is_some()
 }
 
 fn publisher_key(room_id: &str, media_id: &str) -> anyhow::Result<String> {
@@ -544,21 +543,23 @@ impl PublisherManager {
 
         // Look up by composite key (room_id:media_id)
         let publisher_key = publisher_key(&room_id, &media_id)?;
-        if self.active_publishers.remove(&publisher_key).is_some() {
-            // Unregister from Redis
+        if let Some((_, entry)) = self.active_publishers.remove(&publisher_key) {
+            // Unregister from Redis only if this event still matches the tracked
+            // publisher epoch. A delayed UnPublish for a previous RTMP session
+            // must not remove a newer publisher that already replaced it.
             if let Err(e) = self
                 .registry
-                .unregister_publisher(&room_id, &media_id)
+                .unregister_publisher_if_epoch_matches(&room_id, &media_id, entry.epoch)
                 .await
             {
                 error!(
-                    "Failed to unregister publisher for room {} / media {}: {}",
-                    room_id, media_id, e
+                    "Failed to unregister publisher for room {} / media {} with epoch {}: {}",
+                    room_id, media_id, entry.epoch, e
                 );
             } else {
                 info!(
-                    "Unregistered publisher for room {} / media {}",
-                    room_id, media_id
+                    "Unregistered publisher for room {} / media {} with epoch {}",
+                    room_id, media_id, entry.epoch
                 );
             }
         }
@@ -1452,9 +1453,13 @@ mod tests {
     #[tokio::test]
     async fn test_handle_unpublish_success() {
         let registry = Arc::new(MockStreamRegistry::new());
-        let (manager, _rx) = test_manager(registry, "test-node-1");
+        let (manager, _rx) = test_manager(registry.clone(), "test-node-1");
 
         // First, register a publisher
+        registry
+            .try_register_publisher("room123", "media456", "test-node-1", "user1", "addr1")
+            .await
+            .unwrap();
         let identifier = StreamIdentifier::Rtmp {
             app_name: "room123".to_string(),
             stream_name: "media456".to_string(),
@@ -1467,6 +1472,80 @@ mod tests {
 
         // Verify publisher was removed from tracking (composite key)
         assert!(!manager.active_publishers.contains_key("room123:media456"));
+        assert!(
+            registry
+                .get_publisher("room123", "media456")
+                .await
+                .unwrap()
+                .is_none(),
+            "matching unpublish should remove registry entry"
+        );
+        assert_eq!(
+            registry.unregister_if_epoch_matches_call_count(),
+            1,
+            "broadcast unpublish must use epoch-fenced unregister"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_unpublish_does_not_delete_replacement_epoch() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry.clone(), "test-node-1");
+
+        registry
+            .try_register_publisher("room-fast", "media-fast", "test-node-1", "user1", "addr1")
+            .await
+            .unwrap();
+        let original = registry
+            .get_publisher("room-fast", "media-fast")
+            .await
+            .unwrap()
+            .expect("original publisher should exist");
+
+        registry
+            .unregister_publisher("room-fast", "media-fast")
+            .await
+            .unwrap();
+        registry
+            .try_register_publisher("room-fast", "media-fast", "test-node-1", "user2", "addr2")
+            .await
+            .unwrap();
+        let replacement = registry
+            .get_publisher("room-fast", "media-fast")
+            .await
+            .unwrap()
+            .expect("replacement publisher should exist");
+
+        manager.active_publishers.insert(
+            "room-fast:media-fast".to_string(),
+            Arc::new(PublisherEntry::with_registration(
+                "user1".to_string(),
+                original.epoch,
+            )),
+        );
+
+        let identifier = StreamIdentifier::Rtmp {
+            app_name: "room-fast".to_string(),
+            stream_name: "media-fast".to_string(),
+        };
+        manager
+            .handle_unpublish(identifier)
+            .await
+            .expect("stale unpublish should be handled");
+
+        let current = registry
+            .get_publisher("room-fast", "media-fast")
+            .await
+            .unwrap()
+            .expect("replacement publisher must not be removed by stale unpublish");
+        assert_eq!(current.epoch, replacement.epoch);
+        assert_eq!(current.user_id, "user2");
+        assert!(
+            !manager
+                .active_publishers
+                .contains_key("room-fast:media-fast"),
+            "stale local entry should still be removed"
+        );
     }
 
     #[tokio::test]
@@ -2443,10 +2522,10 @@ mod tests {
             .active_publishers
             .insert("room-timeout:media-timeout".to_string(), Arc::clone(&entry));
 
-        let timeout_error = anyhow::anyhow!("Redis operation timed out after 5s");
+        let timeout_error = RedisOperationTimeout::new(5).into();
         assert!(
             is_redis_unreachable_error(&timeout_error),
-            "wrapped Redis timeout errors should classify as registry-unreachable"
+            "typed Redis timeout errors should classify as registry-unreachable"
         );
 
         registry.set_fail_refresh_publisher_ttl_with_wrapped_timeout(true);

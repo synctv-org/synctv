@@ -13,10 +13,11 @@
 // - Cross-node gRPC relay
 
 use crate::{
+    error::StreamError,
     grpc::HlsProxyClient,
     livestream::{
         external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
-        segment_manager::SegmentManager,
+        SegmentManager,
     },
     protocols::hls::remuxer::StreamRegistry as HlsStreamRegistry,
     protocols::httpflv::HttpFlvSession,
@@ -384,7 +385,7 @@ impl FlvStreamingApi {
             .has_publisher(room_id, media_id)
             .await?
             .then_some(())
-            .ok_or_else(|| anyhow::anyhow!("No publisher for {room_id}/{media_id}"))?;
+            .ok_or_else(|| StreamError::NoPublisher(format!("{room_id}/{media_id}")))?;
 
         // Create bounded channel for FLV data (backpressure for slow clients)
         let (tx, rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
@@ -601,7 +602,7 @@ impl HlsStreamingApi {
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
         let Some(publisher_info) = publisher_info else {
-            return Err(anyhow::anyhow!("No publisher for {room_id}/{media_id}"));
+            return Err(StreamError::NoPublisher(format!("{room_id}/{media_id}")).into());
         };
 
         // Check if publisher is local
@@ -628,7 +629,12 @@ impl HlsStreamingApi {
                 )
                 .await?;
 
-            segment.ok_or_else(|| anyhow::anyhow!("Segment not found on publisher node"))
+            segment.ok_or_else(|| {
+                StreamError::StreamNotFound(format!(
+                    "segment {segment_name} for {room_id}/{media_id} on publisher node"
+                ))
+                .into()
+            })
         } else {
             // No proxy configured, try local anyway (single-node mode)
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
@@ -647,9 +653,18 @@ impl HlsStreamingApi {
                 .storage()
                 .read(room_id, media_id, segment_name)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to read segment: {e}"))
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        StreamError::StreamNotFound(format!(
+                            "segment {segment_name} for {room_id}/{media_id}"
+                        ))
+                        .into()
+                    } else {
+                        anyhow::anyhow!("Failed to read segment: {e}")
+                    }
+                })
         } else {
-            Err(anyhow::anyhow!("Segment manager not configured"))
+            Err(StreamError::InvalidState("Segment manager not configured".to_string()).into())
         }
     }
 }
@@ -790,7 +805,7 @@ mod tests {
 
         let segment_manager = Arc::new(SegmentManager::new(
             storage,
-            crate::livestream::segment_manager::CleanupConfig::default(),
+            crate::livestream::CleanupConfig::default(),
         ));
         let infrastructure = make_infrastructure_with_publisher("node-local", "node-remote", "")
             .with_segment_manager(segment_manager)

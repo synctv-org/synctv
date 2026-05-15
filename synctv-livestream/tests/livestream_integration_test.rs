@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::time::Instant;
 use synctv_livestream::api::{HlsStreamingApi, LiveStreamingInfrastructure};
 use synctv_livestream::libraries::storage::MemoryStorage;
-use synctv_livestream::livestream::segment_manager::{CleanupConfig, SegmentManager};
+use synctv_livestream::livestream::{CleanupConfig, SegmentManager};
 use synctv_livestream::protocols::hls::remuxer::{SegmentInfo, StreamProcessorState};
 use tokio::sync::mpsc;
 

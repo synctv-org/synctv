@@ -552,6 +552,8 @@ pub struct GrpcServerConfig<'a> {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// Structured WebRTC/STUN runtime state exposed through shared API runtime.
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     /// Credential encryption for provider credential resolution
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Pre-bound TCP listener for the gRPC server.
@@ -580,10 +582,9 @@ fn resolve_provider_proxy_runtime(
             config.jwt.secret.as_bytes(),
         )),
         synctv_core::provider::store::build_provider_store_resolver_from_profile(
-            &synctv_core::SharedStateProfile::from_runtime(
+            &synctv_core::SharedStateProfile::best_effort(
                 redis_runtime,
                 config.redis.key_prefix.clone(),
-                false,
             ),
         ),
     )
@@ -620,6 +621,7 @@ struct FallbackHttpAppStateDeps {
     proxy_signing_key: Arc<synctv_core::service::ProxySigningKey>,
     provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     builtin_stun_url: Option<String>,
+    webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     audit_service: Arc<synctv_core::service::AuditService>,
 }
 
@@ -672,6 +674,7 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
             shared_provider_stores: Some(deps.provider_stores),
             shared_proxy_signing_key: Some(deps.proxy_signing_key),
             builtin_stun_url: deps.builtin_stun_url,
+            webrtc_status: deps.webrtc_status,
             credential_encryption: deps.credential_encryption,
             proxy_slice_cache: Arc::new(
                 synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
@@ -722,6 +725,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         shared_http_app_state,
         shutdown_rx,
         builtin_stun_url,
+        webrtc_status,
         credential_encryption,
         grpc_listener: _,
     } = grpc_config;
@@ -766,6 +770,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             proxy_signing_key: proxy_signing_key.clone(),
             provider_stores: provider_stores.clone(),
             builtin_stun_url,
+            webrtc_status,
             audit_service: audit_service.clone(),
         }))
     });
@@ -1548,6 +1553,8 @@ mod tests {
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,
                 builtin_stun_url: None,
+                webrtc_status:
+                    synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     synctv_proxy::slice_cache::SliceCacheConfig::default(),
@@ -1709,6 +1716,7 @@ mod tests {
             proxy_signing_key: proxy_signing_key.clone(),
             provider_stores: provider_stores.clone(),
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             audit_service: context.audit_service,
         });
 

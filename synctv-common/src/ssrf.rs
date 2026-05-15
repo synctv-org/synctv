@@ -28,10 +28,41 @@ use ipnet::IpNet;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::collections::HashSet;
 use std::error::Error;
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 type BoxError = Box<dyn Error + Send + Sync>;
+
+/// DNS resolution result rejected by the configured SSRF policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SsrfResolutionBlocked {
+    host: String,
+}
+
+impl SsrfResolutionBlocked {
+    fn new(host: impl Into<String>) -> Self {
+        Self { host: host.into() }
+    }
+
+    /// Hostname whose resolved addresses were rejected.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+}
+
+impl fmt::Display for SsrfResolutionBlocked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "resolved addresses for `{}` are blocked by SSRF policy",
+            self.host
+        )
+    }
+}
+
+impl Error for SsrfResolutionBlocked {}
 
 /// Default extra denied IP ranges (beyond what `http-acl` blocks via `is_global`).
 const DEFAULT_EXTRA_DENIED_RANGES: &[&str] = &[
@@ -215,7 +246,7 @@ impl Resolve for SsrfDnsResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_string();
         if self.acl.is_host_allowed(&host).is_denied() {
-            let err: BoxError = Box::new(std::io::Error::other("Host denied by ACL"));
+            let err: BoxError = Box::new(SsrfResolutionBlocked::new(host));
             return Box::pin(std::future::ready(Err(err)));
         }
 
@@ -225,12 +256,19 @@ impl Resolve for SsrfDnsResolver {
 
         Box::pin(async move {
             let resolved = resolver.resolve(name).await?;
-            let filtered = resolved
+            let addresses = resolved.collect::<Vec<SocketAddr>>();
+            let filtered = addresses
+                .iter()
+                .copied()
                 .filter(|addr| {
                     policy.is_ip_allowed_for_host(&host, &addr.ip())
                         && acl.is_port_allowed(addr.port()).is_allowed()
                 })
                 .collect::<Vec<SocketAddr>>();
+
+            if !addresses.is_empty() && filtered.is_empty() {
+                return Err(Box::new(SsrfResolutionBlocked::new(host)) as BoxError);
+            }
 
             Ok(Box::new(filtered.into_iter()) as Addrs)
         })
@@ -665,16 +703,17 @@ mod tests {
         let guard = SsrfGuard::strict_policy();
         let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
 
-        let resolved = resolver
+        let result = resolver
             .resolve("example.com".parse().expect("valid DNS name"))
-            .await
-            .expect("DNS resolution should succeed")
-            .collect::<Vec<_>>();
+            .await;
+        let Err(err) = result else {
+            panic!("private DNS results should fail with a typed SSRF error");
+        };
 
-        assert!(
-            resolved.is_empty(),
-            "private DNS results should still be filtered for non-allowlisted hosts"
-        );
+        let blocked = err
+            .downcast_ref::<SsrfResolutionBlocked>()
+            .expect("DNS resolution error should expose typed SSRF denial");
+        assert_eq!(blocked.host(), "example.com");
     }
 
     #[tokio::test]
@@ -685,16 +724,17 @@ mod tests {
         let resolver =
             resolver_for_test(&guard, vec![SocketAddr::from(([169, 254, 169, 254], 80))]);
 
-        let resolved = resolver
+        let result = resolver
             .resolve("internal.example".parse().expect("valid DNS name"))
-            .await
-            .expect("DNS resolution should succeed")
-            .collect::<Vec<_>>();
+            .await;
+        let Err(err) = result else {
+            panic!("metadata DNS results should fail with a typed SSRF error");
+        };
 
-        assert!(
-            resolved.is_empty(),
-            "hostname allowlist should not allow metadata IPs"
-        );
+        let blocked = err
+            .downcast_ref::<SsrfResolutionBlocked>()
+            .expect("DNS resolution error should expose typed SSRF denial");
+        assert_eq!(blocked.host(), "internal.example");
     }
 
     #[test]

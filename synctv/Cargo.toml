@@ -10,7 +10,7 @@ name = "synctv"
 path = "src/main.rs"
 
 [features]
-default = ["k8s", "mimalloc", "openapi", "tls-aws-lc", "tls-webpki-roots", "tls-native-roots"]
+default = ["k8s", "mimalloc", "tls-aws-lc", "tls-webpki-roots"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
@@ -21,6 +21,8 @@ k8s = ["synctv-cluster/k8s", "synctv-core/k8s", "synctv-api/k8s"]
 mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:tikv-jemallocator"]
 openapi = ["synctv-api/openapi"]
+# Enable Swagger UI and OpenAPI schema endpoints:
+#   cargo build --features openapi
 
 # TLS contract:
 # - `tls-aws-lc` / `tls-ring` select the rustls crypto provider where upstream
@@ -45,9 +47,6 @@ tls-aws-lc = [
     "synctv-xiu/tls-aws-lc",
     "tonic/tls-aws-lc",
     "sqlx/tls-rustls-aws-lc-rs",
-    "synctv-core-testing/tls-aws-lc",
-    "testcontainers/aws-lc-rs",
-    "testcontainers-modules/aws-lc-rs",
     "reqwest/rustls",
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",
@@ -65,9 +64,6 @@ tls-ring = [
     "synctv-common/tls-ring",
     "synctv-xiu/tls-ring",
     "tonic/tls-ring",
-    "synctv-core-testing/tls-ring",
-    "testcontainers/ring",
-    "testcontainers-modules/ring",
     "reqwest/rustls-no-provider",
     "rustls/ring",
     "tokio-rustls/ring",
@@ -189,3 +185,5 @@ prost.workspace = true
 clap = { workspace = true, features = ["derive"] }
 clap_complete.workspace = true
 tokio-stream.workspace = true
+opaque-ke.workspace = true
+sha2_010.workspace = true

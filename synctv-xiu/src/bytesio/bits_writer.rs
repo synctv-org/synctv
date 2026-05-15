@@ -155,14 +155,14 @@ mod tests {
         bit_writer.write_bit(0).unwrap();
 
         let byte = bit_writer.get_current_bytes();
-        assert!(byte.to_vec()[0] == 0x2);
+        assert_eq!(byte.to_vec()[0], 0x2);
 
         bit_writer.write_bit(1).unwrap();
         bit_writer.write_bit(1).unwrap();
 
         println!("=={}=={}==", bit_writer.cur_bit_num, bit_writer.cur_byte);
-        assert!(bit_writer.cur_bit_num == 2);
-        assert!(bit_writer.cur_byte == 0xC0); //0x11000000
+        assert_eq!(bit_writer.cur_bit_num, 2);
+        assert_eq!(bit_writer.cur_byte, 0xC0); //0x11000000
     }
 
     #[test]
@@ -183,10 +183,10 @@ mod tests {
         println!("=={}=={}==", bit_writer.cur_bit_num, bit_writer.cur_byte);
         println!("=={}==", byte.to_vec()[0]);
 
-        assert!(byte.to_vec()[0] == 0xC0); //0x11000000
+        assert_eq!(byte.to_vec()[0], 0xC0); //0x11000000
 
-        assert!(bit_writer.cur_bit_num == 2);
-        assert!(bit_writer.cur_byte == 0xC0); //0x11000000
+        assert_eq!(bit_writer.cur_bit_num, 2);
+        assert_eq!(bit_writer.cur_byte, 0xC0); //0x11000000
     }
 
     #[test]
@@ -201,13 +201,13 @@ mod tests {
         bit_writer.bits_aligment_8().unwrap();
 
         let byte = bit_writer.get_current_bytes();
-        assert!(byte.to_vec()[0] == 0xC0); //0x11000000
+        assert_eq!(byte.to_vec()[0], 0xC0); //0x11000000
 
         bit_writer.write_bit(1).unwrap();
         bit_writer.write_bit(1).unwrap();
         bit_writer.write_bit(0).unwrap();
 
-        assert!(bit_writer.cur_bit_num == 3);
-        assert!(bit_writer.cur_byte == 0xC0); //0x11000000
+        assert_eq!(bit_writer.cur_bit_num, 3);
+        assert_eq!(bit_writer.cur_byte, 0xC0); //0x11000000
     }
 }

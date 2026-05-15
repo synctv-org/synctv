@@ -21,13 +21,14 @@ use std::hash::BuildHasher;
 use std::time::Duration;
 
 use axum::{body::Body, http::StatusCode, response::Response};
+use bytes::Bytes;
 use futures::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue, REFERER, USER_AGENT};
 use synctv_common::ExecutionControl;
 
 pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
-pub(crate) use error::ProxyError;
-pub use error::{proxy_error_kind, ProxyErrorKind};
+pub(crate) use error::{classify_reqwest_body_error, ProxyError};
+pub use error::{proxy_error_kind, proxy_error_kind_from_std_error, ProxyErrorKind};
 pub use manifest::{
     default_proxy_url, make_absolute, percent_encode, rewrite_m3u8, rewrite_m3u8_with_limit,
     rewrite_m3u8_with_url_mapper, rewrite_uri_attribute_with_count, MAX_M3U8_URLS,
@@ -211,6 +212,35 @@ pub struct NoopMetrics;
 
 impl ProxyMetrics for NoopMetrics {
     fn on_proxy_complete(&self, _protocol: &str, _duration: Duration, _error: Option<&str>) {}
+}
+
+fn proxy_body_stream<S>(
+    stream: S,
+    max_body_size: usize,
+) -> impl futures::Stream<Item = Result<Bytes, ProxyError>>
+where
+    S: futures::Stream<Item = Result<Bytes, reqwest::Error>>,
+{
+    stream.scan((0usize, false), move |(total, exceeded), chunk| {
+        if *exceeded {
+            return futures::future::ready(None);
+        }
+        match chunk {
+            Ok(data) => {
+                *total += data.len();
+                if *total > max_body_size {
+                    *exceeded = true;
+                    futures::future::ready(Some(Err(ProxyError::BodyTooLarge(format!(
+                        "response exceeded size limit ({} bytes, max {max_body_size})",
+                        *total
+                    )))))
+                } else {
+                    futures::future::ready(Some(Ok(data)))
+                }
+            }
+            Err(e) => futures::future::ready(Some(Err(classify_reqwest_body_error(&e)))),
+        }
+    })
 }
 
 /// Fetch a remote URL and return the response.
@@ -418,7 +448,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // where u64 > usize::MAX would wrap around and pass the size check.
     if let Some(cl) = proxy_response.content_length() {
         if usize::try_from(cl).map_or(true, |s| s > MAX_PROXY_BODY_SIZE) {
-            return Err(ProxyError::Upstream(format!(
+            return Err(ProxyError::BodyTooLarge(format!(
                 "response too large ({cl} bytes, max {MAX_PROXY_BODY_SIZE})"
             ))
             .into());
@@ -479,31 +509,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // After headers arrive the body is intentionally cancellation-only. We do
     // not apply a timeout to the remainder of the proxy lifecycle because
     // upstream media responses can be arbitrarily large or slow by design.
-    let body_stream =
-        proxy_response
-            .bytes_stream()
-            .scan((0usize, false), |(total, exceeded), chunk| {
-                if *exceeded {
-                    return futures::future::ready(None);
-                }
-                match chunk {
-                    Ok(data) => {
-                        *total += data.len();
-                        if *total > MAX_PROXY_BODY_SIZE {
-                            *exceeded = true;
-                            futures::future::ready(Some(Err(std::io::Error::other(
-                                format!(
-                                    "Response body exceeded size limit ({} bytes, max {MAX_PROXY_BODY_SIZE})",
-                                    *total
-                                ),
-                            ))))
-                        } else {
-                            futures::future::ready(Some(Ok(data)))
-                        }
-                    }
-                    Err(e) => futures::future::ready(Some(Err(std::io::Error::other(e)))),
-                }
-            });
+    let body_stream = proxy_body_stream(proxy_response.bytes_stream(), MAX_PROXY_BODY_SIZE);
     let body = Body::from_stream(body_stream);
 
     builder
@@ -620,6 +626,7 @@ where
 mod tests {
     use super::*;
     use axum::http::StatusCode;
+    use http_body_util::BodyExt;
 
     fn test_proxy_client() -> reqwest::Client {
         reqwest::Client::builder()
@@ -930,6 +937,10 @@ mod tests {
             ProxyError::Connection("x".into()).kind(),
             ProxyErrorKind::Connection
         );
+        assert_eq!(
+            ProxyError::BodyTooLarge("x".into()).kind(),
+            ProxyErrorKind::BodyTooLarge
+        );
         assert_eq!(ProxyError::Ssrf("x".into()).kind(), ProxyErrorKind::Ssrf);
         assert_eq!(
             ProxyError::InvalidRequest("x".into()).kind(),
@@ -940,6 +951,34 @@ mod tests {
             ProxyErrorKind::Upstream
         );
         assert_eq!(ProxyError::Other("x".into()).kind(), ProxyErrorKind::Other);
+    }
+
+    #[test]
+    fn test_proxy_error_kind_from_error_chain() {
+        let err = anyhow::Error::from(ProxyError::BodyTooLarge(
+            "stream exceeded limit".to_string(),
+        ))
+        .context("outer context");
+
+        assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::BodyTooLarge));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_body_stream_preserves_typed_oversize_error() {
+        let stream = futures::stream::iter([
+            Ok(Bytes::from_static(b"1234")),
+            Ok(Bytes::from_static(b"567")),
+        ]);
+        let body = Body::from_stream(proxy_body_stream(stream, 6));
+        let err = body
+            .collect()
+            .await
+            .expect_err("oversized streaming body should fail");
+
+        assert_eq!(
+            proxy_error_kind_from_std_error(&err),
+            Some(ProxyErrorKind::BodyTooLarge)
+        );
     }
 
     #[tokio::test]
@@ -982,6 +1021,20 @@ mod tests {
             .expect("body should be readable");
         assert_eq!(body.as_ref(), b"ok");
         assert!(proxy_response.followed_redirects);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_redirect_validation_dns_rebind_error_is_typed_ssrf() {
+        let client = build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
+            .expect("strict proxy client should build");
+        let request = client.get("http://localhost/private");
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+
+        let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
+            panic!("DNS-level SSRF denial should fail");
+        };
+
+        assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Ssrf));
     }
 
     #[tokio::test]

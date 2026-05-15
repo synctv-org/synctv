@@ -135,7 +135,7 @@ pub async fn update_user_preferences(
     Ok(Json(response))
 }
 
-/// Update user (unified endpoint for username and password via PATCH)
+/// Update user profile fields.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -158,18 +158,11 @@ pub async fn update_user(
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UpdateUserResponse>> {
-    let UpdateUserRequest {
-        username,
-        password,
-        old_password,
-    } = req;
+    let UpdateUserRequest { username } = req;
 
     let mut updated_fields = Vec::new();
     if username.is_some() {
         updated_fields.push("username");
-    }
-    if password.is_some() {
-        updated_fields.push("password");
     }
 
     let response_username = username.clone();
@@ -185,12 +178,7 @@ pub async fn update_user(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .update_profile(
-                        &auth.user_id,
-                        update_username.clone(),
-                        old_password,
-                        password,
-                    )
+                    .update_profile(&auth.user_id, update_username)
                     .await
             },
         )

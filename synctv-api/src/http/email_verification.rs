@@ -26,9 +26,10 @@ use crate::http::{
 };
 use crate::impls::{EmailApiImpl, EndpointRateLimitCategory};
 use crate::proto::client::{
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse,
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
+    FinishOpaquePasswordResetRequest, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    SendVerificationEmailRequest, SendVerificationEmailResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse,
 };
 
 fn email_api_unavailable_error() -> AppError {
@@ -94,7 +95,14 @@ pub fn create_email_router() -> Router<AppState> {
         .route("/api/email/verify/send", post(send_verification_email))
         .route("/api/email/verify/confirm", post(confirm_email))
         .route("/api/email/password/reset", post(request_password_reset))
-        .route("/api/email/password/confirm", post(confirm_password_reset))
+        .route(
+            "/api/email/password/opaque/start",
+            post(start_opaque_password_reset),
+        )
+        .route(
+            "/api/email/password/opaque/finish",
+            post(finish_opaque_password_reset),
+        )
 }
 
 /// Send verification email
@@ -211,34 +219,70 @@ pub async fn request_password_reset(
     Ok(Json(result))
 }
 
-/// Confirm password reset
+/// Start OPAQUE password reset
 ///
-/// POST /api/email/password/confirm
+/// POST /api/email/password/opaque/start
 /// Public endpoint - no authentication required
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/email/password/confirm",
+        path = "/api/email/password/opaque/start",
         tag = "Email",
-        request_body = ConfirmPasswordResetRequest,
+        request_body = StartOpaquePasswordResetRequest,
+        responses(
+            (status = 200, description = "OPAQUE password reset challenge created", body = StartOpaquePasswordResetResponse),
+            (status = 400, description = "Invalid password reset request", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn start_opaque_password_reset(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<StartOpaquePasswordResetRequest>,
+) -> AppResult<Json<StartOpaquePasswordResetResponse>> {
+    let result = execute_email_endpoint(
+        &state,
+        request_meta,
+        move |email_api, request_control| async move {
+            email_api
+                .start_opaque_password_reset_response_with_control(req, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(result))
+}
+
+/// Finish OPAQUE password reset
+///
+/// POST /api/email/password/opaque/finish
+/// Public endpoint - no authentication required
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/email/password/opaque/finish",
+        tag = "Email",
+        request_body = FinishOpaquePasswordResetRequest,
         responses(
             (status = 200, description = "Password reset confirmed", body = ConfirmPasswordResetResponse),
             (status = 400, description = "Invalid password reset confirmation", body = crate::openapi::ErrorResponseDoc)
         )
     )
 )]
-pub async fn confirm_password_reset(
+pub async fn finish_opaque_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<ConfirmPasswordResetRequest>,
+    Json(req): Json<FinishOpaquePasswordResetRequest>,
 ) -> AppResult<Json<ConfirmPasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,
         request_meta,
         move |email_api, request_control| async move {
             email_api
-                .confirm_password_reset_response_with_control(req, Some(&request_control))
+                .finish_opaque_password_reset_response_with_control(req, Some(&request_control))
                 .await
         },
     )

@@ -20,9 +20,10 @@ WORKDIR /app
 # a build-time database connection.
 ENV SQLX_OFFLINE=true
 
-# Empty feature args use the crate's default features. Set
-# SYNCTV_BUILD_NO_DEFAULT_FEATURES=true plus SYNCTV_BUILD_FEATURES to build a
-# narrower production binary, for example without openapi.
+# Empty feature args use the crate's production-oriented default features.
+# Set SYNCTV_BUILD_FEATURES=openapi to include Swagger UI/OpenAPI endpoints.
+# Set SYNCTV_BUILD_NO_DEFAULT_FEATURES=true plus SYNCTV_BUILD_FEATURES for a
+# fully explicit feature set.
 ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
 ARG SYNCTV_BUILD_FEATURES=""
 

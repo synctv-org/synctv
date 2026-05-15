@@ -142,6 +142,7 @@ fn resolve_management_endpoint_from_config(
         data_dir: data_dir.map(str::to_string),
         load_dotenv,
         validate: false,
+        strict_unknown: false,
         verbose,
     })?;
     normalize_endpoint(&config.management_endpoint())
@@ -214,6 +215,7 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
         data_dir: options.data_dir.clone(),
         load_dotenv: options.load_dotenv,
         validate: false,
+        strict_unknown: false,
         verbose: options.verbose,
     })?;
     let token = config.management.auth_token.trim();

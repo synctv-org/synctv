@@ -200,6 +200,8 @@ pub struct ClientApiImpl {
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// Structured WebRTC/STUN runtime state for diagnostics.
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     /// Credential encryption for provider credential resolution
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Credential repository for resolving stored provider credentials
@@ -485,6 +487,9 @@ impl ClientApiImpl {
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::disabled_by_config(
+                synctv_core::service::WebRtcRuntimeMode::PeerToPeer,
+            ),
             credential_encryption: None,
             credential_repo: None,
             provider_access_service: None,
@@ -547,6 +552,9 @@ impl ClientApiImpl {
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::disabled_by_config(
+                synctv_core::service::WebRtcRuntimeMode::PeerToPeer,
+            ),
             credential_encryption: config.credential_encryption,
             credential_repo: None,
             provider_access_service: None,
@@ -726,6 +734,13 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_builtin_stun_url(mut self, url: String) -> Self {
         self.builtin_stun_url = Some(url);
+        self
+    }
+
+    /// Set structured WebRTC/STUN runtime status for diagnostics.
+    #[must_use]
+    pub fn with_webrtc_status(mut self, status: synctv_core::service::WebRtcRuntimeStatus) -> Self {
+        self.webrtc_status = status;
         self
     }
 

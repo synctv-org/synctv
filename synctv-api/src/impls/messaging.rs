@@ -537,6 +537,65 @@ pub trait StreamMessage: Send + Sync {
     }
 }
 
+fn user_notification_server_message(
+    notification_id: impl Into<String>,
+    notification_type: impl Into<String>,
+    title: impl Into<String>,
+    content: impl Into<String>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> ServerMessage {
+    let notification_id = notification_id.into();
+    let notification_type = notification_type.into();
+    let title = title.into();
+    let content = content.into();
+    let data = serde_json::json!({
+        "type": "user_notification",
+        "notification_id": &notification_id,
+        "notification_type": &notification_type,
+        "title": &title,
+        "content": &content,
+    });
+
+    ServerMessage {
+        message: Some(crate::proto::client::server_message::Message::Notification(
+            crate::proto::client::UserNotification {
+                notification_id,
+                notification_type,
+                title,
+                content,
+                data: data.to_string(),
+                timestamp: timestamp.timestamp(),
+            },
+        )),
+    }
+}
+
+fn system_notification_server_message(
+    message: impl Into<String>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> ServerMessage {
+    let message = message.into();
+    let data = serde_json::json!({
+        "type": "system_notification",
+        "notification_type": "system_announcement",
+        "title": &message,
+        "content": &message,
+    });
+
+    ServerMessage {
+        message: Some(crate::proto::client::server_message::Message::Notification(
+            crate::proto::client::UserNotification {
+                notification_id: String::new(),
+                notification_type: "system_announcement".to_string(),
+                title: message.clone(),
+                content: message,
+                data: data.to_string(),
+                timestamp: timestamp.timestamp(),
+            },
+        )),
+    }
+}
+
 /// Per-connection stream message handler with complete logic encapsulation
 ///
 /// Each connection gets its own handler instance with:
@@ -1815,29 +1874,24 @@ impl StreamMessageHandler {
                         Ok(RealtimeEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if *user_id == self.user_id {
-                                let data = serde_json::json!({
-                                    "type": "user_notification",
-                                    "notification_id": notification_id,
-                                    "notification_type": notification_type,
-                                    "title": title,
-                                    "content": content,
-                                });
-                                let msg = ServerMessage {
-                                    message: Some(crate::proto::client::server_message::Message::Notification(
-                                        crate::proto::client::UserNotification {
-                                            notification_id: notification_id.clone(),
-                                            notification_type: notification_type.clone(),
-                                            title: title.clone(),
-                                            content: content.clone(),
-                                            data: data.to_string(),
-                                            timestamp: timestamp.timestamp(),
-                                        },
-                                    )),
-                                };
+                                let msg = user_notification_server_message(
+                                    notification_id.clone(),
+                                    notification_type.clone(),
+                                    title.clone(),
+                                    content.clone(),
+                                    timestamp,
+                                );
                                 if let Err(e) = stream.send(msg) {
                                     tracing::error!("Failed to push notification to WebSocket: {}", e);
                                     break;
                                 }
+                            }
+                        }
+                        Ok(RealtimeEvent::SystemNotification { ref message, timestamp, .. }) => {
+                            let msg = system_notification_server_message(message.clone(), timestamp);
+                            if let Err(e) = stream.send(msg) {
+                                tracing::error!("Failed to push system notification to WebSocket: {}", e);
+                                break;
                             }
                         }
                         Ok(RealtimeEvent::ProviderCredentialChanged { ref event_id, ref user_id, ref provider, ref server_id, .. }) => {
@@ -2201,10 +2255,21 @@ impl StreamMessageHandler {
             Ok(false) => {}
         }
 
-        let (role_proto, permissions) = if let Some(identity) = self.principal.guest_identity() {
+        let (
+            role_proto,
+            permissions,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        ) = if let Some(identity) = self.principal.guest_identity() {
             (
                 synctv_proto::common::RoomMemberRole::Guest as i32,
                 identity.permissions,
+                synctv_core::models::PermissionBits(0),
+                synctv_core::models::PermissionBits(0),
+                synctv_core::models::PermissionBits(0),
+                synctv_core::models::PermissionBits(0),
             )
         } else {
             match member {
@@ -2217,7 +2282,14 @@ impl StreamMessageHandler {
                         .permission_service()
                         .effective_member_permissions(member, settings);
                     let role = room_role_to_proto(member.role);
-                    (role, effective)
+                    (
+                        role,
+                        effective,
+                        synctv_core::models::PermissionBits(member.added_permissions),
+                        synctv_core::models::PermissionBits(member.removed_permissions),
+                        synctv_core::models::PermissionBits(member.admin_added_permissions),
+                        synctv_core::models::PermissionBits(member.admin_removed_permissions),
+                    )
                 }
                 None => {
                     // Fallback: if we can't fetch membership, use Member defaults
@@ -2226,6 +2298,10 @@ impl StreamMessageHandler {
                         synctv_core::models::PermissionBits(
                             synctv_core::models::PermissionBits::DEFAULT_MEMBER,
                         ),
+                        synctv_core::models::PermissionBits(0),
+                        synctv_core::models::PermissionBits(0),
+                        synctv_core::models::PermissionBits(0),
+                        synctv_core::models::PermissionBits(0),
                     )
                 }
             }
@@ -2250,10 +2326,10 @@ impl StreamMessageHandler {
                 username: self.username.clone(),
                 permissions,
                 role: role_proto,
-                added_permissions: synctv_core::models::PermissionBits(0),
-                removed_permissions: synctv_core::models::PermissionBits(0),
-                admin_added_permissions: synctv_core::models::PermissionBits(0),
-                admin_removed_permissions: synctv_core::models::PermissionBits(0),
+                added_permissions,
+                removed_permissions,
+                admin_added_permissions,
+                admin_removed_permissions,
                 joined_at: chrono::Utc::now(),
                 timestamp: chrono::Utc::now(),
             }
@@ -2388,7 +2464,7 @@ impl StreamMessageHandler {
                     user = %self.username,
                     room = %room_id,
                     connection = %self.connection_id,
-                    "Distributed same-user presence lookup failed during cleanup; skipping UserLeft broadcast to avoid false offline signal"
+                    "Distributed same-user presence lookup failed during cleanup; using local presence fallback for UserLeft broadcast"
                 );
                 should_broadcast_user_left(has_other_local_connection, Err(()))
             }
@@ -2875,30 +2951,30 @@ impl StreamMessageHandler {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if let Ok(RealtimeEvent::UserNotification { user_id: uid, title, content, notification_type, notification_id, timestamp, .. }) = &admin_event {
                                 if *uid == user_id {
-                                    let data = serde_json::json!({
-                                        "type": "user_notification",
-                                        "notification_id": notification_id,
-                                        "notification_type": notification_type,
-                                        "title": title,
-                                        "content": content,
-                                    });
-                                    let msg = ServerMessage {
-                                        message: Some(crate::proto::client::server_message::Message::Notification(
-                                            crate::proto::client::UserNotification {
-                                                notification_id: notification_id.clone(),
-                                                notification_type: notification_type.clone(),
-                                                title: title.clone(),
-                                                content: content.clone(),
-                                                data: data.to_string(),
-                                                timestamp: timestamp.timestamp(),
-                                            },
-                                        )),
-                                    };
+                                    let msg = user_notification_server_message(
+                                        notification_id.clone(),
+                                        notification_type.clone(),
+                                        title.clone(),
+                                        content.clone(),
+                                        *timestamp,
+                                    );
                                     if let Err(e) = admin_sender.send(msg) {
                                         tracing::error!("Failed to push notification in start(): {}", e);
                                         disconnect_token.cancel();
                                         break;
                                     }
+                                }
+                                continue;
+                            }
+                            if let Ok(RealtimeEvent::SystemNotification { message, timestamp, .. }) = &admin_event {
+                                let msg = system_notification_server_message(message.clone(), *timestamp);
+                                if let Err(e) = admin_sender.send(msg) {
+                                    tracing::error!(
+                                        "Failed to push system notification in start(): {}",
+                                        e
+                                    );
+                                    disconnect_token.cancel();
+                                    break;
                                 }
                                 continue;
                             }
@@ -4171,26 +4247,10 @@ fn realtime_event_to_server_messages(
         }],
         RealtimeEvent::SystemNotification {
             message, timestamp, ..
-        } => {
-            let data = serde_json::json!({
-                "type": "system_notification",
-                "notification_type": "system_announcement",
-                "title": message,
-                "content": message,
-            });
-            vec![ServerMessage {
-                message: Some(Message::Notification(
-                    crate::proto::client::UserNotification {
-                        notification_id: String::new(),
-                        notification_type: "system_announcement".to_string(),
-                        title: message.clone(),
-                        content: message.clone(),
-                        data: data.to_string(),
-                        timestamp: timestamp.timestamp(),
-                    },
-                )),
-            }]
-        }
+        } => vec![system_notification_server_message(
+            message.clone(),
+            *timestamp,
+        )],
         RealtimeEvent::RoomDeleted { .. } => {
             // Notify WebSocket clients that the room has been deleted
             vec![ServerMessage {
@@ -4248,8 +4308,8 @@ const fn should_broadcast_user_left(
     }
 
     match distributed_presence {
-        Ok(false) => UserLeftDeliveryPlan::LocalAndRedis,
-        Ok(true) | Err(()) => UserLeftDeliveryPlan::Skip,
+        Ok(true) => UserLeftDeliveryPlan::Skip,
+        Ok(false) | Err(()) => UserLeftDeliveryPlan::LocalAndRedis,
     }
 }
 

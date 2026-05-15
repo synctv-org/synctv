@@ -39,13 +39,6 @@ fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)
         return map_stream_error(context, stream_error);
     }
 
-    let message = error.to_string();
-    if message.contains("Segment not found")
-        || message.contains("Failed to read segment: Key not found:")
-    {
-        return AppError::not_found("Live stream segment is not currently available");
-    }
-
     tracing::error!(context, error = %error, "Unexpected livestream error");
     AppError::internal_server_error("Live streaming request failed")
 }
@@ -592,13 +585,13 @@ mod tests {
 
     #[test]
     fn livestream_missing_segment_maps_to_404() {
-        let err = anyhow::anyhow!("Failed to read segment: Key not found: room/media/seg001");
+        let err = anyhow::Error::new(StreamError::StreamNotFound(
+            "segment seg001 for room/media".to_string(),
+        ))
+        .context("wrapped storage read");
         let mapped = map_livestream_error("Failed to get HLS segment", err.as_ref());
         assert_eq!(mapped.status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            mapped.message,
-            "Live stream segment is not currently available"
-        );
+        assert_eq!(mapped.message, "Live stream is not currently available");
     }
 
     #[test]

@@ -55,6 +55,8 @@ fn create_user_service(pool: &PgPool) -> UserService {
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
+    svc.enable_legacy_password_login_for_tests();
+    svc.enable_legacy_password_registration_for_tests();
     svc
 }
 
@@ -80,6 +82,8 @@ fn create_user_service_with_security_pipeline(
     );
     service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     service.enable_password_registration_for_tests();
+    service.enable_legacy_password_login_for_tests();
+    service.enable_legacy_password_registration_for_tests();
     let service = Arc::new(service);
     let pipeline = SecurityPipeline::new(Arc::clone(&service))
         .with_token_blacklist(token_blacklist, key_builder);
@@ -1067,78 +1071,6 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
     );
 }
 
-async fn assert_mfa_password_failures_trigger_brute_force_lockout(pool: PgPool) {
-    let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "two_factor_mfa_password_lockout".to_string(),
-            Some("two_factor_mfa_password_lockout@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
-
-    service
-        .set_email_verified(&user.id, true)
-        .await
-        .expect("verified email should count as second factor");
-    service
-        .set_two_factor_enabled(&user.id, true)
-        .await
-        .expect("password+verified email user can enable two-factor authentication");
-
-    let client_ip: std::net::IpAddr = "192.168.1.150".parse().unwrap();
-    let mfa_brute_force_key = "mfa-password-lockout@example.com";
-    let login_result = service
-        .login_with_verified_email_with_control(
-            &user.id,
-            mfa_brute_force_key,
-            Some(client_ip),
-            None,
-        )
-        .await
-        .expect("email first factor should return MFA challenge");
-    let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
-        panic!("2FA-enabled email login should require another factor");
-    };
-    assert!(
-        challenge
-            .available_methods
-            .contains(&AuthFactorMethod::Password),
-        "email first-factor login should expose password as a remaining factor"
-    );
-
-    for _ in 0..5 {
-        let result = service
-            .verify_mfa_password_with_control(
-                &challenge.session_id,
-                "WrongPass1",
-                Some(client_ip),
-                None,
-            )
-            .await;
-        assert!(
-            matches!(result, Err(Error::Authentication(_))),
-            "wrong MFA password should fail authentication, got {result:?}"
-        );
-    }
-
-    let result = service
-        .verify_mfa_password_with_control(
-            &challenge.session_id,
-            "StrongPass1",
-            Some(client_ip),
-            None,
-        )
-        .await
-        .expect_err("MFA password should be locked after repeated failures");
-    assert!(
-        matches!(&result, Error::Authentication(message) if message.contains("Too many failed login attempts")),
-        "expected brute-force lockout after repeated MFA password failures, got {result:?}"
-    );
-}
-
 async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
     let (service, jwt, pipeline) = create_user_service_with_security_pipeline(&pool);
     let (user, old_access_token, old_refresh_token) = service
@@ -1329,7 +1261,6 @@ async fn test_user_service_registration_login_and_delete_flows() {
     assert_two_factor_requires_two_usable_methods(pool.clone()).await;
     assert_two_factor_blocks_deleting_required_passkey(pool.clone()).await;
     assert_two_factor_blocks_single_factor_token_issuance(pool.clone()).await;
-    assert_mfa_password_failures_trigger_brute_force_lockout(pool.clone()).await;
     assert_two_factor_access_token_context_is_enforced(pool.clone()).await;
     assert_two_factor_allows_oauth2_without_local_mfa(pool.clone()).await;
 

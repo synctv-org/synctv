@@ -914,6 +914,27 @@ impl ConnectionManager {
         }
     }
 
+    async fn redis_conn_snapshot_required(
+        &self,
+        unavailable_message: &str,
+    ) -> Result<Option<redis::aio::ConnectionManager>, String> {
+        let Some(runtime) = self.redis_conn.as_ref() else {
+            return Ok(None);
+        };
+
+        if let Ok(conn) =
+            tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await
+        {
+            Ok(Some(conn))
+        } else {
+            warn!(
+                timeout_ms = runtime.operation_timeout().as_millis(),
+                "Redis connection snapshot timed out"
+            );
+            Err(unavailable_message.to_string())
+        }
+    }
+
     #[must_use]
     pub(crate) fn with_redis_runtime(
         mut self,
@@ -2501,10 +2522,15 @@ impl ConnectionManager {
     /// Get total connection count across all replicas (distributed).
     ///
     /// Reads the Redis atomic counter (`connections:total`) which is maintained
-    /// by `register`/`unregister`. Falls back to the local-only count if Redis
-    /// is not configured or unavailable.
+    /// by `register`/`unregister`. Local-only managers return the local count;
+    /// Redis-backed managers return an error when Redis is unavailable.
     pub async fn connection_count_distributed(&self) -> Result<usize, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed total connection count unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let redis_key = format!("{}connections:total", self.redis_key_prefix);
             match self
                 .redis_op(
@@ -2546,13 +2572,19 @@ impl ConnectionManager {
     /// Get connection count for a room across all replicas (distributed).
     ///
     /// Reads the Redis atomic counter (`connections:room:{room_id}`) which is
-    /// maintained by `register`/`unregister`/`join_room`. Falls back to the
-    /// local-only count if Redis is not configured or unavailable.
+    /// maintained by `register`/`unregister`/`join_room`. Local-only managers
+    /// return the local count; Redis-backed managers return an error when Redis
+    /// is unavailable.
     pub async fn room_connection_count_distributed(
         &self,
         room_id: &RoomId,
     ) -> Result<usize, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed room connection count unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
             match self
                 .redis_op(
@@ -2578,8 +2610,8 @@ impl ConnectionManager {
     /// Get connection counts for multiple rooms across all replicas (distributed).
     ///
     /// Uses Redis MGET to fetch all room counters in a single round-trip,
-    /// avoiding N+1 queries. Falls back to sequential local-only counts if
-    /// Redis is not configured or unavailable.
+    /// avoiding N+1 queries. Local-only managers return local counts;
+    /// Redis-backed managers return an error when Redis is unavailable.
     pub async fn room_connection_count_distributed_batch(
         &self,
         room_ids: &[&RoomId],
@@ -2588,7 +2620,12 @@ impl ConnectionManager {
             return Ok(Vec::new());
         }
 
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed room connection counts unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let keys: Vec<String> = room_ids
                 .iter()
                 .map(|rid| format!("{}connections:room:{}", self.redis_key_prefix, rid))
@@ -2657,7 +2694,12 @@ impl ConnectionManager {
             return Ok(Vec::new());
         }
 
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed online user counts unavailable while Redis is degraded",
+            )
+            .await?
+        {
             use std::collections::{HashMap, HashSet};
 
             let mut room_to_users: HashMap<RoomId, HashSet<UserId>> = room_ids
@@ -2708,7 +2750,12 @@ impl ConnectionManager {
     pub async fn hot_room_online_user_counts_distributed(
         &self,
     ) -> Result<Vec<(RoomId, usize)>, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed hot-room online user counts unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let directory_key = self.room_index_directory_key();
             let room_index_keys: Vec<String> = self
                 .redis_op("fetch room index directory", async {
@@ -3880,7 +3927,12 @@ impl ConnectionManager {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<String>, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed user connection lookup unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id);
 
             match self
@@ -3932,7 +3984,12 @@ impl ConnectionManager {
         &self,
         room_id: &RoomId,
     ) -> Result<Vec<String>, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed room connection lookup unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let room_index_key = format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id);
 
             match self
@@ -3971,7 +4028,12 @@ impl ConnectionManager {
         user_id: &UserId,
         room_id: &RoomId,
     ) -> Result<usize, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed user room connection count unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let conn_ids = self.get_user_connections_distributed(user_id).await?;
             if conn_ids.is_empty() {
                 return Ok(0);
@@ -4012,15 +4074,20 @@ impl ConnectionManager {
     /// potentially on another replica.
     ///
     /// In Redis-backed distributed mode this reads connection metadata from Redis so the
-    /// answer reflects all replicas. When Redis is not configured, it falls back to
-    /// local in-memory state.
+    /// answer reflects all replicas. Local-only managers use in-memory state;
+    /// Redis-backed managers return an error when Redis is unavailable.
     pub async fn has_other_connection_for_user_in_room_distributed(
         &self,
         user_id: &UserId,
         room_id: &RoomId,
         excluding_connection_id: &str,
     ) -> Result<bool, String> {
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed same-user room presence lookup unavailable while Redis is degraded",
+            )
+            .await?
+        {
             let conn_ids = self.get_user_connections_distributed(user_id).await?;
             let other_conn_ids: Vec<String> = conn_ids
                 .into_iter()

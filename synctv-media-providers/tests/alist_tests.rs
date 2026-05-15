@@ -941,6 +941,13 @@ struct OpenListFixture {
     token: String,
 }
 
+fn openlist_image() -> (String, String) {
+    let image = std::env::var("SYNCTV_OPENLIST_IMAGE")
+        .unwrap_or_else(|_| "openlistteam/openlist".to_string());
+    let tag = std::env::var("SYNCTV_OPENLIST_TAG").unwrap_or_else(|_| "latest".to_string());
+    (image, tag)
+}
+
 async fn login_openlist_when_ready(host: &str, password: &str) -> String {
     let started_at = tokio::time::Instant::now();
     let timeout = std::time::Duration::from_secs(30);
@@ -966,7 +973,8 @@ async fn login_openlist_when_ready(host: &str, password: &str) -> String {
 
 async fn start_openlist_fixture() -> OpenListFixture {
     const ADMIN_PASSWORD: &str = "synctv-openlist-test";
-    let image = GenericImage::new("openlistteam/openlist", "latest")
+    let (image_name, image_tag) = openlist_image();
+    let image = GenericImage::new(image_name, image_tag)
         .with_exposed_port(5244.tcp())
         .with_wait_for(WaitFor::message_on_stdout("start HTTP server"));
 
@@ -1058,7 +1066,7 @@ async fn spawn_alist_grpc_server() -> (String, tokio::task::JoinHandle<()>) {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker and the openlistteam/openlist image"]
+#[ignore = "Requires Docker and the OpenList image"]
 async fn test_openlist_container_exercises_real_alist_client_api() {
     let fixture = start_openlist_fixture().await;
     let client = AlistClient::with_token(&fixture.host, &fixture.token).unwrap();
@@ -1124,7 +1132,7 @@ async fn test_openlist_container_exercises_real_alist_client_api() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker and the openlistteam/openlist image"]
+#[ignore = "Requires Docker and the OpenList image"]
 async fn test_openlist_container_rejects_wrong_password() {
     let fixture = start_openlist_fixture().await;
     let mut client = AlistClient::new(&fixture.host).unwrap();
@@ -1139,7 +1147,7 @@ async fn test_openlist_container_rejects_wrong_password() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker and the openlistteam/openlist image"]
+#[ignore = "Requires Docker and the OpenList image"]
 async fn test_openlist_container_exercises_real_alist_grpc_service() {
     let fixture = start_openlist_fixture().await;
     let (grpc_endpoint, server_handle) = spawn_alist_grpc_server().await;

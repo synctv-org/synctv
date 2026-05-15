@@ -32,9 +32,16 @@ pub fn build_connection_manager(
                 profile.key_prefix(),
             ))
         }
-        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => Ok(
-            ConnectionManager::from_redis_runtime(limits, None, profile.key_prefix()),
-        ),
+        SharedStateMode::SharedBestEffort => Ok(ConnectionManager::from_redis_runtime(
+            limits,
+            profile.shared_runtime(),
+            profile.key_prefix(),
+        )),
+        SharedStateMode::LocalOnly => Ok(ConnectionManager::from_redis_runtime(
+            limits,
+            None,
+            profile.key_prefix(),
+        )),
     }
 }
 
@@ -60,9 +67,11 @@ pub fn build_room_message_runtime(
                 profile.key_prefix(),
             )))
         }
-        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => {
-            Ok(Arc::new(RoomMessageHub::new()))
-        }
+        SharedStateMode::SharedBestEffort => Ok(Arc::new(RoomMessageHub::from_redis_runtime(
+            profile.shared_runtime(),
+            profile.key_prefix(),
+        ))),
+        SharedStateMode::LocalOnly => Ok(Arc::new(RoomMessageHub::new())),
     }
 }
 
@@ -103,7 +112,7 @@ pub trait RoomMessageRuntime: Send + Sync {
     async fn get_room_subscribers_replicas_wide(
         &self,
         room_id: &RoomId,
-    ) -> Vec<(UserId, ConnectionId)>;
+    ) -> Result<Vec<(UserId, ConnectionId)>>;
 
     async fn audit_shared_subscriptions(&self) -> std::result::Result<usize, String>;
 
@@ -398,7 +407,28 @@ mod tests {
     use super::{build_connection_manager, build_room_message_runtime};
 
     use crate::sync::ConnectionLimits;
-    use synctv_core::{SharedStateMode, SharedStateProfile};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use synctv_core::models::id::RoomId;
+    use synctv_core::{RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
+
+    struct HangingRedisRuntime;
+
+    #[async_trait]
+    impl RedisConnectionRuntime for HangingRedisRuntime {
+        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            std::future::pending().await
+        }
+
+        fn operation_timeout(&self) -> Duration {
+            Duration::from_millis(10)
+        }
+    }
+
+    fn hanging_runtime() -> Arc<dyn RedisConnectionRuntime> {
+        Arc::new(HangingRedisRuntime)
+    }
 
     #[test]
     fn test_realtime_state_profile_keeps_local_mode_when_shared_state_not_required() {
@@ -434,6 +464,24 @@ mod tests {
         manager.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn test_build_connection_manager_uses_shared_runtime_when_best_effort_has_one() {
+        let profile = SharedStateProfile::from_runtime(Some(hanging_runtime()), "test:", false);
+
+        let manager = build_connection_manager(ConnectionLimits::default(), &profile)
+            .expect("best-effort realtime connection state should accept shared runtime");
+
+        let error = manager
+            .connection_count_distributed()
+            .await
+            .expect_err("best-effort runtime with Redis configured must not behave local-only");
+        assert!(
+            error.contains("Distributed total connection count unavailable"),
+            "unexpected error: {error}"
+        );
+        manager.shutdown().await;
+    }
+
     #[test]
     fn test_build_room_message_runtime_requires_shared_runtime_when_cluster_state_is_required() {
         let profile = SharedStateProfile::from_runtime(None, "test:", true);
@@ -457,6 +505,24 @@ mod tests {
             .expect("standalone realtime message runtime should stay local");
 
         assert_eq!(runtime.room_count(), 0);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_build_room_message_runtime_uses_shared_runtime_when_best_effort_has_one() {
+        let profile = SharedStateProfile::from_runtime(Some(hanging_runtime()), "test:", false);
+
+        let runtime = build_room_message_runtime(&profile)
+            .expect("best-effort realtime message state should accept shared runtime");
+
+        let error = runtime
+            .get_room_subscribers_replicas_wide(&RoomId::expect_positive(10_000_401))
+            .await
+            .expect_err("best-effort message runtime with Redis configured must not be local-only");
+        assert!(
+            error.to_string().contains("Redis"),
+            "unexpected error: {error}"
+        );
         runtime.shutdown().await;
     }
 }

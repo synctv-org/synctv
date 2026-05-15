@@ -1508,9 +1508,9 @@ async fn scenario_tls_configuration_insecure() {
     // Timeout or connection error is expected and acceptable
 }
 
-// ─── Test 10: Fallback to local provider (no remote instance) ───────────────
+// ─── Test 10: Best-effort get misses absent remote instance ─────────────────
 
-async fn scenario_fallback_to_local_provider() {
+async fn scenario_get_returns_none_for_absent_remote_instance() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let _redis_conn = Some(Arc::new(RwLock::new(
@@ -1521,33 +1521,17 @@ async fn scenario_fallback_to_local_provider() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    // Try to get a non-existent instance
     let channel = manager.get("non-existent-instance").await;
 
-    // Should return None, allowing caller to fallback to local provider
     assert!(
         channel.is_none(),
-        "Non-existent instance should return None for fallback"
-    );
-
-    // Test resolve_client with fallback
-    let result = manager
-        .resolve_client(
-            Some("non-existent-instance"),
-            |_channel| "remote",
-            || "local",
-        )
-        .await;
-
-    assert_eq!(
-        result, "local",
-        "resolve_client should fallback to local when remote not found"
+        "Non-existent instance should return None for best-effort probes"
     );
 }
 
-// ─── Test 11: Fallback when instance_name is None ───────────────────────────
+// ─── Test 11: Required resolution uses local when instance_name is None ──────
 
-async fn scenario_fallback_when_instance_name_none() {
+async fn scenario_resolve_client_required_uses_local_when_instance_name_none() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let _redis_conn = Some(Arc::new(RwLock::new(
@@ -1558,14 +1542,14 @@ async fn scenario_fallback_when_instance_name_none() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    // Test resolve_client with None instance_name (should use local)
     let result = manager
-        .resolve_client(None as Option<&str>, |_channel| "remote", || "local")
+        .resolve_client_required(None as Option<&str>, |_channel| "remote", || "local")
         .await;
 
     assert_eq!(
-        result, "local",
-        "resolve_client should use local when instance_name is None"
+        result.unwrap(),
+        "local",
+        "resolve_client_required should use local when instance_name is None"
     );
 }
 
@@ -2584,9 +2568,9 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     );
 }
 
-// ─── Test 23: resolve_client with remote instance ───────────────────────────
+// ─── Test 23: resolve_client_required with remote instance ──────────────────
 
-async fn scenario_resolve_client_uses_remote_when_available() {
+async fn scenario_resolve_client_required_uses_remote_when_available() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -2604,10 +2588,10 @@ async fn scenario_resolve_client_uses_remote_when_available() {
     manager.add(instance).await.unwrap();
 
     let result = manager
-        .resolve_client(Some("test-instance-23"), |_channel| "remote", || "local")
+        .resolve_client_required(Some("test-instance-23"), |_channel| "remote", || "local")
         .await;
 
-    assert_eq!(result, "remote");
+    assert_eq!(result.unwrap(), "remote");
 
     health_handle.abort();
     let _ = health_handle.await;
@@ -3379,16 +3363,16 @@ async fn test_tls_configuration_insecure() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_fallback_to_local_provider() {
+async fn test_get_returns_none_for_absent_remote_instance() {
     install_rustls_provider_once();
-    scenario_fallback_to_local_provider().await;
+    scenario_get_returns_none_for_absent_remote_instance().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_fallback_when_instance_name_none() {
+async fn test_resolve_client_required_uses_local_when_instance_name_none() {
     install_rustls_provider_once();
-    scenario_fallback_when_instance_name_none().await;
+    scenario_resolve_client_required_uses_local_when_instance_name_none().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3519,9 +3503,9 @@ async fn test_ssrf_validation_allows_public_endpoints() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_resolve_client_uses_remote_when_available() {
+async fn test_resolve_client_required_uses_remote_when_available() {
     install_rustls_provider_once();
-    scenario_resolve_client_uses_remote_when_available().await;
+    scenario_resolve_client_required_uses_remote_when_available().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

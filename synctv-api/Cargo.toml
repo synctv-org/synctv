@@ -20,9 +20,6 @@ tls-aws-lc = [
     "synctv-common/tls-aws-lc",
     "tonic/tls-aws-lc",
     "sqlx/tls-rustls-aws-lc-rs",
-    "synctv-core-testing/tls-aws-lc",
-    "testcontainers/aws-lc-rs",
-    "testcontainers-modules/aws-lc-rs",
     "reqwest/rustls",
     "kube?/aws-lc-rs",
 ]
@@ -36,9 +33,6 @@ tls-ring = [
     "synctv-proto/tls-ring",
     "synctv-common/tls-ring",
     "tonic/tls-ring",
-    "synctv-core-testing/tls-ring",
-    "testcontainers/ring",
-    "testcontainers-modules/ring",
     "reqwest/rustls-no-provider",
     "kube?/ring",
 ]

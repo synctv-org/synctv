@@ -38,6 +38,18 @@ const EPOCH_KEY_PREFIX: &str = "stream:epoch";
 const PUBLISHER_KEY_PREFIX: &str = "stream:publisher";
 const USER_PUBLISHERS_KEY_PREFIX: &str = "stream:user_publishers";
 const NODE_PUBLISHERS_KEY_PREFIX: &str = "stream:node_publishers";
+
+#[derive(Debug, thiserror::Error)]
+#[error("Redis operation timed out after {timeout_secs}s")]
+pub struct RedisOperationTimeout {
+    timeout_secs: u64,
+}
+
+impl RedisOperationTimeout {
+    pub const fn new(timeout_secs: u64) -> Self {
+        Self { timeout_secs }
+    }
+}
 const ROOM_PUBLISHERS_KEY_PREFIX: &str = "stream:room_publishers";
 const ACTIVE_PUBLISHERS_KEY: &str = "stream:active_publishers";
 const ACTIVE_PUBLISHER_FETCH_BATCH_SIZE: usize = 128;
@@ -305,9 +317,7 @@ where
 {
     match tokio::time::timeout(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS), future()).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!(
-            "Redis operation timed out after {REDIS_OPERATION_TIMEOUT_SECS}s"
-        )),
+        Err(_) => Err(RedisOperationTimeout::new(REDIS_OPERATION_TIMEOUT_SECS).into()),
     }
 }
 

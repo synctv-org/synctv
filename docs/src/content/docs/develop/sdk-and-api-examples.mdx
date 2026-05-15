@@ -46,17 +46,17 @@ npx openapi-typescript openapi.json -o synctv-api.d.ts
 ## HTTP 最小闭环
 
 <Tabs syncKey="http-api-examples">
-  <TabItem label="登录" icon="approve-check-circle">
+  <TabItem label="OPAQUE 登录" icon="approve-check-circle">
 
 ```bash
 BASE_URL=http://localhost:8080
 
-curl -sS "$BASE_URL/api/auth/login" \
+curl -sS "$BASE_URL/api/auth/opaque/login/start" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"root","password":"change-this-password"}'
+  -d '{"username":"root","credential_request":[/* OPAQUE 客户端生成的字节 */]}'
 ```
 
-如果响应里 `mfa.required=true`，继续完成 MFA；不要把这次响应当作最终登录。
+继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。如果 finish 响应里 `mfa.required=true`，继续完成 MFA；不要把这次响应当作最终登录。`/api/auth/login` 只用于无密码邮箱 token 登录。
 
   </TabItem>
   <TabItem label="刷新 token" icon="random">
@@ -141,13 +141,15 @@ send({
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-登录：
+本地密码登录只支持 OPAQUE。客户端先生成 credential request，调用 `StartOpaqueLogin`，再用 `FinishOpaqueLogin` 完成登录：
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","password":"change-this-password"}' \
-  localhost:8080 synctv.client.AuthService/Login
+  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
+
+`AuthService/Login` 只用于无密码邮箱 token 登录。
 
 房间内 RPC 需要 room metadata：
 

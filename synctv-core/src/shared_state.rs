@@ -44,17 +44,51 @@ impl SharedStateProfile {
     }
 
     #[must_use]
+    pub fn local_only(key_prefix: impl Into<String>) -> Self {
+        Self::new(SharedStateMode::LocalOnly, None, key_prefix)
+    }
+
+    #[must_use]
+    pub fn best_effort(
+        shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        let state_mode = if shared_runtime.is_some() {
+            SharedStateMode::SharedBestEffort
+        } else {
+            SharedStateMode::LocalOnly
+        };
+        Self::new(state_mode, shared_runtime, key_prefix)
+    }
+
+    #[must_use]
+    pub fn required(
+        shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        Self::new(SharedStateMode::SharedRequired, shared_runtime, key_prefix)
+    }
+
+    #[must_use]
+    pub fn for_cluster_runtime(
+        shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: impl Into<String>,
+        cluster_runtime: bool,
+    ) -> Self {
+        if cluster_runtime {
+            Self::required(shared_runtime, key_prefix)
+        } else {
+            Self::best_effort(shared_runtime, key_prefix)
+        }
+    }
+
+    #[must_use]
     pub fn from_runtime(
         shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
         key_prefix: impl Into<String>,
         shared_state_required: bool,
     ) -> Self {
-        let state_mode = match (shared_state_required, shared_runtime.is_some()) {
-            (true, _) => SharedStateMode::SharedRequired,
-            (false, true) => SharedStateMode::SharedBestEffort,
-            (false, false) => SharedStateMode::LocalOnly,
-        };
-        Self::new(state_mode, shared_runtime, key_prefix)
+        Self::for_cluster_runtime(shared_runtime, key_prefix, shared_state_required)
     }
 
     #[must_use]

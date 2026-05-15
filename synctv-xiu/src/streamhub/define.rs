@@ -181,10 +181,6 @@ pub enum FrameTrySendError<T> {
 
 // Used to transfer a/v frame between different protocols (rtmp/rtsp/webrtc/http-flv/hls)
 // or send a/v frame data from publisher to subscribers.
-//
-// We intentionally support both bounded and unbounded channels:
-// - bounded: external viewers / lossy consumers where backpressure must stay bounded
-// - unbounded: internal remuxers / relays where silent frame loss would corrupt output
 #[derive(Debug, Clone)]
 pub enum FrameDataSender {
     Bounded(mpsc::Sender<FrameData>),
@@ -302,7 +298,8 @@ pub type PubEventExecuteResultSender = oneshot::Sender<
         StreamHubError,
     >,
 >;
-pub type TransceiverEventExecuteResultSender = oneshot::Sender<StatisticDataSender>;
+pub type TransceiverEventExecuteResultSender =
+    oneshot::Sender<Result<StatisticDataSender, StreamHubError>>;
 
 #[async_trait]
 pub trait TStreamHandler: Send + Sync {

@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 pub use in_memory_registry::InMemoryStreamRegistry;
 pub use registry::{
-    PublisherInfo, RegistryConnectionRuntime, StreamRegistry, HEARTBEAT_INTERVAL_SECS,
-    PUBLISHER_TTL_SECS,
+    PublisherInfo, RedisOperationTimeout, RegistryConnectionRuntime, StreamRegistry,
+    HEARTBEAT_INTERVAL_SECS, PUBLISHER_TTL_SECS,
 };
 pub use registry_trait::{ActivePublisherEntry, StreamRegistryTrait};
 

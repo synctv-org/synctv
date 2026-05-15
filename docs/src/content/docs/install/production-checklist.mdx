@@ -11,7 +11,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 | 检查项 | 验收标准 |
 | --- | --- |
-| 配置校验 | `synctv config validate` 通过。 |
+| 配置校验 | `synctv config validate --strict` 通过。 |
 | JWT secret | `jwt.secret` 来自 secret 或环境变量，不是示例值。 |
 | OPAQUE setup secret | `security.opaque_server_setup_secret` 已生成、备份，并跨重启保持不变。 |
 | 凭据加密 key | `security.credential_encryption_key` 是 64 个十六进制字符，已备份。 |
@@ -66,7 +66,7 @@ import { Aside } from '@astrojs/starlight/components';
 ### 通用
 
 ```bash
-synctv config validate
+synctv config validate --strict
 synctv db status
 curl -fsS http://localhost:8080/health/ready
 ```

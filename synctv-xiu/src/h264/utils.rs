@@ -77,47 +77,47 @@ mod tests {
         bits_reader.read_n_bits(7).unwrap();
         let v1 = read_uev(&mut bits_reader).unwrap();
         println!("=={v1}==");
-        assert!(v1 == 0);
+        assert_eq!(v1, 0);
 
         bits_reader.read_n_bits(5).unwrap();
         let v2 = read_uev(&mut bits_reader).unwrap();
         println!("=={v2}==");
-        assert!(v2 == 1);
+        assert_eq!(v2, 1);
 
         bits_reader.read_n_bits(5).unwrap();
         let v3 = read_uev(&mut bits_reader).unwrap();
         println!("=={v3}==");
-        assert!(v3 == 2);
+        assert_eq!(v3, 2);
 
         bits_reader.read_n_bits(3).unwrap();
         let v4 = read_uev(&mut bits_reader).unwrap();
         println!("=={v4}==");
-        assert!(v4 == 3);
+        assert_eq!(v4, 3);
 
         bits_reader.read_n_bits(3).unwrap();
         let v5 = read_uev(&mut bits_reader).unwrap();
         println!("=={v5}==");
-        assert!(v5 == 4);
+        assert_eq!(v5, 4);
 
         bits_reader.read_n_bits(3).unwrap();
         let v6 = read_uev(&mut bits_reader).unwrap();
         println!("=={v6}==");
-        assert!(v6 == 5);
+        assert_eq!(v6, 5);
 
         bits_reader.read_n_bits(3).unwrap();
         let v7 = read_uev(&mut bits_reader).unwrap();
         println!("=={v7}==");
-        assert!(v7 == 6);
+        assert_eq!(v7, 6);
 
         bits_reader.read_n_bits(1).unwrap();
         let v8 = read_uev(&mut bits_reader).unwrap();
         println!("=={v8}==");
-        assert!(v8 == 7);
+        assert_eq!(v8, 7);
 
         bits_reader.read_n_bits(1).unwrap();
         let v9 = read_uev(&mut bits_reader).unwrap();
         println!("=={v9}==");
-        assert!(v9 == 8);
+        assert_eq!(v9, 8);
     }
 
     #[test]

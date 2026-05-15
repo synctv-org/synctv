@@ -89,7 +89,7 @@ struct RuntimeModePlan {
 impl RuntimeModePlan {
     fn from_infrastructure(infra: &Infrastructure) -> Self {
         let cluster_runtime = cluster_runtime_enabled(&infra.config);
-        let cache_shared_state_profile = synctv_core::SharedStateProfile::from_runtime(
+        let cache_shared_state_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
             infra.shared_runtime.clone(),
             &infra.config.redis.key_prefix,
             cluster_runtime,
@@ -262,6 +262,7 @@ struct ServerComponents {
     livestream_state: Option<LivestreamState>,
     live_infra: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     stun_server: Option<Arc<synctv_core::service::StunServer>>,
+    webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     providers: synctv_core::provider::ProviderSet,
 }
 
@@ -470,7 +471,11 @@ fn build_realtime_state_profile(
     redis_key_prefix: &str,
     cluster_mode: bool,
 ) -> synctv_core::SharedStateProfile {
-    synctv_core::SharedStateProfile::from_runtime(shared_runtime, redis_key_prefix, cluster_mode)
+    synctv_core::SharedStateProfile::for_cluster_runtime(
+        shared_runtime,
+        redis_key_prefix,
+        cluster_mode,
+    )
 }
 
 fn build_connection_manager(
@@ -1400,6 +1405,7 @@ impl Application {
             livestream_state,
             live_infra,
             stun_server: webrtc_components.stun_server,
+            webrtc_status: webrtc_components.status,
             providers,
         })
     }
@@ -1442,6 +1448,7 @@ impl Application {
             user_cache: core.services.user_cache.clone(),
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,
+            webrtc_status: servers.webrtc_status,
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
             cluster_activation: cluster.cluster_activation,

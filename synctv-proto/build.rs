@@ -163,6 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.StartOpaqueRegistrationRequest.email",
         ".synctv.client.StartOpaqueLoginRequest.username",
         ".synctv.client.StartOpaqueLoginRequest.email",
+        ".synctv.client.StartOpaquePasswordResetRequest.email",
         ".synctv.client.StartPasskeyLoginRequest.username",
         ".synctv.client.StartPasskeyLoginRequest.email",
         ".synctv.client.StartPasskeyRegistrationRequest.email",
@@ -382,6 +383,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.HealthDetails.livestream",
         ".synctv.client.HealthDetails.memory",
         ".synctv.client.HealthDetails.message",
+        ".synctv.client.HealthDetails.webrtc",
+        ".synctv.client.GetIceServersResponse.webrtc",
+        ".synctv.client.WebRtcStatus.local_addr",
+        ".synctv.client.WebRtcStatus.external_addr",
+        ".synctv.client.WebRtcStatus.message",
     ] {
         prost_config.field_attribute(field, "#[serde(skip_serializing_if = \"Option::is_none\")]");
     }

@@ -4,7 +4,7 @@ kind: Cluster
 metadata:
   name: {{ include "synctv.postgresql.kubeblocks.clusterName" . }}
 spec:
-  terminationPolicy: {{ .Values.postgresql.kubeblocks.terminationPolicy | default "Delete" }}
+  terminationPolicy: {{ .Values.postgresql.kubeblocks.terminationPolicy | default "Retain" }}
   clusterDef: {{ .Values.postgresql.kubeblocks.clusterDef | default "postgresql" }}
   topology: {{ .Values.postgresql.kubeblocks.topology | default "replication" }}
   componentSpecs:

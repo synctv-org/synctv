@@ -435,51 +435,101 @@ impl RealtimeManager {
         &self.admin_event_tx
     }
 
-    fn enqueue_redis_publish(&self, event: RealtimeEvent, is_critical: bool) -> bool {
+    fn validate_redis_publish(&self, event: &RealtimeEvent, is_critical: bool) -> bool {
+        let event_type = event.event_type();
+
+        if self.is_quarantined() {
+            warn!(
+                event_type = %event_type,
+                room_id = %event.room_id()
+                    .map_or_else(|| "n/a".to_string(), ToString::to_string),
+                "Rejecting Redis publish because node is quarantined"
+            );
+            return false;
+        }
+
+        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
+            debug!(
+                event_type = %event_type,
+                "Skipping Redis publish because RealtimeManager shutdown is in progress"
+            );
+            return false;
+        }
+        if !self.redis_publish_accepting.load(Ordering::Acquire) {
+            debug!(
+                event_type = %event_type,
+                "Skipping Redis publish because RealtimeManager is draining publisher shutdown"
+            );
+            return false;
+        }
+
+        true
+    }
+
+    fn enqueue_redis_publish_request(
+        &self,
+        req: PublishRequest,
+        is_critical: bool,
+        allow_waiting_retry: bool,
+    ) -> bool {
         let mut redis_sent = 0;
 
         if is_critical {
             if let Some(tx) = &self.redis_critical_tx {
-                match tx.try_send(PublishRequest { event }) {
+                match tx.try_send(req) {
                     Ok(()) => {
                         redis_sent = 1;
                     }
                     Err(mpsc::error::TrySendError::Full(req)) => {
-                        let tx = tx.clone();
-                        warn!(
-                            "Critical event publish channel full (capacity {}), spawning tracked retry task",
-                            self.critical_channel_capacity
-                        );
-                        self.critical_retry_tasks.spawn(async move {
-                            if let Err(e) = tx.send(req).await {
-                                error!("Failed to send critical event after retry: {e}");
-                            }
-                        });
-                        redis_sent = 1;
+                        if allow_waiting_retry {
+                            let tx = tx.clone();
+                            warn!(
+                                "Critical event publish channel full (capacity {}), spawning tracked retry task",
+                                self.critical_channel_capacity
+                            );
+                            self.critical_retry_tasks.spawn(async move {
+                                if let Err(e) = tx.send(req).await {
+                                    error!("Failed to send critical event after retry: {e}");
+                                }
+                            });
+                            redis_sent = 1;
+                        } else {
+                            warn!(
+                                "Critical event publish channel full (capacity {}), rejecting confirmed publish",
+                                self.critical_channel_capacity
+                            );
+                        }
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         error!("Critical event publish channel closed");
                     }
                 }
             } else if let Some(tx) = &self.redis_publish_tx {
-                match tx.try_send(PublishRequest { event }) {
+                match tx.try_send(req) {
                     Ok(()) => {
                         redis_sent = 1;
                     }
                     Err(mpsc::error::TrySendError::Full(req)) => {
-                        let tx = tx.clone();
-                        warn!(
-                            "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), spawning tracked retry for critical event",
-                            self.publish_channel_capacity
-                        );
-                        self.critical_retry_tasks.spawn(async move {
-                            if let Err(e) = tx.send(req).await {
-                                error!(
-                                    "Failed to send critical event through fallback Redis channel: {e}"
-                                );
-                            }
-                        });
-                        redis_sent = 1;
+                        if allow_waiting_retry {
+                            let tx = tx.clone();
+                            warn!(
+                                "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), spawning tracked retry for critical event",
+                                self.publish_channel_capacity
+                            );
+                            self.critical_retry_tasks.spawn(async move {
+                                if let Err(e) = tx.send(req).await {
+                                    error!(
+                                        "Failed to send critical event through fallback Redis channel: {e}"
+                                    );
+                                }
+                            });
+                            redis_sent = 1;
+                        } else {
+                            warn!(
+                                "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), rejecting confirmed publish",
+                                self.publish_channel_capacity
+                            );
+                        }
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         error!(
@@ -489,7 +539,7 @@ impl RealtimeManager {
                 }
             }
         } else if let Some(tx) = &self.redis_publish_tx {
-            match tx.try_send(PublishRequest { event }) {
+            match tx.try_send(req) {
                 Ok(()) => {
                     redis_sent = 1;
                 }
@@ -509,6 +559,10 @@ impl RealtimeManager {
         }
 
         redis_sent > 0
+    }
+
+    fn enqueue_redis_publish(&self, event: RealtimeEvent, is_critical: bool) -> bool {
+        self.enqueue_redis_publish_request(PublishRequest::new(event), is_critical, true)
     }
 
     /// Broadcast an event to local subscribers only.
@@ -569,28 +623,7 @@ impl RealtimeManager {
         let event_type = event.event_type();
         let is_critical = event.is_critical();
 
-        if self.is_quarantined() {
-            warn!(
-                event_type = %event_type,
-                room_id = %event.room_id()
-                    .map_or_else(|| "n/a".to_string(), ToString::to_string),
-                "Rejecting Redis publish because node is quarantined"
-            );
-            return false;
-        }
-
-        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
-            debug!(
-                event_type = %event_type,
-                "Skipping Redis publish because RealtimeManager shutdown is in progress"
-            );
-            return false;
-        }
-        if !self.redis_publish_accepting.load(Ordering::Acquire) {
-            debug!(
-                event_type = %event_type,
-                "Skipping Redis publish because RealtimeManager is draining publisher shutdown"
-            );
+        if !self.validate_redis_publish(&event, is_critical) {
             return false;
         }
 
@@ -603,6 +636,44 @@ impl RealtimeManager {
         );
 
         redis_sent
+    }
+
+    /// Publish an event to Redis and wait for the publisher task to confirm the
+    /// Redis XADD+PUBLISH write. This is for durable retry paths that must not
+    /// mark their own outbox row sent merely because the in-process queue
+    /// accepted the event.
+    pub async fn publish_only_confirmed(
+        &self,
+        event: RealtimeEvent,
+        timeout_duration: Duration,
+    ) -> std::result::Result<(), String> {
+        let event_type = event.event_type();
+        let is_critical = event.is_critical();
+
+        if !self.validate_redis_publish(&event, is_critical) {
+            return Err("Realtime publish queue rejected event".to_string());
+        }
+
+        let (request, ack) = PublishRequest::with_ack(event);
+        if !self.enqueue_redis_publish_request(request, is_critical, false) {
+            return Err("Realtime publish queue rejected event".to_string());
+        }
+
+        match tokio::time::timeout(timeout_duration, ack).await {
+            Ok(Ok(Ok(()))) => {
+                debug!(
+                    event_type = %event_type,
+                    "Confirmed Redis-only publish complete"
+                );
+                Ok(())
+            }
+            Ok(Ok(Err(error))) => Err(error),
+            Ok(Err(_closed)) => Err("Realtime publisher dropped confirmation channel".to_string()),
+            Err(_elapsed) => Err(format!(
+                "Timed out waiting for confirmed Redis publish after {}ms",
+                timeout_duration.as_millis()
+            )),
+        }
     }
 
     /// Start a background heartbeat loop that keeps this node alive in Redis.
@@ -1168,6 +1239,7 @@ mod tests {
     struct StubTransport {
         start_count: Arc<AtomicUsize>,
         shutdown_count: Arc<AtomicUsize>,
+        publish_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<PublishRequest>>>>,
     }
 
     impl RealtimeMessageTransportFactory for StubTransportFactory {
@@ -1178,6 +1250,7 @@ mod tests {
             Ok(Arc::new(StubTransport {
                 start_count: self.start_count.clone(),
                 shutdown_count: self.shutdown_count.clone(),
+                publish_rx: Arc::new(tokio::sync::Mutex::new(None)),
             }))
         }
     }
@@ -1189,7 +1262,8 @@ mod tests {
             _publish_channel_capacity: usize,
         ) -> RealtimeResult<crate::sync::RealtimeMessageTransportRuntime> {
             self.start_count.fetch_add(1, Ordering::Relaxed);
-            let (publish_tx, _publish_rx) = mpsc::channel(8);
+            let (publish_tx, publish_rx) = mpsc::channel(8);
+            *self.publish_rx.lock().await = Some(publish_rx);
             Ok(crate::sync::RealtimeMessageTransportRuntime {
                 publish_tx,
                 publisher_handle: tokio::spawn(async {}),
@@ -1272,8 +1346,8 @@ mod tests {
         async fn get_room_subscribers_replicas_wide(
             &self,
             _room_id: &RoomId,
-        ) -> Vec<(UserId, ConnectionId)> {
-            Vec::new()
+        ) -> RealtimeResult<Vec<(UserId, ConnectionId)>> {
+            Ok(Vec::new())
         }
 
         async fn audit_shared_subscriptions(&self) -> std::result::Result<usize, String> {
@@ -1850,14 +1924,12 @@ mod tests {
         let mut manager = RealtimeManager::new(config).await.unwrap();
         let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(1);
         critical_tx
-            .try_send(PublishRequest {
-                event: RealtimeEvent::KickUser {
-                    event_id: synctv_common::snanoid!(16),
-                    user_id: UserId::expect_positive(10_000_096),
-                    reason: "fill queue".to_string(),
-                    timestamp: Utc::now(),
-                },
-            })
+            .try_send(PublishRequest::new(RealtimeEvent::KickUser {
+                event_id: synctv_common::snanoid!(16),
+                user_id: UserId::expect_positive(10_000_096),
+                reason: "fill queue".to_string(),
+                timestamp: Utc::now(),
+            }))
             .expect("pre-fill critical queue");
         manager.redis_critical_tx = Some(critical_tx);
 
@@ -2245,18 +2317,16 @@ mod tests {
 
         let (normal_tx, mut normal_rx) = mpsc::channel::<PublishRequest>(1);
         normal_tx
-            .try_send(PublishRequest {
-                event: RealtimeEvent::ChatMessage {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: RoomId::expect_positive(10_000_104),
-                    user_id: UserId::expect_positive(10_000_105),
-                    username: "buffer".to_string(),
-                    message: "fill channel".to_string(),
-                    timestamp: Utc::now(),
-                    position: None,
-                    color: None,
-                },
-            })
+            .try_send(PublishRequest::new(RealtimeEvent::ChatMessage {
+                event_id: synctv_common::snanoid!(16),
+                room_id: RoomId::expect_positive(10_000_104),
+                user_id: UserId::expect_positive(10_000_105),
+                username: "buffer".to_string(),
+                message: "fill channel".to_string(),
+                timestamp: Utc::now(),
+                position: None,
+                color: None,
+            }))
             .expect("pre-fill normal channel");
 
         manager.redis_publish_tx = Some(normal_tx);
@@ -2395,6 +2465,90 @@ mod tests {
                 .is_err(),
             "publish_only must not emit UserNotification to the local admin channel"
         );
+    }
+
+    #[tokio::test]
+    async fn test_publish_only_confirmed_waits_for_publisher_ack() {
+        let config = RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test_publish_only_confirmed_waits".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            event_handler: None,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = RealtimeManager::new(config)
+            .await
+            .expect("RealtimeManager::new should succeed");
+        let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
+        manager.redis_publish_tx = Some(publish_tx);
+
+        let event = RealtimeEvent::CacheInvalidate {
+            event_id: synctv_common::snanoid!(16),
+            targets: vec![CacheTarget::All],
+            timestamp: Utc::now(),
+        };
+        let publish = manager.publish_only_confirmed(event, Duration::from_millis(50));
+        tokio::pin!(publish);
+
+        let queued = tokio::select! {
+            queued = publish_rx.recv() => queued.expect("event should be queued"),
+            result = &mut publish => panic!("confirmed publish completed before publisher ack: {result:?}"),
+        };
+        assert_eq!(queued.event.event_type(), "cache_invalidate");
+        assert!(
+            (&mut publish).await.is_err(),
+            "confirmed publish must not complete just because the queue accepted the event"
+        );
+        drop(queued);
+    }
+
+    #[tokio::test]
+    async fn test_publish_only_confirmed_observes_publisher_success_ack() {
+        let config = RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test_publish_only_confirmed_ack".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            event_handler: None,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = RealtimeManager::new(config)
+            .await
+            .expect("RealtimeManager::new should succeed");
+        let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
+        manager.redis_publish_tx = Some(publish_tx);
+
+        let event = RealtimeEvent::CacheInvalidate {
+            event_id: synctv_common::snanoid!(16),
+            targets: vec![CacheTarget::All],
+            timestamp: Utc::now(),
+        };
+        let publish = manager.publish_only_confirmed(event, Duration::from_secs(1));
+        tokio::pin!(publish);
+
+        let mut queued = tokio::select! {
+            queued = publish_rx.recv() => queued.expect("event should be queued"),
+            result = &mut publish => panic!("confirmed publish completed before publisher ack: {result:?}"),
+        };
+        queued.acknowledge_success();
+        (&mut publish)
+            .await
+            .expect("confirmed publish should observe publisher success ack");
     }
 
     #[tokio::test]

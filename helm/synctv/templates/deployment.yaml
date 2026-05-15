@@ -430,7 +430,7 @@ spec:
       topologySpreadConstraints:
         - maxSkew: {{ .Values.topologySpread.maxSkew | default 1 }}
           topologyKey: {{ .Values.topologySpread.topologyKey | default "topology.kubernetes.io/zone" }}
-          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable | default "DoNotSchedule" }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable | default "ScheduleAnyway" }}
           labelSelector:
             matchLabels:
               {{- include "synctv.selectorLabels" . | nindent 14 }}

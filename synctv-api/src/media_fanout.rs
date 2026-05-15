@@ -292,7 +292,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_title: media_title.to_string(),
             timestamp: chrono::Utc::now(),
         };
-        publish_best_effort(self.realtime_fanout.clone(), PublishRequest { event });
+        publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
     fn publish_removed(
@@ -310,7 +310,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_id: *media_id,
             timestamp: chrono::Utc::now(),
         };
-        publish_best_effort(self.realtime_fanout.clone(), PublishRequest { event });
+        publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
     fn publish_updated(
@@ -330,7 +330,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_title: media_title.to_string(),
             timestamp: chrono::Utc::now(),
         };
-        publish_best_effort(self.realtime_fanout.clone(), PublishRequest { event });
+        publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
     fn publish_removed_batch(
@@ -348,7 +348,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_ids,
             timestamp: chrono::Utc::now(),
         };
-        publish_best_effort(self.realtime_fanout.clone(), PublishRequest { event });
+        publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
     fn publish_reordered(
@@ -366,7 +366,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_ids,
             timestamp: chrono::Utc::now(),
         };
-        publish_best_effort(self.realtime_fanout.clone(), PublishRequest { event });
+        publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
     fn prepare_removed_outbox_fanout(

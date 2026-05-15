@@ -2,20 +2,36 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use synctv_core::config::WebRTCMode;
+use synctv_core::service::{BuiltinStunRuntimeReason, WebRtcRuntimeMode, WebRtcRuntimeStatus};
 use synctv_core::Config;
 
 /// WebRTC components initialized during bootstrap
 pub struct WebRTCComponents {
     /// Built-in STUN server (if enabled)
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
+    /// Runtime status exposed to health and ICE bootstrap responses.
+    pub status: WebRtcRuntimeStatus,
 }
 
 /// Initialize WebRTC components.
 pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
-    let stun_server = if config.webrtc.mode == WebRTCMode::SignalingOnly {
+    if config.webrtc.mode == WebRTCMode::SignalingOnly {
         info!("WebRTC signaling_only mode selected; built-in STUN server disabled");
-        None
-    } else if config.webrtc.enable_builtin_stun {
+        return WebRTCComponents {
+            stun_server: None,
+            status: WebRtcRuntimeStatus::signaling_only(),
+        };
+    }
+
+    if !config.webrtc.enable_builtin_stun {
+        info!("Built-in STUN server disabled");
+        return WebRTCComponents {
+            stun_server: None,
+            status: WebRtcRuntimeStatus::disabled_by_config(WebRtcRuntimeMode::PeerToPeer),
+        };
+    }
+
+    let (stun_server, status) = {
         info!("Starting built-in STUN server...");
         let bind_addr = format!("{}:{}", config.webrtc.stun_host, config.webrtc.stun_port);
 
@@ -35,15 +51,22 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
                 if let Some(ip) = synctv_core::service::resolve_external_ip().await {
                     format!("{ip}:{}", config.webrtc.stun_port)
                 } else {
-                    error!(
+                    let message = format!(
                         "Could not resolve a routable external IP for STUN server. \
-                         advertise_host '{}' is not routable and cloud metadata detection failed. \
+                         advertise_host '{advertise}' is not routable and cloud metadata detection failed. \
                          Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public ip:port or DNS name:port, \
                          or set STUN_EXTERNAL_IP to a public IP. \
-                         Built-in STUN server will NOT start.",
-                        advertise
+                         Built-in STUN server will NOT start."
                     );
-                    return WebRTCComponents { stun_server: None };
+                    error!("{message}");
+                    return WebRTCComponents {
+                        stun_server: None,
+                        status: WebRtcRuntimeStatus::degraded(
+                            BuiltinStunRuntimeReason::ExternalAddrUnresolved,
+                            message,
+                            None,
+                        ),
+                    };
                 }
             }
         } else {
@@ -52,12 +75,20 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
 
         // Validate the final external address
         if let Err(e) = synctv_core::service::validate_external_addr(&external_addr) {
-            error!("STUN external address validation failed: {}", e);
-            error!(
-                "Built-in STUN server will NOT start. NAT traversal requires a valid \
-                 public external address. Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a routable IP."
+            let message = format!(
+                "STUN external address validation failed: {e}. Built-in STUN server will NOT start. \
+                 NAT traversal requires a valid public external address. Set \
+                 SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a routable IP."
             );
-            return WebRTCComponents { stun_server: None };
+            error!("{message}");
+            return WebRTCComponents {
+                stun_server: None,
+                status: WebRtcRuntimeStatus::degraded(
+                    BuiltinStunRuntimeReason::ExternalAddrInvalid,
+                    message,
+                    Some(external_addr),
+                ),
+            };
         }
 
         let stun_config = synctv_core::service::StunServerConfig {
@@ -67,18 +98,28 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
         match synctv_core::service::StunServer::start(&stun_config) {
             Ok(server) => {
                 info!("Built-in STUN server started on {}", server.local_addr());
-                Some(server)
+                let status =
+                    WebRtcRuntimeStatus::running(server.local_addr(), server.external_addr());
+                (Some(server), status)
             }
             Err(e) => {
-                warn!("Failed to start STUN server: {}", e);
+                let message = format!("Failed to start STUN server: {e}");
+                warn!("{message}");
                 warn!("WebRTC P2P connectivity may be limited without STUN");
-                None
+                (
+                    None,
+                    WebRtcRuntimeStatus::degraded(
+                        BuiltinStunRuntimeReason::BindFailed,
+                        message,
+                        Some(stun_config.external_addr),
+                    ),
+                )
             }
         }
-    } else {
-        info!("Built-in STUN server disabled");
-        None
     };
 
-    WebRTCComponents { stun_server }
+    WebRTCComponents {
+        stun_server,
+        status,
+    }
 }

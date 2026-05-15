@@ -47,6 +47,7 @@ pub struct PullStream {
     hls_proxy: Option<HlsProxyClient>,
 }
 
+#[async_trait::async_trait]
 impl ManagedStream for PullStream {
     fn lifecycle(&self) -> &StreamLifecycle {
         &self.lifecycle
@@ -54,6 +55,17 @@ impl ManagedStream for PullStream {
 
     fn stream_key(&self) -> String {
         format!("{}:{}", self.room_id, self.media_id)
+    }
+
+    async fn stop_managed(&self) {
+        if let Err(error) = self.stop().await {
+            warn!(
+                room_id = %self.room_id,
+                media_id = %self.media_id,
+                %error,
+                "Failed to stop pull stream during managed cleanup"
+            );
+        }
     }
 }
 
@@ -216,6 +228,7 @@ impl PullStream {
                     room_id.clone(),
                     media_id.clone(),
                     publisher_node.clone(),
+                    epoch,
                     hub_sender.clone(),
                     pool.clone(),
                 )

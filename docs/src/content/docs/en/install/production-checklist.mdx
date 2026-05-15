@@ -11,7 +11,7 @@ Use this checklist before launch. For field definitions, see [Configuration Inde
 
 | Check | Acceptance criteria |
 | --- | --- |
-| Config validation | `synctv config validate` passes. |
+| Config validation | `synctv config validate --strict` passes. |
 | JWT secret | `jwt.secret` comes from a secret or environment variable and is not an example value. |
 | OPAQUE setup secret | `security.opaque_server_setup_secret` is generated, backed up, and stable across restarts. |
 | Credential encryption key | `security.credential_encryption_key` is 64 hex characters and backed up. |
@@ -66,7 +66,7 @@ Use this checklist before launch. For field definitions, see [Configuration Inde
 ### General
 
 ```bash
-synctv config validate
+synctv config validate --strict
 synctv db status
 curl -fsS http://localhost:8080/health/ready
 ```

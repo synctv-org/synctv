@@ -55,6 +55,7 @@ const MAX_FLV_BUFFER_SIZE: usize = 50 * 1024 * 1024;
 const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 /// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
 const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // FLV format constants
 const FLV_HEADER_SIZE: usize = 9;
@@ -66,6 +67,21 @@ const FLV_TAG_SCRIPT_DATA: u8 = 18;
 
 fn should_reset_retry_counters(stream_duration: std::time::Duration) -> bool {
     stream_duration > MIN_SUCCESSFUL_DURATION
+}
+
+async fn send_frame_with_backpressure(
+    data_sender: &FrameDataSender,
+    frame: FrameData,
+) -> Result<()> {
+    tokio::time::timeout(FRAME_SEND_TIMEOUT, data_sender.send(frame))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Timed out waiting {}s for local HTTP-FLV backpressure to clear",
+                FRAME_SEND_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|_| anyhow::anyhow!("HTTP-FLV consumer stream channel closed"))
 }
 
 /// Source type for external streams
@@ -666,8 +682,6 @@ impl ExternalStreamPuller {
 
         let mut buffer = BytesMut::new();
         let mut header_parsed = false;
-        let mut dropped_frames: u64 = 0;
-        let drop_log_interval: u64 = 100;
         // Read response body in chunks and parse FLV tags.
         // Use per-chunk timeout instead of total request timeout so live streams
         // can run indefinitely as long as data keeps flowing.
@@ -801,24 +815,14 @@ impl ExternalStreamPuller {
                     }
                 };
 
-                // Use try_send for non-blocking behavior
-                // If channel is full, drop the packet (backpressure)
-                match data_sender.try_send(frame) {
-                    Ok(()) => {}
-                    Err(synctv_xiu::streamhub::define::FrameTrySendError::Full(_)) => {
-                        dropped_frames += 1;
-                        if dropped_frames % drop_log_interval == 1 {
-                            warn!(
-                                room_id = %self.room_id,
-                                media_id = %self.media_id,
-                                total_dropped = dropped_frames,
-                                "FLV frame dropped due to backpressure"
-                            );
-                        }
-                    }
-                    Err(synctv_xiu::streamhub::define::FrameTrySendError::Closed(_)) => {
-                        anyhow::bail!("HTTP-FLV consumer stream channel closed");
-                    }
+                if let Err(error) = send_frame_with_backpressure(data_sender, frame).await {
+                    warn!(
+                        room_id = %self.room_id,
+                        media_id = %self.media_id,
+                        %error,
+                        "HTTP-FLV frame delivery failed"
+                    );
+                    return Err(error);
                 }
             }
         }
@@ -1313,6 +1317,47 @@ mod tests {
 
         server_handle.abort();
         hub_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_http_flv_frame_send_waits_for_backpressure_instead_of_dropping() {
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::channel(1);
+        data_sender
+            .try_send(FrameData::MetaData {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(b"queued"),
+            })
+            .expect("test channel should start full");
+
+        let sender = FrameDataSender::bounded(data_sender);
+        let send_task = tokio::spawn(async move {
+            send_frame_with_backpressure(
+                &sender,
+                FrameData::Video {
+                    timestamp: 1,
+                    data: bytes::Bytes::from_static(b"video"),
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        assert!(
+            !send_task.is_finished(),
+            "HTTP-FLV send should wait for bounded StreamHub backpressure"
+        );
+
+        let _ = data_receiver.recv().await;
+        send_task
+            .await
+            .expect("send task should join")
+            .expect("send should complete once backpressure clears");
+
+        let received = data_receiver
+            .recv()
+            .await
+            .expect("backpressured frame should be delivered");
+        assert!(matches!(received, FrameData::Video { timestamp: 1, .. }));
     }
 
     #[tokio::test]

@@ -335,7 +335,7 @@ pub async fn init_services_with_options(
     let jwt_service = load_jwt_service(config)?;
     info!("JWT service initialized");
 
-    let shared_state_profile = SharedStateProfile::from_runtime(
+    let shared_state_profile = SharedStateProfile::for_cluster_runtime(
         shared_runtime.clone(),
         &config.redis.key_prefix,
         cluster_mode,

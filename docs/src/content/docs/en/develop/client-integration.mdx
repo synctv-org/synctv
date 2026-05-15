@@ -41,18 +41,18 @@ Implement sign-in, room list, ticket creation, Realtime, and playback snapshots 
 The examples show how to compose calls. Exact fields are defined by `/api-docs/openapi.json` and protobuf.
 
 <Tabs syncKey="client-http-flow">
-  <TabItem label="Login" icon="approve-check-circle">
+  <TabItem label="OPAQUE login" icon="approve-check-circle">
 
 ```bash
-curl -sS http://localhost:8080/api/auth/login \
+curl -sS http://localhost:8080/api/auth/opaque/login/start \
   -H 'Content-Type: application/json' \
   -d '{
     "username": "root",
-    "password": "change-this-password"
+    "credential_request": [/* bytes from your OPAQUE client */]
   }'
 ```
 
-A typical success response contains `access_token`, `refresh_token`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in.
+Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. A typical finish response contains `access_token`, `refresh_token`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in. `/api/auth/login` is reserved for passwordless email-token login.
 
   </TabItem>
   <TabItem label="Create WebSocket ticket" icon="document">
@@ -116,7 +116,7 @@ Client guidance:
 - After refresh, replace the locally stored token pair with the server response. Avoid concurrent refresh attempts with stale refresh tokens.
 - When a user enables 2FA, local login must complete MFA before receiving an acceptable token. OAuth2 login is not part of local 2FA, but OAuth2-issued tokens are accepted for that login path.
 
-Production deployments must use TLS. Login, registration, password changes, password reset, and MFA password verification must use HTTPS or a trusted encrypted tunnel.
+Production deployments must use TLS. Login, registration, password changes, password reset, and MFA verification must use HTTPS or a trusted encrypted tunnel.
 
 ## Local Login and MFA
 
@@ -131,14 +131,13 @@ Client flow:
 4. If `required=true`, store the short-lived `mfa.session_id` and present `available_methods`.
 5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` when the user chooses email.
 6. If `MFA_METHOD_WEBAUTHN` is available, call `StartMfaPasskey` for WebAuthn options, then `FinishMfaPasskey`.
-7. If `MFA_METHOD_PASSWORD` is available, call `VerifyMfaPassword`. Failures are tracked by brute-force protection.
-8. After the second factor succeeds, the final response returns usable tokens.
+7. After the second factor succeeds, the final response returns usable tokens.
 </Steps>
 
-`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. OAuth2 does not count as a local 2FA factor.
+`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. Password is a first factor completed through the OPAQUE login flow; it is not a plaintext MFA completion method. OAuth2 does not count as a local 2FA factor.
 
 <Aside type="note">
-OPAQUE is a password login protocol, but clients must not infer password MFA availability from it. Show password as a second factor only when the server returns `MFA_METHOD_PASSWORD` in `available_methods`.
+OPAQUE is the local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email or WebAuthn.
 </Aside>
 
 ## Email Codes
@@ -190,13 +189,15 @@ Public gRPC uses the same main port. With reflection:
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-Login:
+Local password login is OPAQUE-only. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","password":"change-this-password"}' \
-  localhost:8080 synctv.client.AuthService/Login
+  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
+
+`AuthService/Login` is reserved for passwordless email-token login.
 
 Room-scoped RPCs need both user identity and room context:
 
@@ -256,6 +257,8 @@ Access rules:
 - A signed-in member must belong to the room and have `use_webrtc`.
 - A guest must use a guest token issued for that room, and the room must allow guests and grant `use_webrtc`.
 - If the room is closed, banned, password-protected, or guest access is revoked, guests cannot fetch fresh ICE configuration.
+
+The response includes a `webrtc` status object. Clients can surface a non-secret warning when `builtin_stun_state` is `degraded` or when no ICE servers are returned, while still using any external STUN/TURN servers present in `servers`.
 
 ## Media URLs and Headers
 

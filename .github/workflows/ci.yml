@@ -117,8 +117,10 @@ jobs:
             command: cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
           - name: synctv-tls-ring-native
             command: cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
-          - name: synctv-production-no-openapi
-            command: cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+          - name: synctv-production-default
+            command: cargo check -p synctv --features "tls-native-roots" --locked
+          - name: synctv-openapi
+            command: cargo check -p synctv --features "openapi" --locked
           - name: key-crates-tls-ring-webpki
             command: |
               cargo check -p synctv-core --no-default-features --features "tls-ring,tls-webpki-roots" --locked

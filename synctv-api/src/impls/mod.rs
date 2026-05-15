@@ -763,10 +763,10 @@ mod tests {
 
     #[test]
     fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() {
-        let request = crate::proto::client::RegisterRequest {
+        let request = crate::proto::client::StartOpaqueRegistrationRequest {
             username: "ab".to_string(),
-            password: "short".to_string(),
             email: "not-an-email".to_string(),
+            registration_request: Vec::new(),
         };
 
         let error = validate_proto_request(&request).unwrap_err();
@@ -774,8 +774,8 @@ mod tests {
         match error {
             ApiError::InvalidInput(message) => {
                 assert!(message.contains("username"), "{message}");
-                assert!(message.contains("password"), "{message}");
                 assert!(message.contains("email"), "{message}");
+                assert!(message.contains("registration_request"), "{message}");
             }
             other => panic!("expected invalid input, got {other:?}"),
         }

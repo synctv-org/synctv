@@ -540,9 +540,11 @@ fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
         Some(synctv_proxy::ProxyErrorKind::Cancelled | synctv_proxy::ProxyErrorKind::Timeout) => {
             AppError::new(StatusCode::REQUEST_TIMEOUT, err.to_string())
         }
-        Some(synctv_proxy::ProxyErrorKind::Connection | synctv_proxy::ProxyErrorKind::Upstream) => {
-            AppError::new(StatusCode::BAD_GATEWAY, err.to_string())
-        }
+        Some(
+            synctv_proxy::ProxyErrorKind::Connection
+            | synctv_proxy::ProxyErrorKind::BodyTooLarge
+            | synctv_proxy::ProxyErrorKind::Upstream,
+        ) => AppError::new(StatusCode::BAD_GATEWAY, err.to_string()),
         Some(synctv_proxy::ProxyErrorKind::Ssrf) => {
             AppError::forbidden("Proxy target is not allowed by SSRF policy")
         }
@@ -1071,6 +1073,7 @@ mod tests {
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
             proxy_slice_cache,
             ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
@@ -1188,6 +1191,8 @@ mod tests {
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,
                 builtin_stun_url: None,
+                webrtc_status:
+                    synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     SliceCacheConfig::default(),

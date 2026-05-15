@@ -20,7 +20,8 @@ use crate::{
     repository::{UserProviderCredentialRepository, UserRepository},
     service::{
         optimistic_retry, permission::PermissionService,
-        provider_binding::resolve_credential_provider_instance_binding, ProvidersManager,
+        provider_binding::resolve_credential_provider_instance_binding,
+        source_config::validate_source_config_size, ProvidersManager,
     },
     Error, Result,
 };
@@ -244,6 +245,7 @@ impl PlaylistService {
     ) -> Result<(String, JsonValue, Option<String>)> {
         let trimmed_provider = source_provider.trim().to_string();
         let trimmed_instance = normalize_provider_instance_name_owned(provider_instance_name);
+        validate_source_config_size(&source_config)?;
 
         let provider = self
             .providers_manager
@@ -1497,6 +1499,32 @@ mod tests {
         match err {
             Error::InvalidInput(message) => {
                 assert!(message.contains("does not support dynamic folders"));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_rejects_oversized_config_before_provider_use() {
+        let service = test_playlist_service_with_builtin_providers().await;
+        let err = service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &UserId::new(),
+                "direct_url".to_string(),
+                serde_json::json!({"data": "x".repeat(2 * 1024 * 1024)}),
+                Some("direct_url".to_string()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::InvalidInput(message) => {
+                assert!(message.contains("source_config too large"));
+                assert!(
+                    !message.contains("does not support dynamic folders"),
+                    "size guard should run before provider-specific validation"
+                );
             }
             other => panic!("expected InvalidInput, got {other:?}"),
         }

@@ -82,15 +82,13 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
 
         if !self
             .realtime_fanout
-            .try_publish(PublishRequest {
-                event: RealtimeEvent::KickPublisher {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: *room_id,
-                    media_id: *media_id,
-                    reason: reason.to_string(),
-                    timestamp: chrono::Utc::now(),
-                },
-            })
+            .try_publish(PublishRequest::new(RealtimeEvent::KickPublisher {
+                event_id: synctv_common::snanoid!(16),
+                room_id: *room_id,
+                media_id: *media_id,
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now(),
+            }))
             .await
             && self.realtime_fanout.is_distributed_enabled()
         {
@@ -213,14 +211,12 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
 
         let _ = self
             .realtime_fanout
-            .try_publish(PublishRequest {
-                event: RealtimeEvent::KickUser {
-                    event_id: synctv_common::snanoid!(16),
-                    user_id: *user_id,
-                    reason: reason.to_string(),
-                    timestamp: chrono::Utc::now(),
-                },
-            })
+            .try_publish(PublishRequest::new(RealtimeEvent::KickUser {
+                event_id: synctv_common::snanoid!(16),
+                user_id: *user_id,
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now(),
+            }))
             .await;
     }
 

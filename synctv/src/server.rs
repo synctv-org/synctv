@@ -91,6 +91,7 @@ pub struct Services {
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
     pub health_monitor: Option<Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>>,
     pub(crate) cluster_activation: Option<Arc<dyn ClusterNodeActivator>>,
@@ -125,10 +126,9 @@ impl SharedProviderPlaybackRuntime {
         Self {
             provider_stores:
                 synctv_core::provider::store::build_provider_store_resolver_from_profile(
-                    &synctv_core::SharedStateProfile::from_runtime(
+                    &synctv_core::SharedStateProfile::best_effort(
                         redis_runtime,
                         config.redis.key_prefix.clone(),
-                        false,
                     ),
                 ),
             signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
@@ -790,6 +790,22 @@ fn spawn_admin_event_listener(
 }
 
 impl SyncTvServer {
+    fn builtin_stun_url(&self) -> Option<String> {
+        self.services.stun_server.as_ref().map(|stun| {
+            let addr = stun.external_addr();
+            format!("stun:{}:{}", addr.ip(), addr.port())
+        })
+    }
+
+    fn current_webrtc_status(&self) -> synctv_core::service::WebRtcRuntimeStatus {
+        self.services.webrtc_status.clone().with_task_running(
+            self.services
+                .stun_server
+                .as_ref()
+                .is_some_and(|stun| stun.is_running()),
+        )
+    }
+
     /// Create a new server instance
     pub const fn new(
         config: Config,
@@ -843,9 +859,7 @@ impl SyncTvServer {
         if self.livestream_state.is_some() {
             info!("Livestream infrastructure: enabled");
         }
-        if self.services.stun_server.is_some() {
-            info!("STUN server: enabled");
-        }
+        info!("WebRTC runtime: {}", self.current_webrtc_status().summary());
 
         // Start background connection cleanup (every 60 seconds)
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
@@ -1390,10 +1404,8 @@ impl SyncTvServer {
             redis_runtime: self.services.redis_runtime.clone(),
             shared_http_app_state: Some(shared_http_app_state),
             shutdown_rx: Some(shutdown_rx),
-            builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
-                let addr = s.external_addr();
-                format!("stun:{}:{}", addr.ip(), addr.port())
-            }),
+            builtin_stun_url: self.builtin_stun_url(),
+            webrtc_status: self.current_webrtc_status(),
             credential_encryption: self.services.credential_encryption.clone(),
             grpc_listener: None,
         })
@@ -1443,10 +1455,8 @@ impl SyncTvServer {
                 redis_runtime: self.services.redis_runtime.clone(),
                 shared_provider_stores: Some(shared_provider_runtime.provider_stores.clone()),
                 shared_proxy_signing_key: Some(shared_provider_runtime.signing_key.clone()),
-                builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
-                    let addr = s.external_addr();
-                    format!("stun:{}:{}", addr.ip(), addr.port())
-                }),
+                builtin_stun_url: self.builtin_stun_url(),
+                webrtc_status: self.current_webrtc_status(),
                 credential_encryption: self.services.credential_encryption.clone(),
                 proxy_slice_cache,
                 ssrf_guard,
@@ -1859,6 +1869,8 @@ mod tests {
                 shared_provider_stores: Some(shared_runtime.provider_stores.clone()),
                 shared_proxy_signing_key: Some(shared_runtime.signing_key.clone()),
                 builtin_stun_url: None,
+                webrtc_status:
+                    synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     synctv_proxy::slice_cache::SliceCacheConfig::default(),

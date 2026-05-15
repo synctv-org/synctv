@@ -439,6 +439,7 @@ pub struct ExternalPublishStream {
     max_flv_tag_size_bytes: usize,
 }
 
+#[async_trait::async_trait]
 impl ManagedStream for ExternalPublishStream {
     fn lifecycle(&self) -> &StreamLifecycle {
         &self.lifecycle
@@ -446,6 +447,17 @@ impl ManagedStream for ExternalPublishStream {
 
     fn stream_key(&self) -> String {
         format!("{}:{}", self.room_id, self.media_id)
+    }
+
+    async fn stop_managed(&self) {
+        if let Err(error) = self.stop().await {
+            warn!(
+                room_id = %self.room_id,
+                media_id = %self.media_id,
+                %error,
+                "Failed to stop external publish stream during managed cleanup"
+            );
+        }
     }
 }
 

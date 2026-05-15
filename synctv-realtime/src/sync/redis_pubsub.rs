@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use synctv_core::RedisCoordinationRuntime;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -202,7 +202,7 @@ impl BufferPressureState {
 ///
 /// // Check pressure before sending non-critical events
 /// if backpressure.pressure().allows_non_critical() {
-///     tx.send(PublishRequest { event }).await?;
+///     tx.send(PublishRequest::new(event)).await?;
 /// } else {
 ///     // Drop or queue the event
 /// }
@@ -688,42 +688,60 @@ impl RedisPubSub {
                             );
                             let mut flush_failed = false;
                             // CRITICAL: Flush critical_retry_buffer FIRST (highest priority)
-                            for req in std::mem::take(&mut critical_retry_buffer) {
+                            for mut req in std::mem::take(&mut critical_retry_buffer) {
                                 if flush_failed {
                                     error!(
                                         event_type = req.event.event_type(),
                                         "CRITICAL event lost during shutdown (connection broken)"
+                                    );
+                                    ack_publish_dropped(
+                                        &mut req,
+                                        "Redis publisher shutdown lost critical buffered event",
                                     );
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
                                 match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
+                                        ack_publish_success(&mut req);
                                         debug!(event_type = event_type, "Critical buffer event flushed on shutdown");
                                     }
                                     Err(e) => {
                                         error!(error = %e, event_type = event_type, "Failed to flush CRITICAL event on shutdown");
+                                        ack_publish_failure(
+                                            &mut req,
+                                            format!("Failed to flush critical event on shutdown: {e}"),
+                                        );
                                         flush_failed = true;
                                     }
                                 }
                             }
                             // Then flush normal retry_buffer (events from previous failed publishes)
-                            for req in std::mem::take(&mut retry_buffer) {
+                            for mut req in std::mem::take(&mut retry_buffer) {
                                 if flush_failed {
                                     // Connection broken; skip remaining events (these are non-critical)
                                     debug!(
                                         event_type = req.event.event_type(),
                                         "Non-critical retry_buffer event skipped during shutdown (connection broken)"
                                     );
+                                    ack_publish_dropped(
+                                        &mut req,
+                                        "Redis publisher shutdown skipped buffered event after connection failure",
+                                    );
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
                                 match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
+                                        ack_publish_success(&mut req);
                                         debug!(event_type = event_type, "Retry buffer event flushed on shutdown");
                                     }
                                     Err(e) => {
                                         warn!(error = %e, event_type = event_type, "Failed to flush retry buffer event on shutdown");
+                                        ack_publish_failure(
+                                            &mut req,
+                                            format!("Failed to flush buffered event on shutdown: {e}"),
+                                        );
                                         flush_failed = true;
                                     }
                                 }
@@ -739,37 +757,55 @@ impl RedisPubSub {
                                 }
                             }
                             // Flush critical drained events first
-                            for req in critical_drain {
+                            for mut req in critical_drain {
                                 if flush_failed {
                                     error!(
                                         event_type = req.event.event_type(),
                                         "CRITICAL drained event lost during shutdown (connection broken)"
+                                    );
+                                    ack_publish_dropped(
+                                        &mut req,
+                                        "Redis publisher shutdown lost critical drained event",
                                     );
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
                                 match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
+                                        ack_publish_success(&mut req);
                                         debug!(event_type = event_type, "Critical drained event published");
                                     }
                                     Err(e) => {
                                         error!(error = %e, event_type = event_type, "Failed to publish CRITICAL drained event");
+                                        ack_publish_failure(
+                                            &mut req,
+                                            format!("Failed to publish critical drained event: {e}"),
+                                        );
                                         flush_failed = true;
                                     }
                                 }
                             }
                             // Then flush normal drained events
-                            for req in normal_drain {
+                            for mut req in normal_drain {
                                 if flush_failed {
+                                    ack_publish_dropped(
+                                        &mut req,
+                                        "Redis publisher shutdown skipped drained event after connection failure",
+                                    );
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
                                 match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
+                                        ack_publish_success(&mut req);
                                         debug!(event_type = event_type, "Drained event published");
                                     }
                                     Err(e) => {
                                         warn!(error = %e, event_type = event_type, "Failed to publish drained event");
+                                        ack_publish_failure(
+                                            &mut req,
+                                            format!("Failed to publish drained event: {e}"),
+                                        );
                                         flush_failed = true;
                                     }
                                 }
@@ -778,7 +814,7 @@ impl RedisPubSub {
                         }
                         req = publish_rx.recv() => req,
                     };
-                    if let Some(req) = req {
+                    if let Some(mut req) = req {
                         let event_type = req.event.event_type();
                         match Self::publish_event(
                             &mut conn,
@@ -792,6 +828,7 @@ impl RedisPubSub {
                         {
                             Ok(subscribers) => {
                                 session_healthy = true;
+                                ack_publish_success(&mut req);
                                 debug!(
                                     event_type = event_type,
                                     subscribers = subscribers,
@@ -816,15 +853,26 @@ impl RedisPubSub {
                                         "Failed to publish event, buffering for retry after reconnect"
                                     );
                                 }
-                                // Route failed request to appropriate buffer based on criticality
-                                if req.event.is_critical() {
+                                // Confirmed publish requests are backed by the durable
+                                // database outbox, so fail them back to that retry loop instead
+                                // of also retaining them in the in-memory Redis retry buffer.
+                                if req.expects_ack() {
+                                    ack_publish_failure(
+                                        &mut req,
+                                        format!("Failed to publish event to Redis: {e}"),
+                                    );
+                                } else if req.event.is_critical() {
                                     if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
+                                        let mut dropped = critical_retry_buffer.remove(0);
                                         warn!(
                                             critical_buffer_len = critical_retry_buffer.len(),
                                             max = MAX_CRITICAL_BUFFER,
                                             "Critical event buffer full, dropping oldest event"
                                         );
-                                        critical_retry_buffer.remove(0);
+                                        ack_publish_dropped(
+                                            &mut dropped,
+                                            "Redis critical retry buffer full",
+                                        );
                                     }
                                     critical_retry_buffer.push(req);
                                 } else {
@@ -833,20 +881,29 @@ impl RedisPubSub {
 
                                 // Drain remaining events from channel into appropriate buffers
                                 // (connection is broken, no point trying to publish more)
-                                while let Ok(req) = publish_rx.try_recv() {
+                                while let Ok(mut req) = publish_rx.try_recv() {
                                     let is_critical = req.event.is_critical();
                                     let event_type = req.event.event_type();
 
-                                    if is_critical {
+                                    if req.expects_ack() {
+                                        ack_publish_failure(
+                                            &mut req,
+                                            "Redis publisher connection failed before confirmed publish",
+                                        );
+                                    } else if is_critical {
                                         // Critical events are buffered with a hard cap
                                         // to prevent OOM during prolonged outages.
                                         if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
+                                            let mut dropped = critical_retry_buffer.remove(0);
                                             warn!(
                                                 critical_buffer_len = critical_retry_buffer.len(),
                                                 max = MAX_CRITICAL_BUFFER,
                                                 "Critical event buffer full, dropping oldest event"
                                             );
-                                            critical_retry_buffer.remove(0);
+                                            ack_publish_dropped(
+                                                &mut dropped,
+                                                "Redis critical retry buffer full",
+                                            );
                                         }
                                         critical_retry_buffer.push(req);
 
@@ -870,6 +927,10 @@ impl RedisPubSub {
                                             synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                                                 .with_label_values(&["retry_buffer_full"])
                                                 .inc();
+                                            ack_publish_dropped(
+                                                &mut req,
+                                                "Redis retry buffer full",
+                                            );
                                             continue; // Continue draining, don't break - critical events still need to be collected
                                         }
                                         retry_buffer.push(req);
@@ -2300,6 +2361,56 @@ enum SubscriberExit {
 /// The channel is derived from `event.room_id()` in `publish_event`.
 pub struct PublishRequest {
     pub event: RealtimeEvent,
+    ack: Option<oneshot::Sender<PublishAckResult>>,
+}
+
+pub type PublishAckResult = std::result::Result<(), String>;
+
+impl PublishRequest {
+    #[must_use]
+    pub const fn new(event: RealtimeEvent) -> Self {
+        Self { event, ack: None }
+    }
+
+    #[must_use]
+    pub fn with_ack(event: RealtimeEvent) -> (Self, oneshot::Receiver<PublishAckResult>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Self {
+                event,
+                ack: Some(tx),
+            },
+            rx,
+        )
+    }
+
+    pub fn acknowledge_success(&mut self) {
+        if let Some(ack) = self.ack.take() {
+            let _ = ack.send(Ok(()));
+        }
+    }
+
+    pub fn acknowledge_failure(&mut self, error: impl Into<String>) {
+        if let Some(ack) = self.ack.take() {
+            let _ = ack.send(Err(error.into()));
+        }
+    }
+
+    fn expects_ack(&self) -> bool {
+        self.ack.is_some()
+    }
+}
+
+fn ack_publish_success(req: &mut PublishRequest) {
+    req.acknowledge_success();
+}
+
+fn ack_publish_failure(req: &mut PublishRequest, error: impl Into<String>) {
+    req.acknowledge_failure(error);
+}
+
+fn ack_publish_dropped(req: &mut PublishRequest, reason: &'static str) {
+    req.acknowledge_failure(reason);
 }
 
 async fn retry_publish_batch(
@@ -2312,7 +2423,7 @@ async fn retry_publish_batch(
 ) -> (Vec<PublishRequest>, usize) {
     let mut failed = Vec::new();
     let mut success_count = 0;
-    for req in batch {
+    for mut req in batch {
         let event_type = req.event.event_type();
         match RedisPubSub::publish_event(
             conn,
@@ -2326,6 +2437,7 @@ async fn retry_publish_batch(
         {
             Ok(subscribers) => {
                 success_count += 1;
+                ack_publish_success(&mut req);
                 debug!(
                     event_type = event_type,
                     subscribers = subscribers,
@@ -2385,9 +2497,7 @@ mod tests {
 
         loop {
             publish_tx
-                .send(PublishRequest {
-                    event: make_event(),
-                })
+                .send(PublishRequest::new(make_event()))
                 .await
                 .expect("publish should succeed");
 
@@ -2714,7 +2824,7 @@ mod tests {
             color: None,
         };
 
-        publish_tx1.send(PublishRequest { event }).await.unwrap();
+        publish_tx1.send(PublishRequest::new(event)).await.unwrap();
 
         // Wait for event propagation
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

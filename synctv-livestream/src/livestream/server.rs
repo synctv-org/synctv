@@ -9,9 +9,8 @@ use crate::{
     api::{LiveStreamingInfrastructure, StreamTracker},
     error::StreamResult,
     livestream::{
-        external_publish_manager::ExternalPublishManager,
-        pull_manager::PullStreamManager,
-        segment_manager::{CleanupConfig, SegmentManager},
+        external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
+        CleanupConfig, SegmentManager,
     },
     protocols::hls::{CustomHlsRemuxer, StreamRegistry},
     relay::{registry_trait::StreamRegistryTrait, PublisherManager},
@@ -26,7 +25,7 @@ use synctv_xiu::hls::segment_manager::CleanupAuthority;
 use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, OssConfig, OssStorage};
 use synctv_xiu::streamhub::StreamsHub;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -35,6 +34,44 @@ use tracing::{error, info, warn};
 /// Used to size the stop-streams notification channel to prevent signal loss
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
+const HUB_REREGISTER_TIMEOUT_SECS: u64 = 60;
+
+type ReregisterRequest = oneshot::Sender<()>;
+
+async fn request_publisher_reregistration(
+    reregister_tx: &mpsc::Sender<ReregisterRequest>,
+    is_restarting: &AtomicBool,
+    timeout_duration: std::time::Duration,
+) {
+    let (done_tx, done_rx) = oneshot::channel::<()>();
+
+    match reregister_tx.try_send(done_tx) {
+        Ok(()) => match tokio::time::timeout(timeout_duration, done_rx).await {
+            Ok(Ok(())) => {
+                info!("StreamHub restart: publisher re-registration completed");
+            }
+            Ok(Err(_)) => {
+                warn!(
+                    "StreamHub restart: publisher re-registration task dropped completion signal"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    timeout_secs = timeout_duration.as_secs(),
+                    "StreamHub restart: publisher re-registration timed out; clearing restart guard"
+                );
+            }
+        },
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!("StreamHub restart: re-registration channel full; clearing restart guard");
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            warn!("StreamHub restart: re-registration task exited; clearing restart guard");
+        }
+    }
+
+    is_restarting.store(false, Ordering::Release);
+}
 
 struct LeaderCleanupAuthority {
     leader_check: Arc<dyn LeaderCheck>,
@@ -559,10 +596,37 @@ impl LivestreamServer {
     /// `ExternalPublishManager`, `PublisherManager`, and `LiveStreamingInfrastructure`.
     /// Returns a handle with public components.
     pub fn start(self) -> StreamResult<LivestreamHandle> {
+        let local_node_id = self.config.node_id.clone();
+        if local_node_id.is_empty() {
+            return Err(crate::error::StreamError::InvalidState(
+                "livestream node_id is required: empty node_id causes stream ownership confusion. \
+                 Set node_id in the livestream config."
+                    .to_string(),
+            ));
+        }
+
+        // Build all fallible local resources before spawning background tasks.
+        // This keeps start() transactional: validation failures cannot leave an
+        // RTMP/StreamHub/HLS task running without a returned handle to shut it down.
+        let hls_storage = build_hls_storage(&self.config)?;
+
         // 1. Create StreamHub channels and hub (bounded to prevent OOM under load)
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
         let mut streams_hub = StreamsHub::new(event_sender.clone(), event_receiver);
+
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::with_timeouts(
+                self.publisher_registry.clone(),
+                local_node_id.clone(),
+                self.config.api_address.clone(),
+                event_sender.clone(),
+                self.config.ssrf_guard.clone(),
+                self.config.cleanup_check_interval_seconds,
+                self.config.stream_timeout_seconds,
+            )?
+            .with_max_flv_tag_size_bytes(self.config.max_flv_tag_size_bytes),
+        );
 
         // Create a long-lived external broadcast channel that survives StreamHub restarts.
         // The StreamHub's internal broadcast channel is recreated on each restart, which
@@ -581,10 +645,11 @@ impl LivestreamServer {
         // Clone user_stream_tracker for cleanup on StreamHub restart
         // This ensures stale local entries are cleared when Redis entries are cleaned
         let user_stream_tracker_for_cleanup = self.user_stream_tracker.clone();
-        // Notify to signal PublisherManager to re-register after StreamHub restart.
-        // Uses Notify instead of mpsc channel so signals are never lost even if
-        // multiple restarts occur before the listener wakes up.
-        let reregister_notify = Arc::new(tokio::sync::Notify::new());
+        // Request channel used by the StreamHub restart loop to ask
+        // PublisherManager to re-register tracked publishers. Each request
+        // carries an ack so the restart loop owns the restarting flag lifetime.
+        let (reregister_tx, mut reregister_rx) =
+            mpsc::channel::<ReregisterRequest>(HUB_MAX_RESTARTS as usize);
         // Shared flag to suppress silent-publisher detection during StreamHub restart.
         // Set before cleanup begins, cleared after re-registration completes.
         // Also checked by auth callback (via restarting_flag()) to reject new publications.
@@ -636,7 +701,7 @@ impl LivestreamServer {
         let rtmp_gop_cache_size = self.config.gop_cache_size;
         let rtmp_auth = self.auth.clone();
         let rtmp_event_sender = event_sender.clone();
-        let reregister_notify_for_hub = Arc::clone(&reregister_notify);
+        let reregister_tx_for_hub = reregister_tx.clone();
         let is_restarting_for_hub = Arc::clone(&is_restarting_flag);
         let restart_mutex_for_hub = Arc::clone(&restart_mutex);
         // Pre-bound listener for first cycle (enables early port conflict detection)
@@ -848,10 +913,15 @@ impl LivestreamServer {
                 // publishers in Redis, so they must be cleared to prevent incorrect lookups
                 user_stream_tracker_for_cleanup.clear();
 
-                // Notify PublisherManager to re-register all active publishers immediately.
-                // The reregister_all_publishers() method will clear the is_restarting flag
-                // after re-registration completes.
-                reregister_notify_for_hub.notify_one();
+                // Re-register all active publishers immediately. The restart loop
+                // waits for completion and then clears the shared restart guard,
+                // so publication blocking is not owned by a detached background task.
+                request_publisher_reregistration(
+                    &reregister_tx_for_hub,
+                    &is_restarting_for_hub,
+                    std::time::Duration::from_secs(HUB_REREGISTER_TIMEOUT_SECS),
+                )
+                .await;
 
                 if restart_count >= HUB_MAX_RESTARTS {
                     error!(
@@ -879,9 +949,6 @@ impl LivestreamServer {
                 // Mutex guard is dropped here, allowing the next restart (if any) to proceed
             }
         });
-
-        // 3. Start HLS remuxer (converts RTMP to HLS segments)
-        let hls_storage = build_hls_storage(&self.config)?;
 
         let mut segment_manager = SegmentManager::new(hls_storage, CleanupConfig::default());
         if hls_cleanup_should_use_leader(self.config.hls_storage_backend) {
@@ -998,19 +1065,6 @@ impl LivestreamServer {
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let pull_manager_cleanup = pull_manager.start_cleanup_task();
 
-        // 6. Create ExternalPublishManager
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::with_timeouts(
-                self.publisher_registry.clone(),
-                self.config.node_id.clone(),
-                self.config.api_address.clone(),
-                event_sender.clone(),
-                self.config.ssrf_guard.clone(),
-                self.config.cleanup_check_interval_seconds,
-                self.config.stream_timeout_seconds,
-            )?
-            .with_max_flv_tag_size_bytes(self.config.max_flv_tag_size_bytes),
-        );
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let external_publish_cleanup = external_publish_manager.start_cleanup_task();
 
@@ -1038,18 +1092,6 @@ impl LivestreamServer {
             })
         };
 
-        // 7. Start PublisherManager -- listens to StreamHub broadcast events
-        // and registers/unregisters publishers in Redis for multi-node relay
-        // (PublisherManager was created earlier in step 3 to wire the activity callback)
-        let local_node_id = self.config.node_id.clone();
-        if local_node_id.is_empty() {
-            return Err(crate::error::StreamError::InvalidState(
-                "node_id is required for cluster mode: empty node_id causes stream ownership confusion. \
-                 Set node_id in the livestream config."
-                    .to_string(),
-            ));
-        }
-
         // Create cancellation token for the re-registration task.
         // This allows graceful shutdown to prevent task leaks.
         let reregister_cancel_token = CancellationToken::new();
@@ -1061,7 +1103,6 @@ impl LivestreamServer {
         // a task leak because tokio::spawn detaches child tasks.
         let reregister_task_handle = {
             let pm_for_reregister = Arc::clone(&publisher_manager);
-            let reregister = Arc::clone(&reregister_notify);
             tokio::spawn(async move {
                 loop {
                     // Use tokio::select to respond to both signals and cancellation
@@ -1071,8 +1112,12 @@ impl LivestreamServer {
                             info!("Re-registration task received shutdown signal");
                             break;
                         }
-                        () = reregister.notified() => {
+                        request = reregister_rx.recv() => {
+                            let Some(done_tx) = request else {
+                                break;
+                            };
                             pm_for_reregister.reregister_all_publishers().await;
+                            let _ = done_tx.send(());
                         }
                     }
                 }
@@ -1186,6 +1231,67 @@ mod tests {
                 .join("seg1")
                 .exists(),
             "memory storage should not create files on disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reregister_request_clears_restart_flag_after_ack() {
+        let is_restarting = AtomicBool::new(true);
+        let (tx, mut rx) = mpsc::channel::<ReregisterRequest>(1);
+
+        let request = request_publisher_reregistration(
+            &tx,
+            &is_restarting,
+            std::time::Duration::from_secs(1),
+        );
+        tokio::pin!(request);
+
+        let done_tx = tokio::select! {
+            done_tx = rx.recv() => done_tx.expect("request should be queued"),
+            () = &mut request => panic!("re-registration request completed before ack"),
+        };
+        assert!(
+            is_restarting.load(Ordering::Acquire),
+            "restart flag must remain set until re-registration is acknowledged"
+        );
+        let _ = done_tx.send(());
+
+        (&mut request).await;
+        assert!(
+            !is_restarting.load(Ordering::Acquire),
+            "restart flag must be cleared after acknowledged re-registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reregister_request_clears_restart_flag_when_channel_closed() {
+        let is_restarting = AtomicBool::new(true);
+        let (tx, rx) = mpsc::channel::<ReregisterRequest>(1);
+        drop(rx);
+
+        request_publisher_reregistration(&tx, &is_restarting, std::time::Duration::from_millis(10))
+            .await;
+
+        assert!(
+            !is_restarting.load(Ordering::Acquire),
+            "restart flag must not stay set forever when re-registration task is unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reregister_request_clears_restart_flag_when_channel_full() {
+        let is_restarting = AtomicBool::new(true);
+        let (tx, _rx) = mpsc::channel::<ReregisterRequest>(1);
+        let (queued_tx, _queued_rx) = oneshot::channel::<()>();
+        tx.try_send(queued_tx)
+            .expect("test precondition: channel should accept first request");
+
+        request_publisher_reregistration(&tx, &is_restarting, std::time::Duration::from_millis(10))
+            .await;
+
+        assert!(
+            !is_restarting.load(Ordering::Acquire),
+            "restart flag must not stay set forever when re-registration queue is saturated"
         );
     }
 
@@ -1579,6 +1685,73 @@ mod tests {
 
         // Clean up
         handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_start_failure_on_hls_storage_validation_does_not_spawn_rtmp() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to pre-bind RTMP port");
+        let local_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let mut config = test_config();
+        config.rtmp_address = local_addr.to_string();
+        config.hls_storage_backend = HlsStorageBackend::SharedFile;
+        config.hls_storage_path = String::new();
+
+        let server =
+            LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
+        let err = match server.start() {
+            Ok(handle) => {
+                handle.shutdown();
+                panic!("empty shared_file path should fail before spawning RTMP");
+            }
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("hls_storage_path"),
+            "unexpected error: {err}"
+        );
+
+        let rebound = tokio::net::TcpListener::bind(local_addr).await;
+        assert!(
+            rebound.is_ok(),
+            "failed start must not leave an RTMP task bound to the prebound port: {rebound:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_failure_on_empty_node_id_does_not_spawn_rtmp() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to pre-bind RTMP port");
+        let local_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let mut config = test_config();
+        config.rtmp_address = local_addr.to_string();
+        config.node_id = String::new();
+
+        let server =
+            LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
+        let err = match server.start() {
+            Ok(handle) => {
+                handle.shutdown();
+                panic!("empty node_id should fail before spawning RTMP");
+            }
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("node_id"),
+            "unexpected error: {err}"
+        );
+
+        let rebound = tokio::net::TcpListener::bind(local_addr).await;
+        assert!(
+            rebound.is_ok(),
+            "failed start must not leave an RTMP task bound to the prebound port: {rebound:?}"
+        );
     }
 
     #[tokio::test]

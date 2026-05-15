@@ -298,6 +298,7 @@ impl HlsProxyClient {
             media_id: media_id.to_string(),
             segment_url_base: segment_url_base.to_string(),
             segment_url_suffix: segment_url_suffix.to_string(),
+            expected_epoch: epoch,
         });
         request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;
@@ -372,6 +373,7 @@ impl HlsProxyClient {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
             segment_name: segment_name.to_string(),
+            expected_epoch: epoch,
         });
         request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;

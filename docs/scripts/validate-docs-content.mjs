@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const docsRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const workspaceRoot = path.resolve(docsRoot, '..');
 const contentRoot = path.join(docsRoot, 'src/content/docs');
 const starlightRoot = path.join(docsRoot, 'node_modules/@astrojs/starlight');
 
@@ -14,8 +15,17 @@ const linkErrors = validateInternalLinks();
 const iconErrors = validateIcons();
 const hygieneErrors = validateContentHygiene();
 const mirrorErrors = validateEnglishMirrors();
+const runtimeEnvErrors = validateRuntimeEnvironmentVariables();
+const secretFileReferenceErrors = validateSecretFileReferences();
 const contentWarnings = collectContentWarnings();
-const errors = [...linkErrors, ...iconErrors, ...hygieneErrors, ...mirrorErrors];
+const errors = [
+  ...linkErrors,
+  ...iconErrors,
+  ...hygieneErrors,
+  ...mirrorErrors,
+  ...runtimeEnvErrors,
+  ...secretFileReferenceErrors,
+];
 
 if (errors.length > 0) {
   console.error(`Docs content validation failed with ${errors.length} issue(s):`);
@@ -158,6 +168,111 @@ function validateEnglishMirrors() {
   }
 
   return errors;
+}
+
+function validateRuntimeEnvironmentVariables() {
+  const errors = [];
+  const configSourcePath = path.join(workspaceRoot, 'synctv-core/src/config.rs');
+  const envReferencePath = path.join(contentRoot, 'en/reference/environment-variables.mdx');
+  const configSource = fs.readFileSync(configSourcePath, 'utf8');
+  const envReference = fs.readFileSync(envReferencePath, 'utf8');
+
+  const runtimeEnvVars = new Set(extractRuntimeEnvVars(configSource));
+  runtimeEnvVars.add('SYNCTV_CONFIG_PATH');
+
+  const documentedEnvVars = new Set(
+    [...envReference.matchAll(/`(SYNCTV_[A-Z0-9_]+)`/g)].map((match) => match[1])
+  );
+
+  const undocumented = [...runtimeEnvVars].filter((name) => !documentedEnvVars.has(name)).sort();
+  const stale = [...documentedEnvVars].filter((name) => !runtimeEnvVars.has(name)).sort();
+
+  if (undocumented.length > 0) {
+    errors.push(
+      `reference/environment-variables.mdx is missing runtime SYNCTV_ variable(s): ${undocumented.join(', ')}`
+    );
+  }
+  if (stale.length > 0) {
+    errors.push(
+      `reference/environment-variables.mdx documents unsupported runtime SYNCTV_ variable(s): ${stale.join(', ')}`
+    );
+  }
+
+  return errors;
+}
+
+function extractRuntimeEnvVars(configSource) {
+  const start = configSource.indexOf('fn apply_env_overrides_with');
+  if (start < 0) {
+    throw new Error('Could not find Config::apply_env_overrides_with in synctv-core/src/config.rs');
+  }
+
+  const end = configSource.indexOf('fn resolve_owned_local_paths', start);
+  if (end < 0) {
+    throw new Error('Could not find end of Config::apply_env_overrides_with in synctv-core/src/config.rs');
+  }
+
+  const section = configSource.slice(start, end);
+  return [...new Set([...section.matchAll(/"(SYNCTV_[A-Z0-9_]+)"/g)].map((match) => match[1]))];
+}
+
+function validateSecretFileReferences() {
+  const errors = [];
+  const configSourcePath = path.join(workspaceRoot, 'synctv-core/src/config.rs');
+  const docsPath = path.join(contentRoot, 'en/configuration/how-configuration-works.mdx');
+  const configSource = fs.readFileSync(configSourcePath, 'utf8');
+  const docs = fs.readFileSync(docsPath, 'utf8');
+
+  const supportedFields = extractSupportedSecretFileFields(configSource);
+  const documentedFields = extractDocumentedSecretFileFields(docs);
+
+  const undocumented = [...supportedFields].filter((field) => !documentedFields.has(field)).sort();
+  const stale = [...documentedFields].filter((field) => !supportedFields.has(field)).sort();
+
+  if (undocumented.length > 0) {
+    errors.push(
+      `configuration/how-configuration-works.mdx is missing secret-file field(s): ${undocumented.join(', ')}`
+    );
+  }
+  if (stale.length > 0) {
+    errors.push(
+      `configuration/how-configuration-works.mdx documents unsupported secret-file field(s): ${stale.join(', ')}`
+    );
+  }
+
+  return errors;
+}
+
+function extractSupportedSecretFileFields(configSource) {
+  const start = configSource.indexOf('fn supports_secret_file_reference');
+  if (start < 0) {
+    throw new Error('Could not find supports_secret_file_reference in synctv-core/src/config.rs');
+  }
+
+  const end = configSource.indexOf('fn resolve_secret_file_references_in_json_value', start);
+  if (end < 0) {
+    throw new Error('Could not find end of supports_secret_file_reference in synctv-core/src/config.rs');
+  }
+
+  const section = configSource.slice(start, end);
+  return new Set(
+    [...section.matchAll(/"([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)"/g)].map((match) => match[1])
+  );
+}
+
+function extractDocumentedSecretFileFields(docs) {
+  const start = docs.indexOf('Common fields that support file references include:');
+  if (start < 0) {
+    throw new Error('Could not find secret-file field list in how-configuration-works.mdx');
+  }
+
+  const end = docs.indexOf('Relative `*_file` paths', start);
+  if (end < 0) {
+    throw new Error('Could not find end of secret-file field list in how-configuration-works.mdx');
+  }
+
+  const section = docs.slice(start, end);
+  return new Set([...section.matchAll(/`([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)`/g)].map((match) => match[1]));
 }
 
 function collectContentWarnings() {

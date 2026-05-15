@@ -42,6 +42,10 @@ impl BilibiliProviderGrpcService {
     }
 }
 
+fn redact_qr_key(key: &str) -> &'static str {
+    synctv_core::secrets::mask_secret(key)
+}
+
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl BilibiliProviderService for BilibiliProviderGrpcService {
@@ -118,7 +122,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             Some(crate::grpc::grpc_unary_request_timeout()),
         );
         let req = request.into_inner();
-        tracing::info!("gRPC Bilibili check QR: {}", req.key);
+        tracing::info!("gRPC Bilibili check QR: key={}", redact_qr_key(&req.key));
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
@@ -335,5 +339,20 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             .await
             .map(Response::new)
             .map_err(crate::grpc::map_api_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_qr_key;
+
+    #[test]
+    fn redact_qr_key_never_exposes_original_value() {
+        let key = "qr-secret-token-abcdef123456";
+        let redacted = redact_qr_key(key);
+
+        assert_eq!(redacted, "[SECRET:redacted]");
+        assert!(!redacted.contains(key));
+        assert_eq!(redacted, redact_qr_key("short"));
     }
 }

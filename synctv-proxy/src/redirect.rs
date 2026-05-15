@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::future::Future;
 use std::time::Duration;
 
@@ -251,7 +252,11 @@ fn classify_reqwest_error(error: &reqwest::Error) -> anyhow::Error {
     let proxy_error = if error.is_timeout() {
         ProxyError::Timeout(message)
     } else if error.is_connect() {
-        ProxyError::Connection(message)
+        if reqwest_error_has_ssrf_resolution_block(error) {
+            ProxyError::Ssrf(message)
+        } else {
+            ProxyError::Connection(message)
+        }
     } else {
         let lower = message.to_ascii_lowercase();
         if lower.contains("private")
@@ -265,4 +270,18 @@ fn classify_reqwest_error(error: &reqwest::Error) -> anyhow::Error {
         }
     };
     proxy_error.into()
+}
+
+fn reqwest_error_has_ssrf_resolution_block(error: &reqwest::Error) -> bool {
+    let mut source = error.source();
+    while let Some(error) = source {
+        if error
+            .downcast_ref::<synctv_common::ssrf::SsrfResolutionBlocked>()
+            .is_some()
+        {
+            return true;
+        }
+        source = error.source();
+    }
+    false
 }

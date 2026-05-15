@@ -8,16 +8,18 @@ description: Use config validate, logs, and rendered manifests to locate configu
 Local binary:
 
 ```bash
-synctv config --config synctv.yaml validate
+synctv config --config synctv.yaml validate --strict
 ```
 
 Development via Cargo:
 
 ```bash
-cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+cargo run -p synctv --bin synctv -- config --config synctv.yaml validate --strict
 ```
 
 If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../troubleshooting/).
+
+`config validate` reports unknown config-file keys and unsupported `SYNCTV_` environment variables as warnings by default. Use `--strict` for deployment preflight because `synctv serve` uses the same strict unknown-input policy at startup.
 
 ## Common Errors
 

@@ -21,6 +21,7 @@ use tracing::warn;
 use crate::http::AppState;
 use crate::observability::metrics;
 pub use crate::proto::client::{HealthDetails, HealthResponse, MemoryHealth};
+use crate::webrtc_status;
 
 /// Timeout for individual health check probes (DB, Redis).
 /// Prevents a hung dependency from blocking the readiness endpoint indefinitely.
@@ -203,6 +204,9 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
             } else {
                 Some(error_messages.join("; "))
             },
+            webrtc: Some(webrtc_status::to_proto_status(
+                &state.shared_api_runtime.webrtc_status,
+            )),
         }),
     };
 
@@ -720,6 +724,7 @@ mod tests {
                 livestream: None,
                 memory: None,
                 message: None,
+                webrtc: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -749,6 +754,7 @@ mod tests {
                 livestream: None,
                 memory: None,
                 message: None,
+                webrtc: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -768,6 +774,7 @@ mod tests {
                 livestream: None,
                 memory: None,
                 message: Some("Database: connection refused".to_string()),
+                webrtc: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -787,6 +794,7 @@ mod tests {
                 livestream: None,
                 memory: None,
                 message: None,
+                webrtc: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -796,6 +804,7 @@ mod tests {
         assert!(!json.contains("email"));
         assert!(!json.contains("livestream"));
         assert!(!json.contains("memory"));
+        assert!(!json.contains("webrtc"));
     }
 
     #[test]
@@ -832,6 +841,7 @@ mod tests {
                     status: "healthy".to_string(),
                 }),
                 message: None,
+                webrtc: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -856,6 +866,7 @@ mod tests {
                     status: "unhealthy".to_string(),
                 }),
                 message: Some("Memory: usage at 95.2% (threshold: 90%)".to_string()),
+                webrtc: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -950,6 +961,22 @@ mod tests {
             details.redis, "not configured",
             "readiness must distinguish missing Redis from a healthy configured Redis"
         );
+    }
+
+    #[tokio::test]
+    async fn test_readiness_includes_webrtc_status() {
+        let state = test_app_state();
+        let response = readiness_check(State(state)).await.into_response();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        let details = health.details.expect("readiness should include details");
+        let webrtc = details
+            .webrtc
+            .expect("readiness should expose WebRTC status");
+
+        assert_eq!(webrtc.mode, "peer_to_peer");
+        assert_eq!(webrtc.builtin_stun_state, "disabled");
+        assert_eq!(webrtc.reason, "disabled_by_config");
     }
 
     fn metrics_test_state(metrics_bearer_token: &str) -> crate::http::AppState {

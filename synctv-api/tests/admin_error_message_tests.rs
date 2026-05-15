@@ -65,6 +65,8 @@ fn create_user_service(pool: &PgPool) -> UserService {
         brute_force,
     );
     service.enable_password_registration_for_tests();
+    service.enable_legacy_password_login_for_tests();
+    service.enable_legacy_password_registration_for_tests();
     service
 }
 

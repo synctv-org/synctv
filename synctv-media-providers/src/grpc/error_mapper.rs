@@ -12,6 +12,8 @@ use tonic::Status;
 
 use crate::error::ProviderClientError;
 
+const RETRY_AFTER_METADATA_KEY: &str = "retry-after";
+
 /// Map a `ProviderClientError` to a `tonic::Status` with an appropriate gRPC
 /// status code.
 ///
@@ -37,18 +39,24 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
             Status::unauthenticated(format!("{context}: authentication failed"))
         }
         ProviderClientError::Http {
-            status, url, body, ..
-        } => match status.as_u16() {
-            400 | 422 => {
-                Status::invalid_argument(format!("{context}: invalid request for {url}: {body}"))
-            }
-            401 | 403 => Status::permission_denied(format!("{context}: access denied")),
-            404 => Status::not_found(format!("{context}: resource not found")),
-            409 => Status::failed_precondition(format!("{context}: request conflict")),
-            429 => Status::resource_exhausted(format!("{context}: rate limited")),
-            s if s >= 500 => Status::unavailable(format!("{context}: upstream server error")),
-            _ => Status::internal(format!("{context}: request failed")),
-        },
+            status,
+            url,
+            body,
+            retry_after_secs,
+        } => attach_retry_after(
+            match status.as_u16() {
+                400 | 422 => Status::invalid_argument(format!(
+                    "{context}: invalid request for {url}: {body}"
+                )),
+                401 | 403 => Status::permission_denied(format!("{context}: access denied")),
+                404 => Status::not_found(format!("{context}: resource not found")),
+                409 => Status::failed_precondition(format!("{context}: request conflict")),
+                429 => Status::resource_exhausted(format!("{context}: rate limited")),
+                s if s >= 500 => Status::unavailable(format!("{context}: upstream server error")),
+                _ => Status::internal(format!("{context}: request failed")),
+            },
+            *retry_after_secs,
+        ),
         ProviderClientError::Network(_) => Status::unavailable(format!("{context}: network error")),
         ProviderClientError::Parse(_) => {
             Status::internal(format!("{context}: failed to parse response"))
@@ -74,6 +82,17 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
             _ => Status::internal(format!("{context}: API error (code {code})")),
         },
     }
+}
+
+fn attach_retry_after(mut status: Status, retry_after_secs: Option<u64>) -> Status {
+    if let Some(secs) = retry_after_secs {
+        if let Ok(value) = secs.to_string().parse() {
+            status
+                .metadata_mut()
+                .insert(RETRY_AFTER_METADATA_KEY, value);
+        }
+    }
+    status
 }
 
 #[cfg(test)]
@@ -220,5 +239,31 @@ mod tests {
         };
         let status = map_provider_error("get_video_url", &err);
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            status
+                .metadata()
+                .get(RETRY_AFTER_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("60")
+        );
+    }
+
+    #[test]
+    fn http_503_preserves_retry_after_metadata() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            url: "https://example.com".to_string(),
+            retry_after_secs: Some(120),
+            body: String::new(),
+        };
+        let status = map_provider_error("get_items", &err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status
+                .metadata()
+                .get(RETRY_AFTER_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("120")
+        );
     }
 }

@@ -126,7 +126,7 @@ pub struct GlobalConfigArgs {
 }
 
 impl GlobalConfigArgs {
-    pub fn load_options(&self, validate: bool) -> LoadConfigOptions {
+    pub fn load_options(&self, validate: bool, strict_unknown: bool) -> LoadConfigOptions {
         LoadConfigOptions {
             config_path: self.config.as_ref().map(|path| path.display().to_string()),
             data_dir: self
@@ -135,6 +135,7 @@ impl GlobalConfigArgs {
                 .map(|path| path.display().to_string()),
             load_dotenv: !self.no_dotenv,
             validate,
+            strict_unknown,
             verbose: self.verbose > 0,
         }
     }
@@ -182,6 +183,10 @@ impl CliConfigContext {
         self.load(true)
     }
 
+    fn strict_validated_config(&self) -> Result<synctv_core::Config> {
+        load_config_with_options(&self.global.load_options(true, true))
+    }
+
     fn load(&self, validate: bool) -> Result<synctv_core::Config> {
         let cache = if validate {
             &self.validated
@@ -190,7 +195,7 @@ impl CliConfigContext {
         };
 
         match cache.get_or_init(|| {
-            load_config_with_options(&self.global.load_options(validate))
+            load_config_with_options(&self.global.load_options(validate, false))
                 .map_err(|error| error.to_string())
         }) {
             Ok(config) => Ok(config.clone()),
@@ -280,7 +285,11 @@ pub enum ConfigSubcommand {
 }
 
 #[derive(Debug, Args)]
-pub struct ConfigValidateArgs {}
+pub struct ConfigValidateArgs {
+    /// Reject unknown config-file keys and unsupported SYNCTV_ environment variables
+    #[arg(long, default_value_t = false)]
+    pub strict: bool,
+}
 
 #[derive(Debug, Args)]
 pub struct ConfigShowArgs {
@@ -3990,7 +3999,7 @@ fn merge_slice_cache_command_globals(command: &mut SliceCacheCommand, root: &Glo
 
 async fn execute_serve(args: ServeArgs) -> Result<()> {
     let context = CliConfigContext::new(args.global.clone());
-    let config = context.validated_config()?;
+    let config = context.strict_validated_config()?;
     switch_process_working_dir_to_data_dir(&config)?;
 
     crate::install_panic_hook(config.logging.backtrace);
@@ -4234,8 +4243,12 @@ fn print_stop_output(format: RemoteOutputFormat, output: &StopServerOutput) -> R
 fn execute_config(config_command: ConfigCommand) -> Result<()> {
     let context = CliConfigContext::new(config_command.global.clone());
     match config_command.command {
-        ConfigSubcommand::Validate(_) => {
-            let config = context.validated_config()?;
+        ConfigSubcommand::Validate(args) => {
+            let config = if args.strict {
+                load_config_with_options(&config_command.global.load_options(true, true))?
+            } else {
+                context.validated_config()?
+            };
             println!("Configuration is valid");
             println!("API address: {}", config.api_address());
             Ok(())
@@ -8959,6 +8972,25 @@ mod tests {
     }
 
     #[test]
+    fn serve_config_context_rejects_unknown_inputs_strictly() {
+        let _env_lock = acquire_env_test_lock();
+        let _unknown_env = EnvVarGuard::set("SYNCTV_UNKNOWN_BOOT_FLAG", "1");
+        let context = CliConfigContext::new(GlobalConfigArgs {
+            no_dotenv: true,
+            ..GlobalConfigArgs::default()
+        });
+
+        let err = context
+            .strict_validated_config()
+            .expect_err("serve config loading should fail on unsupported SYNCTV_ inputs");
+
+        assert!(
+            err.to_string().contains("SYNCTV_UNKNOWN_BOOT_FLAG"),
+            "strict startup error should name the unsupported environment variable: {err}"
+        );
+    }
+
+    #[test]
     fn switch_process_working_dir_to_data_dir_creates_and_enters_directory() {
         let _lock = acquire_current_dir_test_lock();
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
@@ -9143,9 +9175,21 @@ mod tests {
         let cli = Cli::parse_from(["synctv", "config", "validate"]);
         match cli.command {
             Commands::Config(ConfigCommand {
-                command: ConfigSubcommand::Validate(_),
+                command: ConfigSubcommand::Validate(args),
                 ..
-            }) => {}
+            }) => assert!(!args.strict),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_config_validate_strict() {
+        let cli = Cli::parse_from(["synctv", "config", "validate", "--strict"]);
+        match cli.command {
+            Commands::Config(ConfigCommand {
+                command: ConfigSubcommand::Validate(args),
+                ..
+            }) => assert!(args.strict),
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }

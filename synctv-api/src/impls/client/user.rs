@@ -1,4 +1,4 @@
-//! User operations: `get_profile`, `set_username`, `set_password`
+//! User operations: `get_profile`, `set_username`
 
 use crate::impls::ApiError;
 use crate::proto::client::OpaquePasswordUpdateVerificationMethod;
@@ -154,20 +154,16 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         username: Option<String>,
-        old_password: Option<String>,
-        new_password: Option<String>,
     ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
         let normalized_username = username.as_ref().map(|value| value.trim().to_string());
         let request = crate::proto::client::UpdateUserRequest {
             username: normalized_username.clone(),
-            password: new_password.clone(),
-            old_password: old_password.clone(),
         };
         crate::impls::validate_proto_request(&request)?;
 
-        if normalized_username.is_none() && new_password.is_none() {
+        if normalized_username.is_none() {
             return Err(ApiError::InvalidInput(
-                "No valid update fields provided (username or password)".to_string(),
+                "No valid update fields provided (username)".to_string(),
             ));
         }
 
@@ -180,7 +176,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let updated_user = self
             .user_service
-            .update_profile(&uid, normalized_username, old_password, new_password)
+            .update_profile(&uid, normalized_username)
             .await
             .map_err(ApiError::from)?;
 
@@ -251,33 +247,12 @@ impl ClientApiImpl {
         req: crate::proto::client::SetUsernameRequest,
     ) -> Result<crate::proto::client::SetUsernameResponse, ApiError> {
         let response = self
-            .update_profile(
-                user_id,
-                Some(req.new_username.trim().to_string()),
-                None,
-                None,
-            )
+            .update_profile(user_id, Some(req.new_username.trim().to_string()))
             .await?;
 
         Ok(crate::proto::client::SetUsernameResponse {
             user: response.user,
         })
-    }
-
-    pub async fn set_password(
-        &self,
-        user_id: &UserId,
-        req: crate::proto::client::SetPasswordRequest,
-    ) -> Result<crate::proto::client::SetPasswordResponse, ApiError> {
-        self.update_profile(
-            user_id,
-            None,
-            Some(req.old_password),
-            Some(req.new_password),
-        )
-        .await?;
-
-        Ok(crate::proto::client::SetPasswordResponse { success: true })
     }
 
     pub async fn start_opaque_password_update(
@@ -298,21 +273,6 @@ impl ClientApiImpl {
                 )
                 .await
                 .map_err(ApiError::from)?,
-            OpaquePasswordUpdateVerificationMethod::CurrentPlainPassword => {
-                if req.old_password.is_empty() {
-                    return Err(ApiError::InvalidInput(
-                        "old_password is required for plain password verification".to_string(),
-                    ));
-                }
-                self.user_service
-                    .start_opaque_password_update_after_plain_password_verification(
-                        user_id,
-                        &req.old_password,
-                        req.registration_request,
-                    )
-                    .await
-                    .map_err(ApiError::from)?
-            }
             OpaquePasswordUpdateVerificationMethod::EmailToken => {
                 let email_api = self.email_api.as_ref().ok_or_else(|| {
                     ApiError::ServiceUnavailable(

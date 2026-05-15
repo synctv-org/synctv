@@ -58,7 +58,10 @@ async fn test_cross_replica_subscription_visibility() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Hub B should see the subscription via Redis (distributed query)
-    let distributed_subs = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let distributed_subs = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert!(
         !distributed_subs.is_empty(),
         "Hub B should see hub A's subscription via Redis, got empty list"
@@ -102,7 +105,10 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify subscription is visible from hub B
-    let subs_before = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let subs_before = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         subs_before.len(),
         1,
@@ -116,7 +122,10 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Hub B should no longer see the subscription
-    let subs_after = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let subs_after = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert!(
         subs_after.is_empty(),
         "Hub B should see 0 subscribers after unsubscribe, got {}",
@@ -149,7 +158,10 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let subs_before = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let subs_before = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         subs_before.len(),
         2,
@@ -160,7 +172,10 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let subs_after = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let subs_after = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert!(
         subs_after.is_empty(),
         "remove_room must remove Redis subscription state, got {} lingering entries",
@@ -211,8 +226,14 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Both hubs should see 3 subscribers via distributed query
-    let subs_from_a = hub_a.get_room_subscribers_replicas_wide(&room_id).await;
-    let subs_from_b = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let subs_from_a = hub_a
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
+    let subs_from_b = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
 
     assert_eq!(
         subs_from_a.len(),
@@ -243,7 +264,10 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     hub_a.unsubscribe("conn_a1");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let subs_after = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let subs_after = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         subs_after.len(),
         2,
@@ -449,7 +473,10 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Distributed view should show 10 subscribers
-    let distributed = hub_a.get_room_subscribers_replicas_wide(&room_id).await;
+    let distributed = hub_a
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         distributed.len(),
         10,
@@ -464,7 +491,10 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Should now see only 5 (hub B's subscribers)
-    let remaining = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let remaining = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         remaining.len(),
         5,
@@ -512,7 +542,10 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
     hub_a.unsubscribe("conn_a");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let before_cleanup = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let before_cleanup = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         before_cleanup.len(),
         1,
@@ -527,7 +560,10 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
     cancel.cancel();
     let _ = cleanup_task.await;
 
-    let after_cleanup = hub_b.get_room_subscribers_replicas_wide(&room_id).await;
+    let after_cleanup = hub_b
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         after_cleanup.len(),
         1,
@@ -577,7 +613,10 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let _: () = conn.expire(&valid_conn_key, 180).await.unwrap();
     let _: () = conn.expire(&wrong_room_conn_key, 180).await.unwrap();
 
-    let subscribers = hub.get_room_subscribers_replicas_wide(&room_id).await;
+    let subscribers = hub
+        .get_room_subscribers_replicas_wide(&room_id)
+        .await
+        .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         subscribers,
         vec![(valid_user_id, "conn_valid".to_string())],

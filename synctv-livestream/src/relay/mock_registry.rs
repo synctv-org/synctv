@@ -2,6 +2,7 @@
 
 use super::registry::PublisherInfo;
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
+use super::RedisOperationTimeout;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -281,7 +282,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
             .fail_refresh_publisher_ttl_with_wrapped_timeout
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(anyhow::anyhow!("Redis operation timed out after 5s"));
+            return Err(RedisOperationTimeout::new(5).into());
         }
         if self
             .fail_refresh_publisher_ttl_with_response_error

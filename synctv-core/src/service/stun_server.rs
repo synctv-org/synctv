@@ -5,7 +5,10 @@
 //! replicas behind the same advertised address.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
 
@@ -30,6 +33,166 @@ impl Default for StunServerConfig {
             bind_addr: "0.0.0.0:3478".to_string(),
             external_addr: "0.0.0.0:3478".to_string(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebRtcRuntimeMode {
+    SignalingOnly,
+    PeerToPeer,
+}
+
+impl WebRtcRuntimeMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SignalingOnly => "signaling_only",
+            Self::PeerToPeer => "peer_to_peer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinStunRuntimeState {
+    Disabled,
+    Running,
+    Degraded,
+}
+
+impl BuiltinStunRuntimeState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Running => "running",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinStunRuntimeReason {
+    SignalingOnly,
+    DisabledByConfig,
+    ExternalAddrUnresolved,
+    ExternalAddrInvalid,
+    BindFailed,
+    Running,
+    TaskExited,
+}
+
+impl BuiltinStunRuntimeReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SignalingOnly => "signaling_only",
+            Self::DisabledByConfig => "disabled_by_config",
+            Self::ExternalAddrUnresolved => "external_addr_unresolved",
+            Self::ExternalAddrInvalid => "external_addr_invalid",
+            Self::BindFailed => "bind_failed",
+            Self::Running => "running",
+            Self::TaskExited => "task_exited",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebRtcRuntimeStatus {
+    pub mode: WebRtcRuntimeMode,
+    pub builtin_stun_configured: bool,
+    pub builtin_stun_state: BuiltinStunRuntimeState,
+    pub reason: BuiltinStunRuntimeReason,
+    pub local_addr: Option<String>,
+    pub external_addr: Option<String>,
+    pub message: Option<String>,
+}
+
+impl WebRtcRuntimeStatus {
+    #[must_use]
+    pub fn peer_to_peer_stun_disabled() -> Self {
+        Self::disabled_by_config(WebRtcRuntimeMode::PeerToPeer)
+    }
+
+    #[must_use]
+    pub fn signaling_only() -> Self {
+        Self {
+            mode: WebRtcRuntimeMode::SignalingOnly,
+            builtin_stun_configured: false,
+            builtin_stun_state: BuiltinStunRuntimeState::Disabled,
+            reason: BuiltinStunRuntimeReason::SignalingOnly,
+            local_addr: None,
+            external_addr: None,
+            message: Some("WebRTC signaling_only mode does not start built-in STUN".to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn disabled_by_config(mode: WebRtcRuntimeMode) -> Self {
+        Self {
+            mode,
+            builtin_stun_configured: false,
+            builtin_stun_state: BuiltinStunRuntimeState::Disabled,
+            reason: BuiltinStunRuntimeReason::DisabledByConfig,
+            local_addr: None,
+            external_addr: None,
+            message: Some("Built-in STUN is disabled by configuration".to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn degraded(
+        reason: BuiltinStunRuntimeReason,
+        message: impl Into<String>,
+        external_addr: Option<String>,
+    ) -> Self {
+        Self {
+            mode: WebRtcRuntimeMode::PeerToPeer,
+            builtin_stun_configured: true,
+            builtin_stun_state: BuiltinStunRuntimeState::Degraded,
+            reason,
+            local_addr: None,
+            external_addr,
+            message: Some(message.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn running(local_addr: SocketAddr, external_addr: SocketAddr) -> Self {
+        Self {
+            mode: WebRtcRuntimeMode::PeerToPeer,
+            builtin_stun_configured: true,
+            builtin_stun_state: BuiltinStunRuntimeState::Running,
+            reason: BuiltinStunRuntimeReason::Running,
+            local_addr: Some(local_addr.to_string()),
+            external_addr: Some(external_addr.to_string()),
+            message: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_task_running(mut self, running: bool) -> Self {
+        if self.builtin_stun_state == BuiltinStunRuntimeState::Running && !running {
+            self.builtin_stun_state = BuiltinStunRuntimeState::Degraded;
+            self.reason = BuiltinStunRuntimeReason::TaskExited;
+            self.message = Some("Built-in STUN server task has exited".to_string());
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = vec![
+            format!("mode={}", self.mode.as_str()),
+            format!("builtin_stun={}", self.builtin_stun_state.as_str()),
+            format!("reason={}", self.reason.as_str()),
+        ];
+        if let Some(external_addr) = &self.external_addr {
+            parts.push(format!("external_addr={external_addr}"));
+        }
+        if let Some(message) = &self.message {
+            parts.push(format!("message={message}"));
+        }
+        parts.join("; ")
     }
 }
 
@@ -234,6 +397,7 @@ pub struct StunServer {
     task: JoinHandle<()>,
     local_addr: SocketAddr,
     external_addr: SocketAddr,
+    running: Arc<AtomicBool>,
 }
 
 impl StunServer {
@@ -257,6 +421,8 @@ impl StunServer {
             .local_addr()
             .map_err(|e| anyhow::anyhow!("Failed to inspect STUN local address: {e}"))?;
 
+        let running = Arc::new(AtomicBool::new(true));
+        let task_running = running.clone();
         let task = crate::spawn::spawn_monitored("stun_server", async move {
             let mut buf = [0_u8; 1500];
             loop {
@@ -277,6 +443,7 @@ impl StunServer {
                     tracing::warn!(error = %error, %peer_addr, "STUN server failed to send response");
                 }
             }
+            task_running.store(false, Ordering::Release);
         });
 
         tracing::info!(
@@ -289,6 +456,7 @@ impl StunServer {
             task,
             local_addr,
             external_addr: external,
+            running,
         }))
     }
 
@@ -302,7 +470,13 @@ impl StunServer {
         self.external_addr
     }
 
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire) && !self.task.is_finished()
+    }
+
     pub fn shutdown(&self) {
+        self.running.store(false, Ordering::Release);
         self.task.abort();
     }
 }
@@ -433,6 +607,19 @@ mod tests {
     fn test_validate_external_addr_link_local() {
         let err = validate_external_addr("169.254.1.1:3478").unwrap_err();
         assert!(err.contains("not routable"));
+    }
+
+    #[test]
+    fn test_webrtc_runtime_status_marks_running_task_exit_as_degraded() {
+        let status = WebRtcRuntimeStatus::running(
+            "0.0.0.0:3478".parse().unwrap(),
+            "203.0.113.1:3478".parse().unwrap(),
+        )
+        .with_task_running(false);
+
+        assert_eq!(status.builtin_stun_state, BuiltinStunRuntimeState::Degraded);
+        assert_eq!(status.reason, BuiltinStunRuntimeReason::TaskExited);
+        assert!(status.summary().contains("task_exited"));
     }
 
     #[tokio::test]

@@ -22,13 +22,13 @@ use crate::proto::client::{
     AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
     ApproveRoomJoinReviewResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
     CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
-    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
-    DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse,
-    DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
-    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaquePasswordUpdateRequest,
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
+    CreateGuestTokenRequest, CreateGuestTokenResponse, CreatePlaylistRequest,
+    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, DeleteEntriesRequest,
+    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePasskeyRequest,
+    DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
+    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, FinishMfaPasskeyRequest,
+    FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
     FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
     GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
@@ -44,23 +44,23 @@ use crate::proto::client::{
     ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse,
     LogoutRequest, LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
     MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
+    RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
-    SendVerificationEmailResponse, ServerMessage, SetPasswordRequest, SetPasswordResponse,
-    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
-    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
-    StartOpaqueLoginResponse, StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
-    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
-    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
-    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
-    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    SendVerificationEmailResponse, ServerMessage, SetRoomPasswordRequest, SetRoomPasswordResponse,
+    SetUsernameRequest, SetUsernameResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse, StartOpaquePasswordUpdateRequest,
+    StartOpaquePasswordUpdateResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
+    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
+    StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
+    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
     UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
     UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, VerifyMfaEmailCodeRequest,
-    VerifyMfaPasswordRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -395,30 +395,6 @@ impl ClientServiceImpl {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl AuthService for ClientServiceImpl {
-    async fn register(
-        &self,
-        request: Request<RegisterRequest>,
-    ) -> Result<Response<RegisterResponse>, Status> {
-        let metadata = self.request_metadata(&request);
-        let client_ip = metadata.client_ip;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_public_endpoint_with_control(
-                &metadata,
-                EndpointRateLimitCategory::Auth,
-                move |request_control| async move {
-                    client_api
-                        .register_with_control(req, client_ip, Some(&request_control))
-                        .await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
     async fn start_opaque_registration(
         &self,
         request: Request<StartOpaqueRegistrationRequest>,
@@ -812,30 +788,6 @@ impl AuthService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn verify_mfa_password(
-        &self,
-        request: Request<VerifyMfaPasswordRequest>,
-    ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
-        let client_ip = metadata.client_ip;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_public_endpoint_with_control(
-                &metadata,
-                EndpointRateLimitCategory::Auth,
-                move |request_control| async move {
-                    client_api
-                        .verify_mfa_password_with_control(req, client_ip, Some(&request_control))
-                        .await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
     async fn refresh_token(
         &self,
         request: Request<RefreshTokenRequest>,
@@ -936,27 +888,6 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.set_username(&authenticated.user_id, req).await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn set_password(
-        &self,
-        request: Request<SetPasswordRequest>,
-    ) -> Result<Response<SetPasswordResponse>, Status> {
-        let metadata = self.request_metadata(&request);
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Write,
-                move |authenticated| async move {
-                    client_api.set_password(&authenticated.user_id, req).await
                 },
             )
             .await
@@ -2472,9 +2403,37 @@ impl EmailService for ClientServiceImpl {
         Ok(Response::new(result))
     }
 
-    async fn confirm_password_reset(
+    async fn start_opaque_password_reset(
         &self,
-        request: Request<ConfirmPasswordResetRequest>,
+        request: Request<StartOpaquePasswordResetRequest>,
+    ) -> Result<Response<StartOpaquePasswordResetResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let email_api = self.email_api().map_err(map_api_error)?;
+        let req = request.into_inner();
+        let email_api = email_api.clone();
+        let executor = self.client_api.clone();
+        let result = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Email,
+                move |request_control| async move {
+                    email_api
+                        .start_opaque_password_reset_response_with_control(
+                            req,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_email_flow_error)?;
+
+        Ok(Response::new(result))
+    }
+
+    async fn finish_opaque_password_reset(
+        &self,
+        request: Request<FinishOpaquePasswordResetRequest>,
     ) -> Result<Response<ConfirmPasswordResetResponse>, Status> {
         let metadata = self.request_metadata(&request);
         let email_api = self.email_api().map_err(map_api_error)?;
@@ -2487,7 +2446,10 @@ impl EmailService for ClientServiceImpl {
                 EndpointRateLimitCategory::Email,
                 move |request_control| async move {
                     email_api
-                        .confirm_password_reset_response_with_control(req, Some(&request_control))
+                        .finish_opaque_password_reset_response_with_control(
+                            req,
+                            Some(&request_control),
+                        )
                         .await
                 },
             )

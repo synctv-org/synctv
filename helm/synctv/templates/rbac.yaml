@@ -1,4 +1,7 @@
 {{- if .Values.serviceAccount.create -}}
+{{- $usesK8sDns := and .Values.config.cluster.enabled (eq (.Values.config.cluster.discoveryMode | default "redis") "k8s_dns") -}}
+{{- $usesK8sLease := and .Values.config.cluster.enabled (eq (.Values.config.cluster.leaderElectionMode | default "redis") "k8s_lease") -}}
+{{- if or $usesK8sDns $usesK8sLease }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -6,13 +9,17 @@ metadata:
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
 rules:
+  {{- if $usesK8sDns }}
   - apiGroups: [""]
     resources: ["endpoints", "pods"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if $usesK8sLease }}
   # Required for K8s Lease-based leader election
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -28,4 +35,5 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "synctv.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

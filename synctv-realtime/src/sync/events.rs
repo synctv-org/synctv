@@ -509,7 +509,8 @@ impl RealtimeEvent {
             Self::KickUser { .. }
             | Self::UserNotification { .. }
             | Self::ProviderCredentialChanged { .. }
-            | Self::CacheInvalidate { .. } => RealtimeDeliveryRoute::Admin,
+            | Self::CacheInvalidate { .. }
+            | Self::SystemNotification { .. } => RealtimeDeliveryRoute::Admin,
             Self::ChatMessage { .. }
             | Self::PlaybackStateChanged { .. }
             | Self::UserJoined { .. }
@@ -528,8 +529,7 @@ impl RealtimeEvent {
             | Self::RoomSettingsChanged { .. }
             | Self::WebRTCSignaling { .. }
             | Self::WebRTCJoin { .. }
-            | Self::WebRTCLeave { .. }
-            | Self::SystemNotification { .. } => RealtimeDeliveryRoute::Room,
+            | Self::WebRTCLeave { .. } => RealtimeDeliveryRoute::Room,
         }
     }
 
@@ -754,6 +754,21 @@ mod tests {
         assert!(json.contains("provider_credential_changed"));
         let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "provider_credential_changed");
+    }
+
+    #[test]
+    fn test_system_notification_is_admin_channel_event() {
+        let event = RealtimeEvent::SystemNotification {
+            event_id: synctv_common::snanoid!(16),
+            message: "maintenance".to_string(),
+            level: NotificationLevel::Warning,
+            timestamp: Utc::now(),
+        };
+
+        assert!(event.room_id().is_none());
+        assert_eq!(event.delivery_route(), RealtimeDeliveryRoute::Admin);
+        assert!(event.delivers_to_admin_channel());
+        assert!(!event.delivers_to_room_channel());
     }
 
     #[test]

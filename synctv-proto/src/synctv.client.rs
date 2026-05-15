@@ -220,26 +220,6 @@ pub struct PlaybackState {
     #[serde(with = "crate::http_serde::json_bytes")]
     pub target: ::prost::alloc::vec::Vec<u8>,
 }
-/// Authentication Messages
-/// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
-/// for production deployments; the API does not enforce HTTPS because some
-/// trusted or local deployments intentionally run over HTTP.
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.RegisterRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_RegisterRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RegisterRequest {
-    #[prost(string, tag = "1")]
-    pub username: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub password: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub email: ::prost::alloc::string::String,
-}
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RegisterResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -313,11 +293,8 @@ pub struct FinishOpaqueRegistrationRequest {
     #[prost(bytes = "vec", tag = "2")]
     pub registration_upload: ::prost::alloc::vec::Vec<u8>,
 }
-/// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
-/// for production deployments; the API does not enforce HTTPS because some
-/// trusted or local deployments intentionally run over HTTP.
-/// Provide exactly one login identifier: `username` or `email`.
-/// Provide exactly one credential: `password` or `email_token`.
+/// Confirm a passwordless email login token. Local password login is OPAQUE-only
+/// and uses StartOpaqueLogin / FinishOpaqueLogin.
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.LoginRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -327,12 +304,6 @@ pub struct FinishOpaqueRegistrationRequest {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LoginRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginRequest {
-    #[prost(string, tag = "1")]
-    #[serde(default)]
-    pub username: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    #[serde(default)]
-    pub password: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     #[serde(default)]
     pub email: ::prost::alloc::string::String,
@@ -889,20 +860,6 @@ pub struct FinishMfaPasskeyRequest {
     pub credential: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.VerifyMfaPasswordRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_VerifyMfaPasswordRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct VerifyMfaPasswordRequest {
-    #[prost(string, tag = "1")]
-    pub mfa_session_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub password: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RefreshTokenRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -961,12 +918,6 @@ pub struct UpdateUserRequest {
     #[prost(string, optional, tag = "1")]
     #[serde(default)]
     pub username: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "2")]
-    #[serde(default)]
-    pub password: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "3")]
-    #[serde(default)]
-    pub old_password: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.UpdateUserResponse")]
@@ -1000,8 +951,6 @@ pub struct StartOpaquePasswordUpdateRequest {
     pub registration_request: ::prost::alloc::vec::Vec<u8>,
     #[prost(enumeration = "OpaquePasswordUpdateVerificationMethod", tag = "4")]
     pub verification_method: i32,
-    #[prost(string, tag = "5")]
-    pub old_password: ::prost::alloc::string::String,
     #[prost(string, tag = "6")]
     pub email_token: ::prost::alloc::string::String,
 }
@@ -3495,34 +3444,6 @@ pub struct SetUsernameResponse {
 }
 /// SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SetPasswordRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPasswordRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SetPasswordRequest {
-    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: required
-    #[prost(string, tag = "1")]
-    pub old_password: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
-    #[prost(string, tag = "2")]
-    pub new_password: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SetPasswordResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPasswordResponse))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SetPasswordResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
-#[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.ListMyRoomsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -3879,25 +3800,62 @@ pub struct RequestPasswordResetResponse {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
 }
-/// SECURITY: new_password is transmitted as plaintext. TLS MUST be used.
+/// Start resetting a password with an email reset token. The reset token is
+/// consumed here and exchanged for a short-lived OPAQUE registration session.
+/// The server receives only the OPAQUE registration request for the new password.
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ConfirmPasswordResetRequest")]
+#[prost_reflect(message_name = "synctv.client.StartOpaquePasswordResetRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmPasswordResetRequest))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartOpaquePasswordResetRequest)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ConfirmPasswordResetRequest {
-    /// Validation: required, email format
+pub struct StartOpaquePasswordResetRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub email: ::prost::alloc::string::String,
-    /// Reset code from email. Validation: required
     #[prost(string, tag = "2")]
     pub token: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
-    #[prost(string, tag = "3")]
-    pub new_password: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub registration_request: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaquePasswordResetResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartOpaquePasswordResetResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaquePasswordResetResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub registration_response: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishOpaquePasswordResetRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_FinishOpaquePasswordResetRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishOpaquePasswordResetRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub registration_upload: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.ConfirmPasswordResetResponse")]
@@ -4264,6 +4222,9 @@ pub struct GetIceServersRequest {}
 pub struct GetIceServersResponse {
     #[prost(message, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<IceServer>,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webrtc: ::core::option::Option<WebRtcStatus>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.MemoryHealth")]
@@ -4278,6 +4239,33 @@ pub struct MemoryHealth {
     pub usage_percent: f64,
     #[prost(string, tag = "2")]
     pub status: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.WebRtcStatus")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRtcStatus))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WebRtcStatus {
+    #[prost(string, tag = "1")]
+    pub mode: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub builtin_stun_state: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub builtin_stun_configured: bool,
+    #[prost(string, tag = "4")]
+    pub reason: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_addr: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_addr: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.HealthDetails")]
@@ -4310,6 +4298,9 @@ pub struct HealthDetails {
     #[prost(string, optional, tag = "8")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webrtc: ::core::option::Option<WebRtcStatus>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.HealthResponse")]
@@ -4648,9 +4639,8 @@ impl MfaMethod {
 pub enum OpaquePasswordUpdateVerificationMethod {
     Unspecified = 0,
     CurrentOpaquePassword = 1,
-    CurrentPlainPassword = 2,
-    EmailToken = 3,
-    Passkey = 4,
+    EmailToken = 2,
+    Passkey = 3,
 }
 impl OpaquePasswordUpdateVerificationMethod {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -4662,9 +4652,6 @@ impl OpaquePasswordUpdateVerificationMethod {
             Self::Unspecified => "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED",
             Self::CurrentOpaquePassword => {
                 "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD"
-            }
-            Self::CurrentPlainPassword => {
-                "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_PLAIN_PASSWORD"
             }
             Self::EmailToken => "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN",
             Self::Passkey => "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY",
@@ -4678,9 +4665,6 @@ impl OpaquePasswordUpdateVerificationMethod {
             }
             "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD" => {
                 Some(Self::CurrentOpaquePassword)
-            }
-            "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_PLAIN_PASSWORD" => {
-                Some(Self::CurrentPlainPassword)
             }
             "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN" => {
                 Some(Self::EmailToken)
@@ -5381,10 +5365,6 @@ pub mod auth_service_client {
     /// ==================== Auth Service ====================
     /// Authentication: None (public access)
     /// Routes: /api/auth/\*
-    ///
-    /// SECURITY: All RPCs that transmit passwords (Register, Login) send credentials
-    /// as plaintext in the protobuf payload. Deployments MUST use TLS to protect
-    /// credentials in transit. Never expose this service over an unencrypted channel.
     #[derive(Debug, Clone)]
     pub struct AuthServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -5465,30 +5445,7 @@ pub mod auth_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        pub async fn register(
-            &mut self,
-            request: impl tonic::IntoRequest<super::RegisterRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RegisterResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.AuthService/Register",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.AuthService", "Register"));
-            self.inner.unary(req, path, codec).await
-        }
+        /// Local password registration is OPAQUE-only.
         pub async fn login(
             &mut self,
             request: impl tonic::IntoRequest<super::LoginRequest>,
@@ -5872,29 +5829,6 @@ pub mod auth_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn verify_mfa_password(
-            &mut self,
-            request: impl tonic::IntoRequest<super::VerifyMfaPasswordRequest>,
-        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.AuthService/VerifyMfaPassword",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.AuthService", "VerifyMfaPassword"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn refresh_token(
             &mut self,
             request: impl tonic::IntoRequest<super::RefreshTokenRequest>,
@@ -5934,13 +5868,7 @@ pub mod auth_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with AuthServiceServer.
     #[async_trait]
     pub trait AuthService: std::marker::Send + std::marker::Sync + 'static {
-        async fn register(
-            &self,
-            request: tonic::Request<super::RegisterRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RegisterResponse>,
-            tonic::Status,
-        >;
+        /// Local password registration is OPAQUE-only.
         async fn login(
             &self,
             request: tonic::Request<super::LoginRequest>,
@@ -6031,10 +5959,6 @@ pub mod auth_service_server {
             &self,
             request: tonic::Request<super::FinishMfaPasskeyRequest>,
         ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
-        async fn verify_mfa_password(
-            &self,
-            request: tonic::Request<super::VerifyMfaPasswordRequest>,
-        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
         async fn refresh_token(
             &self,
             request: tonic::Request<super::RefreshTokenRequest>,
@@ -6046,10 +5970,6 @@ pub mod auth_service_server {
     /// ==================== Auth Service ====================
     /// Authentication: None (public access)
     /// Routes: /api/auth/\*
-    ///
-    /// SECURITY: All RPCs that transmit passwords (Register, Login) send credentials
-    /// as plaintext in the protobuf payload. Deployments MUST use TLS to protect
-    /// credentials in transit. Never expose this service over an unencrypted channel.
     #[derive(Debug)]
     pub struct AuthServiceServer<T> {
         inner: Arc<T>,
@@ -6126,51 +6046,6 @@ pub mod auth_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/synctv.client.AuthService/Register" => {
-                    #[allow(non_camel_case_types)]
-                    struct RegisterSvc<T: AuthService>(pub Arc<T>);
-                    impl<
-                        T: AuthService,
-                    > tonic::server::UnaryService<super::RegisterRequest>
-                    for RegisterSvc<T> {
-                        type Response = super::RegisterResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::RegisterRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AuthService>::register(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = RegisterSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.client.AuthService/Login" => {
                     #[allow(non_camel_case_types)]
                     struct LoginSvc<T: AuthService>(pub Arc<T>);
@@ -6878,52 +6753,6 @@ pub mod auth_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.AuthService/VerifyMfaPassword" => {
-                    #[allow(non_camel_case_types)]
-                    struct VerifyMfaPasswordSvc<T: AuthService>(pub Arc<T>);
-                    impl<
-                        T: AuthService,
-                    > tonic::server::UnaryService<super::VerifyMfaPasswordRequest>
-                    for VerifyMfaPasswordSvc<T> {
-                        type Response = super::LoginResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::VerifyMfaPasswordRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AuthService>::verify_mfa_password(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = VerifyMfaPasswordSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.client.AuthService/RefreshToken" => {
                     #[allow(non_camel_case_types)]
                     struct RefreshTokenSvc<T: AuthService>(pub Arc<T>);
@@ -7171,30 +7000,6 @@ pub mod user_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("synctv.client.UserService", "SetUsername"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn set_password(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SetPasswordRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SetPasswordResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.UserService/SetPassword",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.UserService", "SetPassword"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn start_opaque_password_update(
@@ -7538,13 +7343,6 @@ pub mod user_service_server {
             tonic::Response<super::SetUsernameResponse>,
             tonic::Status,
         >;
-        async fn set_password(
-            &self,
-            request: tonic::Request<super::SetPasswordRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SetPasswordResponse>,
-            tonic::Status,
-        >;
         async fn start_opaque_password_update(
             &self,
             request: tonic::Request<super::StartOpaquePasswordUpdateRequest>,
@@ -7827,51 +7625,6 @@ pub mod user_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = SetUsernameSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.UserService/SetPassword" => {
-                    #[allow(non_camel_case_types)]
-                    struct SetPasswordSvc<T: UserService>(pub Arc<T>);
-                    impl<
-                        T: UserService,
-                    > tonic::server::UnaryService<super::SetPasswordRequest>
-                    for SetPasswordSvc<T> {
-                        type Response = super::SetPasswordResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::SetPasswordRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as UserService>::set_password(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = SetPasswordSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -12301,9 +12054,38 @@ pub mod email_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn confirm_password_reset(
+        pub async fn start_opaque_password_reset(
             &mut self,
-            request: impl tonic::IntoRequest<super::ConfirmPasswordResetRequest>,
+            request: impl tonic::IntoRequest<super::StartOpaquePasswordResetRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaquePasswordResetResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.EmailService/StartOpaquePasswordReset",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.EmailService",
+                        "StartOpaquePasswordReset",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_opaque_password_reset(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishOpaquePasswordResetRequest>,
         ) -> std::result::Result<
             tonic::Response<super::ConfirmPasswordResetResponse>,
             tonic::Status,
@@ -12318,12 +12100,15 @@ pub mod email_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.EmailService/ConfirmPasswordReset",
+                "/synctv.client.EmailService/FinishOpaquePasswordReset",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new("synctv.client.EmailService", "ConfirmPasswordReset"),
+                    GrpcMethod::new(
+                        "synctv.client.EmailService",
+                        "FinishOpaquePasswordReset",
+                    ),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -12365,9 +12150,16 @@ pub mod email_service_server {
             tonic::Response<super::RequestPasswordResetResponse>,
             tonic::Status,
         >;
-        async fn confirm_password_reset(
+        async fn start_opaque_password_reset(
             &self,
-            request: tonic::Request<super::ConfirmPasswordResetRequest>,
+            request: tonic::Request<super::StartOpaquePasswordResetRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaquePasswordResetResponse>,
+            tonic::Status,
+        >;
+        async fn finish_opaque_password_reset(
+            &self,
+            request: tonic::Request<super::FinishOpaquePasswordResetRequest>,
         ) -> std::result::Result<
             tonic::Response<super::ConfirmPasswordResetResponse>,
             tonic::Status,
@@ -12592,25 +12384,30 @@ pub mod email_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.EmailService/ConfirmPasswordReset" => {
+                "/synctv.client.EmailService/StartOpaquePasswordReset" => {
                     #[allow(non_camel_case_types)]
-                    struct ConfirmPasswordResetSvc<T: EmailService>(pub Arc<T>);
+                    struct StartOpaquePasswordResetSvc<T: EmailService>(pub Arc<T>);
                     impl<
                         T: EmailService,
-                    > tonic::server::UnaryService<super::ConfirmPasswordResetRequest>
-                    for ConfirmPasswordResetSvc<T> {
-                        type Response = super::ConfirmPasswordResetResponse;
+                    > tonic::server::UnaryService<super::StartOpaquePasswordResetRequest>
+                    for StartOpaquePasswordResetSvc<T> {
+                        type Response = super::StartOpaquePasswordResetResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::ConfirmPasswordResetRequest>,
+                            request: tonic::Request<
+                                super::StartOpaquePasswordResetRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as EmailService>::confirm_password_reset(&inner, request)
+                                <T as EmailService>::start_opaque_password_reset(
+                                        &inner,
+                                        request,
+                                    )
                                     .await
                             };
                             Box::pin(fut)
@@ -12622,7 +12419,59 @@ pub mod email_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = ConfirmPasswordResetSvc(inner);
+                        let method = StartOpaquePasswordResetSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.EmailService/FinishOpaquePasswordReset" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishOpaquePasswordResetSvc<T: EmailService>(pub Arc<T>);
+                    impl<
+                        T: EmailService,
+                    > tonic::server::UnaryService<
+                        super::FinishOpaquePasswordResetRequest,
+                    > for FinishOpaquePasswordResetSvc<T> {
+                        type Response = super::ConfirmPasswordResetResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::FinishOpaquePasswordResetRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as EmailService>::finish_opaque_password_reset(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishOpaquePasswordResetSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -27,6 +27,11 @@ message PullRtmpStreamRequest {
     // (StreamHub already does this automatically, but this flag allows the server
     // to log reconnection events and apply reconnection-specific optimizations.)
     bool is_reconnect = 3;
+    // Publisher fencing token observed by the caller when it discovered the
+    // publisher. The serving node must reject the request if its current
+    // publisher epoch differs, preventing stale cross-node relay after a
+    // republish or ownership change.
+    uint64 expected_epoch = 4;
 }
 
 // RTMP packet with timestamp
@@ -52,6 +57,8 @@ message GetHlsPlaylistRequest {
     // Example: prefix="/api/.../segment/", suffix=".png?sig=..."
     string segment_url_base = 3;
     string segment_url_suffix = 4;
+    // Publisher fencing token observed by the proxying node.
+    uint64 expected_epoch = 5;
 }
 
 message GetHlsPlaylistResponse {
@@ -63,6 +70,8 @@ message GetHlsSegmentRequest {
     string room_id = 1;
     string media_id = 2;
     string segment_name = 3;
+    // Publisher fencing token observed by the proxying node.
+    uint64 expected_epoch = 4;
 }
 
 message GetHlsSegmentResponse {

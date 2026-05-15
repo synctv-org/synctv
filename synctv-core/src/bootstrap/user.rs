@@ -7,7 +7,7 @@ use crate::{
     config::BootstrapConfig,
     models::{SignupMethod, User, UserRole},
     repository::{PasswordCredentialMaterial, UserRepository},
-    service::auth::{hash_password, OpaquePasswordService},
+    service::auth::OpaquePasswordService,
     Error, Result,
 };
 
@@ -60,7 +60,6 @@ pub async fn bootstrap_root_user(
 
     info!("Creating root user '{}'...", config.root_username);
 
-    let password_hash = hash_password(&config.root_password).await?;
     let opaque_password_service =
         OpaquePasswordService::derive_from_secret(opaque_server_setup_secret.as_bytes());
     let opaque_record = opaque_password_service.register_password(
@@ -71,7 +70,7 @@ pub async fn bootstrap_root_user(
     let mut user = User::new(
         config.root_username.clone(),
         (!config.root_email.is_empty()).then(|| config.root_email.clone()),
-        password_hash,
+        String::new(),
         SignupMethod::AdminCreated, // Root user created via bootstrap config
     );
 
@@ -80,7 +79,7 @@ pub async fn bootstrap_root_user(
     let created_user = repository
         .create_with_password_credentials(
             &user,
-            PasswordCredentialMaterial::legacy_and_opaque(&user.password_hash, &opaque_record),
+            PasswordCredentialMaterial::opaque_only(&opaque_record),
             pool,
         )
         .await?;

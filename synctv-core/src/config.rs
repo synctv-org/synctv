@@ -74,6 +74,52 @@ pub fn absolute_display_path(path: &Path) -> String {
         .to_string()
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnknownConfigDiagnostics {
+    pub config_file: Option<String>,
+    pub config_keys: Vec<String>,
+    pub env_keys: Vec<String>,
+}
+
+impl UnknownConfigDiagnostics {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.config_keys.is_empty() && self.env_keys.is_empty()
+    }
+
+    #[must_use]
+    pub fn strict_error_message(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.config_keys.is_empty() {
+            let source = self.config_file.as_deref().map_or_else(
+                || "config file".to_string(),
+                |path| format!("config file {path}"),
+            );
+            parts.push(format!(
+                "unsupported key(s) in {source}: {}",
+                self.config_keys.join(", ")
+            ));
+        }
+        if !self.env_keys.is_empty() {
+            parts.push(format!(
+                "unsupported SYNCTV_ environment variable(s): {}",
+                self.env_keys.join(", ")
+            ));
+        }
+        parts.join("; ")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConfigLoadBehavior {
+    pub strict_unknown: bool,
+}
+
+struct LoadedConfig {
+    config: Config,
+    unknown: UnknownConfigDiagnostics,
+}
+
 pub fn default_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -1549,7 +1595,8 @@ impl Config {
         config_file: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, env, None)
+        Self::load_with_env(config_file, env, None, ConfigLoadBehavior::default())
+            .map(|loaded| loaded.config)
     }
 
     pub fn load_with_env_map_and_data_dir_override(
@@ -1557,14 +1604,45 @@ impl Config {
         env: &HashMap<String, String>,
         data_dir_override: Option<&str>,
     ) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, env, data_dir_override)
+        Self::load_with_env(
+            config_file,
+            env,
+            data_dir_override,
+            ConfigLoadBehavior::default(),
+        )
+        .map(|loaded| loaded.config)
+    }
+
+    pub fn load_with_env_map_and_behavior(
+        config_file: Option<&str>,
+        env: &HashMap<String, String>,
+        data_dir_override: Option<&str>,
+        behavior: ConfigLoadBehavior,
+    ) -> Result<Self, ConfigError> {
+        Self::load_with_env(config_file, env, data_dir_override, behavior)
+            .map(|loaded| loaded.config)
+    }
+
+    pub fn inspect_unknowns_with_env_map(
+        config_file: Option<&str>,
+        env: &HashMap<String, String>,
+        data_dir_override: Option<&str>,
+    ) -> Result<UnknownConfigDiagnostics, ConfigError> {
+        Self::load_with_env(
+            config_file,
+            env,
+            data_dir_override,
+            ConfigLoadBehavior::default(),
+        )
+        .map(|loaded| loaded.unknown)
     }
 
     fn load_with_env(
         config_file: Option<&str>,
         env: &HashMap<String, String>,
         data_dir_override: Option<&str>,
-    ) -> Result<Self, ConfigError> {
+        behavior: ConfigLoadBehavior,
+    ) -> Result<LoadedConfig, ConfigError> {
         let seen_env_keys = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
         if config_file.is_some() && env.contains_key("SYNCTV_CONFIG_PATH") {
             seen_env_keys
@@ -1575,9 +1653,9 @@ impl Config {
             seen_env_keys.borrow_mut().insert(name.to_string());
             env.get(name).cloned()
         };
-        let mut config = match config_file {
+        let (mut config, mut unknown) = match config_file {
             Some(path) => Self::load_config_file(path)?,
-            None => Self::default(),
+            None => (Self::default(), UnknownConfigDiagnostics::default()),
         };
 
         // Apply SYNCTV_* environment variable overrides (single underscore format).
@@ -1591,9 +1669,20 @@ impl Config {
             data_dir_override,
         );
         config.resolve_time_defaults_with(&get_env)?;
-        Self::emit_unknown_synctv_env_var_warnings(env, &seen_env_keys.into_inner());
+        let seen_env_keys = seen_env_keys.into_inner();
+        unknown.env_keys = Self::collect_unknown_synctv_env_vars(env, &seen_env_keys);
+        if behavior.strict_unknown && !unknown.is_empty() {
+            return Err(ConfigError::Message(format!(
+                "strict configuration rejected unknown setting(s): {}",
+                unknown.strict_error_message()
+            )));
+        }
+        if let Some(path) = unknown.config_file.as_deref() {
+            Self::emit_unknown_config_file_warnings(Path::new(path), &unknown.config_keys);
+        }
+        Self::emit_unknown_synctv_env_var_warnings(&unknown.env_keys);
 
-        Ok(config)
+        Ok(LoadedConfig { config, unknown })
     }
 
     fn emit_unknown_config_file_warnings(path: &Path, unknown_keys: &[String]) {
@@ -1606,7 +1695,7 @@ impl Config {
         }
     }
 
-    fn load_config_file(path: &str) -> Result<Self, ConfigError> {
+    fn load_config_file(path: &str) -> Result<(Self, UnknownConfigDiagnostics), ConfigError> {
         let path = Path::new(path);
         if !path.exists() {
             return Err(ConfigError::Message(format!(
@@ -1615,8 +1704,14 @@ impl Config {
             )));
         }
         let (config, unknown_keys) = Self::deserialize_config_file(path)?;
-        Self::emit_unknown_config_file_warnings(path, &unknown_keys);
-        Ok(config)
+        Ok((
+            config,
+            UnknownConfigDiagnostics {
+                config_file: Some(absolute_display_path(path)),
+                config_keys: unknown_keys,
+                env_keys: Vec::new(),
+            },
+        ))
     }
 
     #[cfg(test)]
@@ -1703,12 +1798,7 @@ impl Config {
         Ok((config, Self::finalize_unknown_keys(unknown_keys)))
     }
 
-    fn emit_unknown_synctv_env_var_warnings(
-        env: &HashMap<String, String>,
-        seen_env_keys: &std::collections::HashSet<String>,
-    ) {
-        let unknown_keys = Self::collect_unknown_synctv_env_vars(env, seen_env_keys);
-
+    fn emit_unknown_synctv_env_var_warnings(unknown_keys: &[String]) {
         if !unknown_keys.is_empty() {
             eprintln!(
                 "Warning: ignoring unsupported SYNCTV_ environment variable(s): {}",
@@ -5012,6 +5102,47 @@ mod tests {
     }
 
     #[test]
+    fn test_inspect_unknowns_with_env_map_reports_file_and_env_unknowns() {
+        let secret = "12345678901234567890123456789012";
+        let unique = format!(
+            "synctv-config-inspect-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"jwt":{{"secret":"{secret}"}},"metrics":{{"obsolete_token":"ignored"}}}}"#
+            ),
+        )
+        .expect("write config fixture");
+
+        let diagnostics = Config::inspect_unknowns_with_env_map(
+            Some(path.to_str().expect("utf-8 path")),
+            &env_map(&[("SYNCTV_UNKNOWN_FLAG", "1")]),
+            None,
+        )
+        .expect("unknown inspection should still parse known config");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            diagnostics.config_keys,
+            vec!["metrics.obsolete_token".to_string()]
+        );
+        assert_eq!(
+            diagnostics.env_keys,
+            vec!["SYNCTV_UNKNOWN_FLAG".to_string()]
+        );
+        assert!(diagnostics
+            .strict_error_message()
+            .contains("metrics.obsolete_token"));
+    }
+
+    #[test]
     fn test_public_ids_default_to_prefixed_decimal_ids() {
         let config = Config::from_env_map(&HashMap::new()).expect("default config should load");
         let codec = crate::PublicIdCodec::from_config(&config.public_ids)
@@ -5066,8 +5197,10 @@ mod tests {
         let path_str = path
             .to_str()
             .expect("checked-in config path should be valid UTF-8");
-        Config::load_config_file(path_str)
-            .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
+        Config::load_config_file(path_str).map_or_else(
+            |error| panic!("{config_file} should deserialize: {error}"),
+            |(config, _)| config,
+        );
         let unknown_keys = Config::collect_unknown_config_file_keys(path_str)
             .unwrap_or_else(|error| panic!("{config_file} unknown-key scan failed: {error}"));
         assert!(

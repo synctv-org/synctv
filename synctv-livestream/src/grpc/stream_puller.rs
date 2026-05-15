@@ -65,6 +65,7 @@ pub struct GrpcStreamPuller {
     room_id: String,
     media_id: String,
     publisher_node_addr: String,
+    expected_epoch: u64,
     stream_hub_event_sender: StreamHubEventSender,
     /// Cluster authentication secret (attached as x-cluster-secret metadata)
     cluster_secret: Option<String>,
@@ -88,6 +89,7 @@ impl GrpcStreamPuller {
         room_id: String,
         media_id: String,
         publisher_node_addr: String,
+        expected_epoch: u64,
         stream_hub_event_sender: StreamHubEventSender,
         connection_pool: GrpcConnectionPool,
     ) -> Self {
@@ -95,6 +97,7 @@ impl GrpcStreamPuller {
             room_id,
             media_id,
             publisher_node_addr,
+            expected_epoch,
             stream_hub_event_sender,
             cluster_secret: None,
             connection_pool,
@@ -161,6 +164,7 @@ impl GrpcStreamPuller {
             room_id = %self.room_id,
             media_id = %self.media_id,
             publisher = %self.publisher_node_addr,
+            expected_epoch = self.expected_epoch,
             "Starting gRPC stream puller"
         );
 
@@ -293,6 +297,7 @@ impl GrpcStreamPuller {
             room_id: self.room_id.clone(),
             media_id: self.media_id.clone(),
             is_reconnect,
+            expected_epoch: self.expected_epoch,
         });
 
         request
@@ -465,6 +470,7 @@ mod tests {
             "room123".to_string(),
             "media456".to_string(),
             "publisher-node:50051".to_string(),
+            7,
             stream_hub_event_sender,
             pool.clone(),
         );
@@ -486,6 +492,7 @@ mod tests {
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
+            7,
             stream_hub_event_sender,
             pool,
         )
@@ -503,6 +510,7 @@ mod tests {
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
+            7,
             stream_hub_event_sender,
             pool,
         );
@@ -526,6 +534,7 @@ mod tests {
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
+            7,
             stream_hub_event_sender,
             pool,
         )
@@ -724,6 +733,7 @@ mod tests {
             "room1".to_string(),
             "media1".to_string(),
             "node1:50051".to_string(),
+            7,
             stream_hub_event_sender.clone(),
             pool.clone(),
         );
@@ -732,6 +742,7 @@ mod tests {
             "room2".to_string(),
             "media2".to_string(),
             "node2:50051".to_string(),
+            8,
             stream_hub_event_sender,
             pool.clone(),
         );
@@ -849,6 +860,7 @@ mod tests {
             "room".to_string(),
             "media".to_string(),
             "publisher:50051".to_string(),
+            7,
             stream_hub_event_sender,
             GrpcConnectionPool::with_defaults(),
         );

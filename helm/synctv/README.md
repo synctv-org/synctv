@@ -200,6 +200,7 @@ Notes:
 - PostgreSQL and Redis secret keys are fixed as `username` / `password`
 - The SyncTV app database password is stored in the chart secret as `SYNCTV_DATABASE_PASSWORD`; when using `existingSecret`, provide that key yourself
 - KubeBlocks-generated database services are also internal-only; for external debugging, prefer `kubectl port-forward`
+- KubeBlocks `terminationPolicy` defaults to `Retain` for PostgreSQL and Redis. Set it to `Delete` only for disposable test environments.
 - The KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically set SyncTV `redis.deployment_mode=sentinel`; this chart injects a stable Redis service endpoint. SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
 
 ## Configuration Model
@@ -247,7 +248,21 @@ Ingress controller, DNS name, or cert-manager issuer. Set `ingress.enabled=true`
 with `ingress.className`, `ingress.hosts`, optional annotations, and TLS values
 for HTTP access. When `ingress.grpc.enabled=true`, the chart creates a second
 Ingress that routes to the gRPC Service and uses independent
-`ingress.grpc.annotations`.
+`ingress.grpc.annotations`. Each path defaults to `path: "/"` and
+`pathType: Prefix`; set `pathType` explicitly to `Exact` or
+`ImplementationSpecific` only when your ingress controller requires it.
+
+The default topology spread policy uses `whenUnsatisfiable: ScheduleAnyway`.
+This still biases replicas across zones, but avoids leaving pods pending on
+single-zone clusters or during partial zone outages. Set
+`topologySpread.whenUnsatisfiable=DoNotSchedule` only when strict skew is more
+important than availability.
+
+The application Role is rendered only for Kubernetes-backed cluster features:
+`config.cluster.discoveryMode=k8s_dns` grants namespace-scoped pod/endpoints
+read access, and `config.cluster.leaderElectionMode=k8s_lease` grants
+namespace-scoped Lease access. Redis/static defaults do not require these API
+permissions.
 
 When using `existingSecret`, provide these keys with current names:
 
@@ -335,6 +350,12 @@ networkPolicy:
     - ingress-nginx
   metricsSourceNamespaces:
     - monitoring
+  rtmpSourceCIDRs:
+    - "203.0.113.0/24"
+  externalHttpCIDRs:
+    - "203.0.113.0/24"
+  externalPostgresqlCIDRs: []
+  externalRedisCIDRs: []
 ```
 
 Notes:
@@ -342,6 +363,7 @@ Notes:
 - `ingressControllerNamespaces` controls which namespaces may reach the SyncTV API through an ingress controller
 - `metricsSourceNamespaces` controls which namespaces may scrape the metrics port
 - The template matches namespaces using the standard Kubernetes namespace label `kubernetes.io/metadata.name`
+- Empty `rtmpSourceCIDRs`, `externalHttpCIDRs`, `externalPostgresqlCIDRs`, or `externalRedisCIDRs` render broad `0.0.0.0/0` rules for compatibility. Set them explicitly in production.
 
 ## Upgrading
 
@@ -448,6 +470,17 @@ metrics:
 ```
 
 You can then scrape through either Prometheus Operator (`ServiceMonitor`) or VictoriaMetrics Operator (`VMServiceScrape`).
+
+Alerting rules are disabled by default because `PrometheusRule` is a
+Prometheus Operator CRD. Enable them only on clusters where that CRD is
+installed:
+
+```yaml
+metrics:
+  enabled: true
+alerting:
+  enabled: true
+```
 
 ## Architecture
 

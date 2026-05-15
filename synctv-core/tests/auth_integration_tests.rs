@@ -19,6 +19,10 @@
 
 use std::sync::Arc;
 
+use opaque_ke::argon2::Argon2;
+use opaque_ke::ciphersuite::CipherSuite;
+use opaque_ke::rand::rngs::OsRng;
+use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
 use sqlx::PgPool;
 use synctv_core::{
     cache,
@@ -33,6 +37,14 @@ use synctv_core::{
     Error, KeyBuilder,
 };
 use synctv_core_testing::create_test_pool;
+
+struct TestOpaqueCipherSuite;
+
+impl CipherSuite for TestOpaqueCipherSuite {
+    type OprfCs = opaque_ke::Ristretto255;
+    type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, sha2_010::Sha512>;
+    type Ksf = Argon2<'static>;
+}
 
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars")
@@ -57,6 +69,8 @@ fn create_user_service(pool: &PgPool) -> UserService {
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
+    svc.enable_legacy_password_login_for_tests();
+    svc.enable_legacy_password_registration_for_tests();
     svc
 }
 
@@ -70,6 +84,55 @@ fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::Use
         AuthenticatedLogin::MfaRequired { .. } => {
             panic!("expected complete login, got MFA challenge")
         }
+    }
+}
+
+async fn opaque_login(
+    service: &UserService,
+    identifier: String,
+    password: &str,
+) -> synctv_core::Result<(synctv_core::models::User, String, String)> {
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+        .expect("client OPAQUE login start should succeed");
+    let challenge = service
+        .start_opaque_login_with_control(
+            identifier,
+            client_start.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await?;
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("server credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+
+    let login = service
+        .finish_opaque_login_with_control(
+            &challenge.session_id,
+            client_finish.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await?;
+    match login {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        } => Ok((user, access_token, refresh_token)),
+        AuthenticatedLogin::MfaRequired { .. } => Err(Error::Authentication(
+            "Unexpected MFA challenge in opaque_login test helper".to_string(),
+        )),
     }
 }
 
@@ -118,7 +181,7 @@ async fn scenario_password_change_invalidates_old_tokens() {
 
     let new_password = "NewPassword456!";
     user_service
-        .change_password(&user.id, &original_password, new_password)
+        .set_password(&user.id, new_password)
         .await
         .expect("Failed to change password");
 
@@ -134,12 +197,10 @@ async fn scenario_password_change_invalidates_old_tokens() {
         "Error should mention password change, got: {err}"
     );
 
-    let (_user, new_access_token, _new_refresh_token) = expect_complete_login(
-        user_service
-            .login(username, new_password.to_string(), None)
+    let (_user, new_access_token, _new_refresh_token) =
+        opaque_login(&user_service, username, new_password)
             .await
-            .expect("Failed to login with new password"),
-    );
+            .expect("Failed to login with new OPAQUE password");
 
     let new_claims = jwt_service
         .verify_access_token(&new_access_token)

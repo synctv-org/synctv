@@ -85,7 +85,10 @@ impl ClientApiImpl {
             }
         }
 
-        Ok(GetIceServersResponse { servers })
+        Ok(GetIceServersResponse {
+            servers,
+            webrtc: Some(crate::webrtc_status::to_proto_status(&self.webrtc_status)),
+        })
     }
 }
 

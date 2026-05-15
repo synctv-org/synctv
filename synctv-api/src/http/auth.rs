@@ -13,13 +13,12 @@ use crate::proto::client::{
     CreateGuestTokenRequest, CreateGuestTokenResponse, FinishMfaPasskeyRequest,
     FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest,
     FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse, LogoutResponse,
-    RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
-    RequestMfaEmailCodeResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
-    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
-    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
-    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
-    VerifyMfaPasswordRequest,
+    RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RequestEmailLoginRequest,
+    RequestEmailLoginResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
+    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
+    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
+    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
+    StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
 };
 
 /// Extract the real client IP from a request.
@@ -61,46 +60,6 @@ where
         .await
         .map_err(|err| map_json_rejection(&err))?;
     Ok(request)
-}
-
-/// Register a new user
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/auth/register",
-        tag = "Auth",
-        request_body = RegisterRequest,
-        responses(
-            (status = 200, description = "Registration succeeded", body = RegisterResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
-        )
-    )
-)]
-pub async fn register(
-    State(state): State<AppState>,
-    request: Request,
-) -> AppResult<Json<RegisterResponse>> {
-    let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let client_ip = request_meta.client_ip;
-    let executor = state.shared_api_runtime.client_api.clone();
-    let client_api = state.shared_api_runtime.client_api.clone();
-    let response = executor
-        .execute_public_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |request_control| async move {
-                let req = parse_auth_json::<RegisterRequest>(request).await?;
-                client_api
-                    .register_with_control(req, client_ip, Some(&request_control))
-                    .await
-            },
-        )
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
 }
 
 #[cfg_attr(
@@ -181,7 +140,7 @@ pub async fn finish_opaque_registration(
     Ok(Json(response))
 }
 
-/// Login with username+password, email+password, or email+login-token.
+/// Confirm a passwordless email login token. Local password login is OPAQUE-only.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -739,47 +698,6 @@ pub async fn finish_mfa_passkey(
     Ok(Json(response))
 }
 
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/auth/mfa/password/verify",
-        tag = "Auth",
-        request_body = VerifyMfaPasswordRequest,
-        responses(
-            (status = 200, description = "MFA password verified", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Invalid MFA challenge or password", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
-        )
-    )
-)]
-pub async fn verify_mfa_password(
-    State(state): State<AppState>,
-    request: Request,
-) -> AppResult<Json<LoginResponse>> {
-    let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let client_ip = request_meta.client_ip;
-    let client_api = state.shared_api_runtime.client_api.clone();
-    let response = state
-        .shared_api_runtime
-        .client_api
-        .execute_public_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |request_control| async move {
-                let req = parse_auth_json::<VerifyMfaPasswordRequest>(request).await?;
-                client_api
-                    .verify_mfa_password_with_control(req, client_ip, Some(&request_control))
-                    .await
-            },
-        )
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
 /// Refresh access token using refresh token.
 #[cfg_attr(
     feature = "openapi",
@@ -887,41 +805,25 @@ mod tests {
     // Verify request types have expected fields and derive traits (Serialize, Deserialize, Clone)
 
     #[test]
-    fn test_register_request_json_roundtrip() {
-        let req = RegisterRequest {
-            username: "testuser".to_string(),
-            password: "securepass123".to_string(),
-            email: "test@example.com".to_string(),
-        };
-        let json = serde_json::to_string(&req).expect("serialize");
-        let deserialized: RegisterRequest = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.username, req.username);
-        assert_eq!(deserialized.email, req.email);
-    }
-
-    #[test]
     fn test_login_request_construction() {
         let req = LoginRequest {
-            username: "testuser".to_string(),
-            password: "securepass123".to_string(),
-            email: String::new(),
-            email_token: String::new(),
+            email: "test@example.com".to_string(),
+            email_token: "login-token".to_string(),
         };
-        assert_eq!(req.username, "testuser");
-        assert_eq!(req.password, "securepass123");
+        assert_eq!(req.email, "test@example.com");
+        assert_eq!(req.email_token, "login-token");
     }
 
     #[test]
     fn test_login_request_json_roundtrip() {
         let req = LoginRequest {
-            username: "testuser".to_string(),
-            password: "mypassword".to_string(),
-            email: String::new(),
-            email_token: String::new(),
+            email: "test@example.com".to_string(),
+            email_token: "login-token".to_string(),
         };
         let json = serde_json::to_string(&req).expect("serialize");
         let deserialized: LoginRequest = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.username, req.username);
+        assert_eq!(deserialized.email, req.email);
+        assert_eq!(deserialized.email_token, req.email_token);
     }
 
     #[test]
@@ -1000,44 +902,11 @@ mod tests {
     }
 
     #[test]
-    fn test_register_request_empty_fields() {
-        let req = RegisterRequest {
-            username: String::new(),
-            password: String::new(),
-            email: String::new(),
-        };
-        assert!(req.username.is_empty());
-        assert!(req.password.is_empty());
-        assert!(req.email.is_empty());
-    }
-
-    #[test]
-    fn test_register_request_from_json_with_extra_fields() {
-        // Proto types with serde should ignore unknown fields
-        let json = r#"{"username":"user","password":"pass","email":"e@x.com","extra":"ignored"}"#;
-        let req: RegisterRequest =
-            serde_json::from_str(json).expect("deserialize with extra fields");
-        assert_eq!(req.username, "user");
-    }
-
-    #[test]
     fn test_login_request_missing_fields_default_to_empty_strings() {
-        let json = r#"{"username":"user"}"#;
+        let json = r#"{"email":"user@example.com"}"#;
         let req: LoginRequest = serde_json::from_str(json).expect("deserialize with defaults");
-        assert_eq!(req.username, "user");
-        assert!(req.password.is_empty());
-        assert!(req.email.is_empty());
+        assert_eq!(req.email, "user@example.com");
         assert!(req.email_token.is_empty());
-    }
-
-    #[test]
-    fn test_register_request_unicode_username() {
-        let req = RegisterRequest {
-            username: "\u{4e2d}\u{6587}\u{7528}\u{6237}".to_string(), // Chinese characters
-            password: "pass123!".to_string(),
-            email: "user@example.com".to_string(),
-        };
-        assert_eq!(req.username.chars().count(), 4);
     }
 
     #[test]

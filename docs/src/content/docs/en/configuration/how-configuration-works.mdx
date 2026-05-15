@@ -86,6 +86,8 @@ Common fields that support file references include:
 - `redis.url`
 - `redis.password`
 - `jwt.secret`
+- `metrics.auth.bearer_token`
+- `metrics.auth.basic_password`
 - `email.smtp_password`
 - `bootstrap.root_password`
 - `livestream.hls_oss.access_key_id`
@@ -145,6 +147,8 @@ Validate before deployment:
 
 ```bash
 synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml config validate --strict
 ```
 
 Validation checks required secrets, unsafe placeholder values, CORS origins, WebAuthn origins, cluster dependencies, gRPC size limits, and path resolution constraints.
+`config validate` reports unknown config-file keys and unsupported `SYNCTV_` environment variables as warnings by default. Add `--strict` to make those unknown inputs fail validation. `synctv serve` always uses strict startup loading, so production startup fails instead of ignoring misspelled settings.

@@ -198,7 +198,10 @@ Validate effective configuration:
 ```bash
 synctv config validate
 synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml config validate --strict
 ```
+
+`--strict` rejects unsupported config-file keys and unsupported `SYNCTV_` environment variables instead of only warning and ignoring them.
 
 Show merged configuration with secrets redacted:
 

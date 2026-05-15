@@ -67,7 +67,7 @@ See [Permissions Model](../../concepts/permissions/) and [Rooms, Permissions, an
 
 <Steps>
 1. Follow the [Production Checklist](../../install/production-checklist/) for secrets, database, Redis, TLS, and backups.
-2. Run `synctv config validate`.
+2. Run `synctv config validate --strict`.
 3. Check `/health/ready`.
 4. Sign in as root, create a normal user, and create a test room.
 5. Validate WebSocket, chat, playback control, Provider browse, and proxy playback.

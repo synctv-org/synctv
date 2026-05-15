@@ -475,6 +475,7 @@ mod health_types {
                 livestream: None,
                 memory: None,
                 message: None,
+                webrtc: None,
             }),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -498,6 +499,7 @@ mod health_types {
                 livestream: None,
                 memory: None,
                 message: Some("Database: connection refused".to_string()),
+                webrtc: None,
             }),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -832,6 +834,8 @@ mod websocket_e2e {
             brute_force,
         );
         user_service.enable_password_registration_for_tests();
+        user_service.enable_legacy_password_login_for_tests();
+        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
@@ -958,6 +962,7 @@ mod websocket_e2e {
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
@@ -4522,6 +4527,8 @@ mod websocket_connection_limit_timing {
             brute_force,
         );
         user_service.enable_password_registration_for_tests();
+        user_service.enable_legacy_password_login_for_tests();
+        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
@@ -4644,6 +4651,7 @@ mod websocket_connection_limit_timing {
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),

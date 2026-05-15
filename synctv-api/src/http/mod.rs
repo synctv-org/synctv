@@ -85,6 +85,8 @@ pub struct RouterConfig {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// Structured WebRTC/STUN runtime state exposed through health and ICE bootstrap responses.
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     /// Credential encryption for provider credential resolution
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Shared proxy slice cache instance managed by the runtime.
@@ -150,6 +152,8 @@ pub struct SharedApiRuntime {
     pub proxy_services: Arc<ProxyServices>,
     /// HMAC signing key for proxy URL authentication
     pub proxy_signing_key: Arc<ProxySigningKey>,
+    /// Structured WebRTC/STUN runtime state shared across transports.
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
 }
 
 #[derive(Clone)]
@@ -234,10 +238,9 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     });
     let provider_stores = config.shared_provider_stores.clone().unwrap_or_else(|| {
         synctv_core::provider::store::build_provider_store_resolver_from_profile(
-            &synctv_core::SharedStateProfile::from_runtime(
+            &synctv_core::SharedStateProfile::best_effort(
                 redis_runtime.clone(),
                 config.config.redis.key_prefix.clone(),
-                false,
             ),
         )
     });
@@ -327,6 +330,8 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     } else {
         client_api
     };
+    let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+    let client_api = Arc::new(inner.with_webrtc_status(config.webrtc_status.clone()));
 
     let admin_api = config.settings_service.as_ref().map(|settings_svc| {
         let email_svc = config.email_service.clone().unwrap_or_else(|| {
@@ -451,6 +456,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         proxy_provider_registry,
         proxy_services,
         proxy_signing_key,
+        webrtc_status: config.webrtc_status.clone(),
     }
 }
 
@@ -497,7 +503,6 @@ fn register_auth_routes(_state: &AppState) -> Router<AppState> {
 
 fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/guest-token", post(auth::create_guest_token))
         .route(
@@ -548,10 +553,6 @@ fn register_extracted_auth_routes() -> Router<AppState> {
         .route(
             "/api/auth/mfa/passkeys/finish",
             post(auth::finish_mfa_passkey),
-        )
-        .route(
-            "/api/auth/mfa/password/verify",
-            post(auth::verify_mfa_password),
         )
         .route("/api/auth/refresh", post(auth::refresh_token))
         // Tighter body limit for authentication endpoints (64 KB)
@@ -1225,6 +1226,7 @@ mod tests {
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             proxy_slice_cache: Arc::new(SliceCache::new(SliceCacheConfig::default())),
@@ -1452,6 +1454,7 @@ mod tests {
             shared_provider_stores: Some(injected_provider_stores.clone()),
             shared_proxy_signing_key: Some(injected_proxy_signing_key.clone()),
             builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
             proxy_slice_cache: injected_cache.clone(),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),

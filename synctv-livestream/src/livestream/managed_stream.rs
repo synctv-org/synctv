@@ -6,6 +6,7 @@
 // This module extracts the common parts.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -202,9 +203,14 @@ impl Drop for StreamLifecycle {
 }
 
 /// Trait for streams managed by [`StreamPool`].
+#[async_trait]
 pub trait ManagedStream: Send + Sync + 'static {
     fn lifecycle(&self) -> &StreamLifecycle;
     fn stream_key(&self) -> String;
+    async fn stop_managed(&self) {
+        self.lifecycle().mark_stopping();
+        self.lifecycle().abort_task().await;
+    }
 }
 
 /// Creation lock entry with last access time for cleanup
@@ -275,8 +281,7 @@ impl<S: ManagedStream> StreamPool<S> {
         let keys: Vec<String> = self.streams.iter().map(|e| e.key().clone()).collect();
         for key in &keys {
             if let Some((_, stream)) = self.streams.remove(key) {
-                stream.lifecycle().mark_stopping();
-                stream.lifecycle().abort_task().await;
+                stream.stop_managed().await;
             }
         }
         self.creation_locks.clear();
@@ -514,7 +519,7 @@ impl<S: ManagedStream> StreamPool<S> {
                     streams.remove(stream_key);
                     // Also remove the creation lock to prevent memory leak
                     creation_locks.remove(stream_key);
-                    stream.lifecycle().abort_task().await;
+                    stream.stop_managed().await;
                     break;
                 }
             } else {
@@ -559,14 +564,21 @@ mod tests {
     struct TestStream {
         lifecycle: StreamLifecycle,
         key: String,
+        stop_count: AtomicUsize,
     }
 
+    #[async_trait]
     impl ManagedStream for TestStream {
         fn lifecycle(&self) -> &StreamLifecycle {
             &self.lifecycle
         }
         fn stream_key(&self) -> String {
             self.key.clone()
+        }
+
+        async fn stop_managed(&self) {
+            self.stop_count.fetch_add(1, Ordering::AcqRel);
+            self.lifecycle.mark_stopping();
         }
     }
 
@@ -616,6 +628,7 @@ mod tests {
         let stream = Arc::new(TestStream {
             lifecycle: StreamLifecycle::new(),
             key: "room:media".to_string(),
+            stop_count: AtomicUsize::new(0),
         });
         stream.lifecycle().set_running();
 
@@ -634,6 +647,7 @@ mod tests {
         let stream = Arc::new(TestStream {
             lifecycle: StreamLifecycle::new(),
             key: "room:media".to_string(),
+            stop_count: AtomicUsize::new(0),
         });
         // Not running, so unhealthy
 
@@ -692,6 +706,7 @@ mod tests {
         let stream = Arc::new(TestStream {
             lifecycle: StreamLifecycle::new(),
             key: "room:media".to_string(),
+            stop_count: AtomicUsize::new(0),
         });
         stream.lifecycle().set_running();
         pool.streams
@@ -719,6 +734,7 @@ mod tests {
         let stream = Arc::new(TestStream {
             lifecycle: StreamLifecycle::new(),
             key: "room:media".to_string(),
+            stop_count: AtomicUsize::new(0),
         });
         stream.lifecycle().set_running();
         pool.streams
@@ -738,5 +754,30 @@ mod tests {
         // get_existing should fail for stopped stream
         let found = pool.get_existing("room:media").await;
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stop_all_uses_stream_specific_stop_protocol() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            key: "room:media".to_string(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        pool.stop_all().await;
+
+        assert_eq!(
+            stream.stop_count.load(Ordering::Acquire),
+            1,
+            "stop_all must call the stream-specific stop protocol"
+        );
+        assert!(pool.streams.is_empty());
+        assert!(!stream.lifecycle().is_healthy().await);
     }
 }

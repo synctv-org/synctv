@@ -529,11 +529,13 @@ impl RoomMessageHub {
         self.lifecycle_tx.subscribe()
     }
 
-    /// Subscribe a client to room events
-    /// Returns a receiver for messages
+    /// Subscribe a client to room events.
+    ///
+    /// Returns a receiver for messages.
     ///
     /// With Redis configured, persists the subscription relationship for cross-replica
-    /// visibility and recovery. Falls back to local-only on Redis errors.
+    /// visibility and recovery. Redis-backed subscriptions fail closed when the
+    /// shared state write is unavailable so a successful join is visible to peers.
     pub async fn subscribe(
         &self,
         room_id: RoomId,
@@ -1417,12 +1419,13 @@ impl RoomMessageHub {
     /// Get all subscribers in a room across all replicas (from Redis).
     ///
     /// Returns the full subscriber list from Redis, which includes subscriptions
-    /// from all replicas in the cluster. Falls back to local-only if Redis is
-    /// not configured or fails.
+    /// from all replicas in the cluster. Local-only hubs return their local
+    /// subscriber list. Redis-backed hubs return an error if the distributed
+    /// snapshot cannot be loaded or validated.
     pub async fn get_room_subscribers_distributed(
         &self,
         room_id: &RoomId,
-    ) -> Vec<(UserId, ConnectionId)> {
+    ) -> crate::Result<Vec<(UserId, ConnectionId)>> {
         if self.redis_conn.is_some() {
             let room_key = self.room_key(room_id);
             let room_index_directory_key = self.room_index_directory_key();
@@ -1431,14 +1434,8 @@ impl RoomMessageHub {
                 .await
             {
                 Ok(Some(conn)) => conn,
-                Ok(None) => return self.get_room_subscribers(room_id),
-                Err(error) => {
-                    warn!(
-                        room_id = %room_id,
-                        "Failed to acquire Redis connection for distributed subscribers, falling back to local: {error}"
-                    );
-                    return self.get_room_subscribers(room_id);
-                }
+                Ok(None) => return Ok(self.get_room_subscribers(room_id)),
+                Err(error) => return Err(crate::Error::Redis(error)),
             };
 
             match self
@@ -1456,7 +1453,7 @@ impl RoomMessageHub {
                                 conn_clone.srem(&room_index_directory_key, &room_key),
                             )
                             .await;
-                        return Vec::new();
+                        return Ok(Vec::new());
                     }
 
                     let conn_keys: Vec<String> = entries
@@ -1471,18 +1468,7 @@ impl RoomMessageHub {
                         .await
                     {
                         Ok(conn_rooms) => conn_rooms,
-                        Err(e) => {
-                            warn!(
-                                room_id = %room_id,
-                                "Failed to validate distributed room subscribers from Redis, falling back to raw room hash: {e}"
-                            );
-                            return entries
-                                .into_iter()
-                                .filter_map(|(conn_id, user_id)| {
-                                    UserId::try_from(user_id).ok().map(|id| (id, conn_id))
-                                })
-                                .collect();
-                        }
+                        Err(error) => return Err(crate::Error::Redis(error)),
                     };
 
                     let mut subscribers = Vec::with_capacity(entries.len());
@@ -1547,18 +1533,13 @@ impl RoomMessageHub {
                         }
                     }
 
-                    return subscribers;
+                    return Ok(subscribers);
                 }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch room subscribers from Redis, falling back to local: {e}"
-                    );
-                }
+                Err(error) => return Err(crate::Error::Redis(error)),
             }
         }
 
-        // Fallback to local-only
-        self.get_room_subscribers(room_id)
+        Ok(self.get_room_subscribers(room_id))
     }
 
     /// Audit replica-wide subscription state from Redis (observability only).
@@ -1930,7 +1911,7 @@ impl RoomMessageRuntime for RoomMessageHub {
     async fn get_room_subscribers_replicas_wide(
         &self,
         room_id: &RoomId,
-    ) -> Vec<(UserId, ConnectionId)> {
+    ) -> crate::Result<Vec<(UserId, ConnectionId)>> {
         RoomMessageHub::get_room_subscribers_distributed(self, room_id).await
     }
 
@@ -1960,6 +1941,7 @@ impl RoomMessageRuntime for RoomMessageHub {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_subscribe_and_broadcast() {
@@ -2056,6 +2038,58 @@ mod tests {
 
         assert_eq!(received1.event_type(), "chat_message");
         assert_eq!(received2.event_type(), "chat_message");
+    }
+
+    #[tokio::test]
+    async fn test_distributed_subscribers_returns_error_when_redis_snapshot_unavailable() {
+        struct HangingRedisRuntime;
+
+        #[async_trait::async_trait]
+        impl RedisConnectionRuntime for HangingRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                std::future::pending().await
+            }
+
+            fn operation_timeout(&self) -> Duration {
+                Duration::from_millis(10)
+            }
+        }
+
+        let hub = RoomMessageHub::new()
+            .with_redis_runtime(Arc::new(HangingRedisRuntime), "test-timeout:");
+        let room_id = RoomId::expect_positive(10_000_196);
+        let user_id = UserId::expect_positive(10_000_197);
+        let connection_id = "local-only-would-be-misleading".to_string();
+
+        {
+            let mut room = HashMap::new();
+            room.insert(
+                connection_id.clone(),
+                Subscriber {
+                    connection_id: connection_id.clone(),
+                    user_id,
+                    sender: mpsc::channel(SUBSCRIBER_CHANNEL_CAPACITY).0,
+                    consecutive_drops: Arc::new(AtomicU32::new(0)),
+                },
+            );
+            hub.rooms.insert(room_id, room);
+            hub.connections
+                .insert(connection_id.clone(), (room_id, user_id));
+        }
+
+        let error = hub
+            .get_room_subscribers_distributed(&room_id)
+            .await
+            .expect_err("Redis-backed distributed lookup must not fall back to local-only data");
+
+        assert!(
+            error
+                .to_string()
+                .contains("load distributed room subscribers"),
+            "unexpected error: {error}"
+        );
+
+        hub.shutdown().await;
     }
 
     #[tokio::test]

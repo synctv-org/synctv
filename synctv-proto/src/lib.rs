@@ -1118,26 +1118,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_register_request_rejects_invalid_username_email_and_password() {
-        let request = crate::client::RegisterRequest {
+    fn validate_opaque_registration_request_rejects_invalid_username_email_and_payload() {
+        let request = crate::client::StartOpaqueRegistrationRequest {
             username: "ab".into(),
-            password: "short".into(),
             email: "not-an-email".into(),
+            registration_request: Vec::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("username"), "{error}");
-        assert!(error.contains("password"), "{error}");
         assert!(error.contains("email"), "{error}");
+        assert!(error.contains("registration_request"), "{error}");
     }
 
     #[test]
-    fn validate_register_request_accepts_valid_payload() {
-        let request = crate::client::RegisterRequest {
+    fn validate_opaque_registration_request_accepts_valid_payload() {
+        let request = crate::client::StartOpaqueRegistrationRequest {
             username: "valid_user".into(),
-            password: "ComplexPass123".into(),
             email: "valid@example.com".into(),
+            registration_request: vec![1],
         };
 
         crate::validate(&request).unwrap();
@@ -1168,15 +1168,11 @@ mod tests {
     fn validate_update_user_request_checks_optional_fields_when_present() {
         let request = crate::client::UpdateUserRequest {
             username: Some("bad name".into()),
-            password: Some("short".into()),
-            old_password: Some(String::new()),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("username"), "{error}");
-        assert!(error.contains("password"), "{error}");
-        assert!(error.contains("old_password"), "{error}");
     }
 
     #[test]
@@ -1863,7 +1859,6 @@ mod tests {
                 "credential_request":[4,5,6],
                 "registration_request":[7,8,9],
                 "verification_method":1,
-                "old_password":"",
                 "email_token":""
             }"#,
         )
@@ -1883,5 +1878,24 @@ mod tests {
         .expect("OPAQUE password update finish should deserialize from byte arrays");
         assert_eq!(decoded.credential_finalization, vec![10, 11]);
         assert_eq!(decoded.registration_upload, vec![12, 13]);
+
+        let decoded: crate::client::StartOpaquePasswordResetRequest = serde_json::from_str(
+            r#"{
+                "email":"alice@example.com",
+                "token":"reset-token",
+                "registration_request":[14,15]
+            }"#,
+        )
+        .expect("OPAQUE password reset start should deserialize from byte arrays");
+        assert_eq!(decoded.registration_request, vec![14, 15]);
+
+        let decoded: crate::client::FinishOpaquePasswordResetRequest = serde_json::from_str(
+            r#"{
+                "session_id":"opaque-reset-session",
+                "registration_upload":[16,17]
+            }"#,
+        )
+        .expect("OPAQUE password reset finish should deserialize from byte arrays");
+        assert_eq!(decoded.registration_upload, vec![16, 17]);
     }
 }

@@ -7,9 +7,17 @@ use std::sync::Once;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{stream, SinkExt, StreamExt};
+use opaque_ke::argon2::Argon2;
+use opaque_ke::ciphersuite::CipherSuite;
+use opaque_ke::rand::rngs::OsRng;
+use opaque_ke::{
+    ClientLogin, ClientLoginFinishParameters, ClientRegistration,
+    ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
+};
 use prost::Message;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use sha2_010::Sha512;
 use synctv::app::{Application, ApplicationBuildOptions};
 use synctv_core::config::Config;
 use synctv_core::service::auth::TestPasswordHasher;
@@ -45,6 +53,14 @@ const MANAGEMENT_E2E_AUTH_TOKEN: &str = "management-e2e-secret";
 const BOOTSTRAP_ROOT_USERNAME: &str = "e2e_root";
 const TEST_CREDENTIAL_ENCRYPTION_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+struct TestOpaqueCipherSuite;
+
+impl CipherSuite for TestOpaqueCipherSuite {
+    type OprfCs = opaque_ke::Ristretto255;
+    type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, Sha512>;
+    type Ksf = Argon2<'static>;
+}
 
 fn reserve_local_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -1164,6 +1180,97 @@ async fn post_json(
     })
 }
 
+async fn opaque_grpc_register(
+    auth_client: &mut synctv_proto::client::auth_service_client::AuthServiceClient<
+        tonic::transport::Channel,
+    >,
+    username: &str,
+    email: &str,
+    password: &str,
+) -> synctv_proto::client::RegisterResponse {
+    use synctv_proto::client::{FinishOpaqueRegistrationRequest, StartOpaqueRegistrationRequest};
+
+    let mut rng = OsRng;
+    let client_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+            .expect("client OPAQUE registration start should succeed");
+    let challenge = auth_client
+        .start_opaque_registration(StartOpaqueRegistrationRequest {
+            username: username.to_string(),
+            email: email.to_string(),
+            registration_request: client_start.message.serialize().to_vec(),
+        })
+        .await
+        .expect("grpc OPAQUE registration start should succeed")
+        .into_inner();
+    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+        &challenge.registration_response,
+    )
+    .expect("server registration response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .expect("client OPAQUE registration finish should succeed");
+
+    auth_client
+        .finish_opaque_registration(FinishOpaqueRegistrationRequest {
+            session_id: challenge.session_id,
+            registration_upload: client_finish.message.serialize().to_vec(),
+        })
+        .await
+        .expect("grpc OPAQUE registration finish should succeed")
+        .into_inner()
+}
+
+async fn opaque_grpc_login(
+    auth_client: &mut synctv_proto::client::auth_service_client::AuthServiceClient<
+        tonic::transport::Channel,
+    >,
+    username: &str,
+    password: &str,
+) -> synctv_proto::client::LoginResponse {
+    use synctv_proto::client::{FinishOpaqueLoginRequest, StartOpaqueLoginRequest};
+
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+        .expect("client OPAQUE login start should succeed");
+    let challenge = auth_client
+        .start_opaque_login(StartOpaqueLoginRequest {
+            username: username.to_string(),
+            email: String::new(),
+            credential_request: client_start.message.serialize().to_vec(),
+        })
+        .await
+        .expect("grpc OPAQUE login start should succeed")
+        .into_inner();
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("server credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .expect("client OPAQUE login finish should succeed");
+
+    auth_client
+        .finish_opaque_login(FinishOpaqueLoginRequest {
+            session_id: challenge.session_id,
+            credential_finalization: client_finish.message.serialize().to_vec(),
+        })
+        .await
+        .expect("grpc OPAQUE login finish should succeed")
+        .into_inner()
+}
+
 async fn put_json(
     client: &reqwest::Client,
     url: &str,
@@ -1200,31 +1307,153 @@ async fn response_json(response: reqwest::Response) -> Value {
     })
 }
 
-async fn login_http(server: &TestServer, username: &str, password: &str) -> reqwest::Response {
+async fn opaque_http_register(
+    server: &TestServer,
+    username: &str,
+    email: &str,
+    password: &str,
+) -> reqwest::Response {
     let client = test_http_client();
-    post_json(
+    let mut rng = OsRng;
+    let client_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+            .expect("client OPAQUE registration start should succeed");
+
+    let start = post_json(
         &client,
-        &format!("{}/api/auth/login", server.api_base_url),
+        &format!("{}/api/auth/opaque/registration/start", server.api_base_url),
         json!({
             "username": username,
-            "password": password
+            "email": email,
+            "registration_request": client_start.message.serialize()
+        }),
+        None,
+    )
+    .await;
+    if start.status() != StatusCode::OK {
+        return start;
+    }
+
+    let challenge = response_json(start).await;
+    let session_id = challenge["session_id"]
+        .as_str()
+        .expect("OPAQUE registration start should return session_id")
+        .to_string();
+    let registration_response: Vec<u8> = serde_json::from_value(
+        challenge
+            .get("registration_response")
+            .cloned()
+            .expect("OPAQUE registration start should return registration_response"),
+    )
+    .expect("registration_response should decode as bytes");
+    let registration_response =
+        RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(&registration_response)
+            .expect("server registration response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .expect("client OPAQUE registration finish should succeed");
+
+    post_json(
+        &client,
+        &format!(
+            "{}/api/auth/opaque/registration/finish",
+            server.api_base_url
+        ),
+        json!({
+            "session_id": session_id,
+            "registration_upload": client_finish.message.serialize()
         }),
         None,
     )
     .await
 }
 
-async fn login_http_ok_token(server: &TestServer, username: &str, password: &str) -> String {
-    let response = login_http(server, username, password).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "login for {username} should succeed"
-    );
-    response_json(response).await["access_token"]
+async fn opaque_http_login_token(
+    server: &TestServer,
+    username: &str,
+    password: &str,
+) -> Result<String, String> {
+    let client = test_http_client();
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+        .expect("client OPAQUE login start should succeed");
+    let start = post_json(
+        &client,
+        &format!("{}/api/auth/opaque/login/start", server.api_base_url),
+        json!({
+            "username": username,
+            "email": "",
+            "credential_request": client_start.message.serialize()
+        }),
+        None,
+    )
+    .await;
+    let start_status = start.status();
+    if start_status != StatusCode::OK {
+        let body = response_json(start).await;
+        return Err(format!(
+            "OPAQUE login start for {username} failed with {start_status}: {body}"
+        ));
+    }
+
+    let challenge = response_json(start).await;
+    let session_id = challenge["session_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("login response for {username} should include access_token"))
-        .to_string()
+        .expect("OPAQUE login start should return session_id")
+        .to_string();
+    let credential_response: Vec<u8> = serde_json::from_value(
+        challenge
+            .get("credential_response")
+            .cloned()
+            .expect("OPAQUE login start should return credential_response"),
+    )
+    .expect("credential_response should decode as bytes");
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&credential_response)
+            .expect("server credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .map_err(|_| format!("OPAQUE login finalization failed for {username}"))?;
+
+    let finish = post_json(
+        &client,
+        &format!("{}/api/auth/opaque/login/finish", server.api_base_url),
+        json!({
+            "session_id": session_id,
+            "credential_finalization": client_finish.message.serialize()
+        }),
+        None,
+    )
+    .await;
+    let finish_status = finish.status();
+    let body = response_json(finish).await;
+    if finish_status != StatusCode::OK {
+        return Err(format!(
+            "OPAQUE login finish for {username} failed with {finish_status}: {body}"
+        ));
+    }
+    body["access_token"]
+        .as_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("OPAQUE login response for {username} lacked access_token: {body}"))
+}
+
+async fn login_http_ok_token(server: &TestServer, username: &str, password: &str) -> String {
+    opaque_http_login_token(server, username, password)
+        .await
+        .unwrap_or_else(|error| panic!("login for {username} should succeed: {error}"))
 }
 
 async fn join_room_http(
@@ -2004,22 +2233,14 @@ async fn full_stack_management_exposes_only_remote_admin_surface() {
 async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::room_service_client::RoomServiceClient;
-    use synctv_proto::client::{ListPlaylistItemsRequest, ListPlaylistsRequest, LoginRequest};
+    use synctv_proto::client::{ListPlaylistItemsRequest, ListPlaylistsRequest};
 
     let server = start_test_server().await;
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
-    let admin_login = auth_client
-        .login(LoginRequest {
-            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
-            password: "StrongPwd12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("bootstrap root login should succeed")
-        .into_inner();
+    let admin_login =
+        opaque_grpc_login(&mut auth_client, BOOTSTRAP_ROOT_USERNAME, "StrongPwd12345!").await;
 
     let room_create = run_synctv_remote_cli(
         &server,
@@ -2216,7 +2437,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
 async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{CreateRoomRequest, LoginRequest};
+    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -2227,16 +2448,8 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect public auth gRPC client");
-    let admin_login = auth_client
-        .login(LoginRequest {
-            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
-            password: "StrongPwd12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("public auth login for bootstrap root should succeed")
-        .into_inner();
+    let admin_login =
+        opaque_grpc_login(&mut auth_client, BOOTSTRAP_ROOT_USERNAME, "StrongPwd12345!").await;
 
     let create_user = run_synctv_remote_cli(
         &server,
@@ -2325,7 +2538,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
 async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{CreateRoomRequest, LoginRequest};
+    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -2334,16 +2547,8 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect public auth gRPC client");
-    let admin_login = auth_client
-        .login(LoginRequest {
-            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
-            password: "StrongPwd12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("public auth login for bootstrap root should succeed")
-        .into_inner();
+    let admin_login =
+        opaque_grpc_login(&mut auth_client, BOOTSTRAP_ROOT_USERNAME, "StrongPwd12345!").await;
 
     let mut user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
@@ -2426,7 +2631,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
 async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{CreateRoomRequest, LoginRequest};
+    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -2434,16 +2639,8 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect public auth gRPC client");
-    let admin_login = auth_client
-        .login(LoginRequest {
-            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
-            password: "StrongPwd12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("public auth login for bootstrap root should succeed")
-        .into_inner();
+    let admin_login =
+        opaque_grpc_login(&mut auth_client, BOOTSTRAP_ROOT_USERNAME, "StrongPwd12345!").await;
 
     let mut user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
@@ -3046,10 +3243,10 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     .await;
     assert_eq!(password_rotated["success"], true);
 
-    let old_password_login = login_http(&server, &lifecycle_username, lifecycle_password).await;
-    assert_eq!(
-        old_password_login.status(),
-        StatusCode::UNAUTHORIZED,
+    assert!(
+        opaque_http_login_token(&server, &lifecycle_username, lifecycle_password)
+            .await
+            .is_err(),
         "old password should stop working after CLI password rotation"
     );
 
@@ -3069,10 +3266,10 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     assert_eq!(renamed_user["user"]["id"], lifecycle_user_id);
     assert_eq!(renamed_user["user"]["username"], renamed_username);
 
-    let old_username_login = login_http(&server, &lifecycle_username, rotated_password).await;
-    assert_eq!(
-        old_username_login.status(),
-        StatusCode::UNAUTHORIZED,
+    assert!(
+        opaque_http_login_token(&server, &lifecycle_username, rotated_password)
+            .await
+            .is_err(),
         "old username should stop working after CLI username rotation"
     );
     let renamed_login_token =
@@ -3138,10 +3335,10 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         Some(synctv_proto::common::UserStatus::Banned as i64)
     );
 
-    let banned_login = login_http(&server, &renamed_username, rotated_password).await;
-    assert_eq!(
-        banned_login.status(),
-        StatusCode::UNAUTHORIZED,
+    assert!(
+        opaque_http_login_token(&server, &renamed_username, rotated_password)
+            .await
+            .is_err(),
         "banned users must not be able to authenticate"
     );
 
@@ -6174,35 +6371,16 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     let server = start_test_server().await;
     let client = test_http_client();
 
-    let owner_register = post_json(
-        &client,
-        &format!("{}/api/auth/register", server.api_base_url),
-        json!({
-            "username": "owner_user",
-            "email": "owner@example.com",
-            "password": "OwnerPass12345!"
-        }),
-        None,
+    let owner_register = opaque_http_register(
+        &server,
+        "owner_user",
+        "owner@example.com",
+        "OwnerPass12345!",
     )
     .await;
     assert_eq!(owner_register.status(), StatusCode::OK);
 
-    let owner_login = post_json(
-        &client,
-        &format!("{}/api/auth/login", server.api_base_url),
-        json!({
-            "username": "owner_user",
-            "password": "OwnerPass12345!"
-        }),
-        None,
-    )
-    .await;
-    assert_eq!(owner_login.status(), StatusCode::OK);
-    let owner_login_body = response_json(owner_login).await;
-    let owner_token = owner_login_body["access_token"]
-        .as_str()
-        .expect("owner access token")
-        .to_string();
+    let owner_token = login_http_ok_token(&server, "owner_user", "OwnerPass12345!").await;
 
     let owner_profile = get_with_bearer(
         &client,
@@ -6233,35 +6411,16 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
         .expect("created room id")
         .to_string();
 
-    let member_register = post_json(
-        &client,
-        &format!("{}/api/auth/register", server.api_base_url),
-        json!({
-            "username": "member_user",
-            "email": "member@example.com",
-            "password": "MemberPass12345!"
-        }),
-        None,
+    let member_register = opaque_http_register(
+        &server,
+        "member_user",
+        "member@example.com",
+        "MemberPass12345!",
     )
     .await;
     assert_eq!(member_register.status(), StatusCode::OK);
 
-    let member_login = post_json(
-        &client,
-        &format!("{}/api/auth/login", server.api_base_url),
-        json!({
-            "username": "member_user",
-            "password": "MemberPass12345!"
-        }),
-        None,
-    )
-    .await;
-    assert_eq!(member_login.status(), StatusCode::OK);
-    let member_login_body = response_json(member_login).await;
-    let member_token = member_login_body["access_token"]
-        .as_str()
-        .expect("member access token")
-        .to_string();
+    let member_token = login_http_ok_token(&server, "member_user", "MemberPass12345!").await;
 
     let forbidden_ticket = post_json(
         &client,
@@ -6323,35 +6482,16 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
     let server = start_test_server().await;
     let client = test_http_client();
 
-    let register = post_json(
-        &client,
-        &format!("{}/api/auth/register", server.api_base_url),
-        json!({
-            "username": "ws_ticket_user",
-            "email": "ws-ticket@example.com",
-            "password": "WsTicketPass12345!"
-        }),
-        None,
+    let register = opaque_http_register(
+        &server,
+        "ws_ticket_user",
+        "ws-ticket@example.com",
+        "WsTicketPass12345!",
     )
     .await;
     assert_eq!(register.status(), StatusCode::OK);
 
-    let login = post_json(
-        &client,
-        &format!("{}/api/auth/login", server.api_base_url),
-        json!({
-            "username": "ws_ticket_user",
-            "password": "WsTicketPass12345!"
-        }),
-        None,
-    )
-    .await;
-    assert_eq!(login.status(), StatusCode::OK);
-    let login_body = response_json(login).await;
-    let token = login_body["access_token"]
-        .as_str()
-        .expect("access token")
-        .to_string();
+    let token = login_http_ok_token(&server, "ws_ticket_user", "WsTicketPass12345!").await;
 
     let create_room = post_json(
         &client,
@@ -6432,38 +6572,27 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 async fn full_stack_grpc_auth_register_login_and_get_profile() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{GetProfileRequest, LoginRequest, RegisterRequest};
+    use synctv_proto::client::GetProfileRequest;
 
     let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
-    let register = auth_client
-        .register(RegisterRequest {
-            username: "grpc_user".to_string(),
-            email: "grpc-user@example.com".to_string(),
-            password: "GrpcPass12345!".to_string(),
-        })
-        .await
-        .expect("grpc register should succeed")
-        .into_inner();
+    let register = opaque_grpc_register(
+        &mut auth_client,
+        "grpc_user",
+        "grpc-user@example.com",
+        "GrpcPass12345!",
+    )
+    .await;
     let registered_user = register.user.expect("registered user");
     assert_eq!(registered_user.username, "grpc_user");
     assert_eq!(registered_user.email, "grpc-user@example.com");
     assert!(!register.access_token.is_empty());
     assert!(!register.refresh_token.is_empty());
 
-    let login = auth_client
-        .login(LoginRequest {
-            username: "grpc_user".to_string(),
-            password: "GrpcPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("grpc login should succeed")
-        .into_inner();
+    let login = opaque_grpc_login(&mut auth_client, "grpc_user", "GrpcPass12345!").await;
     assert_eq!(login.user.expect("logged in user").username, "grpc_user",);
     assert!(!login.access_token.is_empty());
     assert!(!login.refresh_token.is_empty());
@@ -6498,31 +6627,21 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
 async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{CreateRoomRequest, LoginRequest, RegisterRequest};
+    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_room_owner".to_string(),
-            email: "grpc-room-owner@example.com".to_string(),
-            password: "GrpcRoomPass12345!".to_string(),
-        })
-        .await
-        .expect("grpc register should succeed");
-    let login = auth_client
-        .login(LoginRequest {
-            username: "grpc_room_owner".to_string(),
-            password: "GrpcRoomPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("grpc login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_room_owner",
+        "grpc-room-owner@example.com",
+        "GrpcRoomPass12345!",
+    )
+    .await;
+    let login = opaque_grpc_login(&mut auth_client, "grpc_room_owner", "GrpcRoomPass12345!").await;
 
     let mut user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
@@ -6572,8 +6691,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{
-        CreateRoomRequest, GetRoomRequest, GetRoomSettingsRequest, JoinRoomRequest, LoginRequest,
-        RegisterRequest,
+        CreateRoomRequest, GetRoomRequest, GetRoomSettingsRequest, JoinRoomRequest,
     };
 
     let server = start_test_server().await;
@@ -6582,43 +6700,25 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .await
         .expect("connect auth gRPC client");
 
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_owner".to_string(),
-            email: "grpc-owner@example.com".to_string(),
-            password: "GrpcOwnerPass12345!".to_string(),
-        })
-        .await
-        .expect("owner register should succeed");
-    let owner_login = auth_client
-        .login(LoginRequest {
-            username: "grpc_owner".to_string(),
-            password: "GrpcOwnerPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("owner login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_owner",
+        "grpc-owner@example.com",
+        "GrpcOwnerPass12345!",
+    )
+    .await;
+    let owner_login =
+        opaque_grpc_login(&mut auth_client, "grpc_owner", "GrpcOwnerPass12345!").await;
 
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_member".to_string(),
-            email: "grpc-member@example.com".to_string(),
-            password: "GrpcMemberPass12345!".to_string(),
-        })
-        .await
-        .expect("member register should succeed");
-    let member_login = auth_client
-        .login(LoginRequest {
-            username: "grpc_member".to_string(),
-            password: "GrpcMemberPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("member login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_member",
+        "grpc-member@example.com",
+        "GrpcMemberPass12345!",
+    )
+    .await;
+    let member_login =
+        opaque_grpc_login(&mut auth_client, "grpc_member", "GrpcMemberPass12345!").await;
 
     let mut owner_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
@@ -6721,8 +6821,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     use synctv_proto::client::server_message;
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{
-        ClientMessage, CreateRoomRequest, HeartbeatMessage, JoinRoomRequest, LoginRequest,
-        RegisterRequest,
+        ClientMessage, CreateRoomRequest, HeartbeatMessage, JoinRoomRequest,
     };
 
     let server = start_test_server().await;
@@ -6730,43 +6829,33 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_stream_owner".to_string(),
-            email: "grpc-stream-owner@example.com".to_string(),
-            password: "GrpcStreamOwnerPass12345!".to_string(),
-        })
-        .await
-        .expect("owner register should succeed");
-    let owner_login = auth_client
-        .login(LoginRequest {
-            username: "grpc_stream_owner".to_string(),
-            password: "GrpcStreamOwnerPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("owner login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_stream_owner",
+        "grpc-stream-owner@example.com",
+        "GrpcStreamOwnerPass12345!",
+    )
+    .await;
+    let owner_login = opaque_grpc_login(
+        &mut auth_client,
+        "grpc_stream_owner",
+        "GrpcStreamOwnerPass12345!",
+    )
+    .await;
 
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_stream_member".to_string(),
-            email: "grpc-stream-member@example.com".to_string(),
-            password: "GrpcStreamMemberPass12345!".to_string(),
-        })
-        .await
-        .expect("member register should succeed");
-    let member_login = auth_client
-        .login(LoginRequest {
-            username: "grpc_stream_member".to_string(),
-            password: "GrpcStreamMemberPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("member login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_stream_member",
+        "grpc-stream-member@example.com",
+        "GrpcStreamMemberPass12345!",
+    )
+    .await;
+    let member_login = opaque_grpc_login(
+        &mut auth_client,
+        "grpc_stream_member",
+        "GrpcStreamMemberPass12345!",
+    )
+    .await;
 
     let mut owner_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
@@ -7395,31 +7484,26 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
 async fn full_stack_grpc_message_stream_requires_join_room_first() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::room_service_client::RoomServiceClient;
-    use synctv_proto::client::{ClientMessage, LoginRequest, RegisterRequest};
+    use synctv_proto::client::ClientMessage;
 
     let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_stream_missing_join".to_string(),
-            email: "grpc-stream-missing-join@example.com".to_string(),
-            password: "GrpcStreamMissingJoinPass12345!".to_string(),
-        })
-        .await
-        .expect("register should succeed");
-    let login = auth_client
-        .login(LoginRequest {
-            username: "grpc_stream_missing_join".to_string(),
-            password: "GrpcStreamMissingJoinPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_stream_missing_join",
+        "grpc-stream-missing-join@example.com",
+        "GrpcStreamMissingJoinPass12345!",
+    )
+    .await;
+    let login = opaque_grpc_login(
+        &mut auth_client,
+        "grpc_stream_missing_join",
+        "GrpcStreamMissingJoinPass12345!",
+    )
+    .await;
 
     let mut room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
@@ -8647,7 +8731,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{ClientMessage, CreateRoomRequest, LoginRequest, RegisterRequest};
+    use synctv_proto::client::{ClientMessage, CreateRoomRequest};
 
     let server = start_test_server().await;
 
@@ -8655,43 +8739,33 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .await
         .expect("connect auth gRPC client");
 
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_stream_owner_only".to_string(),
-            email: "grpc-stream-owner-only@example.com".to_string(),
-            password: "GrpcStreamOwnerOnlyPass12345!".to_string(),
-        })
-        .await
-        .expect("owner register should succeed");
-    let owner_login = auth_client
-        .login(LoginRequest {
-            username: "grpc_stream_owner_only".to_string(),
-            password: "GrpcStreamOwnerOnlyPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("owner login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_stream_owner_only",
+        "grpc-stream-owner-only@example.com",
+        "GrpcStreamOwnerOnlyPass12345!",
+    )
+    .await;
+    let owner_login = opaque_grpc_login(
+        &mut auth_client,
+        "grpc_stream_owner_only",
+        "GrpcStreamOwnerOnlyPass12345!",
+    )
+    .await;
 
-    auth_client
-        .register(RegisterRequest {
-            username: "grpc_stream_outsider".to_string(),
-            email: "grpc-stream-outsider@example.com".to_string(),
-            password: "GrpcStreamOutsiderPass12345!".to_string(),
-        })
-        .await
-        .expect("outsider register should succeed");
-    let outsider_login = auth_client
-        .login(LoginRequest {
-            username: "grpc_stream_outsider".to_string(),
-            password: "GrpcStreamOutsiderPass12345!".to_string(),
-            email: String::new(),
-            email_token: String::new(),
-        })
-        .await
-        .expect("outsider login should succeed")
-        .into_inner();
+    opaque_grpc_register(
+        &mut auth_client,
+        "grpc_stream_outsider",
+        "grpc-stream-outsider@example.com",
+        "GrpcStreamOutsiderPass12345!",
+    )
+    .await;
+    let outsider_login = opaque_grpc_login(
+        &mut auth_client,
+        "grpc_stream_outsider",
+        "GrpcStreamOutsiderPass12345!",
+    )
+    .await;
 
     let mut owner_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await

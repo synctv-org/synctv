@@ -39,25 +39,21 @@ impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
     fn publish_invalidation(&self, room_id: &RoomId) {
         publish_best_effort(
             self.realtime_fanout.clone(),
-            PublishRequest {
-                event: RealtimeEvent::CacheInvalidate {
-                    event_id: synctv_common::snanoid!(16),
-                    targets: vec![CacheTarget::Room { room_id: *room_id }],
-                    timestamp: chrono::Utc::now(),
-                },
-            },
+            PublishRequest::new(RealtimeEvent::CacheInvalidate {
+                event_id: synctv_common::snanoid!(16),
+                targets: vec![CacheTarget::Room { room_id: *room_id }],
+                timestamp: chrono::Utc::now(),
+            }),
         );
     }
 
     async fn try_publish_all_invalidation(&self) -> bool {
         self.realtime_fanout
-            .try_publish(PublishRequest {
-                event: RealtimeEvent::CacheInvalidate {
-                    event_id: synctv_common::snanoid!(16),
-                    targets: vec![CacheTarget::All],
-                    timestamp: chrono::Utc::now(),
-                },
-            })
+            .try_publish(PublishRequest::new(RealtimeEvent::CacheInvalidate {
+                event_id: synctv_common::snanoid!(16),
+                targets: vec![CacheTarget::All],
+                timestamp: chrono::Utc::now(),
+            }))
             .await
     }
 }

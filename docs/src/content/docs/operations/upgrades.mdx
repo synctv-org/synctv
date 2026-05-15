@@ -24,7 +24,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 2. 备份 PostgreSQL 和生产 secret。
 3. 如果涉及 secret 管理方式变化，先按 [安全加固与密钥轮换](../security-hardening-and-rotation/) 判断是否能直接轮换。
 4. 在测试环境使用生产同结构数据启动目标版本，验证自动 migration 和业务读写。
-5. 运行 `synctv config validate`。
+5. 运行 `synctv config validate --strict`。
 6. 运行 `synctv config show --output yaml` 保存当前有效配置快照。
 7. 对比 [配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
 8. 如果协议或 protobuf 变更，确认 [API 与 protobuf 演进策略](../../reference/api-versioning/) 和客户端示例已同步。
@@ -153,7 +153,7 @@ synctv --config /etc/synctv/synctv.yaml config show --output yaml > effective-be
 
 ```bash
 synctv db status
-synctv config validate
+synctv config validate --strict
 curl -fsS http://localhost:8080/health/ready
 ```
 

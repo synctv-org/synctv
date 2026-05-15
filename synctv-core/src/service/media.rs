@@ -23,6 +23,7 @@ use crate::{
         notification::{MediaAddedNotification, NotificationService},
         permission::PermissionService,
         provider_binding::resolve_credential_provider_instance_binding,
+        source_config::validate_source_config_size,
         ProvidersManager,
     },
     Error, Result,
@@ -36,8 +37,6 @@ use std::sync::Arc;
 /// This limit prevents `DoS` attacks and ensures reasonable resource usage
 /// for bulk operations like add, delete, and reorder.
 const MAX_BATCH_SIZE: usize = 100;
-/// Limit `source_config` storage size to prevent unbounded JSONB growth.
-const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
 /// Leave sparse gaps between inserted media positions to reduce renumbering.
 const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
 
@@ -347,6 +346,7 @@ impl MediaService {
         let explicit_provider_instance =
             normalize_provider_instance_name(request.provider_instance_name.as_deref())
                 .map(str::to_string);
+        validate_source_config_size(&request.source_config)?;
 
         // Resolve the provider adapter from the declared type plus optional
         // top-level instance binding. Empty and None instance names both use
@@ -401,15 +401,6 @@ impl MediaService {
             .validate_source_config(&ctx, SourceConfig::media(&request.source_config))
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
-
-        // Validate source_config size to prevent storage bloat
-        // Limit: 1MB max (JSONB can grow large with embedded metadata)
-        let config_size = serde_json::to_string(&request.source_config).map_or(0, |s| s.len());
-        if config_size > MAX_SOURCE_CONFIG_SIZE {
-            return Err(Error::InvalidInput(format!(
-                "source_config too large: {config_size} bytes (max {MAX_SOURCE_CONFIG_SIZE} bytes / 1MB)"
-            )));
-        }
 
         // Prepare source_config for storage (provider-owned normalization)
         let prepared_source_config = provider
@@ -538,6 +529,7 @@ impl MediaService {
             let explicit_provider_instance =
                 normalize_provider_instance_name(item.provider_instance_name.as_deref())
                     .map(str::to_string);
+            validate_source_config_size(&item.source_config)?;
 
             // Resolve provider by declared type plus optional top-level instance binding.
             let provider = self
@@ -1875,138 +1867,6 @@ mod tests {
         };
 
         assert_eq!(request.source_config["options"]["subtitle"]["lang"], "en");
-    }
-
-    #[test]
-    fn test_source_config_size_limit_constant() {
-        // MAX_SOURCE_CONFIG_SIZE = 1MB
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
-        assert_eq!(MAX_SOURCE_CONFIG_SIZE, 1_048_576);
-    }
-
-    #[test]
-    fn test_source_config_size_calculation() {
-        // Small config should be well under 1MB
-        let small_config = serde_json::json!({
-            "url": "https://example.com/video.mp4",
-            "headers": {"Referer": "https://example.com"}
-        });
-        let size = serde_json::to_string(&small_config).map_or(0, |s| s.len());
-        assert!(size < 200, "Small config should be under 200 bytes");
-    }
-
-    #[test]
-    fn test_source_config_large_rejection() {
-        // Config with 2MB of data should be rejected
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
-        let large_string = "x".repeat(2 * 1024 * 1024); // 2MB string
-        let large_config = serde_json::json!({
-            "data": large_string
-        });
-        let size = serde_json::to_string(&large_config).map_or(0, |s| s.len());
-        assert!(
-            size > MAX_SOURCE_CONFIG_SIZE,
-            "Large config should exceed 1MB"
-        );
-    }
-
-    #[test]
-    fn test_source_config_exactly_1mb_accepted() {
-        // Config exactly at 1MB limit should be accepted
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
-
-        // Create a config that is exactly 1MB when serialized
-        // JSON overhead: {"data":"..."} = 12 bytes, so we need 1MB - 12 bytes
-        let data_size = MAX_SOURCE_CONFIG_SIZE - 12;
-        let exact_string = "x".repeat(data_size);
-        let exact_config = serde_json::json!({
-            "data": exact_string
-        });
-
-        let size = serde_json::to_string(&exact_config).map_or(0, |s| s.len());
-
-        // Should be exactly at or just under the limit
-        assert!(
-            size <= MAX_SOURCE_CONFIG_SIZE,
-            "Config should be at or under 1MB, got {size} bytes"
-        );
-    }
-
-    #[test]
-    fn test_source_config_1mb_plus_one_rejected() {
-        // Config at 1MB + 1 byte should be rejected
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
-
-        // Create a config that exceeds 1MB by a small amount
-        // JSON overhead: {"data":"..."} = 12 bytes
-        // To be 1 byte over, we need (1MB - 12 bytes + 1 byte) = 1MB - 11 bytes of data
-        let data_size = MAX_SOURCE_CONFIG_SIZE - 10; // -10 to be safely over the limit
-        let over_string = "x".repeat(data_size);
-        let over_config = serde_json::json!({
-            "data": over_string
-        });
-
-        let size = serde_json::to_string(&over_config).map_or(0, |s| s.len());
-
-        assert!(
-            size > MAX_SOURCE_CONFIG_SIZE,
-            "Config should exceed 1MB, got {size} bytes"
-        );
-    }
-
-    #[test]
-    fn test_source_config_nested_structure_size() {
-        // Nested JSON structures should also be checked for size
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
-
-        let nested_config = serde_json::json!({
-            "playback_infos": {
-                "1080p": {
-                    "urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"],
-                    "headers": {
-                        "Referer": "https://example.com",
-                        "User-Agent": "Mozilla/5.0"
-                    }
-                },
-                "720p": {
-                    "urls": ["https://example.com/video1-720.mp4"],
-                    "headers": {}
-                }
-            },
-            "default_mode": "1080p",
-            "metadata": {
-                "title": "Test Video",
-                "duration": 3600
-            }
-        });
-
-        let size = serde_json::to_string(&nested_config).map_or(0, |s| s.len());
-
-        // Complex nested structures should still be under limit
-        assert!(
-            size < MAX_SOURCE_CONFIG_SIZE,
-            "Nested config should be under 1MB, got {size} bytes"
-        );
-    }
-
-    #[test]
-    fn test_source_config_unicode_content_size() {
-        // Unicode characters should be counted correctly in bytes, not characters
-        // (MAX_SOURCE_CONFIG_SIZE is 1MB but this test just validates byte counting)
-
-        // Unicode emoji takes 4 bytes in UTF-8
-        let unicode_string = "🎉".repeat(100);
-        let unicode_config = serde_json::json!({
-            "title": unicode_string
-        });
-
-        let size = serde_json::to_string(&unicode_config).map_or(0, |s| s.len());
-
-        // 100 emoji * 4 bytes each = 400 bytes + JSON overhead
-        assert!(
-            size > 400 && size < 500,
-            "Unicode size should be counted in bytes, got {size} bytes"
-        );
     }
 
     #[test]

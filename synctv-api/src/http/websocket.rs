@@ -381,7 +381,7 @@ fn validate_websocket_origin(
     headers: &HeaderMap,
     allowed_origins: &[String],
     direct_peer_ip: Option<std::net::IpAddr>,
-    trusted_proxies: &[String],
+    server_config: &synctv_core::config::ServerConfig,
 ) -> Result<(), AppError> {
     let Some(origin) = headers.get(header::ORIGIN) else {
         // Non-browser clients typically omit Origin. Keep supporting them.
@@ -412,7 +412,7 @@ fn validate_websocket_origin(
         .and_then(|host| host.to_str().ok())
     {
         let forwarded_proto = direct_peer_ip.and_then(|peer_ip| {
-            if is_trusted_proxy(peer_ip, trusted_proxies) {
+            if server_config.is_trusted_proxy(&peer_ip) {
                 headers
                     .get("x-forwarded-proto")
                     .and_then(|value| value.to_str().ok())
@@ -432,20 +432,6 @@ fn validate_websocket_origin(
     Err(AppError::forbidden(
         "WebSocket Origin is not allowed for this endpoint",
     ))
-}
-
-fn is_trusted_proxy(peer_ip: std::net::IpAddr, trusted_proxies: &[String]) -> bool {
-    trusted_proxies.iter().any(|proxy| {
-        proxy
-            .parse::<ipnet::IpNet>()
-            .map(|network| network.contains(&peer_ip))
-            .or_else(|_| {
-                proxy
-                    .parse::<std::net::IpAddr>()
-                    .map(|proxy_ip| proxy_ip == peer_ip)
-            })
-            .unwrap_or(false)
-    })
 }
 
 fn same_origin_as_host(
@@ -974,6 +960,7 @@ pub async fn websocket_handler(
             &room_id,
             &query,
             &headers,
+            peer_ip.0,
             &request_meta,
             &handshake_control,
         )
@@ -1130,6 +1117,7 @@ async fn prepare_websocket_upgrade(
     room_id: &str,
     query: &WsQuery,
     headers: &HeaderMap,
+    direct_peer_ip: Option<std::net::IpAddr>,
     request_meta: &ApiRequestMetadata,
     handshake_control: &ExecutionControl,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
@@ -1139,8 +1127,8 @@ async fn prepare_websocket_upgrade(
     validate_websocket_origin(
         headers,
         &state.config.server.cors_allowed_origins,
-        request_meta.client_ip,
-        &state.config.server.trusted_proxies,
+        direct_peer_ip,
+        &state.config.server,
     )?;
 
     let rid = state
@@ -1441,6 +1429,8 @@ mod tests {
             BruteForceProtection::in_memory("test".to_string()),
         );
         service.enable_password_registration_for_tests();
+        service.enable_legacy_password_login_for_tests();
+        service.enable_legacy_password_registration_for_tests();
         service
     }
 
@@ -1663,7 +1653,8 @@ mod tests {
     #[test]
     fn test_validate_websocket_origin_allows_missing_origin_for_non_browser_clients() {
         let headers = HeaderMap::new();
-        validate_websocket_origin(&headers, &[], None, &[])
+        let config = synctv_core::Config::default();
+        validate_websocket_origin(&headers, &[], None, &config.server)
             .expect("missing origin should be allowed");
     }
 
@@ -1677,7 +1668,7 @@ mod tests {
             &headers,
             &["https://app.example.com".to_string()],
             None,
-            &[],
+            &synctv_core::Config::default().server,
         )
         .expect("same-origin browser websocket should only be allowed when explicitly configured");
     }
@@ -1688,9 +1679,10 @@ mod tests {
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
 
-        validate_websocket_origin(&headers, &[], None, &[]).expect(
-            "same-origin browser websocket should be allowed without explicit CORS allowlist",
-        );
+        validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
+            .expect(
+                "same-origin browser websocket should be allowed without explicit CORS allowlist",
+            );
     }
 
     #[test]
@@ -1703,7 +1695,7 @@ mod tests {
             &headers,
             &["https://app.example.com".to_string()],
             None,
-            &[],
+            &synctv_core::Config::default().server,
         )
         .expect("configured frontend origin should be allowed");
     }
@@ -1714,12 +1706,14 @@ mod tests {
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
         headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         let err = validate_websocket_origin(
             &headers,
             &[],
             Some("127.0.0.1".parse().unwrap()),
-            &["127.0.0.1".to_string()],
+            &config.server,
         )
         .expect_err("same host with proxy-reported https must reject an http origin");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
@@ -1731,14 +1725,46 @@ mod tests {
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
         headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         validate_websocket_origin(
             &headers,
             &[],
             Some("198.51.100.10".parse().unwrap()),
-            &["127.0.0.1".to_string()],
+            &config.server,
         )
         .expect("untrusted peers must not influence same-origin checks via x-forwarded-proto");
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_proto() {
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
+        headers.insert("x-forwarded-for", "203.0.113.10".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+
+        let direct_peer_ip = "10.2.3.4".parse().unwrap();
+        let resolved_client_ip =
+            crate::client_ip::extract_client_ip_from_headers(&config, direct_peer_ip, &headers);
+        assert_eq!(
+            resolved_client_ip,
+            "203.0.113.10".parse::<std::net::IpAddr>().unwrap()
+        );
+
+        let err = validate_websocket_origin(&headers, &[], Some(direct_peer_ip), &config.server)
+            .expect_err(
+                "origin validation must trust x-forwarded-proto based on the direct proxy peer",
+            );
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+
+        validate_websocket_origin(&headers, &[], Some(resolved_client_ip), &config.server).expect(
+            "using the resolved client IP as peer would ignore trusted proxy metadata and allow the mismatched scheme",
+        );
     }
 
     #[test]
@@ -1754,8 +1780,9 @@ mod tests {
         headers.insert(header::HOST, "api.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
 
-        let err = validate_websocket_origin(&headers, &[], None, &[])
-            .expect_err("unconfigured cross-origin websocket must fail closed");
+        let err =
+            validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
+                .expect_err("unconfigured cross-origin websocket must fail closed");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
         assert!(err.message.contains("Origin"));
     }
@@ -1766,8 +1793,9 @@ mod tests {
         headers.insert(header::HOST, "api.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "null".parse().unwrap());
 
-        let err = validate_websocket_origin(&headers, &[], None, &[])
-            .expect_err("null origin should not be trusted");
+        let err =
+            validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
+                .expect_err("null origin should not be trusted");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     }
 

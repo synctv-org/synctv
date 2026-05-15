@@ -49,7 +49,10 @@ const USER_SELECT_COLUMNS: &str = "
 
 const USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL: &str = "
     u.id, u.username, aei.email,
-    COALESCE(updated_apc.legacy_password_hash, existing_apc.legacy_password_hash, '') AS password_hash,
+    CASE
+        WHEN updated_apc.user_id IS NOT NULL THEN COALESCE(updated_apc.legacy_password_hash, '')
+        ELSE COALESCE(existing_apc.legacy_password_hash, '')
+    END AS password_hash,
     u.signup_method, u.role,
     u.created_at, u.updated_at,
     COALESCE(updated_apc.password_changed_at, existing_apc.password_changed_at, u.created_at) AS password_changed_at,
@@ -687,37 +690,6 @@ impl UserRepository {
         .await?;
 
         Ok(result.rows_affected() > 0)
-    }
-
-    /// Update user password
-    pub async fn update_password(&self, user_id: &UserId, password_hash: &str) -> Result<User> {
-        self.update_password_credentials_with_executor(
-            user_id,
-            PasswordCredentialMaterial::legacy_only(password_hash),
-            &self.pool,
-        )
-        .await
-    }
-
-    /// Update user password using a provided executor (pool or transaction)
-    pub async fn update_password_with_executor<'e, E>(
-        &self,
-        user_id: &UserId,
-        password_hash: &str,
-        opaque_record: Option<&OpaquePasswordRecord>,
-        executor: E,
-    ) -> Result<User>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let credentials = match opaque_record {
-            Some(opaque_record) => {
-                PasswordCredentialMaterial::legacy_and_opaque(password_hash, opaque_record)
-            }
-            None => PasswordCredentialMaterial::legacy_only(password_hash),
-        };
-        self.update_password_credentials_with_executor(user_id, credentials, executor)
-            .await
     }
 
     pub async fn update_password_credentials_with_executor<'e, E>(
@@ -1419,6 +1391,89 @@ mod tests {
             Some(1)
         );
         assert_eq!(row.try_get::<i32, _>("password_version").unwrap(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_password_credentials_opaque_only_clears_legacy_password_material() {
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let user = User::new(
+            "opaque_update_user".into(),
+            Some("opaque-update@example.com".into()),
+            "legacy-hash".into(),
+            SignupMethod::Email,
+        );
+        let initial_opaque_record = OpaquePasswordRecord {
+            record: b"opaque-record-v1".to_vec(),
+            credential_identifier: b"synctv:user:opaque_update_user".to_vec(),
+            ciphersuite: "opaque-ristretto255-sha512-argon2id".to_string(),
+            server_setup_version: 1,
+        };
+        let created = repo
+            .create_with_password_credentials(
+                &user,
+                PasswordCredentialMaterial::legacy_and_opaque(
+                    &user.password_hash,
+                    &initial_opaque_record,
+                ),
+                &pool,
+            )
+            .await
+            .expect("user should be created with legacy and OPAQUE credentials");
+
+        let updated_opaque_record = OpaquePasswordRecord {
+            record: b"opaque-record-v2".to_vec(),
+            credential_identifier: b"synctv:user-id:42".to_vec(),
+            ciphersuite: "opaque-ristretto255-sha512-argon2id".to_string(),
+            server_setup_version: 1,
+        };
+        let updated = repo
+            .update_password_credentials_with_executor(
+                &created.id,
+                PasswordCredentialMaterial::opaque_only(&updated_opaque_record),
+                &pool,
+            )
+            .await
+            .expect("opaque-only password update should succeed");
+        assert_eq!(
+            updated.password_hash, "",
+            "opaque-only updates must clear the legacy password hash exposed on User"
+        );
+
+        let row = sqlx::query(
+            r"
+            SELECT legacy_password_hash, legacy_password_algorithm, opaque_record,
+                   opaque_credential_identifier, password_version
+            FROM auth_password_credentials
+            WHERE user_id = $1
+            ",
+        )
+        .bind(created.id.as_i64())
+        .fetch_one(&pool)
+        .await
+        .expect("password credential row should exist");
+
+        assert_eq!(
+            row.try_get::<Option<String>, _>("legacy_password_hash")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            row.try_get::<Option<String>, _>("legacy_password_algorithm")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            row.try_get::<Option<Vec<u8>>, _>("opaque_record").unwrap(),
+            Some(b"opaque-record-v2".to_vec())
+        );
+        assert_eq!(
+            row.try_get::<Option<Vec<u8>>, _>("opaque_credential_identifier")
+                .unwrap(),
+            Some(b"synctv:user-id:42".to_vec())
+        );
+        assert_eq!(row.try_get::<i32, _>("password_version").unwrap(), 1);
     }
 
     #[tokio::test]

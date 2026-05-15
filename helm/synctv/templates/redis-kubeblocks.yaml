@@ -4,7 +4,7 @@ kind: Cluster
 metadata:
   name: {{ include "synctv.redis.kubeblocks.clusterName" . }}
 spec:
-  terminationPolicy: {{ .Values.redis.kubeblocks.terminationPolicy | default "Delete" }}
+  terminationPolicy: {{ .Values.redis.kubeblocks.terminationPolicy | default "Retain" }}
   clusterDef: {{ .Values.redis.kubeblocks.clusterDef | default "redis" }}
   topology: {{ .Values.redis.kubeblocks.topology | default "replication" }}
   componentSpecs:

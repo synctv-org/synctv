@@ -1,34 +1,24 @@
-//! Type-safe room settings with automatic `lazy_static` registration
+//! Type-safe room settings with a static registry.
 //!
 //! # Architecture
 //!
-//! Each room setting is an **independent type** that implements `RoomSetting` trait.
-//! The `room_setting!` macro generates the type with **`lazy_static`! auto-registration**.
+//! Each room setting is an independent type that implements the `RoomSetting` trait.
+//! The `room_setting!` macro generates the type and its dynamic provider implementation.
 //!
 //! # Examples
 //!
 //! ```text
-//! // Define a setting - auto-registers on first use!
+//! // Define a setting
 //! room_setting!(ChatEnabled, bool, "chat_enabled", true);
 //!
 //! // Use by type (compile-time safe)
 //! let setting = ChatEnabled(true);
-//! // Registration happens automatically on first Default::default() call!
-//!
 //! // Or use via registry
-//! RoomSettingsRegistry::has_key("chat_enabled");  // auto-registers
+//! RoomSettingsRegistry::has_key("chat_enabled");
 //! ```
-//!
-//! # Auto-Registration with `lazy_static`!
-//!
-//! Each type has a **`lazy_static`!** block in the macro that:
-//! - Runs once on first access
-//! - Registers the type in the global registry
-//! - No manual registration needed!
 
 use crate::models::permission::PermissionBits;
 use crate::{Error, Result};
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -38,8 +28,8 @@ use std::sync::Arc;
 /// Trait for room setting operations (type-erased)
 ///
 /// This trait provides a unified interface for working with room settings dynamically.
-/// Each setting type auto-registers into `RoomSettingsRegistry`, so callers can
-/// validate, parse, and apply settings by key without knowing the concrete type.
+/// The static `RoomSettingsRegistry` lets callers validate, parse, and apply settings
+/// by key without knowing the concrete type.
 pub trait RoomSettingProvider: Send + Sync {
     /// Get the setting key
     fn key(&self) -> &'static str;
@@ -65,44 +55,54 @@ pub trait RoomSettingProvider: Send + Sync {
 
 /// Global registry for all room setting types.
 ///
-/// Auto-populated by `#[ctor]` functions in each setting type at program startup
-/// (before `main`). After initialization, this registry is effectively read-only.
-///
-/// Unlike `ProviderRegistry` (oauth2), this cannot easily be converted to DI
-/// because `#[ctor]` runs before any application context exists. The `LazyLock`
-/// + `RwLock` pattern is appropriate here since:
-/// 1. Writes happen only during static initialization (before `main`)
-/// 2. All runtime access is read-only
-/// 3. The set of settings is fixed at compile time (not configurable)
-static REGISTRY: std::sync::LazyLock<RwLock<HashMap<String, Arc<dyn RoomSettingProvider>>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+/// The set of room settings is fixed at compile time, so a lazy immutable map is
+/// enough; no startup constructors or runtime mutation are required.
+static REGISTRY: std::sync::LazyLock<HashMap<&'static str, Arc<dyn RoomSettingProvider>>> =
+    std::sync::LazyLock::new(|| {
+        [
+            provider_entry(ChatEnabled::default()),
+            provider_entry(DanmakuEnabled::default()),
+            provider_entry(AllowGuestJoin::default()),
+            provider_entry(RequirePassword::default()),
+            provider_entry(RequireApproval::default()),
+            provider_entry(AllowAutoJoin::default()),
+            provider_entry(MaxMembers::default()),
+            provider_entry(AdminAddedPermissions::default()),
+            provider_entry(AdminRemovedPermissions::default()),
+            provider_entry(MemberAddedPermissions::default()),
+            provider_entry(MemberRemovedPermissions::default()),
+            provider_entry(GuestAddedPermissions::default()),
+            provider_entry(GuestRemovedPermissions::default()),
+            provider_entry(AutoPlay::default()),
+        ]
+        .into_iter()
+        .collect()
+    });
+
+fn provider_entry<T>(provider: T) -> (&'static str, Arc<dyn RoomSettingProvider>)
+where
+    T: RoomSetting + RoomSettingProvider,
+{
+    (T::KEY, Arc::new(provider))
+}
 
 /// Global registry for all room setting types
 pub struct RoomSettingsRegistry;
 
 impl RoomSettingsRegistry {
-    /// Register a setting type (called automatically by ctor)
-    pub fn register(key: &'static str, provider: Arc<dyn RoomSettingProvider>) {
-        let mut registry = REGISTRY.write();
-        registry.insert(key.to_string(), provider);
-    }
-
     /// Get provider for a setting by key
     pub fn get_provider(key: &str) -> Option<Arc<dyn RoomSettingProvider>> {
-        let registry = REGISTRY.read();
-        registry.get(key).cloned()
+        REGISTRY.get(key).cloned()
     }
 
     /// Get all registered setting keys
     pub fn all_keys() -> Vec<String> {
-        let registry = REGISTRY.read();
-        registry.keys().cloned().collect()
+        REGISTRY.keys().map(ToString::to_string).collect()
     }
 
     /// Check if a setting exists
     pub fn has_key(key: &str) -> bool {
-        let registry = REGISTRY.read();
-        registry.contains_key(key)
+        REGISTRY.contains_key(key)
     }
 
     /// Validate a setting value by key (dynamic validation)
@@ -156,7 +156,7 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
     fn default_value() -> Self::Value;
 }
 
-/// Macro to generate room setting types with automatic ctor registration
+/// Macro to generate room setting types and dynamic provider implementations.
 ///
 /// # Examples
 ///
@@ -173,8 +173,6 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
 ///     }
 /// });
 /// ```
-///
-/// **Auto-registration**: Each type has a `#[ctor]` function that registers default instance!
 ///
 /// The macro auto-derives the field name on `RoomSettings` from the type name
 /// (e.g., `ChatEnabled` → `chat_enabled`) via `paste::paste!`.
@@ -272,18 +270,6 @@ macro_rules! room_setting {
             }
         }
 
-        // Auto-registration at program startup using ctor
-        paste::paste! {
-            #[ctor::ctor(unsafe)]
-            fn [<_register_ $name:snake>]() {
-                let default_instance: $name = std::default::Default::default();
-                $crate::models::room_settings::RoomSettingsRegistry::register(
-                    $key,
-                    std::sync::Arc::new(default_instance),
-                );
-            }
-        }
-
         impl std::default::Default for $name {
             fn default() -> Self {
                 Self($default)
@@ -291,8 +277,6 @@ macro_rules! room_setting {
         }
     };
 }
-
-// Each type has its own lazy_static! that auto-registers!
 
 room_setting!(ChatEnabled, bool, "chat_enabled", true);
 room_setting!(DanmakuEnabled, bool, "danmaku_enabled", true);
@@ -406,13 +390,6 @@ impl RoomSettingProvider for AutoPlay {
         settings.auto_play = Self::new(Self::parse_from_str(value)?);
         Ok(())
     }
-}
-
-// Auto-registration at program startup using ctor for AutoPlay
-#[ctor::ctor(unsafe)]
-fn _auto_play_register() {
-    let default_instance: AutoPlay = std::default::Default::default();
-    RoomSettingsRegistry::register("auto_play", std::sync::Arc::new(default_instance));
 }
 
 use serde::{Deserialize, Serialize};

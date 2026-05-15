@@ -53,8 +53,11 @@ pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::{CacheBackendConfig, SliceCacheConfig};
 pub use etag::{CachedResourceMeta, StoredEntry};
 pub use filter::{
-    proxy_head_with_cache_enabled_with_control, proxy_with_cache, proxy_with_cache_enabled,
-    proxy_with_cache_enabled_with_control, proxy_with_cache_with_control,
+    proxy_head_with_cache_enabled_with_control,
+    proxy_head_with_cache_enabled_with_control_and_timeout, proxy_with_cache,
+    proxy_with_cache_enabled, proxy_with_cache_enabled_with_control,
+    proxy_with_cache_enabled_with_control_and_timeout, proxy_with_cache_with_control,
+    proxy_with_cache_with_control_and_timeout,
 };
 pub use lifecycle::CacheLifecycleManager;
 pub use range::{

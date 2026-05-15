@@ -7,8 +7,8 @@
 use crate::config::{LocalProviderHttpConfig, MediaProvidersConfig};
 use crate::models::normalize_provider_instance_name;
 use crate::provider::{
-    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-    MediaProvider, ProviderClientManager, RtmpProvider,
+    proxy::ProxyProviderRegistry, AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider,
+    LiveProxyProvider, MediaProvider, ProviderClientManager, RtmpProvider,
 };
 use crate::service::RemoteProviderManager;
 use crate::Result;
@@ -85,6 +85,8 @@ pub struct ProvidersManager {
 
     /// Created `MediaProvider` instances (singleton per provider type)
     instances: Arc<RwLock<HashMap<String, Arc<dyn MediaProvider>>>>,
+    /// Proxy-capable view of the default provider graph.
+    proxy_registry: Arc<ProxyProviderRegistry>,
 
     /// Provider instance manager (for local/remote dispatch)
     instance_manager: Arc<RemoteProviderManager>,
@@ -150,6 +152,7 @@ impl ProvidersManager {
         let mut manager = Self {
             factories: HashMap::new(),
             instances: Arc::new(RwLock::new(HashMap::new())),
+            proxy_registry: Arc::new(ProxyProviderRegistry::new()),
             instance_manager,
             default_client_manager,
             ssrf_guard,
@@ -165,6 +168,12 @@ impl ProvidersManager {
     #[must_use]
     pub const fn instance_manager(&self) -> &Arc<RemoteProviderManager> {
         &self.instance_manager
+    }
+
+    /// Proxy-capable view of the same default providers used for playback.
+    #[must_use]
+    pub fn proxy_registry(&self) -> Arc<ProxyProviderRegistry> {
+        Arc::clone(&self.proxy_registry)
     }
 
     /// Register all built-in provider factories
@@ -305,6 +314,11 @@ impl ProvidersManager {
             .write()
             .await
             .insert(instance_id.to_string(), provider.clone());
+
+        if instance_id == Self::default_instance_id(provider_type) {
+            self.proxy_registry
+                .register_media_provider(provider.clone());
+        }
 
         tracing::info!(
             "Created provider instance: {} (type: {})",
@@ -778,6 +792,36 @@ mod tests {
         // Get unknown type
         let not_found = manager.get_by_type("unknown").await;
         assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_default_provider_instances_populate_proxy_registry() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        assert!(
+            manager.proxy_registry().get("alist").is_none(),
+            "proxy registry should not contain providers before default instances are built"
+        );
+
+        manager.create_builtin_defaults().await.unwrap();
+        let registry = manager.proxy_registry();
+
+        for provider_type in [
+            "alist",
+            "bilibili",
+            "emby",
+            "direct_url",
+            "rtmp",
+            "live_proxy",
+        ] {
+            assert!(
+                registry.get(provider_type).is_some(),
+                "default {provider_type} provider should be registered for proxy resolution"
+            );
+        }
     }
 
     #[tokio::test]

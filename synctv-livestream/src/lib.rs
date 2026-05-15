@@ -13,7 +13,10 @@ compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive 
 // All streams are scoped to room_id:media_id (media-level streaming).
 
 /// Encoded file descriptor set for livestream gRPC proto definitions.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
+    env!("SYNCTV_LIVESTREAM_PROTO_OUT_DIR"),
+    "/descriptor.bin"
+));
 
 pub mod api;
 pub mod error;

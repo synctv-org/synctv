@@ -44,11 +44,12 @@ pub(crate) struct ProxyResponse {
     pub(crate) followed_redirects: bool,
 }
 
-pub(crate) async fn send_head_with_redirect_validation_with_control(
+pub(crate) async fn send_head_with_redirect_validation_with_control_and_timeout(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     request_control: Option<&ExecutionControl>,
+    header_timeout: Option<Duration>,
 ) -> Result<ProxyResponse, anyhow::Error> {
     send_with_redirect_validation_inner(
         client,
@@ -56,7 +57,7 @@ pub(crate) async fn send_head_with_redirect_validation_with_control(
         reqwest::Method::HEAD,
         ssrf_guard,
         request_control,
-        None,
+        header_timeout,
     )
     .await
 }

@@ -9,11 +9,18 @@ compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive 
     feature = "tls-webpki-roots",
     feature = "tls-native-roots"
 ))]
-#[ctor::ctor(unsafe)]
-fn install_process_crypto_provider() {
+pub fn install_process_crypto_provider() {
     let _ = rustls::crypto::CryptoProvider::install_default(default_crypto_provider());
     let _ = default_jwt_crypto_provider().install_default();
 }
+
+#[cfg(not(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+)))]
+pub const fn install_process_crypto_provider() {}
 
 #[cfg(any(
     feature = "tls-aws-lc",

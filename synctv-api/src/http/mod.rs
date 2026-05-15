@@ -418,8 +418,13 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             .with_event_service(config.event_service.clone()),
     );
 
-    // Build proxy provider registry from ProviderSet (single source of truth)
-    let proxy_provider_registry = Arc::new(config.providers.build_proxy_registry());
+    // Prefer the provider graph built by ProvidersManager so playback and proxy
+    // resolution share the same provider instances. Tests and fallback
+    // transports without a manager still use the explicitly supplied ProviderSet.
+    let proxy_provider_registry = config.providers_manager.as_ref().map_or_else(
+        || Arc::new(config.providers.build_proxy_registry()),
+        |manager| manager.proxy_registry(),
+    );
 
     // Create ProxyServices for unified proxy handler (gives providers DB access)
     let proxy_services = Arc::new(ProxyServices {

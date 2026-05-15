@@ -1,8 +1,7 @@
 //! gRPC Provider Services
 //!
 //! This module contains gRPC server implementations for all providers.
-//! Generated code is included from Cargo `OUT_DIR`; `src/proto/` is updated only
-//! by the explicit proto regeneration workflow.
+//! Generated code is included from Cargo `OUT_DIR`.
 
 // Include generated protobuf code
 pub mod alist {

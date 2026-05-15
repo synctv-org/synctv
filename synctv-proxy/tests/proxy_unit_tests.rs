@@ -56,15 +56,12 @@ fn test_custom_user_agent_case_insensitive_not_overridden() {
 }
 
 #[test]
-fn test_default_referer_constructed_from_url() {
+fn test_default_referer_not_synthesized_from_url() {
     let headers =
         build_and_get_headers("https://cdn.example.com/path/to/video.mp4", &HashMap::new());
-    let referer = headers
-        .get("referer")
-        .expect("Referer should be set by default");
-    assert_eq!(
-        referer.to_str().unwrap(),
-        "https://cdn.example.com/path/to/video.mp4"
+    assert!(
+        headers.get("referer").is_none(),
+        "Referer should only be sent when a provider explicitly supplies it"
     );
 }
 
@@ -100,20 +97,15 @@ fn test_custom_referer_case_insensitive_not_overridden() {
 fn test_unparseable_url_no_referer_crash() {
     // apply_provider_headers should not panic when url::Url::parse fails.
     // We use a valid HTTP URL with a nonsense host so reqwest can build it,
-    // but url::Url::parse on a truly malformed string would skip Referer.
-    // Here we test that a URL with an odd host still produces a Referer
-    // derived from the URL itself (since url::Url::parse succeeds for http:// URLs).
+    // and pass a malformed URL string to apply_provider_headers directly.
     let client = reqwest::Client::new();
     let request = client.get("https://example.com/path");
-    // Pass a malformed URL string to apply_provider_headers directly.
-    // The function uses url::Url::parse internally; if it fails, no Referer is set.
     let request = apply_provider_headers(request, ":::invalid", &HashMap::new())
         .expect("empty provider headers should be accepted");
     let built = request.build().expect("Request should still build");
-    // url::Url::parse(":::invalid") fails, so no Referer header should be set.
     assert!(
         built.headers().get("referer").is_none(),
-        "Unparseable URL should not produce a Referer header"
+        "Referer should not be synthesized from any URL"
     );
 }
 
@@ -534,27 +526,14 @@ fn test_rewrite_m3u8_variant_playlist_with_ext_x_map() {
 // PX5: Referer query string test
 
 #[test]
-fn test_referer_constructed_from_url_with_query() {
-    // When the URL has a query string, Referer should include the path but not the query
-    // (Referer only includes scheme://host/path)
+fn test_referer_not_constructed_from_url_with_query() {
     let headers = build_and_get_headers(
         "https://cdn.example.com/path/video.mp4?token=abc&expires=123",
         &HashMap::new(),
     );
-    let referer = headers
-        .get("referer")
-        .expect("Referer should be set by default");
-    let referer_str = referer.to_str().unwrap();
-    // The referer is constructed from parsed URL: scheme://host/path
-    // apply_provider_headers uses format!("{}://{}{}", scheme, host, path)
     assert!(
-        referer_str.starts_with("https://cdn.example.com/path/video.mp4"),
-        "Referer should include path: {referer_str}"
-    );
-    // Referer should NOT include query parameters (for privacy)
-    assert!(
-        !referer_str.contains("token=abc"),
-        "Referer should NOT include query parameters: {referer_str}"
+        headers.get("referer").is_none(),
+        "Referer should not be derived from signed media URLs"
     );
 }
 
@@ -575,19 +554,14 @@ fn test_referer_with_custom_referer_header() {
 }
 
 #[test]
-fn test_referer_port_preserved() {
+fn test_referer_not_constructed_from_url_with_port() {
     let headers = build_and_get_headers(
         "https://cdn.example.com:8443/path/video.mp4",
         &HashMap::new(),
     );
-    let referer = headers.get("referer").expect("Referer should be set");
-    let referer_str = referer.to_str().unwrap();
-    // Note: url::Url::host_str() does NOT include port, so the Referer
-    // constructed by apply_provider_headers strips the port.
-    // This is expected behavior - we're testing it doesn't crash.
     assert!(
-        referer_str.starts_with("https://"),
-        "Referer should start with scheme: {referer_str}"
+        headers.get("referer").is_none(),
+        "Referer should only be sent when provider headers include it"
     );
 }
 

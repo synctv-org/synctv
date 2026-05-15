@@ -1,7 +1,7 @@
 //! Range header parsing, Content-Range response parsing, and slice alignment.
 //!
 //! Mirrors nginx's slice module approach:
-//! - Request `Range` header parsing (single byte-range only, multi-range rejected)
+//! - Request `Range` header parsing (single byte-range only)
 //! - Response `Content-Range` parsing modeled after
 //!   `ngx_http_slice_parse_content_range`
 //! - Slice-aligned range computation
@@ -38,10 +38,10 @@ pub fn parse_range_header(range: &str, total_size: u64) -> Result<(u64, u64), an
         let suffix_len: u64 = parts[1]
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid suffix range"))?;
-        if suffix_len == 0 || suffix_len > total_size {
+        if suffix_len == 0 {
             return Err(anyhow::anyhow!("Suffix range out of bounds"));
         }
-        (total_size - suffix_len, total_size - 1)
+        (total_size.saturating_sub(suffix_len), total_size - 1)
     } else if parts[1].is_empty() {
         // Open-ended: bytes=N-
         let start: u64 = parts[0]

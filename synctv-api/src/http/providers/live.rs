@@ -318,8 +318,8 @@ fn normalize_hls_segment_name(
         .filter(|name| !name.is_empty())
         .ok_or_else(|| AppError::bad_request("Invalid segment name"))?;
 
-    if let Err(error) = synctv_common::validation::validate_path_for_traversal(normalized) {
-        warn!(segment = %normalized, error = %error, "HLS segment name failed path traversal validation");
+    if let Err(error) = synctv_livestream::util::validate_hls_segment_name(normalized) {
+        warn!(segment = %normalized, error = %error, "HLS segment name failed validation");
         return Err(AppError::bad_request("Invalid segment name"));
     }
 
@@ -350,29 +350,20 @@ async fn execute_hls_segment(
             map_livestream_error("Failed to get HLS segment", &*e)
         })?;
 
-    if disguised_as_png {
-        let png_header = [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02, 0x00, 0x00,
-            0x00, 0x90, 0x77, 0x53, 0xDE,
-        ];
+    build_hls_segment_response(ts_data, disguised_as_png)
+}
 
-        let mut disguised_data = Vec::with_capacity(png_header.len() + ts_data.len());
-        disguised_data.extend_from_slice(&png_header);
-        disguised_data.extend_from_slice(&ts_data);
-
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "image/png")
-            .header(header::CACHE_CONTROL, "public, max-age=90")
-            .header("X-Accel-Buffering", "no")
-            .body(Body::from(disguised_data))
-            .map_err(|_| AppError::internal_server_error("Failed to build response"));
-    }
-
+fn build_hls_segment_response(ts_data: Bytes, disguised_as_png: bool) -> AppResult<Response> {
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "video/mp2t")
+        .header(
+            header::CONTENT_TYPE,
+            if disguised_as_png {
+                "image/png"
+            } else {
+                "video/mp2t"
+            },
+        )
         .header(header::CACHE_CONTROL, "public, max-age=90")
         .header("X-Accel-Buffering", "no")
         .body(Body::from(ts_data))
@@ -408,7 +399,18 @@ enum FlvChunkSendResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use axum::http::StatusCode;
+    use http_body_util::BodyExt;
+
+    async fn response_bytes(response: Response<Body>) -> Bytes {
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("test response body should collect")
+            .to_bytes()
+    }
 
     #[tokio::test]
     async fn send_flv_chunk_waits_without_timeout_when_capacity_frees() {
@@ -474,6 +476,20 @@ mod tests {
         assert_eq!(path, "/api/providers/proxy/rtmp/ver1/segment/seg001.ts");
     }
 
+    #[tokio::test]
+    async fn disguised_hls_segment_response_does_not_rewrite_payload() {
+        let ts_data = Bytes::from_static(b"\x47\x40\x00\x10mpeg-ts-payload");
+
+        let response =
+            build_hls_segment_response(ts_data.clone(), true).expect("test response should build");
+
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(response_bytes(response).await, ts_data);
+    }
+
     #[test]
     fn normalize_hls_segment_name_removes_only_one_expected_suffix() {
         assert_eq!(
@@ -507,6 +523,32 @@ mod tests {
         );
         assert_eq!(
             normalize_hls_segment_name("../secret.ts", false)
+                .unwrap_err()
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn normalize_hls_segment_name_uses_livestream_segment_validator() {
+        assert_eq!(
+            normalize_hls_segment_name("seg:001.ts", false)
+                .unwrap_err()
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+
+        let too_long = format!("{}.ts", "a".repeat(257));
+        assert_eq!(
+            normalize_hls_segment_name(&too_long, false)
+                .unwrap_err()
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+
+        let control_char = "seg\u{7}.ts";
+        assert_eq!(
+            normalize_hls_segment_name(control_char, false)
                 .unwrap_err()
                 .status,
             StatusCode::BAD_REQUEST

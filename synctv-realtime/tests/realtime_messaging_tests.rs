@@ -169,7 +169,7 @@ async fn test_message_deduplication() {
         color: None,
     };
 
-    let key = DedupKey::from_event(&event);
+    let key = DedupKey::try_from_event(&event).unwrap();
 
     // First check should be processable (not duplicate)
     let should_process1 = dedup.should_process(&key);
@@ -196,7 +196,7 @@ async fn test_message_deduplication() {
         position: None,
         color: None,
     };
-    let key2 = DedupKey::from_event(&event2);
+    let key2 = DedupKey::try_from_event(&event2).unwrap();
     let should_process3 = dedup.should_process(&key2);
     assert!(should_process3, "Different event_id should be processable");
 }
@@ -217,7 +217,7 @@ async fn test_dedup_ttl_expiry() {
         position: None,
         color: None,
     };
-    let key = DedupKey::from_event(&event);
+    let key = DedupKey::try_from_event(&event).unwrap();
 
     // First check
     let should_process1 = dedup.should_process(&key);
@@ -267,8 +267,8 @@ async fn test_dedup_with_different_events() {
         timestamp: chrono::Utc::now(),
     };
 
-    let key1 = DedupKey::from_event(&event1);
-    let key2 = DedupKey::from_event(&event2);
+    let key1 = DedupKey::try_from_event(&event1).unwrap();
+    let key2 = DedupKey::try_from_event(&event2).unwrap();
 
     // Different event types should have different keys
     assert_ne!(key1.event_type, key2.event_type);
@@ -797,7 +797,7 @@ async fn test_dedup_key_from_event() {
         color: None,
     };
 
-    let key = DedupKey::from_event(&event);
+    let key = DedupKey::try_from_event(&event).unwrap();
 
     assert_eq!(key.event_type, "chat_message");
     assert_eq!(key.room_id, room.to_string());

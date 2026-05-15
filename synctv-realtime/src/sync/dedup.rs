@@ -10,6 +10,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use thiserror::Error;
+
+/// Errors raised while deriving deduplication identity from a realtime event.
+#[derive(Debug, Error)]
+pub enum DedupKeyError {
+    #[error("realtime event {event_type} has an empty event_id")]
+    EmptyEventId { event_type: &'static str },
+}
 
 /// Deduplication key for events
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -27,14 +35,16 @@ pub struct DedupKey {
 
 impl DedupKey {
     /// Create a deduplication key from a realtime event.
-    #[must_use]
-    pub fn from_event(event: &crate::sync::events::RealtimeEvent) -> Self {
+    pub fn try_from_event(
+        event: &crate::sync::events::RealtimeEvent,
+    ) -> Result<Self, DedupKeyError> {
         let eid = event.event_id();
-        assert!(
-            !eid.is_empty(),
-            "realtime events must carry a non-empty event_id"
-        );
-        Self {
+        if eid.is_empty() {
+            return Err(DedupKeyError::EmptyEventId {
+                event_type: event.event_type(),
+            });
+        }
+        Ok(Self {
             event_type: event.event_type().to_string(),
             room_id: event
                 .room_id()
@@ -43,7 +53,7 @@ impl DedupKey {
             extra: eid.to_string(),
             timestamp_ms: event.timestamp().timestamp_millis(),
             content_hash: 0,
-        }
+        })
     }
 }
 
@@ -241,15 +251,14 @@ mod tests {
             color: None,
         };
 
-        let key = DedupKey::from_event(&event);
+        let key = DedupKey::try_from_event(&event).unwrap();
 
         assert!(dedup.should_process(&key));
         assert!(!dedup.should_process(&key));
     }
 
     #[test]
-    #[should_panic(expected = "realtime events must carry a non-empty event_id")]
-    fn test_dedup_from_event_rejects_empty_event_id() {
+    fn test_dedup_from_event_rejects_empty_event_id_without_panic() {
         let event = crate::sync::events::RealtimeEvent::ChatMessage {
             event_id: String::new(),
             room_id: RoomId::expect_positive(10_000_092),
@@ -261,7 +270,9 @@ mod tests {
             color: None,
         };
 
-        let _ = DedupKey::from_event(&event);
+        let error = DedupKey::try_from_event(&event)
+            .expect_err("empty event_id must be rejected as a recoverable error");
+        assert!(matches!(error, DedupKeyError::EmptyEventId { .. }));
     }
 
     #[test]

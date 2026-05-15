@@ -3,24 +3,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const MAIN_GENERATED_FILES: &[&str] = &[
-    "descriptor.bin",
-    "buf.validate.rs",
-    "synctv.common.rs",
-    "synctv.client.rs",
-    "synctv.admin.rs",
-];
-
-const PROVIDER_GENERATED_FILES: &[&str] = &[
-    "descriptor.bin",
-    "buf.validate.rs",
-    "synctv.provider.alist.rs",
-    "synctv.provider.bilibili.rs",
-    "synctv.provider.common.rs",
-    "synctv.provider.emby.rs",
-    "synctv.provider.rtmp.rs",
-];
-
 fn build_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     env::var_os("OUT_DIR").map(PathBuf::from).ok_or_else(|| {
         Box::new(io::Error::new(
@@ -28,11 +10,6 @@ fn build_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
             "OUT_DIR is not set by Cargo",
         )) as Box<dyn std::error::Error>
     })
-}
-
-fn regen_proto_enabled() -> bool {
-    env::var("SYNCTV_REGEN_PROTO")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
 }
 
 fn emit_proto_rerun_if_changed(path: &Path) -> io::Result<()> {
@@ -44,23 +21,6 @@ fn emit_proto_rerun_if_changed(path: &Path) -> io::Result<()> {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
-    Ok(())
-}
-
-fn sync_generated_files(
-    source_root: &Path,
-    destination_root: &Path,
-    files: &[&str],
-) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(destination_root)?;
-    for file in files {
-        let source = source_root.join(file);
-        let destination = destination_root.join(file);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(&source, &destination)?;
-    }
     Ok(())
 }
 
@@ -128,7 +88,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cargo:rustc-env=SYNCTV_PROTO_PROVIDERS_OUT_DIR={}",
         provider_out_dir.display()
     );
-    println!("cargo:rerun-if-env-changed=SYNCTV_REGEN_PROTO");
     emit_proto_rerun_if_changed(Path::new("proto"))?;
 
     let main_proto_files = [
@@ -649,15 +608,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             &["."],
         )?;
-
-    if regen_proto_enabled() {
-        sync_generated_files(&main_out_dir, Path::new("src"), MAIN_GENERATED_FILES)?;
-        sync_generated_files(
-            &provider_out_dir,
-            Path::new("src/providers"),
-            PROVIDER_GENERATED_FILES,
-        )?;
-    }
 
     Ok(())
 }

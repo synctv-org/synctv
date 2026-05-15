@@ -11,7 +11,7 @@ use std::sync::Arc;
 use super::access::ProviderAccessService;
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
-use super::ExecutionControl;
+use super::{ExecutionControl, MediaProvider};
 use crate::models::{MediaId, RoomId, UserId};
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
@@ -181,6 +181,26 @@ pub trait ProviderProxy: Send + Sync {
     ) -> Result<ProxyAction, ProviderError>;
 }
 
+struct MediaProviderProxyAdapter {
+    provider: Arc<dyn MediaProvider>,
+}
+
+#[async_trait]
+impl ProviderProxy for MediaProviderProxyAdapter {
+    async fn resolve_proxy(
+        &self,
+        ctx: &ProxyRequestContext<'_>,
+    ) -> Result<ProxyAction, ProviderError> {
+        let proxy = self.provider.as_provider_proxy().ok_or_else(|| {
+            ProviderError::UnsupportedFormat(format!(
+                "Provider '{}' does not support proxy routes",
+                self.provider.name()
+            ))
+        })?;
+        proxy.resolve_proxy(ctx).await
+    }
+}
+
 /// Registry of proxy-capable providers, keyed by provider type name.
 ///
 /// Populated at startup. The proxy handler looks up providers by name instead
@@ -202,6 +222,19 @@ impl ProxyProviderRegistry {
     /// Register a proxy-capable provider under its type name (e.g., `"emby"`).
     pub fn register(&self, name: impl Into<String>, provider: Arc<dyn ProviderProxy>) {
         self.providers.insert(name.into(), provider);
+    }
+
+    /// Register a media provider when it advertises proxy support.
+    ///
+    /// This lets `ProvidersManager` supply the same provider instances used for
+    /// playback to the HTTP proxy registry without constructing a second
+    /// provider graph.
+    pub fn register_media_provider(&self, provider: Arc<dyn MediaProvider>) {
+        if provider.as_provider_proxy().is_some() {
+            let name = provider.name().to_string();
+            self.providers
+                .insert(name, Arc::new(MediaProviderProxyAdapter { provider }));
+        }
     }
 
     /// Look up a provider by type name.

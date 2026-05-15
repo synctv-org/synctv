@@ -45,6 +45,24 @@ impl Match for HeaderAbsent {
     }
 }
 
+struct HeaderEquals(&'static str, &'static str);
+
+impl Match for HeaderEquals {
+    fn matches(&self, request: &Request) -> bool {
+        request
+            .headers
+            .get(self.0)
+            .and_then(|value| value.to_str().ok())
+            == Some(self.1)
+    }
+}
+
+fn error_chain_contains(error: &anyhow::Error, expected: &str) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains(expected))
+}
+
 // SliceCacheConfig tests
 
 #[test]
@@ -1042,7 +1060,7 @@ async fn test_head_content_length_loopback_without_listener_fails_with_disabled_
         "unexpected error: {err}"
     );
     assert!(
-        err.to_string().contains("Connection failed"),
+        error_chain_contains(&err, "Connection failed"),
         "HEAD path should surface the connection failure when SSRF is disabled: {err}"
     );
 }
@@ -1077,7 +1095,7 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wi
         "unexpected error: {err}"
     );
     assert!(
-        err.to_string().contains("Connection failed"),
+        error_chain_contains(&err, "Connection failed"),
         "HEAD redirect path should surface the connection failure when SSRF is disabled: {err}"
     );
 }
@@ -2045,9 +2063,10 @@ async fn test_suffix_range_with_head_length_bypasses_when_origin_ignores_aligned
 }
 
 #[tokio::test]
-async fn test_suffix_range_larger_than_known_total_is_rejected_without_upstream_get() {
+async fn test_suffix_range_larger_than_known_total_returns_entire_resource() {
     let mock_server = MockServer::start().await;
     let total_size: u64 = 4096;
+    let body = Bytes::from(vec![0xAB; 4096]);
 
     Mock::given(method("HEAD"))
         .and(path("/suffix-too-large.bin"))
@@ -2062,8 +2081,15 @@ async fn test_suffix_range_larger_than_known_total_is_rejected_without_upstream_
 
     Mock::given(method("GET"))
         .and(path("/suffix-too-large.bin"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
+        .and(HeaderEquals("range", "bytes=0-2097151"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Range", format!("bytes 0-4095/{total_size}"))
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
         .mount(&mock_server)
         .await;
 
@@ -2083,19 +2109,22 @@ async fn test_suffix_range_larger_than_known_total_is_rejected_without_upstream_
     .unwrap();
     assert_eq!(head.status(), StatusCode::OK);
 
-    let error = synctv_proxy::slice_cache::proxy_with_cache(
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
         &cache,
         Some("bytes=-8192"),
         &url,
         &provider_headers,
     )
     .await
-    .expect_err("suffix range larger than known total must be rejected");
+    .expect("suffix range larger than known total should be satisfiable");
 
-    assert!(
-        error.to_string().contains("Suffix range out of bounds"),
-        "error should explain invalid suffix range, got: {error}"
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get("Content-Range").unwrap(),
+        &format!("bytes 0-4095/{total_size}")
     );
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(response_body, body);
 }
 
 // Enhancement 2: ETag consistency validation
@@ -2286,10 +2315,11 @@ async fn test_cache_status_bypass_when_disabled() {
     );
 }
 
-/// Multi-range requests are rejected before any upstream request.
+/// Multi-range requests bypass slice cache and are streamed from upstream.
 #[tokio::test]
-async fn test_multi_range_request_is_rejected() {
+async fn test_multi_range_request_bypasses_slice_cache() {
     let mock_server = MockServer::start().await;
+    let body = Bytes::from_static(b"multipart-body");
 
     Mock::given(method("HEAD"))
         .and(path("/video.mp4"))
@@ -2300,8 +2330,14 @@ async fn test_multi_range_request_is_rejected() {
 
     Mock::given(method("GET"))
         .and(path("/video.mp4"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
+        .and(HeaderEquals("range", "bytes=0-100,200-300"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Type", "multipart/byteranges; boundary=abc")
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
         .mount(&mock_server)
         .await;
 
@@ -2309,15 +2345,22 @@ async fn test_multi_range_request_is_rejected() {
     let cache = slice_cache_for_mock(config, &mock_server);
     let url = mock_public_url(&mock_server, "/video.mp4");
 
-    let result = synctv_proxy::slice_cache::proxy_with_cache(
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
         &cache,
         Some("bytes=0-100,200-300"),
         &url,
         &HashMap::new(),
     )
-    .await;
+    .await
+    .expect("multi-range request should bypass slice cache");
 
-    assert!(result.is_err(), "Multi-range should be rejected");
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(response_body, body);
 }
 
 /// Expired slice-cache entry re-fetches and returns EXPIRED status.
@@ -3389,7 +3432,7 @@ async fn test_proxy_with_cache_redirect_to_loopback_is_blocked_on_slice_fetch() 
     .expect_err("range fetch redirect to loopback must be blocked by SSRF policy");
 
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
+        error_chain_contains(&err, "blocked by SSRF policy"),
         "slice fetch path should block loopback redirect before connecting: {err}"
     );
 }
@@ -3424,7 +3467,7 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_is_blocked_on_bypas
     .expect_err("disabled-cache bypass path redirect to loopback must be blocked by SSRF policy");
 
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
+        error_chain_contains(&err, "blocked by SSRF policy"),
         "bypass path should block loopback redirect before connecting: {err}"
     );
 }
@@ -3617,26 +3660,70 @@ async fn test_proxy_with_cache_bypasses_full_resource_200_without_metadata() {
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_marks_multi_range_as_invalid_request() {
+async fn test_proxy_with_cache_preserves_multi_range_header_on_bypass() {
     let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/multi-range.bin"))
+        .and(HeaderEquals("range", "bytes=0-1,3-4"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(Bytes::from_static(b"ok"))
+                .insert_header("Content-Type", "multipart/byteranges; boundary=abc"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
 
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
     let url = mock_public_url(&mock_server, "/multi-range.bin");
     let headers = HashMap::new();
 
-    let err =
+    let response =
         synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-1,3-4"), &url, &headers)
             .await
-            .expect_err("multi-range requests must be rejected as invalid client input");
+            .expect("multi-range requests should bypass slice cache");
+
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_multi_range_bypass_obeys_header_timeout() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/slow-multi-range.bin"))
+        .and(HeaderEquals("range", "bytes=0-1,3-4"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_millis(200))
+                .set_body_bytes(Bytes::from_static(b"ok")),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/slow-multi-range.bin");
+    let headers = HashMap::new();
+
+    let err = synctv_proxy::slice_cache::proxy_with_cache_with_control_and_timeout(
+        &cache,
+        Some("bytes=0-1,3-4"),
+        &url,
+        &headers,
+        None,
+        Some(Duration::from_millis(25)),
+    )
+    .await
+    .expect_err("multi-range cache bypass should use upstream header timeout");
 
     assert_eq!(
         synctv_proxy::proxy_error_kind(&err),
-        Some(synctv_proxy::ProxyErrorKind::InvalidRequest)
-    );
-    assert!(
-        err.to_string()
-            .contains("Multi-range requests are not supported"),
-        "error should preserve the invalid range reason: {err}"
+        Some(synctv_proxy::ProxyErrorKind::Timeout)
     );
 }
 

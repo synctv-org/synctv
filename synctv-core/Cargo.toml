@@ -73,7 +73,6 @@ thiserror.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
 dotenvy.workspace = true
-ctor.workspace = true
 paste.workspace = true
 url.workspace = true
 regex.workspace = true

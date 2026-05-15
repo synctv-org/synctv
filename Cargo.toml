@@ -134,11 +134,10 @@ sqlx = { version = "0.8.6", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "1.2.1", features = [
+redis = { version = "1.2.1", default-features = false, features = [
     "tokio-comp",
     "connection-manager",
     "streams",
-    "cluster",
     "sentinel",
     "script",
 ] }
@@ -263,9 +262,6 @@ lettre = { version = "0.11.21", default-features = false, features = [
     "tokio1",
 ] }
 handlebars = "6.4.0"
-
-# Initialization
-ctor = "1.0.3"
 
 # Compression
 flate2 = "1.1.9"

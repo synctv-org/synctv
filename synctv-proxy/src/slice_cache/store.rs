@@ -9,14 +9,16 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use synctv_common::ExecutionControl;
 use tokio::sync::Mutex;
 
 use crate::{
-    apply_provider_headers, run_with_proxy_cancellation, send_with_redirect_validation,
-    send_with_redirect_validation_with_control,
+    apply_provider_headers, run_with_proxy_cancellation,
+    send_head_with_redirect_validation_with_control_and_timeout, send_with_redirect_validation,
+    send_with_redirect_validation_with_control_and_timeout,
 };
 
 use super::backend::{CacheBackend, SliceCacheBackend};
@@ -34,6 +36,16 @@ const META_RETENTION_TARGET_DIVISOR: usize = 2;
 
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
+
+struct SliceFetchRequest<'a> {
+    url: &'a str,
+    provider_headers: &'a HashMap<String, String>,
+    slice_index: u64,
+    known_total_size: Option<u64>,
+    request_control: Option<&'a ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+    bypass_on_non_partial: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct MetaEvictionCandidate {
@@ -756,6 +768,7 @@ impl SliceCache {
         provider_headers: &HashMap<String, String>,
         range_header: Option<&str>,
         request_control: Option<&ExecutionControl>,
+        upstream_header_timeout: Option<Duration>,
     ) -> Result<HeadResourceResult, anyhow::Error> {
         if let Some(meta) = self.get_resource_meta(url, provider_headers).await {
             if let Some((status, headers)) =
@@ -802,14 +815,15 @@ impl SliceCache {
             request = request.header(reqwest::header::RANGE, range);
         }
 
-        let resp = crate::send_head_with_redirect_validation_with_control(
+        let resp = send_head_with_redirect_validation_with_control_and_timeout(
             &self.client,
             request,
             &self.ssrf_guard,
             request_control,
+            upstream_header_timeout,
         )
         .await
-        .map_err(|e| anyhow::anyhow!("HEAD metadata request failed: {e}"))?
+        .context("HEAD metadata request failed")?
         .response;
         let status = resp.status();
         let headers = resp.headers().clone();
@@ -888,8 +902,15 @@ impl SliceCache {
         slice_index: u64,
         total_size: u64,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
-        self.get_or_fetch_slice_with_control(url, provider_headers, slice_index, total_size, None)
-            .await
+        self.get_or_fetch_slice_with_control(
+            url,
+            provider_headers,
+            slice_index,
+            total_size,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Get or fetch a single aligned slice with cooperative execution control.
@@ -900,16 +921,18 @@ impl SliceCache {
         slice_index: u64,
         total_size: u64,
         request_control: Option<&ExecutionControl>,
+        upstream_header_timeout: Option<Duration>,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
         match self
-            .get_or_fetch_slice_result_with_control(
+            .get_or_fetch_slice_result_with_control(SliceFetchRequest {
                 url,
                 provider_headers,
                 slice_index,
-                Some(total_size),
+                known_total_size: Some(total_size),
                 request_control,
-                false,
-            )
+                upstream_header_timeout,
+                bypass_on_non_partial: false,
+            })
             .await?
         {
             SliceFetchResult::Slice(fetched) => Ok((fetched.slice.data, fetched.status)),
@@ -928,27 +951,33 @@ impl SliceCache {
         slice_index: u64,
         known_total_size: Option<u64>,
         request_control: Option<&ExecutionControl>,
+        upstream_header_timeout: Option<Duration>,
     ) -> Result<SliceFetchResult, anyhow::Error> {
-        self.get_or_fetch_slice_result_with_control(
+        self.get_or_fetch_slice_result_with_control(SliceFetchRequest {
             url,
             provider_headers,
             slice_index,
             known_total_size,
             request_control,
-            true,
-        )
+            upstream_header_timeout,
+            bypass_on_non_partial: true,
+        })
         .await
     }
 
     async fn get_or_fetch_slice_result_with_control(
         &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-        slice_index: u64,
-        known_total_size: Option<u64>,
-        request_control: Option<&ExecutionControl>,
-        bypass_on_non_partial: bool,
+        fetch: SliceFetchRequest<'_>,
     ) -> Result<SliceFetchResult, anyhow::Error> {
+        let SliceFetchRequest {
+            url,
+            provider_headers,
+            slice_index,
+            known_total_size,
+            request_control,
+            upstream_header_timeout,
+            bypass_on_non_partial,
+        } = fetch;
         let key = Self::compute_cache_key(url, provider_headers, slice_index);
         let meta_key = Self::meta_key(url, provider_headers);
         let (mut cached_meta, mut effective_total_size) =
@@ -1082,11 +1111,12 @@ impl SliceCache {
             }
         }
 
-        let resp = match send_with_redirect_validation_with_control(
+        let resp = match send_with_redirect_validation_with_control_and_timeout(
             &self.client,
             request,
             &self.ssrf_guard,
             request_control,
+            upstream_header_timeout,
         )
         .await
         {
@@ -1095,7 +1125,7 @@ impl SliceCache {
                 // Clean up updating_keys on send failure so the key is not
                 // permanently stuck in "updating" state.
                 self.updating_keys.remove(&key);
-                return Err(anyhow::anyhow!("Slice fetch failed: {e}"));
+                return Err(e).context("Slice fetch failed");
             }
         };
 
@@ -1127,18 +1157,19 @@ impl SliceCache {
             let mut request2 = self.client.get(url);
             request2 = apply_provider_headers(request2, url, provider_headers)?;
             request2 = request2.header("Range", &range_header);
-            let resp2 = match send_with_redirect_validation_with_control(
+            let resp2 = match send_with_redirect_validation_with_control_and_timeout(
                 &self.client,
                 request2,
                 &self.ssrf_guard,
                 request_control,
+                upstream_header_timeout,
             )
             .await
             {
                 Ok(proxy_response) => proxy_response.response,
                 Err(e) => {
                     self.updating_keys.remove(&key);
-                    return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}"));
+                    return Err(e).context("Slice re-fetch failed after 304");
                 }
             };
             if bypass_on_non_partial && resp2.status() != reqwest::StatusCode::PARTIAL_CONTENT {

@@ -1855,7 +1855,18 @@ impl RedisPubSub {
     /// event side effects, and local broadcast to room subscribers.
     async fn dispatch_event(&self, channel: &str, event: RealtimeEvent) {
         // Deduplicate events (prevents duplicate delivery during catch-up + live overlap)
-        let dedup_key = DedupKey::from_event(&event);
+        let dedup_key = match DedupKey::try_from_event(&event) {
+            Ok(key) => key,
+            Err(error) => {
+                warn!(
+                    channel = %channel,
+                    event_type = %event.event_type(),
+                    error = %error,
+                    "Dropping Redis realtime event with invalid dedup identity"
+                );
+                return;
+            }
+        };
         if !self.deduplicator.should_process(&dedup_key) {
             debug!(
                 channel = %channel,

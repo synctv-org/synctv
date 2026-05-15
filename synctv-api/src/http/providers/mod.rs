@@ -76,7 +76,7 @@ pub(crate) async fn execute_proxy_action(
                 provider_headers: &headers,
                 range_header: range_header.as_deref(),
                 request_control,
-                upstream_header_timeout: None,
+                upstream_header_timeout: Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
             };
             synctv_proxy::proxy_fetch_and_forward(cfg, &synctv_proxy::NoopMetrics)
                 .await
@@ -163,13 +163,14 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
 
             if method == Method::HEAD {
                 if should_use_proxy_cache(cache_enabled) {
-                    return synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+                    return synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control_and_timeout(
                         &state.proxy_slice_cache,
                         cache_enabled,
                         range_header.as_deref(),
                         &url,
                         &headers,
                         proxy_control.as_ref(),
+                        Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
                     )
                     .await
                     .map_err(map_proxy_execution_error);
@@ -182,7 +183,7 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
                     provider_headers: &headers,
                     range_header: range_header.as_deref(),
                     request_control: proxy_control.as_ref(),
-                    upstream_header_timeout: None,
+                    upstream_header_timeout: Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
                 };
                 return synctv_proxy::proxy_head_and_forward(cfg)
                     .await
@@ -194,13 +195,14 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
             }
 
             if should_use_proxy_cache(cache_enabled) {
-                return synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control(
+                return synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control_and_timeout(
                     &state.proxy_slice_cache,
                     cache_enabled,
                     range_header.as_deref(),
                     &url,
                     &headers,
                     proxy_control.as_ref(),
+                    Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
                 )
                 .await
                 .map_err(map_proxy_execution_error);
@@ -232,12 +234,17 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
             if let Some(claims) = proxy_url_claims {
                 let signing_key = state.shared_api_runtime.proxy_signing_key.clone();
                 synctv_proxy::proxy_m3u8_and_rewrite_with_control_and_mapper(
-                    &state.proxy_http_client,
-                    &state.ssrf_guard,
-                    &url,
-                    &headers,
-                    &proxy_base,
-                    proxy_control.as_ref(),
+                    synctv_proxy::M3u8RewriteConfig {
+                        client: &state.proxy_http_client,
+                        ssrf_guard: &state.ssrf_guard,
+                        url: &url,
+                        provider_headers: &headers,
+                        proxy_base: &proxy_base,
+                        request_control: proxy_control.as_ref(),
+                        upstream_header_timeout: Some(
+                            synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT,
+                        ),
+                    },
                     move |proxy_base, target_url| {
                         let signed_query =
                             signing_key.build_signed_query_with_target_url(&claims, target_url);

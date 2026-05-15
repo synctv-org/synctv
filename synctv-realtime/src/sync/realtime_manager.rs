@@ -591,7 +591,17 @@ impl RealtimeManager {
             return 0;
         }
 
-        let dedup_key = DedupKey::from_event(&event);
+        let dedup_key = match DedupKey::try_from_event(&event) {
+            Ok(key) => key,
+            Err(error) => {
+                warn!(
+                    event_type = %event_type,
+                    error = %error,
+                    "Dropping local realtime event with invalid dedup identity"
+                );
+                return 0;
+            }
+        };
         if !self.deduplicator.should_process(&dedup_key) {
             debug!(
                 event_type = %event_type,
@@ -1008,7 +1018,20 @@ impl RealtimeManager {
             };
         }
 
-        let dedup_key = DedupKey::from_event(&event);
+        let dedup_key = match DedupKey::try_from_event(&event) {
+            Ok(key) => key,
+            Err(error) => {
+                warn!(
+                    event_type = %event_type,
+                    error = %error,
+                    "Dropping realtime event with invalid dedup identity"
+                );
+                return BroadcastResult {
+                    local_sent: 0,
+                    redis_sent: false,
+                };
+            }
+        };
 
         // Check if this is a duplicate
         if !self.deduplicator.should_process(&dedup_key) {

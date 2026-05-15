@@ -23,7 +23,7 @@ use std::time::Duration;
 use axum::{body::Body, http::StatusCode, response::Response};
 use bytes::Bytes;
 use futures::StreamExt;
-use reqwest::header::{HeaderName, HeaderValue, REFERER, USER_AGENT};
+use reqwest::header::{HeaderName, HeaderValue, USER_AGENT};
 use synctv_common::ExecutionControl;
 
 pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
@@ -39,8 +39,7 @@ pub use manifest::{
 #[cfg(test)]
 pub(crate) use redirect::REDIRECT_PRESERVE_HEADERS;
 pub(crate) use redirect::{
-    send_head_with_redirect_validation_with_control, send_with_redirect_validation,
-    send_with_redirect_validation_with_control,
+    send_head_with_redirect_validation_with_control_and_timeout, send_with_redirect_validation,
     send_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
 };
 
@@ -49,6 +48,13 @@ const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
 
 /// Maximum response body size for M3U8/MPD manifests (10 MB).
 const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
+
+/// Default timeout for sending an upstream proxy request and receiving response headers.
+///
+/// Media bodies are intentionally streamed without a transfer timeout after
+/// headers arrive, but the request/header phase must stay bounded so slow or
+/// stalled origins cannot hold proxy tasks forever.
+pub const DEFAULT_UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Check if an HTTP status code is retryable.
 ///
@@ -152,14 +158,13 @@ where
     }
 }
 
-/// Apply provider headers and defaults (User-Agent, Referer) to a request builder.
+/// Apply provider headers and a default User-Agent to a request builder.
 pub fn apply_provider_headers<S: BuildHasher>(
     mut request: reqwest::RequestBuilder,
-    url: &str,
+    _url: &str,
     provider_headers: &HashMap<String, String, S>,
 ) -> Result<reqwest::RequestBuilder, anyhow::Error> {
     let mut has_user_agent = false;
-    let mut has_referer = false;
 
     for (name, value) in provider_headers {
         let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
@@ -172,9 +177,6 @@ pub fn apply_provider_headers<S: BuildHasher>(
         if header_name == USER_AGENT {
             has_user_agent = true;
         }
-        if header_name == REFERER {
-            has_referer = true;
-        }
 
         request = request.header(header_name, header_value);
     }
@@ -184,18 +186,6 @@ pub fn apply_provider_headers<S: BuildHasher>(
             USER_AGENT,
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         );
-    }
-
-    if !has_referer {
-        if let Ok(parsed) = url::Url::parse(url) {
-            let referer = format!(
-                "{}://{}{}",
-                parsed.scheme(),
-                parsed.host_str().unwrap_or(""),
-                parsed.path()
-            );
-            request = request.header(REFERER, referer);
-        }
     }
 
     Ok(request)
@@ -215,6 +205,16 @@ pub struct NoopMetrics;
 
 impl ProxyMetrics for NoopMetrics {
     fn on_proxy_complete(&self, _protocol: &str, _duration: Duration, _error: Option<&str>) {}
+}
+
+pub struct M3u8RewriteConfig<'a, S: BuildHasher> {
+    pub client: &'a reqwest::Client,
+    pub ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
+    pub url: &'a str,
+    pub provider_headers: &'a HashMap<String, String, S>,
+    pub proxy_base: &'a str,
+    pub request_control: Option<&'a ExecutionControl>,
+    pub upstream_header_timeout: Option<Duration>,
 }
 
 fn proxy_body_stream<S>(
@@ -312,11 +312,12 @@ pub async fn proxy_head_and_forward(cfg: ProxyConfig<'_>) -> Result<Response, an
     validate_target_url_against_ssrf(&parsed_url, cfg.ssrf_guard)?;
 
     let request = build_proxy_request_with_method(&cfg, reqwest::Method::HEAD)?;
-    let proxy_result = send_head_with_redirect_validation_with_control(
+    let proxy_result = send_head_with_redirect_validation_with_control_and_timeout(
         cfg.client,
         request,
         cfg.ssrf_guard,
         cfg.request_control,
+        cfg.upstream_header_timeout,
     )
     .await?;
 
@@ -541,44 +542,69 @@ pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
     proxy_base: &str,
     request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
-    proxy_m3u8_and_rewrite_with_control_and_mapper(
+    proxy_m3u8_and_rewrite_with_control_and_timeout(
         client,
         ssrf_guard,
         url,
         provider_headers,
         proxy_base,
         request_control,
-        manifest::default_proxy_url,
+        Some(DEFAULT_UPSTREAM_HEADER_TIMEOUT),
     )
     .await
 }
 
-pub async fn proxy_m3u8_and_rewrite_with_control_and_mapper<S, F>(
+pub async fn proxy_m3u8_and_rewrite_with_control_and_timeout<S: BuildHasher>(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String, S>,
     proxy_base: &str,
     request_control: Option<&ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+) -> Result<Response, anyhow::Error> {
+    proxy_m3u8_and_rewrite_with_control_and_mapper(
+        M3u8RewriteConfig {
+            client,
+            ssrf_guard,
+            url,
+            provider_headers,
+            proxy_base,
+            request_control,
+            upstream_header_timeout,
+        },
+        manifest::default_proxy_url,
+    )
+    .await
+}
+
+pub async fn proxy_m3u8_and_rewrite_with_control_and_mapper<S, F>(
+    cfg: M3u8RewriteConfig<'_, S>,
     proxy_url_for_target: F,
 ) -> Result<Response, anyhow::Error>
 where
     S: BuildHasher,
     F: Fn(&str, &str) -> String,
 {
-    let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("M3U8 URL is invalid: {e}"))?;
+    let parsed =
+        url::Url::parse(cfg.url).map_err(|e| anyhow::anyhow!("M3U8 URL is invalid: {e}"))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(anyhow::anyhow!("M3U8 URL has disallowed scheme: {scheme}"));
     }
-    validate_target_url_against_ssrf(&parsed, ssrf_guard)
+    validate_target_url_against_ssrf(&parsed, cfg.ssrf_guard)
         .map_err(|e| anyhow::anyhow!("M3U8 SSRF validation failed: {e}"))?;
 
-    let request = apply_provider_headers(client.get(url), url, provider_headers)?;
+    let request = apply_provider_headers(cfg.client.get(cfg.url), cfg.url, cfg.provider_headers)?;
 
-    let proxy_result =
-        send_with_redirect_validation_with_control(client, request, ssrf_guard, request_control)
-            .await?;
+    let proxy_result = send_with_redirect_validation_with_control_and_timeout(
+        cfg.client,
+        request,
+        cfg.ssrf_guard,
+        cfg.request_control,
+        cfg.upstream_header_timeout,
+    )
+    .await?;
     let proxy_response = proxy_result.response;
 
     if !proxy_response.status().is_success() {
@@ -598,7 +624,7 @@ where
 
     let m3u8_bytes = run_with_proxy_cancellation(
         "manifest proxy body read",
-        request_control,
+        cfg.request_control,
         proxy_response.bytes(),
     )
     .await?
@@ -614,8 +640,12 @@ where
     let m3u8_text = String::from_utf8(m3u8_bytes.to_vec())
         .map_err(|e| anyhow::anyhow!("M3U8 response is not valid UTF-8: {e}"))?;
 
-    let rewritten =
-        manifest::rewrite_m3u8_with_url_mapper(&m3u8_text, url, proxy_base, proxy_url_for_target)?;
+    let rewritten = manifest::rewrite_m3u8_with_url_mapper(
+        &m3u8_text,
+        cfg.url,
+        cfg.proxy_base,
+        proxy_url_for_target,
+    )?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -878,6 +908,43 @@ mod tests {
             .await
             .expect("proxy fetch should not inherit the outer request deadline");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_head_and_forward_applies_upstream_header_timeout() {
+        let server = wiremock::MockServer::start().await;
+        let public_origin = format!("http://cdn.example.com:{}", server.address().port());
+
+        wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+            .and(wiremock::matchers::path("/slow-head.mp4"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_delay(Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *server.address())
+            .build()
+            .expect("client should build");
+        let provider_headers = HashMap::new();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
+            client: &client,
+            url: &format!("{public_origin}/slow-head.mp4"),
+            provider_headers: &provider_headers,
+            range_header: None,
+            request_control: None,
+            upstream_header_timeout: Some(Duration::from_millis(25)),
+        };
+
+        let err = proxy_head_and_forward(cfg)
+            .await
+            .expect_err("HEAD proxy should enforce upstream header timeout");
+
+        assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Timeout));
     }
 
     #[tokio::test]

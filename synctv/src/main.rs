@@ -19,5 +19,6 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    synctv_core::install_process_crypto_provider();
     Box::pin(synctv::cli::execute(synctv::cli::Cli::parse())).await
 }

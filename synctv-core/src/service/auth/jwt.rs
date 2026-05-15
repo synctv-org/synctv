@@ -299,6 +299,8 @@ impl JwtService {
             return Err(Error::Internal("JWT secret cannot be empty".to_string()));
         }
 
+        crate::install_process_crypto_provider();
+
         // Always validate secret entropy
         Self::validate_secret_entropy(secret)?;
 

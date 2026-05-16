@@ -371,6 +371,8 @@ Notes:
 - `ingressControllerNamespaces` controls which namespaces may reach the SyncTV API through an ingress controller
 - `metricsSourceNamespaces` controls which namespaces may scrape the metrics port
 - The template matches namespaces using the standard Kubernetes namespace label `kubernetes.io/metadata.name`
+- SyncTV API, gRPC, RTMP, STUN, metrics, PDB, and app NetworkPolicy selectors include `app.kubernetes.io/component=app`, so chart-managed PostgreSQL/Redis pods are not selected as application endpoints.
+- When NetworkPolicy ingress isolation is enabled with chart-managed PostgreSQL or Redis, the chart also renders dependency-specific ingress policies that allow only SyncTV application pods to reach those dependency ports.
 - Empty CIDR lists do not create broad allow rules. Use explicit CIDRs, or set `allowAnyRtmpSource`, `allowAnyStunSource`, `allowAnyExternalHttpEgress`, or `allowAnyExternalDatabaseEgress` when that traffic is intentionally unrestricted.
 - When `postgresql.mode=external` or `redis.mode=external`, enabling NetworkPolicy requires explicit external database CIDRs or `allowAnyExternalDatabaseEgress=true`.
 

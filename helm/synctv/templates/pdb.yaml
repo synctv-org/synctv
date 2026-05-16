@@ -15,5 +15,5 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "synctv.selectorLabels" . | nindent 6 }}
+      {{- include "synctv.appSelectorLabels" . | nindent 6 }}
 {{- end }}

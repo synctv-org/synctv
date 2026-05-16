@@ -7,9 +7,8 @@
 
 use chrono::Utc;
 use synctv_core::{
-    models::{User, UserId, UserRole, UserStatus},
+    models::{OpaquePasswordRecord, User, UserId, UserRole, UserStatus},
     repository::{PasswordCredentialMaterial, UserRepository},
-    service::auth::OpaquePasswordRecord,
     Error,
 };
 use synctv_core_testing::create_test_pool;

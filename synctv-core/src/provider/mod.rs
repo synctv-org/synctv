@@ -42,6 +42,7 @@ pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::*;
 
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
+use crate::proxy_signature::{build_signed_proxy_url, ProxySigningKey};
 
 pub(crate) fn subtitle_headers_for_proxy(
     playback_headers: &std::collections::HashMap<String, String>,
@@ -278,7 +279,7 @@ pub fn sign_playback_urls(
     result: &mut PlaybackResult,
     provider_name: &str,
     version: &str,
-    signing_key: &crate::service::proxy_signature::ProxySigningKey,
+    signing_key: &ProxySigningKey,
     room_id: &str,
     user_id: &str,
     expires_at: i64,
@@ -292,7 +293,7 @@ pub fn sign_playback_urls(
     {
         result.metadata.insert(
             "thumbnail".to_string(),
-            serde_json::json!(crate::service::proxy_signature::build_signed_proxy_url(
+            serde_json::json!(build_signed_proxy_url(
                 provider_name,
                 version,
                 "thumbnail",
@@ -316,7 +317,7 @@ pub fn sign_playback_urls(
                 .iter()
                 .enumerate()
                 .map(|(index, _)| {
-                    crate::service::proxy_signature::build_signed_proxy_url(
+                    build_signed_proxy_url(
                         provider_name,
                         version,
                         &format!("stream/{mode_name}/{index}"),
@@ -331,7 +332,7 @@ pub fn sign_playback_urls(
             info.cors_proxy_required = false;
         } else if info.format == "m3u8" || info.format == "hls" || mode_name.contains("hls") {
             if mode_name == &default_mode && info.urls.len() == 1 {
-                info.urls = vec![crate::service::proxy_signature::build_signed_proxy_url(
+                info.urls = vec![build_signed_proxy_url(
                     provider_name,
                     version,
                     "m3u8",
@@ -346,7 +347,7 @@ pub fn sign_playback_urls(
                     .iter()
                     .enumerate()
                     .map(|(index, _)| {
-                        crate::service::proxy_signature::build_signed_proxy_url(
+                        build_signed_proxy_url(
                             provider_name,
                             version,
                             &format!("m3u8/{mode_name}/{index}"),
@@ -362,7 +363,7 @@ pub fn sign_playback_urls(
             info.headers.clear();
             info.cors_proxy_required = false;
         } else if mode_name == &default_mode && info.urls.len() == 1 {
-            info.urls = vec![crate::service::proxy_signature::build_signed_proxy_url(
+            info.urls = vec![build_signed_proxy_url(
                 provider_name,
                 version,
                 "stream",
@@ -380,7 +381,7 @@ pub fn sign_playback_urls(
                 .iter()
                 .enumerate()
                 .map(|(index, _)| {
-                    crate::service::proxy_signature::build_signed_proxy_url(
+                    build_signed_proxy_url(
                         provider_name,
                         version,
                         &format!("stream/{mode_name}/{index}"),
@@ -398,7 +399,7 @@ pub fn sign_playback_urls(
 
         // Also sign subtitle URLs
         for (idx, subtitle) in info.subtitles.iter_mut().enumerate() {
-            subtitle.url = crate::service::proxy_signature::build_signed_proxy_url(
+            subtitle.url = build_signed_proxy_url(
                 provider_name,
                 version,
                 &format!("subtitle/{mode_name}/{idx}"),
@@ -545,8 +546,8 @@ mod tests {
     use super::*;
     use crate::models::{RoomId, UserId};
     use crate::provider::store::{InMemoryProviderStore, StoreError, StoreLockGuard};
+    use crate::proxy_signature::ProxySigningKey;
     use crate::repository::ProviderInstanceRepository;
-    use crate::service::ProxySigningKey;
     use crate::service::RemoteProviderManager;
     use std::sync::Arc;
 

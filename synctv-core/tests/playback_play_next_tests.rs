@@ -17,6 +17,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
+    credential_encryption::CredentialEncryption,
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode, Playlist,
         PlaylistId, ProviderInstance, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
@@ -32,7 +33,7 @@ use synctv_core::{
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         room::RoomServiceOptions,
-        CredentialEncryption, InMemoryTokenBlacklistStore, RoomService, UserService,
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     service::{ProvidersManager, RemoteProviderManager},
 };

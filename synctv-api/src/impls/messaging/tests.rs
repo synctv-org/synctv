@@ -6795,6 +6795,37 @@ fn test_realtime_join_error_from_string_classifies_capacity_errors() {
 }
 
 #[test]
+fn test_realtime_join_error_from_admission_error_classifies_capacity_errors() {
+    let error = super::RealtimeJoinError::from(
+        crate::runtime::RealtimeAdmissionError::from_runtime_message(
+            "Room at capacity (42 connections, max: 40)".to_string(),
+        ),
+    );
+
+    assert!(matches!(
+        error,
+        super::RealtimeJoinError::RateLimited(message)
+        if message == "Room at capacity (42 connections, max: 40)"
+    ));
+}
+
+#[test]
+fn test_realtime_join_error_from_admission_error_classifies_cluster_degradation() {
+    let error = super::RealtimeJoinError::from(
+        crate::runtime::RealtimeAdmissionError::from_runtime_message(
+            "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+                .to_string(),
+        ),
+    );
+
+    assert!(matches!(
+        error,
+        super::RealtimeJoinError::ServiceUnavailable(message)
+        if message == "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+    ));
+}
+
+#[test]
 fn test_realtime_join_error_into_string_preserves_message() {
     let message = String::from(super::RealtimeJoinError::PermissionDenied(
         "Not a member of this room".to_string(),

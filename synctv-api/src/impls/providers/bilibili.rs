@@ -656,6 +656,7 @@ mod tests {
     use super::{ensure_login_cookies_present, BilibiliApiImpl};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use synctv_core::credential_encryption::CredentialEncryption;
     use synctv_core::models::{
         CredentialProviderInstanceName, NewProviderInstance, SignupMethod, User,
     };
@@ -663,7 +664,7 @@ mod tests {
     use synctv_core::repository::{
         ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository,
     };
-    use synctv_core::service::{CredentialEncryption, RemoteProviderManager};
+    use synctv_core::service::RemoteProviderManager;
     use synctv_core_testing::create_test_pool;
 
     fn provider() -> Arc<BilibiliProvider> {

@@ -315,7 +315,7 @@ impl ServerSession {
                 Err(err) => {
                     if matches!(err.value, UnpackErrorValue::CannotParse) {
                         self.teardown_active_stream().await?;
-                        return Err(err)?;
+                        Err(err)?;
                     }
                     break;
                 }

@@ -117,7 +117,8 @@ The SyncTV process serves HTTP REST and gRPC on the same container port. The Hel
 
 | Service | Purpose | Port name |
 | --- | --- | --- |
-| `synctv` | HTTP/REST plus RTMP ports | `api`, `rtmp` |
+| `synctv` | HTTP/REST API entry | `api` |
+| `synctv-rtmp` | RTMP publish entry when `rtmpService.enabled=true` | `rtmp` |
 | `synctv-stun` | Built-in UDP STUN when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true` | `stun` |
 | `synctv-metrics` | Dedicated metrics endpoint when `metrics.enabled=true` | `metrics` |
 | `synctv-grpc` | Dedicated gRPC entry | `grpc` |
@@ -268,7 +269,9 @@ redis:
 
 External PostgreSQL requires `SYNCTV_DATABASE_PASSWORD` through `existingSecret` or `secrets.database.password`. External Redis password injection is optional; provide `SYNCTV_REDIS_PASSWORD` only when the external Redis requires authentication.
 
-When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules default to `0.0.0.0/0` so external mode, OAuth, and media-provider calls keep working; production deployments should restrict them with `networkPolicy.externalPostgresqlCIDRs`, `networkPolicy.externalRedisCIDRs`, and `networkPolicy.externalHttpCIDRs`.
+When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules are fail-closed by default: external PostgreSQL or Redis mode requires `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`, or `networkPolicy.allowAnyExternalDatabaseEgress=true`; outbound OAuth/media-provider HTTP requires `networkPolicy.externalHttpCIDRs` or `networkPolicy.allowAnyExternalHttpEgress=true`.
+
+Application Services, the PDB, and the app NetworkPolicy select only pods with `app.kubernetes.io/component=app`. Chart-managed PostgreSQL and Redis keep their own component labels and receive dependency-specific ingress policies when NetworkPolicy ingress isolation is enabled, so enabling NetworkPolicy does not route API traffic to dependency pods or isolate the dependencies from SyncTV itself.
 
 Redis connection-manager values:
 

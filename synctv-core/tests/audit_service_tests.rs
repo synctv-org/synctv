@@ -6,7 +6,8 @@
 //! Run Docker tests: cargo test --test `audit_service_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::{AuditAction, AuditService, AuditTargetType};
+use synctv_core::models::{AuditAction, AuditTargetType};
+use synctv_core::service::AuditService;
 use synctv_core_testing::create_test_pool;
 
 // Unbuffered write tests (require Docker)

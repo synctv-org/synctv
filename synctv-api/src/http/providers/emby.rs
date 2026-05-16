@@ -16,7 +16,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use synctv_core::models::ProviderCredential;
 use synctv_core::provider::proxy::ProxyAction;
-use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
+use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 
 use crate::http::{
     error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppError, AppResult,
@@ -287,7 +287,7 @@ pub(crate) fn sign_emby_thumbnail_url(
         max_width,
     };
     let expires_at = chrono::Utc::now().timestamp()
-        + synctv_core::service::ProxySigningKey::default_expiry_secs();
+        + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs();
     let signed_query =
         build_signed_thumbnail_query(signing_key, room_id, user_id, scope, expires_at);
 

@@ -560,7 +560,7 @@ pub struct GrpcServerConfig<'a> {
     /// Structured WebRTC/STUN runtime state exposed through shared API runtime.
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     /// Credential encryption for provider credential resolution
-    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
     /// Pre-bound TCP listener for the gRPC server.
     /// When provided, the server will use this listener instead of binding internally.
     /// This allows the caller to detect port-in-use errors before spawning the server task.
@@ -572,7 +572,7 @@ fn resolve_provider_proxy_runtime(
     redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     shared_api_runtime: Option<&Arc<crate::http::SharedApiRuntime>>,
 ) -> (
-    Arc<synctv_core::service::ProxySigningKey>,
+    Arc<synctv_core::proxy_signature::ProxySigningKey>,
     Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
 ) {
     if let Some(shared_api_runtime) = shared_api_runtime {
@@ -583,7 +583,7 @@ fn resolve_provider_proxy_runtime(
     }
 
     (
-        Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+        Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
             config.jwt.secret.as_bytes(),
         )),
         synctv_core::provider::store::build_provider_store_resolver_from_profile(
@@ -621,9 +621,9 @@ struct FallbackHttpAppStateDeps {
     redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     messaging_rate_limit_config: RateLimitConfig,
-    credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
     credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
-    proxy_signing_key: Arc<synctv_core::service::ProxySigningKey>,
+    proxy_signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
     provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     builtin_stun_url: Option<String>,
     webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
@@ -1689,9 +1689,10 @@ mod tests {
             );
         let ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService> =
             Arc::new(synctv_core::service::WsTicketService::local_only(None));
-        let proxy_signing_key = Arc::new(synctv_core::service::ProxySigningKey::derive_from(
-            b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
-        ));
+        let proxy_signing_key =
+            Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
+                b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
+            ));
         let content_filter =
             ContentFilter::with_config(17, 9, Some(vec!["blocked".to_string()]), false);
         let messaging_rate_limit_config = RateLimitConfig {

@@ -1,6 +1,9 @@
 //! Email token repository for database operations
 
-use crate::{models::UserId, service::email_token::EmailTokenType, Error, Result};
+use crate::{
+    models::{EmailTokenType, UserId},
+    Error, Result,
+};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;

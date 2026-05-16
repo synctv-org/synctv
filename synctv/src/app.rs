@@ -36,7 +36,7 @@ use synctv_realtime::sync::{
 };
 
 use synctv_api::realtime_fanout::{
-    default_realtime_fanout_service, required_realtime_fanout_service_with_realtime,
+    default_realtime_fanout_service_with_realtime, required_realtime_fanout_service_with_realtime,
     RealtimeFanoutService,
 };
 use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
@@ -1231,10 +1231,15 @@ impl Application {
                 shutdown,
             );
             info!("Cluster mode disabled — initialized local-only RealtimeManager");
+            let realtime_event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
             return Ok(ClusterState {
-                realtime_fanout_service: default_realtime_fanout_service(None, false),
+                realtime_fanout_service: default_realtime_fanout_service_with_realtime(
+                    None,
+                    false,
+                    Some(realtime_event_service.clone()),
+                ),
                 realtime_connection_service: realtime_connection_service.clone(),
-                realtime_event_service: Some(realtime_manager),
+                realtime_event_service: Some(realtime_event_service),
                 node_registry: None,
                 health_monitor: None,
                 cluster_activation: None,

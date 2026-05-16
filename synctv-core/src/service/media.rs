@@ -117,7 +117,7 @@ pub struct MediaService {
     /// Local room event bus for media/domain notifications
     notification_service: NotificationService,
     /// Optional credential encryption for provider credential resolution
-    credential_encryption: Option<crate::service::CredentialEncryption>,
+    credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     /// Optional credential repository for provider-backed source resolution
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
@@ -240,7 +240,7 @@ impl MediaService {
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
         notification_service: NotificationService,
-        credential_encryption: Option<crate::service::CredentialEncryption>,
+        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
         Self {
@@ -267,7 +267,9 @@ impl MediaService {
 
     /// Get the credential encryption used for provider source resolution, if configured.
     #[must_use]
-    pub const fn credential_encryption(&self) -> Option<&crate::service::CredentialEncryption> {
+    pub const fn credential_encryption(
+        &self,
+    ) -> Option<&crate::credential_encryption::CredentialEncryption> {
         self.credential_encryption.as_ref()
     }
 

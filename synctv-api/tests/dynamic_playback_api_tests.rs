@@ -17,12 +17,13 @@ use synctv_core::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
         MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
     },
+    proxy_signature::ProxySigningKey,
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, ProvidersManager, ProxySigningKey, RemoteProviderManager,
-        RoomService, UserService,
+        InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
+        UserService,
     },
     Config,
 };
@@ -109,9 +110,10 @@ fn make_room_service_with_provider_credentials(
     user_service: &UserService,
     providers_manager: Arc<ProvidersManager>,
 ) -> RoomService {
-    let credential_encryption =
-        synctv_core::service::CredentialEncryption::new(b"0123456789abcdef0123456789abcdef")
-            .unwrap();
+    let credential_encryption = synctv_core::credential_encryption::CredentialEncryption::new(
+        b"0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
     let credential_repo = Arc::new(
         synctv_core::repository::UserProviderCredentialRepository::new_with_encryption(
             pool.clone(),

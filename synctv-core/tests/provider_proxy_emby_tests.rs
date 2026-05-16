@@ -103,7 +103,7 @@ fn fake_proxy_services() -> ProxyServices {
         credential_encryption: None,
         credential_repo,
         provider_access_service: None,
-        signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+        signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
             b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
         )),
         public_id_codec: Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
@@ -328,7 +328,7 @@ async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
     let store = new_store();
-    let signing_key = synctv_core::service::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
     );
     let version = "emode";

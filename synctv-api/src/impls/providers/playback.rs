@@ -1,12 +1,13 @@
 use std::collections::HashMap;
+use synctv_core::credential_encryption::CredentialEncryption;
 use synctv_core::models::{Media, MediaId, RoomId, UserId};
 use synctv_core::provider::store::ProviderStore;
 use synctv_core::provider::{
     ExecutionControl, MediaProvider, PlaybackResult as ProviderPlaybackResult, ProviderContext,
 };
+use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::RoomService;
-use synctv_core::service::{CredentialEncryption, ProxySigningKey};
 
 use crate::impls::client::ClientApiImpl;
 use crate::impls::ApiError;

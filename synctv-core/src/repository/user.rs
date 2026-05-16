@@ -3,8 +3,7 @@ use sqlx::PgPool;
 
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
-    models::{User, UserId, UserListQuery, UserListSortBy},
-    service::auth::OpaquePasswordRecord,
+    models::{OpaquePasswordRecord, User, UserId, UserListQuery, UserListSortBy},
     Error, Result,
 };
 

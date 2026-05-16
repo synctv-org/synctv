@@ -99,7 +99,7 @@ fn fake_proxy_services() -> ProxyServices {
         credential_encryption: None,
         credential_repo,
         provider_access_service: None,
-        signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+        signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
             b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
         )),
         public_id_codec: Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
@@ -229,7 +229,7 @@ async fn test_subtitle_not_found() {
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
     let store = new_store();
-    let signing_key = synctv_core::service::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
     );
     let version = "vsigned";
@@ -327,7 +327,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
 #[tokio::test]
 async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
     let store = new_store();
-    let signing_key = synctv_core::service::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
     );
     let version = "vmpd";

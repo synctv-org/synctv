@@ -7,9 +7,8 @@
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
-use synctv_core::models::{PageParams, UserId};
+use synctv_core::models::{AuditAction, AuditTargetType, PageParams, UserId};
 use synctv_core::repository::{AuditLogQuery, AuditLogRepository};
-use synctv_core::service::{AuditAction, AuditTargetType};
 use synctv_core_testing::create_test_pool;
 /// Insert an audit log directly via SQL and return the generated id.
 async fn insert_audit_log(

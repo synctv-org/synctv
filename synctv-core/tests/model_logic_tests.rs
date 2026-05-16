@@ -263,7 +263,7 @@ fn test_room_role_permissions_hierarchy() {
     let guest = RoomRole::Guest.permissions();
 
     // Creator has all permissions
-    assert_eq!(creator.0, u64::MAX);
+    assert_eq!(creator.0, PermissionBits::ALL);
 
     // Admin is a superset of member
     assert!(admin.has_all(member.0));

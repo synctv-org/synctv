@@ -908,8 +908,9 @@ impl AdminApiImpl {
         media: synctv_core::models::Media,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
-        let signing_key =
-            synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
+        let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+            self.config.jwt.secret.as_bytes(),
+        );
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id)
@@ -1069,8 +1070,9 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let signing_key =
-            synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
+        let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+            self.config.jwt.secret.as_bytes(),
+        );
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id_model)
@@ -1511,8 +1513,8 @@ impl AdminApiImpl {
     async fn log_admin_action(
         &self,
         admin_user_id: &UserId,
-        action: synctv_core::service::AuditAction,
-        target_type: synctv_core::service::AuditTargetType,
+        action: synctv_core::models::AuditAction,
+        target_type: synctv_core::models::AuditTargetType,
         target_id: Option<String>,
         details: serde_json::Value,
         ctx: &RequestContext,
@@ -1695,8 +1697,8 @@ impl AdminApiImpl {
         // Audit log: delete_room is a critical operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomDeleted,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomDeleted,
+            synctv_core::models::AuditTargetType::Room,
             Some(rid.to_string()),
             serde_json::json!({ "room_id": rid.to_string() }),
             ctx,
@@ -1755,8 +1757,8 @@ impl AdminApiImpl {
         // Audit log: room password change is a security-relevant operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomPasswordUpdated,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomPasswordUpdated,
+            synctv_core::models::AuditTargetType::Room,
             Some(room_id.to_string()),
             serde_json::json!({
                 "room_id": room_id.to_string(),
@@ -1898,8 +1900,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberStatusUpdated,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberStatusUpdated,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -1974,8 +1976,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberStatusUpdated,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberStatusUpdated,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -2023,8 +2025,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberStatusUpdated,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberStatusUpdated,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -2134,8 +2136,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberPermissionUpdated,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberPermissionUpdated,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -2209,8 +2211,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberKicked,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberKicked,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -2291,8 +2293,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberBanned,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberBanned,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -2344,8 +2346,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::MemberUnbanned,
-            synctv_core::service::AuditTargetType::Member,
+            synctv_core::models::AuditAction::MemberUnbanned,
+            synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -2484,8 +2486,8 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserPreferencesUpdated,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserPreferencesUpdated,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -2575,8 +2577,8 @@ impl AdminApiImpl {
         // Audit log: role change is a critical operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserRoleUpdated,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserRoleUpdated,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -2648,8 +2650,8 @@ impl AdminApiImpl {
             }
             self.log_admin_action(
                 &caller_user_id,
-                synctv_core::service::AuditAction::UserPasswordUpdated,
-                synctv_core::service::AuditTargetType::User,
+                synctv_core::models::AuditAction::UserPasswordUpdated,
+                synctv_core::models::AuditTargetType::User,
                 Some(uid.to_string()),
                 serde_json::Value::Object(details_map),
                 ctx,
@@ -2672,8 +2674,8 @@ impl AdminApiImpl {
         // Audit log for settings view (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::SettingsViewed,
-            synctv_core::service::AuditTargetType::Settings,
+            synctv_core::models::AuditAction::SettingsViewed,
+            synctv_core::models::AuditTargetType::Settings,
             None,
             serde_json::json!({
                 "group_count": group_names.len(),
@@ -2707,8 +2709,8 @@ impl AdminApiImpl {
         // Audit log for settings group view (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::SettingsGroupViewed,
-            synctv_core::service::AuditTargetType::Settings,
+            synctv_core::models::AuditAction::SettingsGroupViewed,
+            synctv_core::models::AuditTargetType::Settings,
             None,
             serde_json::json!({ "group": group_name }),
             ctx,
@@ -2740,8 +2742,8 @@ impl AdminApiImpl {
         // Audit log for settings update (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::SettingsUpdated,
-            synctv_core::service::AuditTargetType::Settings,
+            synctv_core::models::AuditAction::SettingsUpdated,
+            synctv_core::models::AuditTargetType::Settings,
             None,
             serde_json::json!({ "changed_keys": changed_keys }),
             ctx,
@@ -2859,8 +2861,8 @@ impl AdminApiImpl {
         // Audit log: user creation via admin panel (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserCreated,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserCreated,
+            synctv_core::models::AuditTargetType::User,
             Some(user.id.to_string()),
             serde_json::json!({"reason": "User created via admin panel"}),
             ctx,
@@ -2904,8 +2906,8 @@ impl AdminApiImpl {
         // Audit log: user deletion is a critical operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserDeleted,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserDeleted,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({ "target_user_id": uid.to_string() }),
             ctx,
@@ -2943,8 +2945,8 @@ impl AdminApiImpl {
         // Audit log: admin changing another user's username (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserUsernameUpdated,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserUsernameUpdated,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -2979,8 +2981,8 @@ impl AdminApiImpl {
         // Audit log: ban_user is a critical operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserBanned,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserBanned,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -3024,8 +3026,8 @@ impl AdminApiImpl {
         // Audit log: unban is a security-relevant operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserUnbanned,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserUnbanned,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -3426,8 +3428,8 @@ impl AdminApiImpl {
         // Audit log: approving a user is a security-relevant operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserApproved,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserApproved,
+            synctv_core::models::AuditTargetType::User,
             Some(updated.id.to_string()),
             serde_json::json!({
                 "request_id": request_id.to_string(),
@@ -3578,8 +3580,8 @@ impl AdminApiImpl {
         // Audit log: ban_room is a critical operation (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomBanned,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomBanned,
+            synctv_core::models::AuditTargetType::Room,
             Some(rid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -3622,8 +3624,8 @@ impl AdminApiImpl {
         // Audit log: unban_room (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomUnbanned,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomUnbanned,
+            synctv_core::models::AuditTargetType::Room,
             Some(rid.to_string()),
             serde_json::json!({
                 "room_id": rid.to_string(),
@@ -3656,8 +3658,8 @@ impl AdminApiImpl {
         // Audit log: approving a room (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomApproved,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomApproved,
+            synctv_core::models::AuditTargetType::Room,
             Some(room.id.to_string()),
             serde_json::json!({
                 "request_id": request_id.to_string(),
@@ -3831,8 +3833,8 @@ impl AdminApiImpl {
         // Audit log: granting admin role (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserRoleUpdated,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserRoleUpdated,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -3882,8 +3884,8 @@ impl AdminApiImpl {
         // Audit log: revoking admin role (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserRoleUpdated,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserRoleUpdated,
+            synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
             serde_json::json!({
                 "target_user_id": uid.to_string(),
@@ -5232,7 +5234,7 @@ impl AdminApiImpl {
                 *admin_user_id,
                 &actor.username,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -5319,8 +5321,8 @@ impl AdminApiImpl {
         // Audit log (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserBanned,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserBanned,
+            synctv_core::models::AuditTargetType::User,
             None,
             serde_json::json!({
                 "action": "batch_ban",
@@ -5443,8 +5445,8 @@ impl AdminApiImpl {
         // Audit log (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::UserDeleted,
-            synctv_core::service::AuditTargetType::User,
+            synctv_core::models::AuditAction::UserDeleted,
+            synctv_core::models::AuditTargetType::User,
             None,
             serde_json::json!({
                 "action": "batch_delete",
@@ -5534,8 +5536,8 @@ impl AdminApiImpl {
         // Audit log (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomBanned,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomBanned,
+            synctv_core::models::AuditTargetType::Room,
             None,
             serde_json::json!({
                 "action": "batch_ban",
@@ -5619,8 +5621,8 @@ impl AdminApiImpl {
         // Audit log (best-effort)
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::RoomDeleted,
-            synctv_core::service::AuditTargetType::Room,
+            synctv_core::models::AuditAction::RoomDeleted,
+            synctv_core::models::AuditTargetType::Room,
             None,
             serde_json::json!({
                 "action": "batch_delete",

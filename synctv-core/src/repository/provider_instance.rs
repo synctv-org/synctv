@@ -1,12 +1,12 @@
 // Provider Instance Repository
 // Database access layer for provider instance configuration management.
 
+use crate::credential_encryption::CredentialEncryption;
 use crate::models::{
     normalize_provider_instance_name, provider_type_code_from_name, provider_type_codes_from_names,
     provider_type_name_from_code, ProviderInstance, ProviderInstanceListQuery,
     ProviderInstanceListSortBy, UserId, UserProviderCredential,
 };
-use crate::service::CredentialEncryption;
 use crate::Result;
 use sqlx::PgPool;
 
@@ -856,7 +856,7 @@ impl UserProviderCredentialRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::CredentialEncryption;
+    use crate::credential_encryption::CredentialEncryption;
     use serde_json::json;
 
     // Note: These are unit tests for the repository structure.

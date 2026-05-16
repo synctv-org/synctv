@@ -10,11 +10,13 @@ use rand_08::SeedableRng;
 use rand_chacha_08::ChaCha20Rng;
 use sha2_010::{Digest, Sha512};
 
-use crate::{Error, Result};
-
-pub const OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID: &str =
-    "opaque-ristretto255-sha512-argon2id";
-pub const OPAQUE_SERVER_SETUP_VERSION: i32 = 1;
+use crate::{
+    models::{
+        OpaquePasswordRecord, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
+        OPAQUE_SERVER_SETUP_VERSION,
+    },
+    Error, Result,
+};
 
 struct SyncTvOpaqueCipherSuite;
 
@@ -22,14 +24,6 @@ impl CipherSuite for SyncTvOpaqueCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
     type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, Sha512>;
     type Ksf = Argon2<'static>;
-}
-
-#[derive(Debug, Clone)]
-pub struct OpaquePasswordRecord {
-    pub record: Vec<u8>,
-    pub credential_identifier: Vec<u8>,
-    pub ciphersuite: String,
-    pub server_setup_version: i32,
 }
 
 pub struct OpaqueRegistrationStart {

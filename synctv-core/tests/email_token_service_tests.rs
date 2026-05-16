@@ -11,9 +11,9 @@
 use chrono::Utc;
 use futures::future::join_all;
 use synctv_core::{
-    models::{User, UserId, UserRole, UserStatus},
+    models::{EmailTokenType, User, UserId, UserRole, UserStatus},
     repository::{EmailTokenRepository, UserRepository},
-    service::email_token::{EmailTokenService, EmailTokenType},
+    service::email_token::EmailTokenService,
 };
 use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {

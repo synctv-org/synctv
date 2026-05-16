@@ -12,8 +12,8 @@ use std::sync::{Arc, OnceLock};
 use synctv_common::ExecutionControl;
 
 use super::email_templates::EmailTemplateManager;
-use super::email_token::{EmailTokenService, EmailTokenType};
-use crate::{Error, InternalExt, Result};
+use super::email_token::EmailTokenService;
+use crate::{models::EmailTokenType, Error, InternalExt, Result};
 
 /// Mask an email address for safe logging: `user***@example.com`
 pub fn mask_email(email: &str) -> String {

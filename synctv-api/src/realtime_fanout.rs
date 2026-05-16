@@ -16,13 +16,17 @@ pub trait RealtimeFanoutService: Send + Sync {
     fn publish_after_outbox_commit(&self, event: RealtimeEvent);
 
     fn is_distributed_enabled(&self) -> bool;
+
+    fn accepts_immediate_publish(&self) -> bool {
+        self.is_distributed_enabled()
+    }
 }
 
 pub fn publish_best_effort(
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     request: PublishRequest,
 ) {
-    if !realtime_fanout.is_distributed_enabled() {
+    if !realtime_fanout.accepts_immediate_publish() {
         return;
     }
 
@@ -92,6 +96,8 @@ impl PreparedRealtimeFanoutPlan {
 }
 
 type RealtimeEventBuilder<T> = Arc<dyn Fn(&T) -> RealtimeEvent + Send + Sync>;
+type RealtimeOutboxEventFactory<T> =
+    Arc<dyn Fn(&T) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
 
 /// Prepared outbox fanout for repository callbacks that return one saved entity.
 ///
@@ -121,13 +127,7 @@ impl<T: 'static> PreparedOutboxFanout<T> {
     }
 
     #[must_use]
-    pub fn outbox_factory(
-        &self,
-    ) -> Option<Arc<dyn Fn(&T) -> Option<NewRealtimeOutboxEvent> + Send + Sync>> {
-        if !self.realtime_fanout.is_distributed_enabled() {
-            return None;
-        }
-
+    pub fn outbox_factory(&self) -> Option<RealtimeOutboxEventFactory<T>> {
         let realtime_fanout = self.realtime_fanout.clone();
         let event_builder = self.event_builder.clone();
         let event_slot = self.event.clone();
@@ -137,6 +137,9 @@ impl<T: 'static> PreparedOutboxFanout<T> {
                 .lock()
                 .expect("prepared realtime fanout event mutex should not be poisoned") =
                 Some(event.clone());
+            if !realtime_fanout.is_distributed_enabled() {
+                return None;
+            }
             realtime_fanout.outbox_event(&event)
         }))
     }
@@ -170,6 +173,48 @@ impl RealtimeFanoutService for NoopRealtimeFanoutService {
 
     fn is_distributed_enabled(&self) -> bool {
         false
+    }
+}
+
+#[derive(Clone)]
+pub struct LocalRealtimeFanoutService {
+    event_service: Arc<dyn RealtimeEventService>,
+}
+
+impl LocalRealtimeFanoutService {
+    #[must_use]
+    pub fn new(event_service: Arc<dyn RealtimeEventService>) -> Self {
+        Self { event_service }
+    }
+}
+
+impl std::fmt::Debug for LocalRealtimeFanoutService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalRealtimeFanoutService").finish()
+    }
+}
+
+#[async_trait]
+impl RealtimeFanoutService for LocalRealtimeFanoutService {
+    async fn try_publish(&self, request: PublishRequest) -> bool {
+        broadcast_event_locally(self.event_service.as_ref(), &request.event);
+        true
+    }
+
+    fn outbox_event(&self, _event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
+        None
+    }
+
+    fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
+        broadcast_event_locally(self.event_service.as_ref(), &event);
+    }
+
+    fn is_distributed_enabled(&self) -> bool {
+        false
+    }
+
+    fn accepts_immediate_publish(&self) -> bool {
+        true
     }
 }
 
@@ -320,6 +365,10 @@ pub fn default_realtime_fanout_service_with_realtime(
         }
     }
 
+    if let Some(event_service) = event_service {
+        return Arc::new(LocalRealtimeFanoutService::new(event_service));
+    }
+
     Arc::new(NoopRealtimeFanoutService)
 }
 
@@ -371,8 +420,9 @@ pub fn channel_realtime_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::{
-        broadcast_event_locally, default_realtime_fanout_service, is_admin_channel_event,
-        publish_best_effort, PreparedRealtimeFanoutPlan,
+        broadcast_event_locally, default_realtime_fanout_service,
+        default_realtime_fanout_service_with_realtime, is_admin_channel_event, publish_best_effort,
+        PreparedOutboxFanout, PreparedRealtimeFanoutPlan,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -463,6 +513,52 @@ mod tests {
                 timestamp: Utc::now(),
             }),
         );
+    }
+
+    #[tokio::test]
+    async fn test_local_realtime_fanout_broadcasts_committed_room_event() {
+        let event_service = std::sync::Arc::new(RecordingRealtimeEventService::default());
+        let service =
+            default_realtime_fanout_service_with_realtime(None, false, Some(event_service.clone()));
+
+        service.publish_after_outbox_commit(RealtimeEvent::RoomSettingsChanged {
+            event_id: "local-room-settings".to_string(),
+            room_id: RoomId::expect_positive(10_000_158),
+            user_id: UserId::expect_positive(10_000_159),
+            username: "tester".to_string(),
+            settings_json: Vec::new(),
+            version: 1,
+            timestamp: Utc::now(),
+        });
+
+        assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(event_service.admin_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_prepared_outbox_fanout_builds_local_event_without_outbox_row() {
+        let event_service = std::sync::Arc::new(RecordingRealtimeEventService::default());
+        let service =
+            default_realtime_fanout_service_with_realtime(None, false, Some(event_service.clone()));
+        let prepared = PreparedOutboxFanout::new(service, |room_id: &RoomId| {
+            RealtimeEvent::RoomSettingsChanged {
+                event_id: "local-prepared-room-settings".to_string(),
+                room_id: *room_id,
+                user_id: UserId::expect_positive(10_000_160),
+                username: "tester".to_string(),
+                settings_json: Vec::new(),
+                version: 1,
+                timestamp: Utc::now(),
+            }
+        });
+        let factory = prepared
+            .outbox_factory()
+            .expect("local fanout still needs a callback to capture the committed event");
+
+        assert!(factory(&RoomId::expect_positive(10_000_161)).is_none());
+        prepared.publish_after_outbox_commit();
+
+        assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

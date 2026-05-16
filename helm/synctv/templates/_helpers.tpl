@@ -60,6 +60,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Selector labels for SyncTV application pods only.
+*/}}
+{{- define "synctv.appSelectorLabels" -}}
+{{ include "synctv.selectorLabels" . }}
+app.kubernetes.io/component: app
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "synctv.serviceAccountName" -}}

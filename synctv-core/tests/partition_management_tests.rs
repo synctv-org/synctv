@@ -11,12 +11,12 @@ use chrono::{Duration, Utc};
 use std::sync::Arc;
 use synctv_core::{
     models::{
-        ChatMessage, ChatMessageType, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
+        AuditAction, ChatMessage, ChatMessageType, Room, RoomId, RoomStatus, User, UserId,
+        UserRole, UserStatus,
     },
     repository::{ChatRepository, RoomRepository, SettingsRepository, UserRepository},
     service::{
-        global_settings::SettingsRegistry, AlwaysLeader, AuditAction, ChatPartitionManager,
-        SettingsService,
+        global_settings::SettingsRegistry, AlwaysLeader, ChatPartitionManager, SettingsService,
     },
 };
 use synctv_core_testing::create_test_pool;

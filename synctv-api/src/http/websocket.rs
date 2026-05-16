@@ -366,8 +366,9 @@ fn map_websocket_ticket_validation_api_error(error: synctv_core::Error) -> ApiEr
         AuthErrorCategory::Authentication => {
             ApiError::Authentication("Invalid or expired ticket".to_string())
         }
-        AuthErrorCategory::Authorization => ApiError::from(error),
-        AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => ApiError::from(error),
+        AuthErrorCategory::Authorization
+        | AuthErrorCategory::Unavailable
+        | AuthErrorCategory::Internal => ApiError::from(error),
     }
 }
 
@@ -1103,11 +1104,13 @@ fn reserve_websocket_upgrade_slots(
 ) -> Result<HandshakeReservation, AppError> {
     connection_service
         .reserve_user_slot(user_id)
+        .map_err(crate::runtime::RealtimeAdmissionError::from_runtime_message)
         .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)?;
 
     if let Err(error) = connection_service
         .reserve_room_slot(room_id)
+        .map_err(crate::runtime::RealtimeAdmissionError::from_runtime_message)
         .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)
     {

@@ -3,10 +3,11 @@
 //! Used by both HTTP and gRPC handlers to avoid duplicating email logic.
 
 use std::sync::Arc;
+use synctv_core::models::EmailTokenType;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
     rate_limit::RateLimitError, AuthFactorMethod, AuthenticatedLogin, EmailService,
-    EmailTokenService, EmailTokenType, RequestRateLimiterService, UserService,
+    EmailTokenService, RequestRateLimiterService, UserService,
 };
 use synctv_proto::client::{
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
@@ -887,18 +888,12 @@ mod tests {
 
         let first = api
             .email_token_service
-            .generate_token(
-                &created.id,
-                synctv_core::service::EmailTokenType::EmailLogin,
-            )
+            .generate_token(&created.id, synctv_core::models::EmailTokenType::EmailLogin)
             .await
             .unwrap();
         let second = api
             .email_token_service
-            .generate_token(
-                &created.id,
-                synctv_core::service::EmailTokenType::EmailLogin,
-            )
+            .generate_token(&created.id, synctv_core::models::EmailTokenType::EmailLogin)
             .await
             .unwrap();
 
@@ -994,7 +989,7 @@ mod tests {
 
         let token = api
             .email_token_service
-            .generate_token(&user.id, synctv_core::service::EmailTokenType::EmailLogin)
+            .generate_token(&user.id, synctv_core::models::EmailTokenType::EmailLogin)
             .await
             .unwrap();
         let completed = api

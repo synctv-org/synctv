@@ -1,17 +1,14 @@
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomSettings, UserId};
 use synctv_core::service::RealtimeOutboxSettingsEventFactory;
-use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
+use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::{
-    publish_best_effort, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
-};
+use crate::realtime_fanout::{PreparedRealtimeFanoutPlan, RealtimeFanoutService};
 use crate::runtime::RealtimeDeliveryRequirement;
 
 #[derive(Clone)]
 pub struct PreparedRoomSettingsFanout {
     plan: PreparedRealtimeFanoutPlan,
-    distributed: bool,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
 }
 
@@ -28,19 +25,15 @@ impl PreparedRoomSettingsFanout {
             event,
             RealtimeDeliveryRequirement::DistributedIfAvailable,
         );
-        let distributed = plan.outbox_event().is_some();
         Self {
             plan,
-            distributed,
             realtime_fanout,
         }
     }
 
     #[must_use]
     pub fn settings_outbox_factory(&self) -> Option<RealtimeOutboxSettingsEventFactory> {
-        if !self.distributed {
-            return None;
-        }
+        self.plan.outbox_event()?;
 
         let prepared = self.clone();
         Some(Arc::new(move |settings: &RoomSettings, version| {
@@ -76,7 +69,7 @@ impl std::fmt::Debug for PreparedRoomSettingsFanout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedRoomSettingsFanout")
             .field("event", self.event())
-            .field("distributed", &self.distributed)
+            .field("has_outbox_event", &self.plan.outbox_event().is_some())
             .finish()
     }
 }
@@ -138,14 +131,7 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
     }
 
     fn publish_prepared_after_outbox_commit(&self, prepared: PreparedRoomSettingsFanout) {
-        if prepared.distributed {
-            prepared.plan.publish_after_outbox_commit();
-        } else {
-            publish_best_effort(
-                self.realtime_fanout.clone(),
-                PublishRequest::new(prepared.plan.into_event()),
-            );
-        }
+        prepared.plan.publish_after_outbox_commit();
     }
 }
 
@@ -208,7 +194,7 @@ pub fn default_room_settings_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_room_settings_fanout_service;
-    use crate::realtime_fanout::default_realtime_fanout_service;
+    use crate::realtime_fanout::default_realtime_fanout_service_with_realtime;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -286,10 +272,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_standalone_room_settings_fanout_does_not_broadcast_locally() {
+    async fn test_standalone_room_settings_fanout_broadcasts_locally() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service =
-            default_room_settings_fanout_service(default_realtime_fanout_service(None, false));
+        let service = default_room_settings_fanout_service(
+            default_realtime_fanout_service_with_realtime(None, false, Some(event_service.clone())),
+        );
 
         let prepared = service.prepare_settings_changed(
             &room_id(),
@@ -303,22 +290,23 @@ mod tests {
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
+            1
         );
-        assert!(
+        assert_eq!(
             event_service
                 .local_events
                 .lock()
                 .expect("recorded local events mutex should not be poisoned")
-                .is_empty(),
-            "standalone room settings fanout must rely on the room notification bridge instead of rebroadcasting locally"
+                .len(),
+            1
         );
     }
 
     #[tokio::test]
     async fn test_prepared_room_settings_fanout_keeps_event_identity_when_snapshot_is_applied() {
-        let service =
-            default_room_settings_fanout_service(default_realtime_fanout_service(None, true));
+        let service = default_room_settings_fanout_service(
+            default_realtime_fanout_service_with_realtime(None, true, None),
+        );
         let prepared =
             service.prepare_settings_changed(&room_id(), &user_id(), "tester", Vec::new(), 0);
         let original_event_id = prepared.event().event_id().to_string();

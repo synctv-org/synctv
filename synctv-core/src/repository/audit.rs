@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgRow, PgPool, Postgres, QueryBuilder, Row};
 
-use crate::models::{PageParams, UserId};
-use crate::service::{AuditAction, AuditTargetType};
+use crate::models::{AuditAction, AuditTargetType, PageParams, UserId};
 use crate::{Error, Result};
 
 /// Audit log entry as read from the database

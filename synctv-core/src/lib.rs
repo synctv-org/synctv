@@ -75,12 +75,14 @@ fn default_jwt_crypto_provider() -> &'static jsonwebtoken::crypto::CryptoProvide
 pub mod bootstrap;
 pub mod cache;
 pub mod config;
+pub mod credential_encryption;
 pub mod error;
 pub mod logging;
 pub mod metrics;
 pub mod models;
 pub mod oauth2;
 pub mod provider;
+pub mod proxy_signature;
 pub mod public_id;
 pub mod redis_runtime;
 pub mod repository;

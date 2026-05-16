@@ -99,7 +99,7 @@ fn fake_proxy_services() -> ProxyServices {
         credential_encryption: None,
         credential_repo,
         provider_access_service: None,
-        signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+        signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
             b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
         )),
         public_id_codec: Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
@@ -187,8 +187,9 @@ async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
 
 #[test]
 fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
-    let signing_key =
-        synctv_core::service::ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+        b"test-jwt-secret-that-is-long-enough",
+    );
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([(
             "direct".to_string(),
@@ -306,8 +307,9 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
     };
     store_versioned(&store, &stored).await;
 
-    let signing_key =
-        synctv_core::service::ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+        b"test-jwt-secret-that-is-long-enough",
+    );
     sign_playback_urls(
         &mut result,
         "alist",
@@ -426,7 +428,7 @@ async fn test_unknown_sub_path() {
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
     let store = new_store();
-    let signing_key = synctv_core::service::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
     );
     let version = "asub";

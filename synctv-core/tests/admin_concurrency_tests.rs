@@ -18,12 +18,13 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        Room, RoomId, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
+        AddMemberOptions, Room, RoomId, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        member::{AddMemberOptions, MemberService},
+        member::MemberService,
         permission::PermissionService,
         InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
     },

@@ -8,12 +8,9 @@
 
 use chrono::{Duration, Utc};
 use synctv_core::{
-    models::{User, UserId, UserRole, UserStatus},
+    models::{EmailTokenType, User, UserId, UserRole, UserStatus},
     repository::{EmailTokenRepository, UserRepository},
-    service::{
-        email_token::{EmailTokenService, EmailTokenType},
-        EmailConfig, EmailService,
-    },
+    service::{email_token::EmailTokenService, EmailConfig, EmailService},
 };
 use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers

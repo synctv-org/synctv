@@ -15,9 +15,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::credential_encryption::CredentialEncryption;
 use crate::models::{ProviderCredential, UserId, UserProviderCredential};
 use crate::repository::UserProviderCredentialRepository;
-use crate::service::CredentialEncryption;
 
 use super::credential_resolver::{credential_revision, ResolvedProviderCredential};
 use super::store::{ProviderStore, ProviderStoreExt};

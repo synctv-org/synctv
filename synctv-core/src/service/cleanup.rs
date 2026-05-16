@@ -393,10 +393,11 @@ impl CleanupService {
         let mut purged = 0u64;
         for room_id in room_ids {
             let mut tx = self.pool.begin().await?;
-            let deleted =
-                crate::service::room::hard_delete_room_and_cleanup_in_tx(&mut tx, &room_id)
-                    .await
-                    .internal_with_err("Failed to clean up room dependencies during purge")?;
+            let deleted = crate::repository::room_cleanup::hard_delete_room_and_cleanup_in_tx(
+                &mut tx, &room_id,
+            )
+            .await
+            .internal_with_err("Failed to clean up room dependencies during purge")?;
             tx.commit()
                 .await
                 .internal_with_err("Failed to commit room purge transaction")?;

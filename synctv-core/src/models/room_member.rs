@@ -98,6 +98,81 @@ impl TryFrom<i32> for MemberStatus {
     }
 }
 
+/// Repository-level options for admitting a user into a room membership row.
+#[derive(Debug, Clone, Default)]
+pub struct AddMemberOptions {
+    /// Check if room is active
+    pub check_room_active: bool,
+    /// Check for duplicate membership
+    pub check_duplicate: bool,
+    /// Check max members limit
+    pub check_max_members: bool,
+    /// Maximum number of members allowed (0 = no limit)
+    pub max_members: u64,
+    /// Initial lifecycle status for the membership row
+    pub initial_status: MemberStatus,
+    /// Invalidate permission cache after adding
+    pub invalidate_cache: bool,
+}
+
+impl AddMemberOptions {
+    /// Create default options (all checks enabled, no max limit)
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            check_room_active: true,
+            check_duplicate: true,
+            check_max_members: false,
+            max_members: 0,
+            initial_status: MemberStatus::Active,
+            invalidate_cache: true,
+        }
+    }
+
+    /// Set max members limit (enables the check)
+    #[must_use]
+    pub const fn with_max_members(mut self, max: u64) -> Self {
+        self.max_members = max;
+        self.check_max_members = true;
+        self
+    }
+
+    /// Skip max members check
+    #[must_use]
+    pub const fn skip_max_members_check(mut self) -> Self {
+        self.check_max_members = false;
+        self
+    }
+
+    /// Skip room active check
+    #[must_use]
+    pub const fn skip_active_check(mut self) -> Self {
+        self.check_room_active = false;
+        self
+    }
+
+    /// Skip duplicate membership check
+    #[must_use]
+    pub const fn skip_duplicate_check(mut self) -> Self {
+        self.check_duplicate = false;
+        self
+    }
+
+    /// Set the initial lifecycle status for the membership row.
+    #[must_use]
+    pub const fn with_initial_status(mut self, status: MemberStatus) -> Self {
+        self.initial_status = status;
+        self
+    }
+
+    /// Skip cache invalidation
+    #[must_use]
+    pub const fn skip_cache_invalidation(mut self) -> Self {
+        self.invalidate_cache = false;
+        self
+    }
+}
+
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]

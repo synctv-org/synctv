@@ -288,7 +288,7 @@ impl ClientApiImpl {
                     .email_token_service
                     .validate_token_for_user(
                         &req.email_token,
-                        synctv_core::service::EmailTokenType::PasswordReset,
+                        synctv_core::models::EmailTokenType::PasswordReset,
                         user_id,
                     )
                     .await

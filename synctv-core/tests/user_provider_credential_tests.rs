@@ -9,9 +9,9 @@
 use chrono::{Duration, Utc};
 use serde_json::json;
 use synctv_core::{
+    credential_encryption::CredentialEncryption,
     models::{ProviderInstance, ProviderType, SignupMethod, User, UserId, UserProviderCredential},
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
-    service::CredentialEncryption,
 };
 use synctv_core_testing::create_test_pool;
 

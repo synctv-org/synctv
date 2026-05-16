@@ -296,8 +296,8 @@ impl ProviderCommonApiImpl {
     async fn log_admin_action(
         &self,
         admin_user_id: &UserId,
-        action: synctv_core::service::AuditAction,
-        target_type: synctv_core::service::AuditTargetType,
+        action: synctv_core::models::AuditAction,
+        target_type: synctv_core::models::AuditTargetType,
         target_id: Option<String>,
         details: serde_json::Value,
         ctx: &RequestContext,
@@ -455,8 +455,8 @@ impl ProviderCommonApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceCreated,
-            synctv_core::service::AuditTargetType::ProviderInstance,
+            synctv_core::models::AuditAction::ProviderInstanceCreated,
+            synctv_core::models::AuditTargetType::ProviderInstance,
             Some(instance.name.clone()),
             serde_json::json!({
                 "instance_name": instance.name,
@@ -565,8 +565,8 @@ impl ProviderCommonApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceUpdated,
-            synctv_core::service::AuditTargetType::ProviderInstance,
+            synctv_core::models::AuditAction::ProviderInstanceUpdated,
+            synctv_core::models::AuditTargetType::ProviderInstance,
             Some(instance.name.clone()),
             serde_json::json!({ "instance_name": instance.name }),
             ctx,
@@ -597,8 +597,8 @@ impl ProviderCommonApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceDeleted,
-            synctv_core::service::AuditTargetType::ProviderInstance,
+            synctv_core::models::AuditAction::ProviderInstanceDeleted,
+            synctv_core::models::AuditTargetType::ProviderInstance,
             Some(req.name.clone()),
             serde_json::json!({ "instance_name": req.name }),
             ctx,
@@ -632,8 +632,8 @@ impl ProviderCommonApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceReconnected,
-            synctv_core::service::AuditTargetType::ProviderInstance,
+            synctv_core::models::AuditAction::ProviderInstanceReconnected,
+            synctv_core::models::AuditTargetType::ProviderInstance,
             Some(instance.name.clone()),
             serde_json::json!({
                 "instance_name": instance.name,

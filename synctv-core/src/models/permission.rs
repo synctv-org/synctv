@@ -1,9 +1,10 @@
 //! Permission System (Design Document 07-permission-system-design.md)
 //!
-//! This module implements the 64-bit permission bitmask system as specified in the design document.
+//! This module implements a database-compatible permission bitmask system.
 //!
 //! Key features:
-//! - Uses u64 (not i64) for permission bits
+//! - Uses `u64` at API/domain boundaries while reserving the sign bit so values
+//!   fit PostgreSQL `BIGINT` storage without lossy conversion
 //! - Telegram-style permission inheritance
 //! - Role and Status separation
 //! - Allow/Deny permission pattern for customization
@@ -12,12 +13,19 @@ use serde::{Deserialize, Serialize};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
 use std::str::FromStr;
 
-/// 64-bit permission bitmask (u64 as per design document)
+/// Permission bitmask.
+///
+/// The public protobuf/API representation is `uint64`, but persisted room
+/// permission overrides use PostgreSQL `BIGINT`. Keep the sign bit reserved so
+/// every valid domain value is representable in storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PermissionBits(pub u64);
 
 impl PermissionBits {
+    /// Maximum permission mask representable in signed database storage.
+    pub const STORAGE_MASK: u64 = i64::MAX as u64;
+
     /// Send chat messages (includes messages with position for danmaku display)
     pub const SEND_CHAT: u64 = 1 << 0;
 
@@ -95,8 +103,8 @@ impl PermissionBits {
     /// Use WebRTC (voice/video)
     pub const USE_WEBRTC: u64 = 1 << 50;
 
-    /// All permissions (for Creator)
-    pub const ALL: u64 = u64::MAX;
+    /// All permissions available in the current storage-compatible domain.
+    pub const ALL: u64 = Self::STORAGE_MASK;
 
     /// Bits that are defined but cannot be delegated through room role/member
     /// permission overrides.

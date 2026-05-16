@@ -6,11 +6,11 @@
 
 use sqlx::Row;
 use synctv_core::{
-    models::{SignupMethod, User, UserId, UserRole, UserStatus},
+    models::{OpaquePasswordRecord, SignupMethod, User, UserId, UserRole, UserStatus},
     repository::{PasswordCredentialMaterial, UserRepository},
     service::auth::{
         password::{hash_password, verify_password},
-        OpaquePasswordRecord, TokenType,
+        TokenType,
     },
 };
 use synctv_core_testing::{create_test_jwt_service, create_test_pool};

@@ -118,7 +118,7 @@ pub struct ClientApiConfig {
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
@@ -203,13 +203,13 @@ pub struct ClientApiImpl {
     /// Structured WebRTC/STUN runtime state for diagnostics.
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     /// Credential encryption for provider credential resolution
-    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
     /// Credential repository for resolving stored provider credentials
     pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
     /// Typed provider credential/session access cache
     pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
-    pub signing_key: Option<Arc<synctv_core::service::ProxySigningKey>>,
+    pub signing_key: Option<Arc<synctv_core::proxy_signature::ProxySigningKey>>,
     /// Per-provider stores for signed playback version mappings
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     /// JWT validator for token validation (e.g. live streaming tokens)
@@ -641,7 +641,7 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_credential_encryption(
         mut self,
-        enc: Option<synctv_core::service::CredentialEncryption>,
+        enc: Option<synctv_core::credential_encryption::CredentialEncryption>,
     ) -> Self {
         self.credential_encryption = enc;
         self
@@ -669,7 +669,10 @@ impl ClientApiImpl {
 
     /// Set the proxy signing key for generating HMAC-signed proxy URLs
     #[must_use]
-    pub fn with_signing_key(mut self, key: Arc<synctv_core::service::ProxySigningKey>) -> Self {
+    pub fn with_signing_key(
+        mut self,
+        key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    ) -> Self {
         self.signing_key = Some(key);
         self
     }

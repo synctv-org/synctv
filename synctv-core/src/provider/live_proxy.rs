@@ -210,6 +210,10 @@ impl MediaProvider for LiveProxyProvider {
         Self::validate_live_source_url(source_url, &self.ssrf_guard)?;
 
         let mut result = super::build_live_playback(*media_id, *room_id);
+        // External live_proxy sources are lazy-started by the FLV path today.
+        // Do not advertise HLS until that path can start/remux external pullers.
+        result.playback_infos.remove("hls");
+        result.default_mode = "flv".to_string();
         let redacted_host = url::Url::parse(source_url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
@@ -335,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn generate_playback_signs_urls_with_provider_proxy_prefix() {
         use crate::provider::store::InMemoryProviderStore;
-        use crate::service::ProxySigningKey;
+        use crate::proxy_signature::ProxySigningKey;
         use std::sync::Arc;
 
         let provider = LiveProxyProvider::new();
@@ -351,13 +355,6 @@ mod tests {
             .await
             .unwrap();
 
-        let hls = result
-            .playback_infos
-            .get("hls")
-            .unwrap()
-            .urls
-            .first()
-            .unwrap();
         let flv = result
             .playback_infos
             .get("flv")
@@ -365,9 +362,12 @@ mod tests {
             .urls
             .first()
             .unwrap();
-        assert!(hls.starts_with("/api/providers/proxy/live_proxy/"));
-        assert!(hls.contains("/m3u8?"));
+        assert!(
+            !result.playback_infos.contains_key("hls"),
+            "live_proxy must not advertise HLS until external pullers can lazy-start that path"
+        );
         assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));
+        assert_eq!(result.default_mode, "flv");
         let flv_url = url::Url::parse(&format!("http://synctv.local{flv}")).unwrap();
         assert!(flv_url
             .path_segments()

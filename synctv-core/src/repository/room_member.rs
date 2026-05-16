@@ -2,11 +2,10 @@ use sqlx::{PgPool, Row};
 
 use crate::{
     models::{
-        MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, PageParams, RoomId,
-        RoomMember, RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser, RoomRole,
-        RoomStatus, UserId,
+        AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation,
+        PageParams, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
+        RoomMemberWithUser, RoomRole, RoomStatus, UserId,
     },
-    service::AddMemberOptions,
     Error, Result,
 };
 
@@ -106,7 +105,9 @@ const ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
 
 fn permission_bits_to_i64(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| {
-        Error::InvalidInput(format!("permission bits value {value} exceeds i64 range"))
+        Error::InvalidInput(format!(
+            "permission bits value {value} exceeds signed storage range"
+        ))
     })
 }
 

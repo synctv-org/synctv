@@ -140,7 +140,7 @@ pub async fn finish_opaque_registration(
     Ok(Json(response))
 }
 
-/// Confirm a passwordless email login token. Local password login is OPAQUE-only.
+/// Confirm a passwordless email login token. Public client password login uses OPAQUE.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(

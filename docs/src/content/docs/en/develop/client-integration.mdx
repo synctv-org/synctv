@@ -137,7 +137,7 @@ Client flow:
 `GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. Password is a first factor completed through the OPAQUE login flow; it is not a plaintext MFA completion method. OAuth2 does not count as a local 2FA factor.
 
 <Aside type="note">
-OPAQUE is the local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email or WebAuthn.
+OPAQUE is the public client local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email or WebAuthn.
 </Aside>
 
 ## Email Codes
@@ -189,7 +189,7 @@ Public gRPC uses the same main port. With reflection:
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-Local password login is OPAQUE-only. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
+The public AuthService local password flow uses OPAQUE. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
 
 ```bash
 grpcurl -plaintext \

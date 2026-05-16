@@ -10,11 +10,11 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        MemberStatus, MyRoomListQuery, MyRoomListSortBy, PageParams, Room, RoomId, RoomMember,
-        RoomRole, RoomStatus, SortDirection, User, UserId, UserRole, UserStatus,
+        AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, PageParams, Room,
+        RoomId, RoomMember, RoomRole, RoomStatus, SortDirection, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
-    service::AddMemberOptions,
     Error,
 };
 use synctv_core_testing::create_test_pool;

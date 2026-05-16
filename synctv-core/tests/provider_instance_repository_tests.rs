@@ -7,9 +7,9 @@
 
 use chrono::Utc;
 use synctv_core::{
+    credential_encryption::CredentialEncryption,
     models::{ProviderInstance, ProviderType, SignupMethod},
     repository::ProviderInstanceRepository,
-    service::CredentialEncryption,
     Error,
 };
 use synctv_core_testing::create_test_pool;

@@ -5,6 +5,36 @@ use tokio::sync::{broadcast, mpsc};
 
 pub use synctv_realtime::sync::ConnectionRuntime as RealtimeConnectionService;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RealtimeAdmissionError {
+    Capacity(String),
+    ClusterUnavailable(String),
+    Internal(String),
+}
+
+impl RealtimeAdmissionError {
+    #[must_use]
+    pub fn from_runtime_message(message: String) -> Self {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("distributed room capacity check unavailable")
+            || lower.contains("distributed user connection check unavailable")
+            || lower.contains("distributed total connection check unavailable")
+        {
+            return Self::ClusterUnavailable(message);
+        }
+
+        if lower.contains("room at capacity")
+            || lower.contains("user at capacity")
+            || lower.contains("server at capacity")
+            || lower.contains("too many connections for this user")
+        {
+            return Self::Capacity(message);
+        }
+
+        Self::Internal(message)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RealtimeMetrics {
     pub distributed_enabled: bool,

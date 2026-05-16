@@ -107,11 +107,14 @@ macro_rules! sqlx_i16_enum {
     };
 }
 
+pub mod audit;
 pub mod chat;
+pub mod email_token;
 pub mod id;
 pub mod media;
 pub mod notification;
 pub mod oauth2_client;
+pub mod opaque_password;
 pub mod pagination;
 pub mod permission;
 pub mod playback;
@@ -126,10 +129,12 @@ pub mod settings;
 pub mod user;
 pub mod user_preferences;
 
+pub use audit::{AuditAction, AuditTargetType};
 pub use chat::{
     ChatMessage, ChatMessageType, DanmakuMessage, DanmakuPosition, SendChatRequest,
     SendDanmakuRequest,
 };
+pub use email_token::EmailTokenType;
 pub use id::{
     generate_id, BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId,
 };
@@ -146,6 +151,10 @@ pub use oauth2_client::{
     oauth2_provider_type_code_from_name, oauth2_provider_type_name_from_code,
     OAuth2AuthUrlResponse, OAuth2CallbackRequest, OAuth2CallbackResponse, OAuth2Provider,
     OAuth2ProviderTypeName, OAuth2UserInfo, UserOAuthProviderMapping,
+};
+pub use opaque_password::{
+    OpaquePasswordRecord, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
+    OPAQUE_SERVER_SETUP_VERSION,
 };
 pub use pagination::{Page, PageParams, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 pub use permission::{PermissionBits, Role as RoomRole};
@@ -168,7 +177,7 @@ pub use room::{
     RoomSettingsJson, RoomStatus, RoomWithCount, UpdateRoomRequest,
 };
 pub use room_member::{
-    MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, RoomMember,
+    AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, RoomMember,
     RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser,
 };
 pub use room_settings::RoomSettings;

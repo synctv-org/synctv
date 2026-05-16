@@ -28,7 +28,7 @@ spec:
       protocol: TCP
       name: api
   selector:
-    {{- include "synctv.selectorLabels" . | nindent 4 }}
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   {{- if .Values.service.sessionAffinity }}
   sessionAffinity: {{ .Values.service.sessionAffinity }}
   {{- end }}
@@ -67,7 +67,7 @@ spec:
       nodePort: {{ .Values.rtmpService.nodePort }}
       {{- end }}
   selector:
-    {{- include "synctv.selectorLabels" . | nindent 4 }}
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   {{- if .Values.rtmpService.sessionAffinity }}
   sessionAffinity: {{ .Values.rtmpService.sessionAffinity }}
   {{- end }}
@@ -107,7 +107,7 @@ spec:
       nodePort: {{ .Values.stunService.nodePort }}
       {{- end }}
   selector:
-    {{- include "synctv.selectorLabels" . | nindent 4 }}
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   {{- if .Values.stunService.sessionAffinity }}
   sessionAffinity: {{ .Values.stunService.sessionAffinity }}
   {{- end }}
@@ -147,7 +147,7 @@ spec:
       protocol: TCP
       name: metrics
   selector:
-    {{- include "synctv.selectorLabels" . | nindent 4 }}
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   {{- with .Values.metrics.service.sessionAffinity }}
   sessionAffinity: {{ . }}
   {{- end }}
@@ -172,7 +172,7 @@ spec:
       protocol: TCP
       name: grpc
   selector:
-    {{- include "synctv.selectorLabels" . | nindent 4 }}
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   {{- if .Values.grpcService.sessionAffinity }}
   sessionAffinity: {{ .Values.grpcService.sessionAffinity }}
   {{- end }}

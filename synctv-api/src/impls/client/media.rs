@@ -785,7 +785,7 @@ impl ClientApiImpl {
             .prepare_removed_batch_outbox_fanout(rid, uid, username);
         let result = self
             .room_service
-            .clear_playlist_with_outbox(rid, uid, prepared_outbox_fanout.outbox_factory())
+            .clear_playlist_with_outbox(rid, uid, Some(prepared_outbox_fanout.outbox_factory()))
             .await
             .map_err(ApiError::from)?;
 
@@ -872,7 +872,7 @@ impl ClientApiImpl {
                 uid,
                 playlist_id,
                 items,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -934,7 +934,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;

@@ -10,7 +10,9 @@ import "proto/common.proto";
 // Routes: /api/auth/*
 //
 service AuthService {
-    // Local password registration is OPAQUE-only.
+    // Public client local password registration/login uses OPAQUE.
+    // Legacy password mode remains available outside this public client flow
+    // for compatibility/bootstrap paths.
     rpc Login(LoginRequest) returns (LoginResponse);
     rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
     rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
@@ -107,8 +109,10 @@ service RoomService {
     // Batch Operations (room-scoped)
     rpc AddMediaBatch(AddMediaBatchRequest) returns (AddMediaBatchResponse);
 
-    // Playback Control (room-scoped operations)
-    // Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
+    // Playback Control (room-scoped request/response operations)
+    // Real-time playback commands (play/pause/seek/speed) are sent as
+    // ClientMessage frames over the room realtime stream, either WebSocket or
+    // gRPC MessageStream.
     rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a media or a dynamic-playlist item
     rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
     rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
@@ -289,8 +293,9 @@ message FinishOpaqueRegistrationRequest {
     }];
 }
 
-// Confirm a passwordless email login token. Local password login is OPAQUE-only
-// and uses StartOpaqueLogin / FinishOpaqueLogin.
+// Confirm a passwordless email login token. Public client local password login
+// uses StartOpaqueLogin / FinishOpaqueLogin; legacy password mode is not exposed
+// through this request.
 message LoginRequest {
     string email = 3 [(buf.validate.field).string = {
         min_len: 1,
@@ -643,8 +648,9 @@ message UpdateUserResponse {
 }
 
 // Start changing the current user's password credential via OPAQUE. This is an
-// authenticated endpoint; successful finish replaces password credentials with
-// OPAQUE-only material and clears legacy password login.
+// authenticated endpoint; successful finish stores the updated account
+// credential as OPAQUE material. Legacy password mode remains supported for
+// compatibility/bootstrap flows outside this public OPAQUE update path.
 enum OpaquePasswordUpdateVerificationMethod {
     OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED = 0;
     OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD = 1;
@@ -1619,7 +1625,8 @@ message AddMediaBatchResponse {
 
 // Playback Control Messages
 // Note: room_id extracted from x-room-id metadata
-// Client -> Server: Real-time playback control commands (sent via WebSocket)
+// Client -> Server: Real-time playback control commands sent over the room
+// realtime stream, either WebSocket or gRPC MessageStream.
 // Server broadcasts playback state changes to all room members via ServerMessage.PlaybackStateChanged
 
 enum PlaybackUpdateType {
@@ -2098,7 +2105,6 @@ message SetUsernameResponse {
     User user = 1;
 }
 
-// SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
 message ListMyRoomsRequest {
     option (buf.validate.message).cel = {
         id: "list_my_rooms.page"

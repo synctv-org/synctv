@@ -894,9 +894,8 @@ impl OAuth2Service {
             return false;
         }
 
-        let reversed_scheme_domain = match Self::reverse_domain_from_native_scheme(scheme) {
-            Some(domain) => domain,
-            None => return false,
+        let Some(reversed_scheme_domain) = Self::reverse_domain_from_native_scheme(scheme) else {
+            return false;
         };
 
         Self::redirect_host_matches_allowlist(&reversed_scheme_domain, allowed_domains)

@@ -276,7 +276,7 @@ impl ExternalPublishManager {
             "Lazy-load: Creating external publish stream for {}/{} from {} ({}/{} active streams)",
             room_id,
             media_id,
-            source_url,
+            super::external_puller::redact_source_url_for_logs(source_url),
             current_count + 1,
             self.max_concurrent_streams,
         );
@@ -334,7 +334,8 @@ impl ExternalPublishManager {
                 room_id,
                 media_id,
                 &self.local_node_id,
-                "external_puller",
+                // System-owned external pullers must not populate the user reverse index.
+                "",
                 &self.local_api_address,
             ),
         )

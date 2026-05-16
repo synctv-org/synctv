@@ -622,7 +622,7 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
     media: &synctv_core::models::Media,
     user_id: &str,
     public_id_codec: &crate::PublicIdCodec,
-    signing_key: Option<&synctv_core::service::ProxySigningKey>,
+    signing_key: Option<&synctv_core::proxy_signature::ProxySigningKey>,
     expires_at: Option<i64>,
 ) -> Option<synctv_core::models::media::Danmaku> {
     let signing_key = signing_key?;
@@ -640,7 +640,7 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
 
     let expires_at = expires_at.unwrap_or_else(|| {
         chrono::Utc::now().timestamp()
-            + synctv_core::service::ProxySigningKey::default_expiry_secs()
+            + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs()
     });
     let room_id = public_id_codec
         .encode_room_id(media.room_id)
@@ -648,7 +648,7 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
     let media_id = public_id_codec
         .encode_media_id(media.id)
         .expect("positive media id must encode as public ID");
-    let url = synctv_core::service::proxy_signature::build_signed_proxy_url(
+    let url = synctv_core::proxy_signature::build_signed_proxy_url(
         synctv_core::provider::BilibiliProvider::NAME,
         &room_id,
         &format!("{media_id}/danmu"),
@@ -669,7 +669,7 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
 pub(crate) fn sign_local_bilibili_danmaku_urls(
     result: &mut synctv_core::models::media::PlaybackResult,
     user_id: &str,
-    signing_key: Option<&synctv_core::service::ProxySigningKey>,
+    signing_key: Option<&synctv_core::proxy_signature::ProxySigningKey>,
     expires_at: Option<i64>,
 ) {
     let Some(signing_key) = signing_key else {
@@ -677,7 +677,7 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
     };
     let expires_at = expires_at.unwrap_or_else(|| {
         chrono::Utc::now().timestamp()
-            + synctv_core::service::ProxySigningKey::default_expiry_secs()
+            + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs()
     });
 
     for info in result.playback_infos.values_mut() {
@@ -695,7 +695,7 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
                 continue;
             }
 
-            danmaku.url = synctv_core::service::proxy_signature::build_signed_proxy_url(
+            danmaku.url = synctv_core::proxy_signature::build_signed_proxy_url(
                 synctv_core::provider::BilibiliProvider::NAME,
                 room_id,
                 action,
@@ -1160,7 +1160,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             version: 0,
         };
-        let signing_key = synctv_core::service::ProxySigningKey::derive_from(
+        let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
             b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
         );
 

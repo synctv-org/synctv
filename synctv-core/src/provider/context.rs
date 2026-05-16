@@ -5,10 +5,10 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_common::ExecutionControl;
 
+use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
+use crate::proxy_signature::ProxySigningKey;
 use crate::repository::UserProviderCredentialRepository;
-use crate::service::proxy_signature::ProxySigningKey;
-use crate::service::CredentialEncryption;
 
 use super::{PlaybackClientProfile, ProviderAccessService};
 

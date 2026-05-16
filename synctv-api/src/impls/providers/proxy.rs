@@ -5,7 +5,8 @@ use synctv_core::provider::proxy::{
 };
 use synctv_core::provider::store::ProviderStoreResolver;
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::{ProxySigningKey, UserService};
+use synctv_core::proxy_signature::ProxySigningKey;
+use synctv_core::service::UserService;
 use synctv_proto::providers::common::ProviderProxyPathRequest;
 
 use crate::impls::ApiError;

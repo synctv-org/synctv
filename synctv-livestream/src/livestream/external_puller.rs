@@ -69,6 +69,17 @@ fn should_reset_retry_counters(stream_duration: std::time::Duration) -> bool {
     stream_duration > MIN_SUCCESSFUL_DURATION
 }
 
+pub(crate) fn redact_source_url_for_logs(source_url: &str) -> String {
+    let Ok(mut parsed) = Url::parse(source_url) else {
+        return "<invalid-url>".to_string();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
+}
+
 async fn send_frame_with_backpressure(
     data_sender: &FrameDataSender,
     frame: FrameData,
@@ -289,7 +300,7 @@ impl ExternalStreamPuller {
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
-            source_url = %self.source_url,
+            source_url = %redact_source_url_for_logs(&self.source_url),
             source_type = ?self.source_type,
             "Starting external stream puller"
         );
@@ -652,7 +663,7 @@ impl ExternalStreamPuller {
     /// Each parsed tag is converted to a `FrameData` and sent through `data_sender`.
     async fn connect_and_stream_flv(&mut self, data_sender: &FrameDataSender) -> Result<()> {
         info!(
-            source_url = %self.source_url,
+            source_url = %redact_source_url_for_logs(&self.source_url),
             "Connecting to HTTP-FLV source"
         );
 
@@ -864,8 +875,11 @@ impl ExternalStreamPuller {
             pub_type: PublishType::RtmpRelay,
             pub_data_type: synctv_xiu::streamhub::define::PubDataType::Frame,
             notify_info: NotifyInfo {
-                request_url: format!("external://{}", self.source_url),
-                remote_addr: self.source_url.clone(),
+                request_url: format!(
+                    "external://{}",
+                    redact_source_url_for_logs(&self.source_url)
+                ),
+                remote_addr: redact_source_url_for_logs(&self.source_url),
             },
         };
 
@@ -1112,6 +1126,18 @@ mod tests {
         assert!(validate_source_url("ftp://example.com/video.flv").is_err());
         assert!(validate_source_url("file:///tmp/video.flv").is_err());
         assert!(validate_source_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_redact_source_url_for_logs_removes_sensitive_parts() {
+        let redacted = redact_source_url_for_logs(
+            "https://user:pass@live.example.com:8443/app/stream.flv?token=secret#frag",
+        );
+        assert_eq!(redacted, "https://live.example.com:8443/app/stream.flv");
+        assert!(!redacted.contains("user"));
+        assert!(!redacted.contains("pass"));
+        assert!(!redacted.contains("token"));
+        assert!(!redacted.contains("secret"));
     }
 
     /// Note: SSRF protection is enforced at the network level (DNS resolution time),

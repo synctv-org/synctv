@@ -367,7 +367,7 @@ impl RoomRepository {
     pub async fn hard_delete(&self, room_id: &RoomId) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
         let deleted =
-            crate::service::room::hard_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
+            super::room_cleanup::hard_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
         tx.commit().await?;
         Ok(deleted)
     }

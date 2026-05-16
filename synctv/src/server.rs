@@ -97,7 +97,7 @@ pub struct Services {
     pub(crate) cluster_activation: Option<Arc<dyn ClusterNodeActivator>>,
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// Credential encryption for protecting sensitive data (optional)
-    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
 }
 
 /// `SyncTV` server - manages all server components
@@ -119,7 +119,7 @@ const METRICS_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 struct SharedProviderPlaybackRuntime {
     provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    signing_key: Arc<synctv_core::service::ProxySigningKey>,
+    signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
 }
 
 impl SharedProviderPlaybackRuntime {
@@ -132,7 +132,7 @@ impl SharedProviderPlaybackRuntime {
                         config.redis.key_prefix.clone(),
                     ),
                 ),
-            signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+            signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
                 config.jwt.secret.as_bytes(),
             )),
         }

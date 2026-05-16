@@ -16,9 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
     cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage},
+    credential_encryption::CredentialEncryption,
     models::ProviderInstance,
     repository::ProviderInstanceRepository,
-    service::{remote_provider_manager::RemoteProviderManager, CredentialEncryption},
+    service::remote_provider_manager::RemoteProviderManager,
     Error,
 };
 use synctv_core_testing::{

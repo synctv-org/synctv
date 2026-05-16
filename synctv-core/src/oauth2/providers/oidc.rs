@@ -46,7 +46,7 @@ type OidcClient = Client<
     EndpointSet,
 >;
 
-const OIDC_JWKS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const OIDC_JWKS_CACHE_TTL: Duration = Duration::from_mins(10);
 
 /// OIDC provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,17 +250,8 @@ impl OidcProvider {
         client_secret: String,
         redirect_url: String,
         issuer: &str,
-        auth_url: Option<String>,
-        token_url: Option<String>,
-        userinfo_url: Option<String>,
-        jwks_url: Option<String>,
+        endpoints: OidcEndpointOverrides,
     ) -> Result<Self, Error> {
-        let endpoints = OidcEndpointOverrides {
-            auth_url,
-            token_url,
-            userinfo_url,
-            jwks_url,
-        };
         Self::create_with_endpoints_and_ssrf_guard(
             client_id,
             client_secret,
@@ -862,7 +853,7 @@ mod tests {
     use jsonwebtoken::{EncodingKey, Header};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const TEST_RSA_PRIVATE_KEY: &[u8] = br#"-----BEGIN RSA PRIVATE KEY-----
+    const TEST_RSA_PRIVATE_KEY: &[u8] = br"-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTL
 UTv4l4sggh5/CYYi/cvI+SXVT9kPWSKXxJXBXd/4LkvcPuUakBoAkfh+eiFVMh2V
 rUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8H
@@ -889,7 +880,7 @@ PYPeRz0CgYALHCj/Ji8XSsDoF/MhVhnGdIs2P99NNdmo3R2Pv0CuZbDKMU559LJH
 UvrKS8WkuWRDuKrz1W/EQKApFjDGpdqToZqriUFQzwy7mR3ayIiogzNtHcvbDHx8
 oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 -----END RSA PRIVATE KEY-----
-"#;
+";
 
     fn jwk_with_algorithm(key_algorithm: Option<KeyAlgorithm>) -> Jwk {
         jwk_with_kid_and_algorithm("test-kid", key_algorithm)
@@ -1005,10 +996,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com",
-            Some("https://issuer.example.com/authorize".to_string()),
-            Some("https://issuer.example.com/token".to_string()),
-            Some("https://issuer.example.com/userinfo".to_string()),
-            Some("https://issuer.example.com/jwks".to_string()),
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
         );
         assert!(provider.is_ok());
         let p = provider.unwrap();
@@ -1049,10 +1042,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com/",
-            None,
-            Some("https://issuer.example.com/token".to_string()),
-            None,
-            Some("https://issuer.example.com/jwks".to_string()),
+            OidcEndpointOverrides {
+                auth_url: None,
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
         );
 
         assert!(
@@ -1213,7 +1208,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let cached = CachedJwks {
             jwks_uri: "https://issuer.example.com/jwks".to_string(),
             jwks: jwk_set_with_key(jwk_with_algorithm(Some(KeyAlgorithm::RS256))),
-            fetched_at: now - Duration::from_secs(60),
+            fetched_at: now.checked_sub(Duration::from_mins(1)).unwrap(),
         };
 
         assert!(cached_jwks_is_fresh(
@@ -1230,7 +1225,11 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let expired = CachedJwks {
             jwks_uri: cached.jwks_uri.clone(),
             jwks: cached.jwks.clone(),
-            fetched_at: now - OIDC_JWKS_CACHE_TTL - Duration::from_secs(1),
+            fetched_at: now
+                .checked_sub(OIDC_JWKS_CACHE_TTL)
+                .unwrap()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap(),
         };
         assert!(!cached_jwks_is_fresh(
             &expired,
@@ -1400,10 +1399,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "secret".to_string(),
             "https://example.com/callback".to_string(),
             "https://issuer.example.com",
-            Some("https://issuer.example.com/authorize".to_string()),
-            Some("https://issuer.example.com/token".to_string()),
-            Some("https://issuer.example.com/userinfo".to_string()),
-            Some("https://issuer.example.com/jwks".to_string()),
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
         )
         .unwrap();
 
@@ -1439,10 +1440,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com",
-            Some("https://issuer.example.com/authorize".to_string()),
-            Some("https://issuer.example.com/token".to_string()),
-            None,
-            Some("https://issuer.example.com/jwks".to_string()),
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
         )
         .unwrap();
 
@@ -1661,10 +1664,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com",
-            Some("https://issuer.example.com/authorize".to_string()),
-            Some("https://issuer.example.com/token".to_string()),
-            Some("https://issuer.example.com/userinfo".to_string()),
-            Some("https://issuer.example.com/jwks".to_string()),
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
         )
         .unwrap();
 
@@ -1686,10 +1691,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com",
-            Some("https://issuer.example.com/authorize".to_string()),
-            Some("https://issuer.example.com/token".to_string()),
-            None,
-            Some("https://issuer.example.com/jwks".to_string()),
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
+            },
         )
         .unwrap();
 

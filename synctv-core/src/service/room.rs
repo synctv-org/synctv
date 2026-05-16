@@ -72,10 +72,10 @@ use std::net::IpAddr;
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
-        ChatMessage, ChatMessageType, Media, MediaId, MemberStatus, PageParams, PermissionBits,
-        Playlist, PlaylistId, ReviewRequestId, ReviewStatus, Room, RoomId, RoomListQuery,
-        RoomMember, RoomPlaybackState, RoomRole, RoomSettings, RoomStatus, RoomWithCount, UserId,
-        UserListQuery, UserRole, UserStatus,
+        AddMemberOptions, AuditAction, AuditTargetType, ChatMessage, ChatMessageType, Media,
+        MediaId, MemberStatus, PageParams, PermissionBits, Playlist, PlaylistId, ReviewRequestId,
+        ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
+        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
         media::MediaListItem,
@@ -86,9 +86,9 @@ use crate::{
         UserProviderCredentialRepository,
     },
     service::{
-        audit::{AuditAction, AuditService, AuditTargetType},
+        audit::AuditService,
         media::MediaService,
-        member::{AddMemberOptions, AdminMemberUpdate, MemberService},
+        member::{AdminMemberUpdate, MemberService},
         notification::NotificationService,
         permission::PermissionService,
         playback::PlaybackService,
@@ -270,7 +270,7 @@ pub struct RoomServiceOptions {
     pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
-    pub credential_encryption: Option<crate::service::CredentialEncryption>,
+    pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     pub audit_service: Option<Arc<AuditService>>,
     pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
@@ -2553,6 +2553,14 @@ impl RoomService {
         self.ensure_target_user_can_join(&target_user_id).await?;
 
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &actor_id,
+            PermissionBits::ADD_MEMBER,
+        )
+        .await?;
         let created = self
             .add_active_member_and_resolve_join_review_tx(
                 &mut tx,
@@ -2640,6 +2648,14 @@ impl RoomService {
             .await?;
 
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &actor_id,
+            PermissionBits::APPROVE_MEMBER,
+        )
+        .await?;
         let (target_user_id, updated) = self
             .approve_pending_join_request_tx(&mut tx, &room_id, request_id, Some(&actor_id))
             .await?;
@@ -2703,6 +2719,14 @@ impl RoomService {
             .await?;
 
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &actor_id,
+            PermissionBits::APPROVE_MEMBER,
+        )
+        .await?;
         let (target_user_id, _) =
             Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
         let rejected = ReviewRepository::reject_room_join_with_executor(
@@ -4153,7 +4177,7 @@ impl RoomService {
                         let ip_str = client_ip.map(|ip| ip.to_string());
                         if let Err(audit_err) = audit
                             .log_rate_limit_reset_failed(
-                                crate::service::audit::AuditTargetType::Room,
+                                crate::models::AuditTargetType::Room,
                                 room_id.to_string(),
                                 e.to_string(),
                                 ip_str,
@@ -4554,19 +4578,20 @@ impl RoomService {
             ));
         }
 
-        self.permission_service
-            .check_permission_no_cache(
-                &room_id,
-                &granter_id,
-                PermissionBits::SET_MEMBER_PERMISSIONS,
-            )
-            .await?;
-
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
             3,
             5,
             "Permission update failed after maximum retry attempts",
             || async {
+                let mut tx = self.pool.begin().await?;
+                ensure_actor_has_room_permission_now_tx(
+                    &mut tx,
+                    &self.permission_service,
+                    &room_id,
+                    &granter_id,
+                    PermissionBits::SET_MEMBER_PERMISSIONS,
+                )
+                .await?;
                 let member = self
                     .member_repo
                     .get(&room_id, &target_user_id)
@@ -4574,7 +4599,6 @@ impl RoomService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
-                let mut tx = self.pool.begin().await?;
                 let updated = if matches!(member.role, RoomRole::Admin) {
                     self.member_repo
                         .update_admin_permissions_with_executor(
@@ -4715,15 +4739,19 @@ impl RoomService {
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
         lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
-        self.permission_service
-            .check_permission_no_cache(&room_id, &kicker_id, PermissionBits::KICK_MEMBER)
-            .await?;
-
         if kicker_id == target_user_id {
             return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
         }
 
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &kicker_id,
+            PermissionBits::KICK_MEMBER,
+        )
+        .await?;
         let removed = self
             .member_repo
             .remove_with_role_check_with_executor(&room_id, &kicker_id, &target_user_id, &mut *tx)
@@ -4769,12 +4797,16 @@ impl RoomService {
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
         lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
-        self.permission_service
-            .check_permission_no_cache(&room_id, &admin_id, PermissionBits::BAN_MEMBER)
-            .await?;
-
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &admin_id,
+            PermissionBits::BAN_MEMBER,
+        )
+        .await?;
         self.member_repo
             .ban_with_role_check_with_executor(
                 &room_id,
@@ -4818,11 +4850,15 @@ impl RoomService {
         target_user_id: UserId,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<()> {
-        self.permission_service
-            .check_permission_no_cache(&room_id, &admin_id, PermissionBits::BAN_MEMBER)
-            .await?;
-
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &admin_id,
+            PermissionBits::BAN_MEMBER,
+        )
+        .await?;
         let member = self
             .member_repo
             .unban_member_with_executor(&room_id, &target_user_id, &mut tx)
@@ -5040,14 +5076,6 @@ impl RoomService {
         }
 
         if apply_permission_update {
-            self.permission_service
-                .check_permission_no_cache(
-                    &room_id,
-                    &actor_id,
-                    PermissionBits::SET_MEMBER_PERMISSIONS,
-                )
-                .await?;
-
             if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
                 return Err(Error::Authorization(
                     "Admin members must use admin_added_permissions/admin_removed_permissions"
@@ -5064,6 +5092,16 @@ impl RoomService {
         }
 
         let mut tx = self.pool.begin().await?;
+        if apply_permission_update {
+            ensure_actor_has_room_permission_now_tx(
+                &mut tx,
+                &self.permission_service,
+                &room_id,
+                &actor_id,
+                PermissionBits::SET_MEMBER_PERMISSIONS,
+            )
+            .await?;
+        }
         let mut updated = current;
         if let Some(new_role) = role {
             updated = self
@@ -7018,6 +7056,52 @@ async fn has_room_permission_in_tx(
     Ok((permissions & permission) == permission)
 }
 
+async fn ensure_actor_has_room_permission_now_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    permission_service: &PermissionService,
+    room_id: &RoomId,
+    actor_id: &UserId,
+    permission: u64,
+) -> Result<()> {
+    let room_state = sqlx::query(
+        r"
+        SELECT closed_at,
+               EXISTS (
+                   SELECT 1
+                   FROM room_bans rb
+                   WHERE rb.room_id = rooms.id
+                     AND rb.revoked_at IS NULL
+                     AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+               ) AS is_banned
+        FROM rooms
+        WHERE id = $1
+          AND deleted_at IS NULL
+        FOR UPDATE
+        ",
+    )
+    .bind(room_id.as_i64())
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+    let closed_at: Option<DateTime<Utc>> = room_state.try_get("closed_at")?;
+    let is_banned: bool = room_state.try_get("is_banned")?;
+    if is_banned {
+        return Err(Error::Authorization("Room is banned".to_string()));
+    }
+    if closed_at.is_some() {
+        return Err(Error::Authorization("Room is not active".to_string()));
+    }
+
+    if !has_room_permission_in_tx(tx, permission_service, room_id, actor_id, permission).await? {
+        return Err(Error::Authorization(
+            synctv_common::messages::PERMISSION_DENIED.to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn permission_bits_from_signed(bits: i64) -> Result<u64> {
     u64::try_from(bits).map_err(|error| {
         Error::Internal(format!(
@@ -7420,72 +7504,6 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
         playback_rows_deleted,
         chat_deleted,
     })
-}
-
-pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    room_id: &RoomId,
-) -> Result<bool> {
-    let exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1) AS "exists!""#,
-        room_id.as_i64(),
-    )
-    .fetch_one(&mut **tx)
-    .await?;
-    if !exists {
-        return Ok(false);
-    }
-
-    let playlist_nodes = collect_all_room_playlist_nodes_in_tx(tx, room_id).await?;
-    let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
-        .iter()
-        .map(|(playlist_id, _)| *playlist_id)
-        .collect();
-    let root_media_ids = collect_room_root_media_ids_in_tx(tx, room_id).await?;
-    let deleted_media_ids =
-        collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &root_media_ids)
-            .await?;
-
-    sqlx::query!(
-        "DELETE FROM room_playback_state WHERE room_id = $1",
-        room_id.as_i64(),
-    )
-    .execute(&mut **tx)
-    .await?;
-
-    if !deleted_media_ids.is_empty() {
-        let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
-        sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
-            .execute(&mut **tx)
-            .await?;
-    }
-
-    delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
-
-    sqlx::query!(
-        "DELETE FROM room_members WHERE room_id = $1",
-        room_id.as_i64(),
-    )
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query!(
-        "DELETE FROM room_settings WHERE room_id = $1",
-        room_id.as_i64(),
-    )
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query!(
-        "DELETE FROM chat_messages WHERE room_id = $1",
-        room_id.as_i64(),
-    )
-    .execute(&mut **tx)
-    .await?;
-
-    let deleted = sqlx::query!("DELETE FROM rooms WHERE id = $1", room_id.as_i64())
-        .execute(&mut **tx)
-        .await?;
-
-    Ok(deleted.rows_affected() > 0)
 }
 
 #[cfg(test)]

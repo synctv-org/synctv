@@ -139,7 +139,7 @@ Public gRPC uses the main port:
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-Local password login is OPAQUE-only. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
+The public AuthService local password flow uses OPAQUE. Generate the credential request in your client and call `StartOpaqueLogin`, then finish with `FinishOpaqueLogin`:
 
 ```bash
 grpcurl -plaintext \
@@ -147,7 +147,7 @@ grpcurl -plaintext \
   localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
 
-`AuthService/Login` is reserved for passwordless email-token login.
+`AuthService/Login` is reserved for passwordless email-token login. Legacy password mode is retained for compatibility/bootstrap paths and is not exposed by this public request.
 
 Room RPCs need room metadata:
 

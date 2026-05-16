@@ -22,15 +22,11 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
     models::{
-        room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        User, UserId, UserRole, UserStatus,
+        room_settings::MaxMembers, AddMemberOptions, Room, RoomId, RoomMember, RoomRole,
+        RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{
-        member::{AddMemberOptions, MemberService},
-        permission::PermissionService,
-        NotificationService,
-    },
+    service::{member::MemberService, permission::PermissionService, NotificationService},
     Error,
 };
 use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};

@@ -34,8 +34,8 @@ use axum::{
 use std::sync::Arc;
 use synctv_core::provider::proxy::ProxyServices;
 use synctv_core::provider::ProviderSet;
+use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::repository::UserProviderCredentialRepository;
-use synctv_core::service::ProxySigningKey;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::task::JoinHandle;
@@ -88,7 +88,7 @@ pub struct RouterConfig {
     /// Structured WebRTC/STUN runtime state exposed through health and ICE bootstrap responses.
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     /// Credential encryption for provider credential resolution
-    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
     /// Shared proxy slice cache instance managed by the runtime.
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     /// Global SSRF policy used by proxy handlers.
@@ -1041,9 +1041,10 @@ mod tests {
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderSet, RtmpProvider,
     };
+    use synctv_core::proxy_signature::ProxySigningKey;
     use synctv_core::service::{
-        AuditService, ContentFilter, InMemoryTokenBlacklistStore, ProxySigningKey, RateLimitConfig,
-        RateLimiter, RemoteProviderManager, RoomService, UserService,
+        AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
+        RemoteProviderManager, RoomService, UserService,
     };
     use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
     use tower::ServiceExt;

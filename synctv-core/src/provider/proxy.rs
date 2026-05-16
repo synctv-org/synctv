@@ -12,10 +12,11 @@ use super::access::ProviderAccessService;
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
 use super::{ExecutionControl, MediaProvider};
+use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
+use crate::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 use crate::repository::UserProviderCredentialRepository;
-use crate::service::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
-use crate::service::{CredentialEncryption, RoomService};
+use crate::service::RoomService;
 use crate::PublicIdCodec;
 
 /// What action the HTTP layer should perform after the provider resolves the request.

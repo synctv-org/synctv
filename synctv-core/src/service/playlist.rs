@@ -143,7 +143,7 @@ pub struct PlaylistService {
     playlist_repo: PlaylistRepository,
     permission_service: PermissionService,
     providers_manager: Arc<ProvidersManager>,
-    credential_encryption: Option<crate::service::CredentialEncryption>,
+    credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     /// Optional realtime broadcaster for cross-replica playlist sync
@@ -201,7 +201,7 @@ impl PlaylistService {
         playlist_repo: PlaylistRepository,
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
-        credential_encryption: Option<crate::service::CredentialEncryption>,
+        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
         Self {

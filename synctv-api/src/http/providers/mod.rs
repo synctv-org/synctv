@@ -589,13 +589,13 @@ mod tests {
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderProxy, ProviderSet, RtmpProvider,
     };
+    use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
     use synctv_core::repository::UserRepository;
     use synctv_core::service::SettingsRegistry;
     use synctv_core::service::{
         AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
         RemoteProviderManager, RoomService, UserService,
     };
-    use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
     use synctv_core_testing::postgres::create_test_pool;
     use synctv_proxy::slice_cache::SliceCacheConfig;
     use wiremock::matchers::{header, method, path};

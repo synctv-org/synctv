@@ -13,7 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use synctv_core::service::{AuditAction, AuditService, AuditTargetType};
+use synctv_core::models::{AuditAction, AuditTargetType};
+use synctv_core::service::AuditService;
 use synctv_core_testing::create_test_pool;
 // Test Infrastructure
 

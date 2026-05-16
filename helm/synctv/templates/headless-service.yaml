@@ -10,7 +10,7 @@ spec:
   clusterIP: None
   publishNotReadyAddresses: true
   selector:
-    {{- include "synctv.selectorLabels" . | nindent 4 }}
+    {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   ports:
     - name: api
       port: {{ .Values.config.server.port }}

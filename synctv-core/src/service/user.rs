@@ -12,8 +12,8 @@ use crate::{
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{
-        MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserAuthFactors, UserId,
-        UserPreferences, UserStatus,
+        MediaId, OpaquePasswordRecord, PlaylistId, ReviewStatus, RoomId, SignupMethod, User,
+        UserAuthFactors, UserId, UserPreferences, UserStatus,
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -21,8 +21,8 @@ use crate::{
         UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
     },
     service::auth::{
-        BruteForceProtectionService, JwtService, OpaquePasswordRecord, OpaquePasswordService,
-        TokenAuthContext, TokenBlacklistStore, TokenType,
+        BruteForceProtectionService, JwtService, OpaquePasswordService, TokenAuthContext,
+        TokenBlacklistStore, TokenType,
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     service::session_store::RedisJsonSessionStore,
@@ -1840,10 +1840,12 @@ impl UserService {
         });
     }
 
-    /// Kept for older tests/helpers. Legacy password mode is enabled by default.
+    /// Legacy password login is a product-supported compatibility/bootstrap mode
+    /// and is enabled by default.
     pub const fn enable_legacy_password_login_for_tests(&mut self) {}
 
-    /// Kept for older tests/helpers. Legacy password registration is enabled by default.
+    /// Legacy password registration is a product-supported compatibility/bootstrap
+    /// mode and is enabled by default.
     pub const fn enable_legacy_password_registration_for_tests(&mut self) {}
 
     /// Enable email verification requirement for login (call when email service is configured)

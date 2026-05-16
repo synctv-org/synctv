@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use serde_json::json;
-use synctv_core::service::credential_encryption::CredentialEncryption;
+use synctv_core::credential_encryption::CredentialEncryption;
 
 fn test_key() -> Vec<u8> {
     vec![

@@ -11,6 +11,7 @@ pub mod query_builder;
 pub mod realtime_outbox;
 pub mod review;
 pub mod room;
+pub(crate) mod room_cleanup;
 pub mod room_member;
 pub mod room_settings;
 pub mod settings;

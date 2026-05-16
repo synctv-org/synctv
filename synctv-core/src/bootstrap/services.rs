@@ -112,7 +112,7 @@ pub struct Services {
     /// Provider invalidation listener task handle (joined on shutdown).
     pub provider_invalidation_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Credential encryption for protecting sensitive data (optional)
-    pub credential_encryption: Option<crate::service::CredentialEncryption>,
+    pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
 }
 
 #[derive(Clone)]
@@ -814,7 +814,7 @@ struct RoomServiceBuildArgs {
     pool: PgPool,
     user_service: UserService,
     credential_repo: Arc<UserProviderCredentialRepository>,
-    credential_encryption: Option<crate::service::CredentialEncryption>,
+    credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     brute_force: Arc<dyn crate::service::auth::BruteForceProtectionService>,
@@ -962,7 +962,7 @@ fn build_publish_key_service(
 /// The key must be a 64-character hex string (32 bytes).
 fn init_credential_encryption(
     hex_key_override: Option<&str>,
-) -> Result<Option<crate::service::CredentialEncryption>, anyhow::Error> {
+) -> Result<Option<crate::credential_encryption::CredentialEncryption>, anyhow::Error> {
     use crate::secrets::{SecretLoader, SecretSource};
 
     let Some(hex_key) = (match hex_key_override {
@@ -981,7 +981,7 @@ fn init_credential_encryption(
         return Ok(None);
     };
 
-    match crate::service::CredentialEncryption::from_hex_key(&hex_key) {
+    match crate::credential_encryption::CredentialEncryption::from_hex_key(&hex_key) {
         Ok(enc) => {
             info!("Credential encryption initialized (AES-256-GCM)");
             Ok(Some(enc))
@@ -1578,7 +1578,7 @@ mod tests {
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
-        let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])
+        let encryption = crate::credential_encryption::CredentialEncryption::new(&[7u8; 32])
             .expect("credential encryption should construct");
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),

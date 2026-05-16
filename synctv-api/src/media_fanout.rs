@@ -62,24 +62,23 @@ pub struct PreparedMediaBatchOutboxFanout {
 
 impl PreparedMediaBatchOutboxFanout {
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxMediaBatchEventFactory> {
-        if !self.realtime_fanout.is_distributed_enabled() {
-            return None;
-        }
-
+    pub fn outbox_factory(&self) -> RealtimeOutboxMediaBatchEventFactory {
         let prepared = self.clone();
-        Some(Arc::new(move |media: &[Media]| {
+        Arc::new(move |media: &[Media]| {
             let events = (prepared.events_builder)(media);
-            let outbox_events = events
-                .iter()
-                .filter_map(|event| prepared.realtime_fanout.outbox_event(event))
-                .collect();
-            *prepared
+            prepared
                 .events
                 .lock()
-                .expect("media fanout events mutex should not be poisoned") = events;
-            outbox_events
-        }))
+                .expect("media fanout events mutex should not be poisoned")
+                .clone_from(&events);
+            if !prepared.realtime_fanout.is_distributed_enabled() {
+                return Vec::new();
+            }
+            events
+                .iter()
+                .filter_map(|event| prepared.realtime_fanout.outbox_event(event))
+                .collect()
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -104,24 +103,23 @@ pub struct PreparedMediaIdsOutboxFanout {
 
 impl PreparedMediaIdsOutboxFanout {
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxMediaIdsEventFactory> {
-        if !self.realtime_fanout.is_distributed_enabled() {
-            return None;
-        }
-
+    pub fn outbox_factory(&self) -> RealtimeOutboxMediaIdsEventFactory {
         let prepared = self.clone();
-        Some(Arc::new(move |media_ids: &[MediaId]| {
+        Arc::new(move |media_ids: &[MediaId]| {
             let events = (prepared.events_builder)(media_ids);
-            let outbox_events = events
-                .iter()
-                .filter_map(|event| prepared.realtime_fanout.outbox_event(event))
-                .collect();
-            *prepared
+            prepared
                 .events
                 .lock()
-                .expect("media fanout events mutex should not be poisoned") = events;
-            outbox_events
-        }))
+                .expect("media fanout events mutex should not be poisoned")
+                .clone_from(&events);
+            if !prepared.realtime_fanout.is_distributed_enabled() {
+                return Vec::new();
+            }
+            events
+                .iter()
+                .filter_map(|event| prepared.realtime_fanout.outbox_event(event))
+                .collect()
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -600,7 +598,7 @@ pub fn default_media_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_media_fanout_service;
-    use crate::realtime_fanout::default_realtime_fanout_service;
+    use crate::realtime_fanout::default_realtime_fanout_service_with_realtime;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
     use crate::test_support::channel_realtime_fanout_service;
     use async_trait::async_trait;
@@ -747,23 +745,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_standalone_media_fanout_does_not_broadcast_locally() {
+    async fn test_standalone_media_fanout_broadcasts_locally() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_media_fanout_service(default_realtime_fanout_service(None, false));
+        let service = default_media_fanout_service(default_realtime_fanout_service_with_realtime(
+            None,
+            false,
+            Some(event_service.clone()),
+        ));
         service.publish_reordered(&room_id(), &user_id(), "tester", vec![media_id()]);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while event_service.broadcast_local_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("standalone media fanout should broadcast locally");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
+            1
         );
-        assert!(
+        assert_eq!(
             event_service
                 .local_events
                 .lock()
                 .expect("recorded local events mutex should not be poisoned")
-                .is_empty(),
-            "standalone media fanout must rely on the room notification bridge instead of rebroadcasting locally"
+                .len(),
+            1
         );
     }
 
@@ -808,5 +818,34 @@ mod tests {
             .await
             .expect("committed media add event should be published");
         assert!(matches!(request.event, RealtimeEvent::MediaAdded { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_standalone_prepared_media_added_fanout_broadcasts_committed_event() {
+        let event_service = Arc::new(RecordingRealtimeEventService::default());
+        let service = default_media_fanout_service(default_realtime_fanout_service_with_realtime(
+            None,
+            false,
+            Some(event_service.clone()),
+        ));
+        let prepared =
+            service.prepare_added_outbox_fanout(room_id(), user_id(), "tester".to_string());
+        let factory = prepared
+            .outbox_factory()
+            .expect("local realtime fanout should still capture committed events");
+
+        assert!(factory(&media()).is_none());
+        prepared.publish_after_outbox_commit();
+
+        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            1
+        );
+        let events = event_service
+            .local_events
+            .lock()
+            .expect("recorded local events mutex should not be poisoned");
+        assert!(matches!(events[0].1, RealtimeEvent::MediaAdded { .. }));
     }
 }

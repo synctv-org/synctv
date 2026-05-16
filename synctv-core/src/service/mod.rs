@@ -6,7 +6,6 @@ pub mod chat;
 pub mod chat_partition_manager;
 pub mod cleanup;
 pub mod content_filter;
-pub mod credential_encryption;
 pub mod db_maintenance;
 pub mod distributed_lock;
 pub mod email;
@@ -26,7 +25,6 @@ pub mod playback;
 pub mod playlist;
 mod provider_binding;
 pub mod providers_manager;
-pub mod proxy_signature;
 pub mod publish_key;
 pub mod rate_limit;
 pub mod remote_provider_manager;
@@ -42,7 +40,7 @@ pub mod user;
 pub mod user_notification;
 pub mod ws_ticket;
 
-pub use audit::{AuditAction, AuditFlushHandle, AuditLog, AuditService, AuditTargetType};
+pub use audit::{AuditFlushHandle, AuditLog, AuditService};
 pub use audit_partition_manager::{
     ensure_audit_partitions_on_startup, AuditPartitionManager, PartitionHealth, PartitionStats,
 };
@@ -68,12 +66,11 @@ pub use chat_partition_manager::{
 };
 pub use cleanup::{CleanupConfig, CleanupResult, CleanupService};
 pub use content_filter::{ContentFilter, ContentFilterError};
-pub use credential_encryption::CredentialEncryption;
 pub use db_maintenance::DatabaseMaintenanceService;
 pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock, LockGuard};
 pub use email::{mask_email, EmailConfig, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
-pub use email_token::{EmailTokenService, EmailTokenType};
+pub use email_token::EmailTokenService;
 pub use global_settings::{
     ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
     OAuth2SignupPolicy, PublicSettings, SettingsRegistry,
@@ -81,7 +78,7 @@ pub use global_settings::{
 pub use media::{
     MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
 };
-pub use member::{AddMemberOptions, MemberService};
+pub use member::MemberService;
 pub use notification::{NotificationService, RoomEvent};
 pub use notification_partition_manager::{
     ensure_notification_partitions_on_startup, NotificationPartitionHealth,
@@ -100,9 +97,6 @@ pub use permission::{EffectivePermissionCalculator, PermissionService, RuntimePe
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
 pub use playlist::{PlaylistBroadcaster, PlaylistService, RealtimeOutboxPlaylistEventFactory};
 pub use providers_manager::ProvidersManager;
-pub use proxy_signature::{
-    build_signed_proxy_url, ProxySignatureError, ProxySigningKey, ProxyUrlClaims,
-};
 pub use publish_key::{
     streaming_publish_key_service_from_shared_state_profile, JtiStore, PublishKey,
     PublishKeyService, StreamingPublishKeyService,

@@ -251,7 +251,7 @@ mod tests {
             credential_encryption: None,
             credential_repo,
             provider_access_service: None,
-            signing_key: Arc::new(crate::service::ProxySigningKey::derive_from(
+            signing_key: Arc::new(crate::proxy_signature::ProxySigningKey::derive_from(
                 b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
             )),
             public_id_codec: Arc::new(crate::PublicIdCodec::default_for_tests()),
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn generate_playback_signs_urls_with_provider_proxy_prefix() {
         use crate::provider::store::InMemoryProviderStore;
-        use crate::service::ProxySigningKey;
+        use crate::proxy_signature::ProxySigningKey;
         use std::sync::Arc;
 
         let provider = RtmpProvider::new();
@@ -394,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn cached_playback_is_resigned_for_current_identity() {
         use crate::provider::store::InMemoryProviderStore;
-        use crate::service::ProxySigningKey;
+        use crate::proxy_signature::ProxySigningKey;
         use std::sync::Arc;
 
         let provider = RtmpProvider::new();
@@ -445,7 +445,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_proxy_flv_includes_verified_identity_and_expiry() {
         use crate::provider::store::VersionedPlayback;
-        use crate::service::proxy_signature::ProxyUrlClaims;
+        use crate::proxy_signature::ProxyUrlClaims;
         use std::collections::HashMap;
 
         let services = fake_proxy_services();

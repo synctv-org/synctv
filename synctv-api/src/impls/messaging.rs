@@ -241,6 +241,18 @@ impl From<String> for RealtimeJoinError {
     }
 }
 
+impl From<crate::runtime::RealtimeAdmissionError> for RealtimeJoinError {
+    fn from(error: crate::runtime::RealtimeAdmissionError) -> Self {
+        match error {
+            crate::runtime::RealtimeAdmissionError::Capacity(message) => Self::RateLimited(message),
+            crate::runtime::RealtimeAdmissionError::ClusterUnavailable(message) => {
+                Self::ServiceUnavailable(message)
+            }
+            crate::runtime::RealtimeAdmissionError::Internal(message) => Self::Internal(message),
+        }
+    }
+}
+
 impl From<crate::impls::ApiError> for RealtimeJoinError {
     fn from(error: crate::impls::ApiError) -> Self {
         let message = error.message().to_string();
@@ -1358,7 +1370,9 @@ impl StreamMessageHandler {
             .await
         {
             tracing::warn!("Failed to register connection: {}", e);
-            return Err(classify_realtime_join_error_message(e));
+            return Err(RealtimeJoinError::from(
+                crate::runtime::RealtimeAdmissionError::from_runtime_message(e),
+            ));
         }
 
         self.pre_join_after_registration().await
@@ -1377,7 +1391,9 @@ impl StreamMessageHandler {
             self.connection_service
                 .unregister(&self.connection_id)
                 .await;
-            return Err(classify_realtime_join_error_message(e));
+            return Err(RealtimeJoinError::from(
+                crate::runtime::RealtimeAdmissionError::from_runtime_message(e),
+            ));
         }
 
         let initial_join_state = match self.prepare_initial_realtime_join_state().await {

@@ -9,9 +9,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use synctv_core::service::{
-    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
-};
+use synctv_core::service::{InMemoryTokenBlacklistStore, TokenBlacklistStore};
 
 /// Mock store that always fails blacklist operations.
 /// Simulates Redis being unavailable.
@@ -165,32 +163,9 @@ async fn test_family_revocation_failure_returns_error() {
     );
 }
 
-// Test 3: Fallback store should succeed even when primary fails
-
-#[tokio::test]
-async fn test_fallback_succeeds_when_primary_fails() {
-    // FallbackTokenBlacklistStore should succeed even when primary fails
-    // because it has its own in-memory fallback
-    let primary = Arc::new(FailingBlacklistStore) as Arc<dyn TokenBlacklistStore>;
-    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
-
-    let result = fallback.blacklist("jti:fallback_test", 3600).await;
-    assert!(
-        result.is_ok(),
-        "FallbackTokenBlacklistStore should succeed via memory fallback"
-    );
-
-    // Token should be blacklisted in the fallback
-    assert!(
-        fallback.is_blacklisted("jti:fallback_test").await,
-        "Token should be blacklisted in memory fallback"
-    );
-}
-
-// Test 4: Verify fail-closed behavior for logout scenario
+// Test 3: Verify fail-closed behavior for logout scenario
 
 /// This test demonstrates the expected behavior for logout:
-/// When using a raw failing store (not wrapped in FallbackTokenBlacklistStore),
 /// the blacklist operation should fail so the caller knows token revocation failed.
 #[tokio::test]
 async fn test_logout_blacklist_fail_closed_semantics() {
@@ -217,7 +192,7 @@ async fn test_logout_blacklist_fail_closed_semantics() {
     );
 }
 
-// Test 5: Multiple concurrent blacklist failures should all return errors
+// Test 4: Multiple concurrent blacklist failures should all return errors
 
 #[tokio::test]
 async fn test_concurrent_blacklist_failures_all_return_errors() {

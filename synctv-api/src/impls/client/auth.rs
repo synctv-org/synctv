@@ -577,32 +577,75 @@ impl ClientApiImpl {
         })
     }
 
-    /// Logout: blacklist the current access token so it cannot be reused.
+    /// Logout: revoke the current authenticated session.
     ///
-    /// Extracts the JTI from the raw Bearer token, computes the remaining TTL,
-    /// and adds it to the token blacklist. The token will be rejected by the
-    /// security pipeline on subsequent requests.
+    /// Extracts the JTI and session id from the raw Bearer token. The matching
+    /// refresh-token session is revoked first so a transient failure can be
+    /// retried with the current access token, then the access token is
+    /// blacklisted so it cannot be reused.
     ///
     /// Returns an error when token revocation fails so callers never treat a
     /// non-revoked token as successfully logged out.
     pub async fn logout(&self, raw_token: &str) -> Result<LogoutOutcome, ApiError> {
-        revoke_access_token_for_logout(&self.jwt_service, raw_token, |jti, ttl_secs| async move {
-            self.user_service
-                .blacklist_access_token(&jti, ttl_secs)
-                .await
+        revoke_session_for_logout(&self.jwt_service, raw_token, |logout_token| async move {
+            revoke_logout_token_in_order(
+                logout_token,
+                |user_id, session_id, revoked_at| async move {
+                    self.user_service
+                        .revoke_refresh_token_session(&user_id, session_id.as_deref(), revoked_at)
+                        .await
+                },
+                |jti, remaining_ttl_secs| async move {
+                    self.user_service
+                        .blacklist_access_token(&jti, remaining_ttl_secs)
+                        .await
+                },
+            )
+            .await
         })
         .await?;
         Ok(LogoutOutcome::success())
     }
 }
 
-async fn revoke_access_token_for_logout<F, Fut>(
+struct LogoutToken {
+    user_id: synctv_core::models::UserId,
+    session_id: Option<String>,
+    jti: String,
+    remaining_ttl_secs: u64,
+    revoked_at: i64,
+}
+
+async fn revoke_logout_token_in_order<FR, FB, FutR, FutB>(
+    logout_token: LogoutToken,
+    revoke_refresh_session: FR,
+    blacklist_access_token: FB,
+) -> synctv_core::Result<()>
+where
+    FR: FnOnce(synctv_core::models::UserId, Option<String>, i64) -> FutR,
+    FB: FnOnce(String, u64) -> FutB,
+    FutR: Future<Output = synctv_core::Result<()>>,
+    FutB: Future<Output = synctv_core::Result<()>>,
+{
+    let LogoutToken {
+        user_id,
+        session_id,
+        jti,
+        remaining_ttl_secs,
+        revoked_at,
+    } = logout_token;
+
+    revoke_refresh_session(user_id, session_id, revoked_at).await?;
+    blacklist_access_token(jti, remaining_ttl_secs).await
+}
+
+async fn revoke_session_for_logout<F, Fut>(
     jwt_service: &synctv_core::service::JwtService,
     raw_token: &str,
-    blacklist: F,
+    revoke: F,
 ) -> Result<(), ApiError>
 where
-    F: FnOnce(String, u64) -> Fut,
+    F: FnOnce(LogoutToken) -> Fut,
     Fut: Future<Output = synctv_core::Result<()>>,
 {
     let claims = jwt_service
@@ -628,25 +671,32 @@ where
             "Access token already expired".to_string(),
         ));
     }
+    let user_id = claims.user_id().map_err(ApiError::from)?;
 
-    blacklist(claims.jti.clone(), remaining_ttl)
-        .await
-        .map_err(|error| {
-            tracing::warn!(
-                error = %error,
-                jti = %claims.jti,
-                "Failed to blacklist access token during logout"
-            );
-            ApiError::from(error)
-        })
+    revoke(LogoutToken {
+        user_id,
+        session_id: claims.sid.clone(),
+        jti: claims.jti.clone(),
+        remaining_ttl_secs: remaining_ttl,
+        revoked_at: now,
+    })
+    .await
+    .map_err(|error| {
+        tracing::warn!(
+            error = %error,
+            jti = %claims.jti,
+            "Failed to revoke session during logout"
+        );
+        ApiError::from(error)
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::revoke_access_token_for_logout;
+    use super::{revoke_logout_token_in_order, revoke_session_for_logout, LogoutToken};
     use crate::impls::ApiError;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
     use synctv_core::{
@@ -665,13 +715,12 @@ mod tests {
             .sign_token(&UserId::new(), TokenType::Access, 0)
             .unwrap();
 
-        let result =
-            revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl_secs| async {
-                Err(synctv_core::Error::Internal(
-                    "Blacklist store unavailable".to_string(),
-                ))
-            })
-            .await;
+        let result = revoke_session_for_logout(&jwt_service, &token, |_logout_token| async {
+            Err(synctv_core::Error::Internal(
+                "Blacklist store unavailable".to_string(),
+            ))
+        })
+        .await;
 
         match result {
             Err(ApiError::Internal(message)) => {
@@ -687,18 +736,15 @@ mod tests {
         let blacklist_called = Arc::new(AtomicBool::new(false));
         let called = Arc::clone(&blacklist_called);
 
-        let result = revoke_access_token_for_logout(
-            &jwt_service,
-            "invalid.token.here",
-            move |_jti, _ttl| {
+        let result =
+            revoke_session_for_logout(&jwt_service, "invalid.token.here", move |_logout_token| {
                 let called = Arc::clone(&called);
                 async move {
                     called.store(true, Ordering::SeqCst);
                     Ok(())
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -720,8 +766,7 @@ mod tests {
             .unwrap();
 
         let result =
-            revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async { Ok(()) })
-                .await;
+            revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -749,8 +794,7 @@ mod tests {
             .unwrap();
 
         let result =
-            revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async { Ok(()) })
-                .await;
+            revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -761,5 +805,112 @@ mod tests {
             }
             other => panic!("expected expired token rejection, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_logout_passes_session_context_to_revoker() {
+        let jwt_service = create_test_jwt_service();
+        let user_id = UserId::new();
+        let session_id = "session-for-logout";
+        let token = jwt_service
+            .sign_token_with_auth_context_and_session(
+                &user_id,
+                TokenType::Access,
+                0,
+                None,
+                Some(session_id),
+            )
+            .unwrap();
+
+        let result = revoke_session_for_logout(&jwt_service, &token, |logout_token| async move {
+            assert_eq!(logout_token.user_id, user_id);
+            assert_eq!(logout_token.session_id.as_deref(), Some(session_id));
+            assert!(!logout_token.jti.is_empty());
+            assert!(logout_token.remaining_ttl_secs > 0);
+            assert!(logout_token.revoked_at > 0);
+            Ok(())
+        })
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_logout_revokes_refresh_session_before_blacklisting_access_token() {
+        let order = Arc::new(AtomicUsize::new(0));
+        let refresh_order = Arc::clone(&order);
+        let blacklist_order = Arc::clone(&order);
+        let user_id = UserId::new();
+
+        let result = revoke_logout_token_in_order(
+            LogoutToken {
+                user_id,
+                session_id: Some("logout-session".to_string()),
+                jti: "logout-jti".to_string(),
+                remaining_ttl_secs: 60,
+                revoked_at: 1_700_000_000,
+            },
+            move |actual_user_id, actual_session_id, revoked_at| {
+                let refresh_order = Arc::clone(&refresh_order);
+                async move {
+                    assert_eq!(actual_user_id, user_id);
+                    assert_eq!(actual_session_id.as_deref(), Some("logout-session"));
+                    assert_eq!(revoked_at, 1_700_000_000);
+                    assert_eq!(refresh_order.fetch_add(1, Ordering::SeqCst), 0);
+                    Ok(())
+                }
+            },
+            move |jti, ttl_secs| {
+                let blacklist_order = Arc::clone(&blacklist_order);
+                async move {
+                    assert_eq!(jti, "logout-jti");
+                    assert_eq!(ttl_secs, 60);
+                    assert_eq!(blacklist_order.fetch_add(1, Ordering::SeqCst), 1);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(order.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_logout_refresh_revocation_failure_does_not_blacklist_access_token() {
+        let blacklist_called = Arc::new(AtomicBool::new(false));
+        let called = Arc::clone(&blacklist_called);
+
+        let result = revoke_logout_token_in_order(
+            LogoutToken {
+                user_id: UserId::new(),
+                session_id: Some("logout-session".to_string()),
+                jti: "logout-jti".to_string(),
+                remaining_ttl_secs: 60,
+                revoked_at: 1_700_000_000,
+            },
+            |_user_id, _session_id, _revoked_at| async {
+                Err(synctv_core::Error::Internal(
+                    "refresh session revocation unavailable".to_string(),
+                ))
+            },
+            move |_jti, _ttl_secs| {
+                let called = Arc::clone(&called);
+                async move {
+                    called.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "logout should fail when refresh session revocation fails"
+        );
+        assert!(
+            !blacklist_called.load(Ordering::SeqCst),
+            "access token must remain usable for a logout retry"
+        );
     }
 }

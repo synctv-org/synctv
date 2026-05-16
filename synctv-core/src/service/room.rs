@@ -3683,7 +3683,7 @@ impl RoomService {
         Ok(self
             .user_service
             .token_blacklist_store()
-            .get_family_revoked_at_checked(&key)
+            .get_version_checked(&key)
             .await?
             .unwrap_or(0))
     }
@@ -4110,16 +4110,12 @@ impl RoomService {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<bool> {
-        // Build the rate limit key: room_id + client_ip (or just room_id if no IP)
-        let rate_limit_key = match client_ip {
-            Some(ip) => format!("{room_id}:{ip}"),
-            None => room_id.to_string(),
-        };
+        let subject_key = self.room_password_attempts_key(room_id, client_ip);
 
         // Check rate limit if brute-force service is configured
         if let Some(ref brute_force) = self.brute_force_service {
             brute_force
-                .check_allowed_with_control(&rate_limit_key, client_ip, control)
+                .check_subject_key_allowed_with_control(&subject_key, client_ip, control)
                 .await?;
         }
 
@@ -4139,7 +4135,7 @@ impl RoomService {
             if is_valid {
                 // Reset failure counter on successful verification
                 if let Err(e) = brute_force
-                    .reset_with_control(&rate_limit_key, control)
+                    .reset_subject_key_with_control(&subject_key, control)
                     .await
                 {
                     // Log warning for monitoring
@@ -4175,7 +4171,7 @@ impl RoomService {
             } else {
                 // Record failure on incorrect password
                 brute_force
-                    .record_failure_with_control(&rate_limit_key, client_ip, control)
+                    .record_subject_key_failure_with_control(&subject_key, client_ip, control)
                     .await?;
             }
         }
@@ -4193,10 +4189,19 @@ impl RoomService {
         client_ip: IpAddr,
     ) -> Result<()> {
         if let Some(ref brute_force) = self.brute_force_service {
-            let rate_limit_key = format!("{room_id}:{client_ip}");
-            brute_force.reset(&rate_limit_key).await?;
+            let subject_key = self.room_password_attempts_key(room_id, Some(client_ip));
+            brute_force
+                .reset_subject_key_with_control(&subject_key, None)
+                .await?;
         }
         Ok(())
+    }
+
+    fn room_password_attempts_key(&self, room_id: &RoomId, client_ip: Option<IpAddr>) -> String {
+        let ip = client_ip.map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
+        self.user_service
+            .key_builder()
+            .room_password_attempts(&room_id.to_string(), &ip)
     }
 
     /// Update room password
@@ -6611,7 +6616,7 @@ impl RoomService {
             .room_guest_version(&room_id.to_string());
         self.user_service
             .token_blacklist_store()
-            .set_family_revoked(&key, next, Self::room_guest_version_ttl_secs())
+            .set_version(&key, next, Self::room_guest_version_ttl_secs())
             .await?;
 
         Ok(next)

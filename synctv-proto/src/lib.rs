@@ -9,7 +9,6 @@
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
 pub mod http_serde;
-pub mod serde_defaults;
 
 pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {
@@ -934,6 +933,22 @@ mod tests {
         .expect_err("multiple anchors must be rejected");
 
         assert!(err.is_data());
+    }
+
+    #[test]
+    fn http_json_move_playlist_request_rejects_legacy_alias_fields() {
+        let decoded: crate::client::MovePlaylistRequest =
+            serde_json::from_str(r#"{"before":"playlist-2","playlistId":"playlist-1"}"#)
+                .expect("unknown JSON fields are ignored by serde");
+
+        assert!(
+            decoded.playlist_id.is_empty(),
+            "legacy playlistId alias must not populate playlist_id"
+        );
+        assert!(
+            decoded.anchor.is_none(),
+            "legacy before alias must not populate the oneof anchor"
+        );
     }
 
     #[test]

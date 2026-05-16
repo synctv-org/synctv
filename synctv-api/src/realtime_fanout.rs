@@ -1,5 +1,7 @@
 use async_trait::async_trait;
+use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::Mutex;
 use synctv_core::repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
@@ -86,6 +88,68 @@ impl PreparedRealtimeFanoutPlan {
 
     pub fn publish_after_outbox_commit(self) {
         self.realtime_fanout.publish_after_outbox_commit(self.event);
+    }
+}
+
+type RealtimeEventBuilder<T> = Arc<dyn Fn(&T) -> RealtimeEvent + Send + Sync>;
+
+/// Prepared outbox fanout for repository callbacks that return one saved entity.
+///
+/// Several services need the same transaction-safe sequence: build a realtime
+/// event from the saved model inside the repository transaction, return the
+/// matching outbox row, then publish the exact same event only after commit.
+#[derive(Clone)]
+pub struct PreparedOutboxFanout<T> {
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    event_builder: RealtimeEventBuilder<T>,
+    event: Arc<Mutex<Option<RealtimeEvent>>>,
+    _marker: PhantomData<fn(&T)>,
+}
+
+impl<T: 'static> PreparedOutboxFanout<T> {
+    #[must_use]
+    pub fn new(
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
+        event_builder: impl Fn(&T) -> RealtimeEvent + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            realtime_fanout,
+            event_builder: Arc::new(event_builder),
+            event: Arc::new(Mutex::new(None)),
+            _marker: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn outbox_factory(
+        &self,
+    ) -> Option<Arc<dyn Fn(&T) -> Option<NewRealtimeOutboxEvent> + Send + Sync>> {
+        if !self.realtime_fanout.is_distributed_enabled() {
+            return None;
+        }
+
+        let realtime_fanout = self.realtime_fanout.clone();
+        let event_builder = self.event_builder.clone();
+        let event_slot = self.event.clone();
+        Some(Arc::new(move |value: &T| {
+            let event = event_builder(value);
+            *event_slot
+                .lock()
+                .expect("prepared realtime fanout event mutex should not be poisoned") =
+                Some(event.clone());
+            realtime_fanout.outbox_event(&event)
+        }))
+    }
+
+    pub fn publish_after_outbox_commit(&self) {
+        if let Some(event) = self
+            .event
+            .lock()
+            .expect("prepared realtime fanout event mutex should not be poisoned")
+            .take()
+        {
+            self.realtime_fanout.publish_after_outbox_commit(event);
+        }
     }
 }
 

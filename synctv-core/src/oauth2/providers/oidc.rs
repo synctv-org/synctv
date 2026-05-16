@@ -4,17 +4,49 @@ use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
     validate_provider_url,
 };
-use crate::oauth2::{OAuth2UserInfo, Provider};
+use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
-use oauth2::{
-    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
+use jsonwebtoken::{
+    decode, decode_header,
+    jwk::{Jwk, JwkSet, KeyOperations, PublicKeyUse},
+    Algorithm, DecodingKey, Validation,
 };
-use reqwest::Client;
+use oauth2::{
+    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenType},
+    AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet, ExtraTokenFields,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, StandardRevocableToken,
+    StandardTokenIntrospectionResponse, StandardTokenResponse, TokenResponse, TokenUrl,
+};
+use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::OnceCell;
+use std::time::{Duration, Instant};
+use tokio::sync::{OnceCell, RwLock};
+
+type OidcTokenResponse = StandardTokenResponse<OidcTokenExtraFields, BasicTokenType>;
+type OidcClientBuilder = Client<
+    BasicErrorResponse,
+    OidcTokenResponse,
+    StandardTokenIntrospectionResponse<OidcTokenExtraFields, BasicTokenType>,
+    StandardRevocableToken,
+    BasicRevocationErrorResponse,
+>;
+type OidcClient = Client<
+    BasicErrorResponse,
+    OidcTokenResponse,
+    StandardTokenIntrospectionResponse<OidcTokenExtraFields, BasicTokenType>,
+    StandardRevocableToken,
+    BasicRevocationErrorResponse,
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointSet,
+>;
+
+const OIDC_JWKS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// OIDC provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +62,8 @@ pub struct OidcConfig {
     pub token_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub userinfo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
 }
 
 /// Optional static OIDC endpoints.
@@ -38,21 +72,25 @@ pub struct OidcEndpointOverrides {
     pub auth_url: Option<String>,
     pub token_url: Option<String>,
     pub userinfo_url: Option<String>,
+    pub jwks_url: Option<String>,
 }
 
 /// Discovered OIDC endpoints from .well-known/openid-configuration
 #[derive(Debug, Clone, Deserialize)]
 struct OidcDiscoveryDocument {
-    authorization: String,
-    token: String,
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    jwks_uri: String,
     #[serde(default)]
-    userinfo: Option<String>,
+    userinfo_endpoint: Option<String>,
 }
 
 /// Resolved OIDC client and endpoints, initialized lazily via discovery or static config.
 struct ResolvedOidc {
-    client: BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
+    client: OidcClient,
     userinfo_url: Option<String>,
+    jwks_uri: String,
 }
 
 /// Generic OIDC provider
@@ -62,10 +100,11 @@ struct ResolvedOidc {
 /// When created via `create_with_endpoints()`, the provided endpoints are used directly.
 pub struct OidcProvider {
     resolved: OnceCell<ResolvedOidc>,
+    jwks_cache: RwLock<Option<CachedJwks>>,
     /// Stored config for lazy initialization (only used in issuer-only mode)
     init_config: OidcInitConfig,
     oauth2_http_client: Arc<super::OAuth2HttpClient>,
-    http_client: Arc<Client>,
+    http_client: Arc<ReqwestClient>,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
 
@@ -83,15 +122,74 @@ struct StaticEndpoints {
     auth: String,
     token: String,
     userinfo: Option<String>,
+    jwks: String,
+}
+
+struct CachedJwks {
+    jwks_uri: String,
+    jwks: JwkSet,
+    fetched_at: Instant,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct OidcTokenExtraFields {
+    id_token: Option<String>,
+}
+
+impl ExtraTokenFields for OidcTokenExtraFields {}
+
+#[derive(Debug, Deserialize)]
+struct OidcIdTokenClaims {
+    iss: String,
+    sub: String,
+    aud: OidcAudience,
+    #[serde(rename = "iat")]
+    _issued_at: i64,
+    #[serde(default)]
+    azp: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+    #[serde(default)]
+    preferred_username: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: Option<bool>,
+    #[serde(default)]
+    picture: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OidcAudience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OidcAudience {
+    fn contains(&self, expected: &str) -> bool {
+        match self {
+            Self::One(aud) => aud == expected,
+            Self::Many(audiences) => audiences.iter().any(|aud| aud == expected),
+        }
+    }
+
+    fn is_multi(&self) -> bool {
+        matches!(self, Self::Many(audiences) if audiences.len() > 1)
+    }
 }
 
 #[derive(Deserialize)]
 struct OidcUserInfoResponse {
     sub: String,
+    #[serde(default)]
+    preferred_username: Option<String>,
     name: Option<String>,
     email: Option<String>,
     #[serde(default)]
-    email_verified: bool,
+    email_verified: Option<bool>,
     picture: Option<String>,
 }
 
@@ -129,6 +227,7 @@ impl OidcProvider {
         validate_provider_url(issuer, "Invalid OIDC issuer URL", ssrf_guard)?;
         Ok(Self {
             resolved: OnceCell::new(),
+            jwks_cache: RwLock::new(None),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
@@ -154,11 +253,13 @@ impl OidcProvider {
         auth_url: Option<String>,
         token_url: Option<String>,
         userinfo_url: Option<String>,
+        jwks_url: Option<String>,
     ) -> Result<Self, Error> {
         let endpoints = OidcEndpointOverrides {
             auth_url,
             token_url,
             userinfo_url,
+            jwks_url,
         };
         Self::create_with_endpoints_and_ssrf_guard(
             client_id,
@@ -179,22 +280,36 @@ impl OidcProvider {
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<Self, Error> {
         let issuer_trimmed = issuer.trim_end_matches('/');
-        if !issuer_trimmed.is_empty() {
-            validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL", ssrf_guard)?;
+        if issuer_trimmed.is_empty() {
+            return Err(Error::InvalidInput(
+                "OIDC provider requires a non-empty 'issuer' URL".to_string(),
+            ));
         }
-        let auth = endpoints
-            .auth_url
-            .unwrap_or_else(|| format!("{issuer_trimmed}/authorize"));
-        let token = endpoints
-            .token_url
-            .unwrap_or_else(|| format!("{issuer_trimmed}/token"));
+        validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL", ssrf_guard)?;
+        let auth = endpoints.auth_url.ok_or_else(|| {
+            Error::InvalidInput(
+                "OIDC static endpoint mode requires explicit 'auth_url'".to_string(),
+            )
+        })?;
+        let token = endpoints.token_url.ok_or_else(|| {
+            Error::InvalidInput(
+                "OIDC static endpoint mode requires explicit 'token_url'".to_string(),
+            )
+        })?;
+        let jwks = endpoints.jwks_url.ok_or_else(|| {
+            Error::InvalidInput(
+                "OIDC static endpoint mode requires explicit 'jwks_url'".to_string(),
+            )
+        })?;
         validate_provider_url(&auth, "Invalid OIDC auth URL", ssrf_guard)?;
         validate_provider_url(&token, "Invalid OIDC token URL", ssrf_guard)?;
+        validate_provider_url(&jwks, "Invalid OIDC JWKS URL", ssrf_guard)?;
         if let Some(userinfo) = endpoints.userinfo_url.as_deref() {
             validate_provider_url(userinfo, "Invalid OIDC userinfo URL", ssrf_guard)?;
         }
         Ok(Self {
             resolved: OnceCell::new(),
+            jwks_cache: RwLock::new(None),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
@@ -204,6 +319,7 @@ impl OidcProvider {
                     auth,
                     token,
                     userinfo: endpoints.userinfo_url,
+                    jwks,
                 }),
             },
             oauth2_http_client: build_oauth2_http_client(ssrf_guard)?,
@@ -218,13 +334,14 @@ impl OidcProvider {
             .get_or_try_init(|| async {
                 let config = &self.init_config;
 
-                let (auth_url_str, token_url_str, userinfo_url) = if let Some(static_ep) =
+                let (auth_url_str, token_url_str, userinfo_url, jwks_uri) = if let Some(static_ep) =
                     &config.static_endpoints
                 {
                     (
                         static_ep.auth.clone(),
                         static_ep.token.clone(),
                         static_ep.userinfo.clone(),
+                        static_ep.jwks.clone(),
                     )
                 } else {
                     // Perform .well-known/openid-configuration discovery
@@ -259,20 +376,37 @@ impl OidcProvider {
                         Error::Internal(format!("Failed to parse OIDC discovery document: {e}"))
                     })?;
 
+                    if doc.issuer.trim_end_matches('/') != config.issuer {
+                        return Err(Error::InvalidInput(format!(
+                            "OIDC discovery issuer '{}' does not match configured issuer '{}'",
+                            doc.issuer, config.issuer
+                        )));
+                    }
+
                     tracing::info!(
-                        "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}",
-                        doc.authorization,
-                        doc.token,
-                        doc.userinfo
+                        "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}, jwks={}",
+                        doc.authorization_endpoint,
+                        doc.token_endpoint,
+                        doc.userinfo_endpoint,
+                        doc.jwks_uri
                     );
 
                     validate_provider_url(
-                        &doc.authorization,
+                        &doc.authorization_endpoint,
                         "Invalid OIDC auth URL",
                         &self.ssrf_guard,
                     )?;
-                    validate_provider_url(&doc.token, "Invalid OIDC token URL", &self.ssrf_guard)?;
-                    if let Some(userinfo) = doc.userinfo.as_deref() {
+                    validate_provider_url(
+                        &doc.token_endpoint,
+                        "Invalid OIDC token URL",
+                        &self.ssrf_guard,
+                    )?;
+                    validate_provider_url(
+                        &doc.jwks_uri,
+                        "Invalid OIDC JWKS URL",
+                        &self.ssrf_guard,
+                    )?;
+                    if let Some(userinfo) = doc.userinfo_endpoint.as_deref() {
                         validate_provider_url(
                             userinfo,
                             "Invalid OIDC userinfo URL",
@@ -280,7 +414,12 @@ impl OidcProvider {
                         )?;
                     }
 
-                    (doc.authorization, doc.token, doc.userinfo)
+                    (
+                        doc.authorization_endpoint,
+                        doc.token_endpoint,
+                        doc.userinfo_endpoint,
+                        doc.jwks_uri,
+                    )
                 };
 
                 let auth = AuthUrl::new(auth_url_str)
@@ -290,7 +429,7 @@ impl OidcProvider {
                 let redirect = RedirectUrl::new(config.redirect_url.clone())
                     .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?;
 
-                let client = BasicClient::new(ClientId::new(config.client_id.clone()))
+                let client = OidcClientBuilder::new(ClientId::new(config.client_id.clone()))
                     .set_client_secret(ClientSecret::new(config.client_secret.clone()))
                     .set_auth_uri(auth)
                     .set_token_uri(token)
@@ -299,10 +438,274 @@ impl OidcProvider {
                 Ok(ResolvedOidc {
                     client,
                     userinfo_url,
+                    jwks_uri,
                 })
             })
             .await
     }
+
+    async fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
+        validate_provider_url(jwks_uri, "Invalid OIDC JWKS URL", &self.ssrf_guard)?;
+        self.http_client
+            .get(jwks_uri)
+            .send()
+            .await
+            .map_err(|err| map_provider_http_error("Failed to fetch OIDC JWKS", err))?
+            .error_for_status()
+            .internal_with_err("OIDC JWKS endpoint returned error")?
+            .json()
+            .await
+            .internal_with_err("Failed to parse OIDC JWKS")
+    }
+
+    async fn cached_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
+        let now = Instant::now();
+        {
+            let cache = self.jwks_cache.read().await;
+            if let Some(cached) = cache.as_ref() {
+                if cached_jwks_is_fresh(cached, jwks_uri, now) {
+                    return Ok(cached.jwks.clone());
+                }
+            }
+        }
+
+        let jwks = self.fetch_jwks(jwks_uri).await?;
+        let mut cache = self.jwks_cache.write().await;
+        *cache = Some(CachedJwks {
+            jwks_uri: jwks_uri.to_string(),
+            jwks: jwks.clone(),
+            fetched_at: Instant::now(),
+        });
+        Ok(jwks)
+    }
+
+    async fn refresh_cached_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
+        let jwks = self.fetch_jwks(jwks_uri).await?;
+        let mut cache = self.jwks_cache.write().await;
+        *cache = Some(CachedJwks {
+            jwks_uri: jwks_uri.to_string(),
+            jwks: jwks.clone(),
+            fetched_at: Instant::now(),
+        });
+        Ok(jwks)
+    }
+
+    async fn validate_id_token(
+        &self,
+        resolved: &ResolvedOidc,
+        id_token: &str,
+        expected_nonce: &str,
+    ) -> Result<OidcIdTokenClaims, Error> {
+        let header = decode_header(id_token)
+            .map_err(|err| Error::Authentication(format!("Invalid OIDC ID Token header: {err}")))?;
+        if !is_supported_oidc_id_token_algorithm(header.alg) {
+            return Err(Error::Authentication(
+                "OIDC ID Token uses an unsupported signing algorithm".to_string(),
+            ));
+        }
+        let claims = if let Some(kid) = header.kid.as_deref() {
+            let jwk = self.jwk_for_kid(&resolved.jwks_uri, kid).await?;
+            self.decode_id_token_with_jwk(id_token, &jwk, header.alg)?
+        } else {
+            self.decode_id_token_without_kid(&resolved.jwks_uri, id_token, header.alg)
+                .await?
+        };
+
+        if claims.iss.trim_end_matches('/') != self.init_config.issuer {
+            return Err(Error::Authentication(
+                "OIDC ID Token issuer does not match configured issuer".to_string(),
+            ));
+        }
+        if !claims.aud.contains(&self.init_config.client_id) {
+            return Err(Error::Authentication(
+                "OIDC ID Token audience does not include configured client_id".to_string(),
+            ));
+        }
+        if claims.aud.is_multi()
+            && claims.azp.as_deref() != Some(self.init_config.client_id.as_str())
+        {
+            return Err(Error::Authentication(
+                "OIDC ID Token authorized party does not match configured client_id".to_string(),
+            ));
+        }
+        match claims.nonce.as_deref() {
+            Some(actual) if actual == expected_nonce => {}
+            Some(_) => {
+                return Err(Error::Authentication(
+                    "OIDC ID Token nonce does not match authorization request".to_string(),
+                ));
+            }
+            None => {
+                return Err(Error::Authentication(
+                    "OIDC ID Token is missing nonce".to_string(),
+                ));
+            }
+        }
+
+        Ok(claims)
+    }
+
+    fn id_token_validation(&self, alg: Algorithm) -> Validation {
+        let mut validation = Validation::new(alg);
+        validation.set_issuer(&[self.init_config.issuer.as_str()]);
+        validation.set_audience(&[self.init_config.client_id.as_str()]);
+        validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud"]);
+        validation
+    }
+
+    fn decode_id_token_with_jwk(
+        &self,
+        id_token: &str,
+        jwk: &Jwk,
+        alg: Algorithm,
+    ) -> Result<OidcIdTokenClaims, Error> {
+        validate_jwk_for_id_token(jwk, alg)?;
+        let decoding_key = DecodingKey::from_jwk(jwk).map_err(|err| {
+            Error::Authentication(format!("Invalid OIDC ID Token signing key: {err}"))
+        })?;
+        let validation = self.id_token_validation(alg);
+        let token = decode::<OidcIdTokenClaims>(id_token, &decoding_key, &validation)
+            .map_err(|err| Error::Authentication(format!("Invalid OIDC ID Token: {err}")))?;
+        Ok(token.claims)
+    }
+
+    async fn decode_id_token_without_kid(
+        &self,
+        jwks_uri: &str,
+        id_token: &str,
+        alg: Algorithm,
+    ) -> Result<OidcIdTokenClaims, Error> {
+        let jwks = self.cached_jwks(jwks_uri).await?;
+        if let Ok(claims) = self.try_decode_id_token_with_jwks(&jwks, id_token, alg) {
+            return Ok(claims);
+        }
+
+        let jwks = self.refresh_cached_jwks(jwks_uri).await?;
+        self.try_decode_id_token_with_jwks(&jwks, id_token, alg)
+    }
+
+    fn try_decode_id_token_with_jwks(
+        &self,
+        jwks: &JwkSet,
+        id_token: &str,
+        alg: Algorithm,
+    ) -> Result<OidcIdTokenClaims, Error> {
+        let mut last_decode_error = None;
+
+        for jwk in &jwks.keys {
+            if validate_jwk_for_id_token(jwk, alg).is_err() {
+                continue;
+            }
+
+            match self.decode_id_token_with_jwk(id_token, jwk, alg) {
+                Ok(claims) => return Ok(claims),
+                Err(err) => last_decode_error = Some(err),
+            }
+        }
+
+        Err(last_decode_error.unwrap_or_else(|| {
+            Error::Authentication("OIDC ID Token signing key was not found in JWKS".to_string())
+        }))
+    }
+
+    async fn jwk_for_kid(&self, jwks_uri: &str, kid: &str) -> Result<Jwk, Error> {
+        let jwks = self.cached_jwks(jwks_uri).await?;
+        if let Some(jwk) = jwks.find(kid) {
+            return Ok(jwk.clone());
+        }
+
+        let jwks = self.refresh_cached_jwks(jwks_uri).await?;
+        jwks.find(kid).cloned().ok_or_else(|| {
+            Error::Authentication("OIDC ID Token signing key was not found in JWKS".to_string())
+        })
+    }
+
+    fn user_info_from_id_token_claims(claims: OidcIdTokenClaims) -> OAuth2UserInfo {
+        OAuth2UserInfo {
+            provider_user_id: claims.sub,
+            username: first_non_empty([claims.preferred_username, claims.name]).unwrap_or_default(),
+            email: claims.email,
+            avatar: claims.picture,
+            email_verified: claims.email_verified.unwrap_or(false),
+        }
+    }
+
+    fn user_info_from_userinfo_response(
+        user: OidcUserInfoResponse,
+        id_token_claims: OidcIdTokenClaims,
+    ) -> OAuth2UserInfo {
+        OAuth2UserInfo {
+            provider_user_id: user.sub,
+            username: first_non_empty([
+                user.preferred_username,
+                user.name,
+                id_token_claims.preferred_username,
+                id_token_claims.name,
+            ])
+            .unwrap_or_default(),
+            email: user.email.or(id_token_claims.email),
+            avatar: user.picture.or(id_token_claims.picture),
+            email_verified: user
+                .email_verified
+                .or(id_token_claims.email_verified)
+                .unwrap_or(false),
+        }
+    }
+}
+
+fn first_non_empty(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn cached_jwks_is_fresh(cached: &CachedJwks, jwks_uri: &str, now: Instant) -> bool {
+    cached.jwks_uri == jwks_uri && now.duration_since(cached.fetched_at) < OIDC_JWKS_CACHE_TTL
+}
+
+fn is_supported_oidc_id_token_algorithm(algorithm: Algorithm) -> bool {
+    !matches!(
+        algorithm,
+        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
+    )
+}
+
+fn validate_jwk_for_id_token(jwk: &Jwk, algorithm: Algorithm) -> Result<(), Error> {
+    if matches!(
+        jwk.common.public_key_use,
+        Some(PublicKeyUse::Encryption | PublicKeyUse::Other(_))
+    ) {
+        return Err(Error::Authentication(
+            "OIDC ID Token signing key is not intended for signatures".to_string(),
+        ));
+    }
+    if let Some(operations) = jwk.common.key_operations.as_ref() {
+        if !operations
+            .iter()
+            .any(|operation| operation == &KeyOperations::Verify)
+        {
+            return Err(Error::Authentication(
+                "OIDC ID Token signing key cannot verify signatures".to_string(),
+            ));
+        }
+    }
+    if let Some(key_algorithm) = jwk.common.key_algorithm {
+        let key_algorithm =
+            Algorithm::from_str(key_algorithm.to_string().as_str()).map_err(|_| {
+                Error::Authentication(
+                    "OIDC ID Token signing key uses an unsupported algorithm".to_string(),
+                )
+            })?;
+        if key_algorithm != algorithm {
+            return Err(Error::Authentication(
+                "OIDC ID Token signing key algorithm does not match token header".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[async_trait]
@@ -311,23 +714,37 @@ impl Provider for OidcProvider {
         "oidc"
     }
 
-    async fn new_auth_url(&self, state: &str) -> Result<(String, String), Error> {
+    async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization, Error> {
         let resolved = self.get_resolved().await?;
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+        let nonce = synctv_common::snanoid!(32);
         let (auth_url, _csrf_token) = resolved
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
+            .add_scope(Scope::new("openid".to_string()))
+            .add_scope(Scope::new("profile".to_string()))
+            .add_scope(Scope::new("email".to_string()))
+            .add_extra_param("nonce", nonce.as_str())
             .set_pkce_challenge(pkce_challenge)
             .url();
-        Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
+        Ok(
+            OAuth2Authorization::new(auth_url.to_string(), pkce_verifier.secret().clone())
+                .with_nonce(nonce),
+        )
     }
 
     async fn get_user_info(
         &self,
         code: &str,
         pkce_verifier: &str,
+        nonce: Option<&str>,
     ) -> Result<OAuth2UserInfo, Error> {
         let resolved = self.get_resolved().await?;
+        let nonce = nonce.ok_or_else(|| {
+            Error::Authentication(
+                "OIDC callback is missing nonce from authorization state".to_string(),
+            )
+        })?;
 
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
@@ -338,13 +755,14 @@ impl Provider for OidcProvider {
             .request_async(self.oauth2_http_client.as_ref())
             .await
             .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
-
-        // Fetch user info from userinfo endpoint
-        let userinfo_url = resolved.userinfo_url.as_ref().ok_or_else(|| {
-            Error::Internal(
-                "userinfo_url not configured and not found in OIDC discovery".to_string(),
-            )
+        let id_token = token.extra_fields().id_token.as_deref().ok_or_else(|| {
+            Error::Authentication("OIDC token response is missing id_token".to_string())
         })?;
+        let id_token_claims = self.validate_id_token(resolved, id_token, nonce).await?;
+
+        let Some(userinfo_url) = resolved.userinfo_url.as_ref() else {
+            return Ok(Self::user_info_from_id_token_claims(id_token_claims));
+        };
 
         let resp = self
             .http_client
@@ -363,14 +781,16 @@ impl Provider for OidcProvider {
             .json()
             .await
             .internal_with_err("Failed to parse user info")?;
+        if user.sub != id_token_claims.sub {
+            return Err(Error::Authentication(
+                "OIDC UserInfo subject does not match ID Token subject".to_string(),
+            ));
+        }
 
-        Ok(OAuth2UserInfo {
-            provider_user_id: user.sub,
-            username: user.name.unwrap_or_default(),
-            email: user.email,
-            avatar: user.picture,
-            email_verified: user.email_verified,
-        })
+        Ok(Self::user_info_from_userinfo_response(
+            user,
+            id_token_claims,
+        ))
     }
 }
 
@@ -386,20 +806,26 @@ pub fn oidc_factory_with_ssrf_guard(
     let config: OidcConfig = serde_json::from_value(config.clone())
         .map_err(|e| Error::InvalidInput(format!("Invalid OIDC config: {e}")))?;
 
-    // Validate issuer is not empty when no custom endpoints are provided.
-    // An empty issuer means .well-known discovery will fail at runtime with
-    // an unhelpful "/.well-known/openid-configuration" URL.
-    let has_custom_endpoints =
-        config.auth_url.is_some() || config.token_url.is_some() || config.userinfo_url.is_some();
-    if config.issuer.is_empty() && !has_custom_endpoints {
+    let has_custom_endpoints = config.auth_url.is_some()
+        || config.token_url.is_some()
+        || config.userinfo_url.is_some()
+        || config.jwks_url.is_some();
+    if config.issuer.trim().is_empty() {
         return Err(Error::InvalidInput(
-            "OIDC provider requires a non-empty 'issuer' URL for .well-known discovery, \
-             or explicit 'auth_url' and 'token_url' endpoints"
+            "OIDC provider requires a non-empty 'issuer' URL".to_string(),
+        ));
+    }
+
+    if has_custom_endpoints
+        && (config.auth_url.is_none() || config.token_url.is_none() || config.jwks_url.is_none())
+    {
+        return Err(Error::InvalidInput(
+            "OIDC static endpoint mode requires 'auth_url', 'token_url', and 'jwks_url'; \
+             omit all custom endpoints to use .well-known discovery"
                 .to_string(),
         ));
     }
 
-    // Use create_with_endpoints if any custom endpoint is specified
     let provider = if has_custom_endpoints {
         OidcProvider::create_with_endpoints_and_ssrf_guard(
             config.client_id,
@@ -410,6 +836,7 @@ pub fn oidc_factory_with_ssrf_guard(
                 auth_url: config.auth_url,
                 token_url: config.token_url,
                 userinfo_url: config.userinfo_url,
+                jwks_url: config.jwks_url,
             },
             ssrf_guard,
         )?
@@ -429,6 +856,110 @@ pub fn oidc_factory_with_ssrf_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::jwk::{
+        AlgorithmParameters, CommonParameters, KeyAlgorithm, RSAKeyParameters, RSAKeyType,
+    };
+    use jsonwebtoken::{EncodingKey, Header};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TEST_RSA_PRIVATE_KEY: &[u8] = br#"-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTL
+UTv4l4sggh5/CYYi/cvI+SXVT9kPWSKXxJXBXd/4LkvcPuUakBoAkfh+eiFVMh2V
+rUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8H
+oGfG/AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBI
+Mc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi+yUod+j8MtvIj812dkS4QMiRVN/
+by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQIDAQABAoIBAHREk0I0O9DvECKd
+WUpAmF3mY7oY9PNQiu44Yaf+AoSuyRpRUGTMIgc3u3eivOE8ALX0BmYUO5JtuRNZ
+Dpvt4SAwqCnVUinIf6C+eH/wSurCpapSM0BAHp4aOA7igptyOMgMPYBHNA1e9A7j
+E0dCxKWMl3DSWNyjQTk4zeRGEAEfbNjHrq6YCtjHSZSLmWiG80hnfnYos9hOr5Jn
+LnyS7ZmFE/5P3XVrxLc/tQ5zum0R4cbrgzHiQP5RgfxGJaEi7XcgherCCOgurJSS
+bYH29Gz8u5fFbS+Yg8s+OiCss3cs1rSgJ9/eHZuzGEdUZVARH6hVMjSuwvqVTFaE
+8AgtleECgYEA+uLMn4kNqHlJS2A5uAnCkj90ZxEtNm3E8hAxUrhssktY5XSOAPBl
+xyf5RuRGIImGtUVIr4HuJSa5TX48n3Vdt9MYCprO/iYl6moNRSPt5qowIIOJmIjY
+2mqPDfDt/zw+fcDD3lmCJrFlzcnh0uea1CohxEbQnL3cypeLt+WbU6kCgYEAzSp1
+9m1ajieFkqgoB0YTpt/OroDx38vvI5unInJlEeOjQ+oIAQdN2wpxBvTrRorMU6P0
+7mFUbt1j+Co6CbNiw+X8HcCaqYLR5clbJOOWNR36PuzOpQLkfK8woupBxzW9B8gZ
+mY8rB1mbJ+/WTPrEJy6YGmIEBkWylQ2VpW8O4O0CgYEApdbvvfFBlwD9YxbrcGz7
+MeNCFbMz+MucqQntIKoKJ91ImPxvtc0y6e/Rhnv0oyNlaUOwJVu0yNgNG117w0g4
+t/+Q38mvVC5xV7/cn7x9UMFk6MkqVir3dYGEqIl/OP1grY2Tq9HtB5iyG9L8NIam
+QOLMyUqqMUILxdthHyFmiGkCgYEAn9+PjpjGMPHxL0gj8Q8VbzsFtou6b1deIRRA
+2CHmSltltR1gYVTMwXxQeUhPMmgkMqUXzs4/WijgpthY44hK1TaZEKIuoxrS70nJ
+4WQLf5a9k1065fDsFZD6yGjdGxvwEmlGMZgTwqV7t1I4X0Ilqhav5hcs5apYL7gn
+PYPeRz0CgYALHCj/Ji8XSsDoF/MhVhnGdIs2P99NNdmo3R2Pv0CuZbDKMU559LJH
+UvrKS8WkuWRDuKrz1W/EQKApFjDGpdqToZqriUFQzwy7mR3ayIiogzNtHcvbDHx8
+oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
+-----END RSA PRIVATE KEY-----
+"#;
+
+    fn jwk_with_algorithm(key_algorithm: Option<KeyAlgorithm>) -> Jwk {
+        jwk_with_kid_and_algorithm("test-kid", key_algorithm)
+    }
+
+    fn jwk_with_kid_and_algorithm(kid: &str, key_algorithm: Option<KeyAlgorithm>) -> Jwk {
+        Jwk {
+            common: CommonParameters {
+                public_key_use: Some(PublicKeyUse::Signature),
+                key_algorithm,
+                key_id: Some(kid.to_string()),
+                ..Default::default()
+            },
+            algorithm: AlgorithmParameters::RSA(RSAKeyParameters {
+                key_type: RSAKeyType::RSA,
+                n: "sXchDaQ1dPhzDYu9TPcL2m7W9uXk3qf8UUNl7fE6jZpb9fBRmG6u42Rn_G8kdR1nRUe8XgUXjS3oKPVNhF9kS6IuZ7Xmb6M3N5Lhlh3Pf4GHY_fAQiNnNLlGXf-6eFjAMj1N0yRu9n5cS7KZkQ7P4_VGf2L9Vy6V5O4H3M".to_string(),
+                e: "AQAB".to_string(),
+            }),
+        }
+    }
+
+    fn jwk_set_with_key(jwk: Jwk) -> JwkSet {
+        JwkSet { keys: vec![jwk] }
+    }
+
+    fn test_signing_jwk(kid: Option<&str>) -> Jwk {
+        Jwk {
+            common: CommonParameters {
+                public_key_use: Some(PublicKeyUse::Signature),
+                key_algorithm: Some(KeyAlgorithm::RS256),
+                key_id: kid.map(ToString::to_string),
+                ..Default::default()
+            },
+            algorithm: AlgorithmParameters::RSA(RSAKeyParameters {
+                key_type: RSAKeyType::RSA,
+                n: "yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ".to_string(),
+                e: "AQAB".to_string(),
+            }),
+        }
+    }
+
+    async fn spawn_jwks_server(jwks: JwkSet) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test JWKS server should bind");
+        let addr = listener
+            .local_addr()
+            .expect("test JWKS server should expose local addr");
+        let body = serde_json::to_string(&jwks).expect("JWKS should serialize");
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("test JWKS server should accept one connection");
+            let mut request = [0; 1024];
+            let _ = socket.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("test JWKS server should write response");
+        });
+
+        format!("http://{addr}/jwks")
+    }
 
     #[test]
     fn test_create_provider_issuer_only() {
@@ -477,6 +1008,7 @@ mod tests {
             Some("https://issuer.example.com/authorize".to_string()),
             Some("https://issuer.example.com/token".to_string()),
             Some("https://issuer.example.com/userinfo".to_string()),
+            Some("https://issuer.example.com/jwks".to_string()),
         );
         assert!(provider.is_ok());
         let p = provider.unwrap();
@@ -487,6 +1019,7 @@ mod tests {
             endpoints.userinfo.as_deref(),
             Some("https://issuer.example.com/userinfo")
         );
+        assert_eq!(endpoints.jwks, "https://issuer.example.com/jwks");
     }
 
     #[test]
@@ -501,6 +1034,7 @@ mod tests {
                 auth_url: Some("https://issuer.example.com/authorize".to_string()),
                 token_url: Some("http://127.0.0.1:8443/token".to_string()),
                 userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+                jwks_url: Some("https://issuer.example.com/jwks".to_string()),
             },
             &guard,
         );
@@ -509,22 +1043,21 @@ mod tests {
     }
 
     #[test]
-    fn test_create_with_endpoints_defaults_from_issuer() {
-        let provider = OidcProvider::create_with_endpoints(
+    fn test_create_with_endpoints_rejects_missing_required_static_endpoints() {
+        let result = OidcProvider::create_with_endpoints(
             "id".to_string(),
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com/",
-            None, // Should default to {issuer}/authorize
-            None, // Should default to {issuer}/token
-            None, // No userinfo
-        )
-        .unwrap();
-        let endpoints = provider.init_config.static_endpoints.as_ref().unwrap();
-        // Issuer trailing slash is trimmed, so defaults use trimmed version
-        assert_eq!(endpoints.auth, "https://issuer.example.com/authorize");
-        assert_eq!(endpoints.token, "https://issuer.example.com/token");
-        assert!(endpoints.userinfo.is_none());
+            None,
+            Some("https://issuer.example.com/token".to_string()),
+            None,
+            Some("https://issuer.example.com/jwks".to_string()),
+        );
+
+        assert!(
+            matches!(result, Err(Error::InvalidInput(message)) if message.contains("auth_url"))
+        );
     }
 
     #[test]
@@ -539,6 +1072,327 @@ mod tests {
         assert_eq!(provider.provider_type(), "oidc");
     }
 
+    #[test]
+    fn test_discovery_document_accepts_standard_oidc_fields() {
+        let doc: OidcDiscoveryDocument = serde_json::from_str(
+            r#"{
+                "issuer": "https://issuer.example.com",
+                "authorization_endpoint": "https://issuer.example.com/authorize",
+                "token_endpoint": "https://issuer.example.com/token",
+                "userinfo_endpoint": "https://issuer.example.com/userinfo",
+                "jwks_uri": "https://issuer.example.com/jwks"
+            }"#,
+        )
+        .expect("standard OIDC discovery document should deserialize");
+
+        assert_eq!(doc.issuer, "https://issuer.example.com");
+        assert_eq!(
+            doc.authorization_endpoint,
+            "https://issuer.example.com/authorize"
+        );
+        assert_eq!(doc.token_endpoint, "https://issuer.example.com/token");
+        assert_eq!(
+            doc.userinfo_endpoint.as_deref(),
+            Some("https://issuer.example.com/userinfo")
+        );
+        assert_eq!(doc.jwks_uri, "https://issuer.example.com/jwks");
+    }
+
+    #[test]
+    fn test_oidc_token_extra_fields_extracts_id_token() {
+        let token: OidcTokenResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "access",
+            "token_type": "Bearer",
+            "id_token": "header.payload.signature"
+        }))
+        .expect("OIDC token response should parse id_token");
+
+        assert_eq!(
+            token.extra_fields().id_token.as_deref(),
+            Some("header.payload.signature")
+        );
+    }
+
+    #[test]
+    fn test_oidc_audience_detects_multiple_audiences() {
+        let single = OidcAudience::One("client".to_string());
+        let multiple = OidcAudience::Many(vec!["client".to_string(), "api".to_string()]);
+
+        assert!(single.contains("client"));
+        assert!(!single.is_multi());
+        assert!(multiple.contains("client"));
+        assert!(multiple.is_multi());
+    }
+
+    #[test]
+    fn test_first_non_empty_trims_and_skips_blank_values() {
+        assert_eq!(
+            first_non_empty([
+                Some("   ".to_string()),
+                None,
+                Some(" preferred ".to_string())
+            ])
+            .as_deref(),
+            Some("preferred")
+        );
+    }
+
+    #[test]
+    fn test_user_info_from_id_token_claims_supports_missing_userinfo_endpoint() {
+        let claims = OidcIdTokenClaims {
+            iss: "https://issuer.example.com".to_string(),
+            sub: "subject-123".to_string(),
+            aud: OidcAudience::One("client".to_string()),
+            _issued_at: 1_700_000_000,
+            azp: None,
+            nonce: Some("nonce".to_string()),
+            preferred_username: Some("preferred_user".to_string()),
+            name: Some("Display Name".to_string()),
+            email: Some("user@example.com".to_string()),
+            email_verified: Some(true),
+            picture: Some("https://example.com/avatar.png".to_string()),
+        };
+
+        let user = OidcProvider::user_info_from_id_token_claims(claims);
+
+        assert_eq!(user.provider_user_id, "subject-123");
+        assert_eq!(user.username, "preferred_user");
+        assert_eq!(user.email.as_deref(), Some("user@example.com"));
+        assert!(user.email_verified);
+        assert_eq!(
+            user.avatar.as_deref(),
+            Some("https://example.com/avatar.png")
+        );
+    }
+
+    #[test]
+    fn test_userinfo_response_overrides_id_token_profile_claims() {
+        let id_token_claims = OidcIdTokenClaims {
+            iss: "https://issuer.example.com".to_string(),
+            sub: "subject-123".to_string(),
+            aud: OidcAudience::One("client".to_string()),
+            _issued_at: 1_700_000_000,
+            azp: None,
+            nonce: Some("nonce".to_string()),
+            preferred_username: Some("token_user".to_string()),
+            name: Some("Token Name".to_string()),
+            email: Some("token@example.com".to_string()),
+            email_verified: Some(false),
+            picture: Some("https://example.com/token.png".to_string()),
+        };
+        let userinfo = OidcUserInfoResponse {
+            sub: "subject-123".to_string(),
+            preferred_username: Some("userinfo_user".to_string()),
+            name: None,
+            email: Some("userinfo@example.com".to_string()),
+            email_verified: Some(true),
+            picture: Some("https://example.com/userinfo.png".to_string()),
+        };
+
+        let user = OidcProvider::user_info_from_userinfo_response(userinfo, id_token_claims);
+
+        assert_eq!(user.provider_user_id, "subject-123");
+        assert_eq!(user.username, "userinfo_user");
+        assert_eq!(user.email.as_deref(), Some("userinfo@example.com"));
+        assert!(user.email_verified);
+        assert_eq!(
+            user.avatar.as_deref(),
+            Some("https://example.com/userinfo.png")
+        );
+    }
+
+    #[test]
+    fn test_oidc_id_token_algorithm_rejects_hmac() {
+        assert!(!is_supported_oidc_id_token_algorithm(Algorithm::HS256));
+        assert!(is_supported_oidc_id_token_algorithm(Algorithm::RS256));
+    }
+
+    #[test]
+    fn test_cached_jwks_is_fresh_requires_same_uri_and_ttl() {
+        let now = Instant::now();
+        let cached = CachedJwks {
+            jwks_uri: "https://issuer.example.com/jwks".to_string(),
+            jwks: jwk_set_with_key(jwk_with_algorithm(Some(KeyAlgorithm::RS256))),
+            fetched_at: now - Duration::from_secs(60),
+        };
+
+        assert!(cached_jwks_is_fresh(
+            &cached,
+            "https://issuer.example.com/jwks",
+            now
+        ));
+        assert!(!cached_jwks_is_fresh(
+            &cached,
+            "https://other.example.com/jwks",
+            now
+        ));
+
+        let expired = CachedJwks {
+            jwks_uri: cached.jwks_uri.clone(),
+            jwks: cached.jwks.clone(),
+            fetched_at: now - OIDC_JWKS_CACHE_TTL - Duration::from_secs(1),
+        };
+        assert!(!cached_jwks_is_fresh(
+            &expired,
+            "https://issuer.example.com/jwks",
+            now
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_jwk_for_kid_uses_fresh_cache_without_fetching() {
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("http://127.0.0.1:9/jwks".to_string()),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .unwrap();
+        let jwks_uri = "http://127.0.0.1:9/jwks";
+        let cached_key = jwk_with_kid_and_algorithm("cached-kid", Some(KeyAlgorithm::RS256));
+        *provider.jwks_cache.write().await = Some(CachedJwks {
+            jwks_uri: jwks_uri.to_string(),
+            jwks: jwk_set_with_key(cached_key.clone()),
+            fetched_at: Instant::now(),
+        });
+
+        let jwk = provider.jwk_for_kid(jwks_uri, "cached-kid").await.unwrap();
+
+        assert_eq!(jwk.common.key_id.as_deref(), Some("cached-kid"));
+    }
+
+    #[tokio::test]
+    async fn test_jwk_for_kid_refreshes_cache_on_kid_miss() {
+        let rotated_key = jwk_with_kid_and_algorithm("rotated-kid", Some(KeyAlgorithm::RS256));
+        let jwks_uri = spawn_jwks_server(jwk_set_with_key(rotated_key)).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri.clone()),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .unwrap();
+        *provider.jwks_cache.write().await = Some(CachedJwks {
+            jwks_uri: jwks_uri.clone(),
+            jwks: jwk_set_with_key(jwk_with_kid_and_algorithm(
+                "old-kid",
+                Some(KeyAlgorithm::RS256),
+            )),
+            fetched_at: Instant::now(),
+        });
+
+        let jwk = provider
+            .jwk_for_kid(&jwks_uri, "rotated-kid")
+            .await
+            .unwrap();
+
+        assert_eq!(jwk.common.key_id.as_deref(), Some("rotated-kid"));
+        let cache = provider.jwks_cache.read().await;
+        let cached = cache.as_ref().expect("JWKS cache should be refreshed");
+        assert!(cached.jwks.find("rotated-kid").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_validate_id_token_accepts_missing_kid_with_single_jwks_key() {
+        crate::install_process_crypto_provider();
+
+        let jwks_uri = spawn_jwks_server(jwk_set_with_key(test_signing_jwk(None))).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("http://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_secs();
+        let claims = serde_json::json!({
+            "iss": "http://issuer.example.com",
+            "sub": "subject-123",
+            "aud": "id",
+            "iat": now,
+            "exp": now + 300,
+            "nonce": "nonce-123"
+        });
+        let token = jsonwebtoken::encode(
+            &Header::new(Algorithm::RS256),
+            &claims,
+            &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY).unwrap(),
+        )
+        .unwrap();
+        let resolved = provider.get_resolved().await.unwrap();
+
+        let id_token_claims = provider
+            .validate_id_token(resolved, &token, "nonce-123")
+            .await
+            .expect("ID token without kid should validate against the single JWKS key");
+
+        assert_eq!(id_token_claims.sub, "subject-123");
+    }
+
+    #[test]
+    fn test_validate_jwk_for_id_token_rejects_algorithm_mismatch() {
+        let jwk = jwk_with_algorithm(Some(KeyAlgorithm::RS512));
+        let err = validate_jwk_for_id_token(&jwk, Algorithm::RS256).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Authentication(message) if message.contains("algorithm")),
+            "expected authentication error for mismatched key algorithm"
+        );
+    }
+
+    #[test]
+    fn test_validate_jwk_for_id_token_rejects_encryption_key_use() {
+        let mut jwk = jwk_with_algorithm(Some(KeyAlgorithm::RS256));
+        jwk.common.public_key_use = Some(PublicKeyUse::Encryption);
+
+        let err = validate_jwk_for_id_token(&jwk, Algorithm::RS256).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Authentication(message) if message.contains("signatures")),
+            "expected authentication error for encryption-only key"
+        );
+    }
+
+    #[test]
+    fn test_discovery_document_rejects_nonstandard_endpoint_field_names() {
+        let err = serde_json::from_str::<OidcDiscoveryDocument>(
+            r#"{
+                "issuer": "https://issuer.example.com",
+                "authorization": "https://issuer.example.com/authorize",
+                "token": "https://issuer.example.com/token",
+                "userinfo": "https://issuer.example.com/userinfo",
+                "jwks": "https://issuer.example.com/jwks"
+            }"#,
+        )
+        .expect_err("nonstandard endpoint field names should not deserialize");
+
+        assert!(err.to_string().contains("authorization_endpoint"));
+    }
+
     #[tokio::test]
     async fn test_new_auth_url_with_static_endpoints() {
         let provider = OidcProvider::create_with_endpoints(
@@ -549,11 +1403,14 @@ mod tests {
             Some("https://issuer.example.com/authorize".to_string()),
             Some("https://issuer.example.com/token".to_string()),
             Some("https://issuer.example.com/userinfo".to_string()),
+            Some("https://issuer.example.com/jwks".to_string()),
         )
         .unwrap();
 
         let state = "oidc_state_123";
-        let (auth_url, pkce_verifier) = provider.new_auth_url(state).await.unwrap();
+        let auth = provider.new_auth_url(state).await.unwrap();
+        let auth_url = auth.auth_url;
+        let pkce_verifier = auth.pkce_verifier;
 
         // Auth URL should use the custom auth endpoint
         assert!(auth_url.starts_with("https://issuer.example.com/authorize"));
@@ -563,6 +1420,11 @@ mod tests {
         assert!(auth_url.contains(&format!("state={state}")));
         // Should contain redirect_uri
         assert!(auth_url.contains("redirect_uri="));
+        assert!(auth_url.contains("scope=openid"));
+        assert!(auth_url.contains("+profile"));
+        assert!(auth_url.contains("+email"));
+        assert!(auth_url.contains("nonce="));
+        assert!(auth.nonce.is_some());
         // Should contain PKCE
         assert!(auth_url.contains("code_challenge="));
         assert!(auth_url.contains("code_challenge_method=S256"));
@@ -580,14 +1442,16 @@ mod tests {
             Some("https://issuer.example.com/authorize".to_string()),
             Some("https://issuer.example.com/token".to_string()),
             None,
+            Some("https://issuer.example.com/jwks".to_string()),
         )
         .unwrap();
 
-        let (url1, v1) = provider.new_auth_url("state_a").await.unwrap();
-        let (url2, v2) = provider.new_auth_url("state_b").await.unwrap();
+        let auth1 = provider.new_auth_url("state_a").await.unwrap();
+        let auth2 = provider.new_auth_url("state_b").await.unwrap();
 
-        assert_ne!(url1, url2);
-        assert_ne!(v1, v2);
+        assert_ne!(auth1.auth_url, auth2.auth_url);
+        assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);
+        assert_ne!(auth1.nonce, auth2.nonce);
     }
 
     #[test]
@@ -612,7 +1476,8 @@ mod tests {
             "issuer": "https://issuer.example.com",
             "auth_url": "https://issuer.example.com/custom/authorize",
             "token_url": "https://issuer.example.com/custom/token",
-            "userinfo_url": "https://issuer.example.com/custom/userinfo"
+            "userinfo_url": "https://issuer.example.com/custom/userinfo",
+            "jwks_url": "https://issuer.example.com/custom/jwks"
         });
         let provider = oidc_factory(&config);
         assert!(provider.is_ok());
@@ -620,7 +1485,6 @@ mod tests {
 
     #[test]
     fn test_factory_with_partial_endpoints() {
-        // Providing only auth_url should trigger create_with_endpoints path
         let config = serde_json::json!({
             "client_id": "id",
             "client_secret": "secret",
@@ -629,7 +1493,9 @@ mod tests {
             "auth_url": "https://issuer.example.com/auth"
         });
         let provider = oidc_factory(&config);
-        assert!(provider.is_ok());
+        assert!(
+            matches!(provider, Err(Error::InvalidInput(message)) if message.contains("auth_url") && message.contains("token_url") && message.contains("jwks_url"))
+        );
     }
 
     #[test]
@@ -682,17 +1548,17 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_empty_issuer_with_custom_endpoints_ok() {
-        // Empty issuer is allowed when custom endpoints are provided
+    fn test_factory_empty_issuer_with_custom_endpoints_rejected() {
         let config = serde_json::json!({
             "client_id": "id",
             "client_secret": "secret",
             "redirect_url": "https://example.com/cb",
             "auth_url": "https://provider.example.com/authorize",
-            "token_url": "https://provider.example.com/token"
+            "token_url": "https://provider.example.com/token",
+            "jwks_url": "https://provider.example.com/jwks"
         });
         let result = oidc_factory(&config);
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(Error::InvalidInput(message)) if message.contains("issuer")));
     }
 
     #[test]
@@ -704,7 +1570,8 @@ mod tests {
             "issuer": "https://issuer.example.com",
             "auth_url": "https://issuer.example.com/auth",
             "token_url": "https://issuer.example.com/token",
-            "userinfo_url": "https://issuer.example.com/userinfo"
+            "userinfo_url": "https://issuer.example.com/userinfo",
+            "jwks_url": "https://issuer.example.com/jwks"
         });
         let config: OidcConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.client_id, "oidc_abc");
@@ -723,6 +1590,10 @@ mod tests {
             config.userinfo_url.as_deref(),
             Some("https://issuer.example.com/userinfo")
         );
+        assert_eq!(
+            config.jwks_url.as_deref(),
+            Some("https://issuer.example.com/jwks")
+        );
     }
 
     #[test]
@@ -737,6 +1608,7 @@ mod tests {
         assert!(config.auth_url.is_none());
         assert!(config.token_url.is_none());
         assert!(config.userinfo_url.is_none());
+        assert!(config.jwks_url.is_none());
     }
 
     #[test]
@@ -749,12 +1621,14 @@ mod tests {
             auth_url: None,
             token_url: None,
             userinfo_url: None,
+            jwks_url: None,
         };
         let json = serde_json::to_value(&config).unwrap();
         // Optional fields with skip_serializing_if should not appear
         assert!(json.get("auth_url").is_none());
         assert!(json.get("token_url").is_none());
         assert!(json.get("userinfo_url").is_none());
+        assert!(json.get("jwks_url").is_none());
     }
 
     #[test]
@@ -767,6 +1641,7 @@ mod tests {
             auth_url: Some("https://issuer.example.com/auth".to_string()),
             token_url: Some("https://issuer.example.com/token".to_string()),
             userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+            jwks_url: Some("https://issuer.example.com/jwks".to_string()),
         };
         let json = serde_json::to_value(&config).unwrap();
         let deserialized: OidcConfig = serde_json::from_value(json).unwrap();
@@ -775,6 +1650,7 @@ mod tests {
         assert_eq!(deserialized.auth_url, config.auth_url);
         assert_eq!(deserialized.token_url, config.token_url);
         assert_eq!(deserialized.userinfo_url, config.userinfo_url);
+        assert_eq!(deserialized.jwks_url, config.jwks_url);
     }
 
     #[tokio::test]
@@ -788,6 +1664,7 @@ mod tests {
             Some("https://issuer.example.com/authorize".to_string()),
             Some("https://issuer.example.com/token".to_string()),
             Some("https://issuer.example.com/userinfo".to_string()),
+            Some("https://issuer.example.com/jwks".to_string()),
         )
         .unwrap();
 
@@ -798,6 +1675,7 @@ mod tests {
             r.userinfo_url.as_deref(),
             Some("https://issuer.example.com/userinfo")
         );
+        assert_eq!(r.jwks_uri, "https://issuer.example.com/jwks");
     }
 
     #[tokio::test]
@@ -811,6 +1689,7 @@ mod tests {
             Some("https://issuer.example.com/authorize".to_string()),
             Some("https://issuer.example.com/token".to_string()),
             None,
+            Some("https://issuer.example.com/jwks".to_string()),
         )
         .unwrap();
 

@@ -108,6 +108,8 @@ email:
 }
 ```
 
+默认使用 `issuer` 进行 OIDC discovery。只有在 IdP 没有标准 discovery 文档时才手动配置 `auth_url`、`token_url` 和 `jwks_url`；`userinfo_url` 可选，缺失时会使用已验证的 ID Token claims。
+
 </TabItem>
 </Tabs>
 

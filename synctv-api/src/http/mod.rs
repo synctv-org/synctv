@@ -924,7 +924,11 @@ fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::ACCEPT,
+                axum::http::HeaderName::from_static("x-request-id"),
+                axum::http::HeaderName::from_static("traceparent"),
+                axum::http::HeaderName::from_static("tracestate"),
             ])
+            .expose_headers([axum::http::HeaderName::from_static("x-request-id")])
             .vary([
                 axum::http::header::ORIGIN,
                 axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
@@ -2204,6 +2208,78 @@ mod tests {
                 .is_none(),
             "native-client-oriented CORS policy should not advertise credentialed browser requests by default"
         );
+    }
+
+    #[tokio::test]
+    async fn test_cors_preflight_allows_request_correlation_headers() {
+        let mut config = synctv_core::Config::default();
+        config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(build_cors_layer(&config).expect("valid CORS config should build"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/test")
+                    .header(axum::http::header::ORIGIN, "https://example.com")
+                    .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                    .header(
+                        axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "x-request-id, traceparent, tracestate",
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let allowed_headers = response
+            .headers()
+            .get(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .expect("preflight should advertise allowed headers")
+            .to_str()
+            .expect("allowed headers should be valid ascii")
+            .to_ascii_lowercase();
+        assert!(allowed_headers.contains("x-request-id"));
+        assert!(allowed_headers.contains("traceparent"));
+        assert!(allowed_headers.contains("tracestate"));
+    }
+
+    #[tokio::test]
+    async fn test_cors_actual_response_exposes_request_id_header() {
+        let mut config = synctv_core::Config::default();
+        config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(build_cors_layer(&config).expect("valid CORS config should build"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/test")
+                    .header(axum::http::header::ORIGIN, "https://example.com")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let exposed_headers = response
+            .headers()
+            .get(axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .expect("CORS response should expose request correlation response headers")
+            .to_str()
+            .expect("exposed headers should be valid ascii")
+            .to_ascii_lowercase();
+        assert!(exposed_headers.contains("x-request-id"));
     }
 
     #[cfg(feature = "openapi")]

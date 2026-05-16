@@ -4,43 +4,24 @@ use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
 use synctv_core::service::RealtimeOutboxPlaylistEventFactory;
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::{PreparedRealtimeFanoutPlan, RealtimeFanoutService};
+use crate::realtime_fanout::{
+    PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+};
 use crate::runtime::RealtimeDeliveryRequirement;
 
 #[derive(Clone)]
 pub struct PreparedPlaylistOutboxFanout {
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_builder: Arc<dyn Fn(&Playlist) -> RealtimeEvent + Send + Sync>,
-    event: Arc<std::sync::Mutex<Option<RealtimeEvent>>>,
+    prepared: PreparedOutboxFanout<Playlist>,
 }
 
 impl PreparedPlaylistOutboxFanout {
     #[must_use]
     pub fn outbox_factory(&self) -> Option<RealtimeOutboxPlaylistEventFactory> {
-        if !self.realtime_fanout.is_distributed_enabled() {
-            return None;
-        }
-
-        let prepared = self.clone();
-        Some(Arc::new(move |playlist: &Playlist| {
-            let event = (prepared.event_builder)(playlist);
-            *prepared
-                .event
-                .lock()
-                .expect("playlist fanout event mutex should not be poisoned") = Some(event.clone());
-            prepared.realtime_fanout.outbox_event(&event)
-        }))
+        self.prepared.outbox_factory()
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        if let Some(event) = self
-            .event
-            .lock()
-            .expect("playlist fanout event mutex should not be poisoned")
-            .take()
-        {
-            self.realtime_fanout.publish_after_outbox_commit(event);
-        }
+        self.prepared.publish_after_outbox_commit();
     }
 }
 
@@ -119,16 +100,17 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
         username: String,
     ) -> PreparedPlaylistOutboxFanout {
         PreparedPlaylistOutboxFanout {
-            realtime_fanout: self.realtime_fanout.clone(),
-            event_builder: Arc::new(move |playlist: &Playlist| RealtimeEvent::PlaylistCreated {
-                event_id: synctv_common::snanoid!(16),
-                room_id,
-                user_id,
-                username: username.clone(),
-                playlist: playlist.clone(),
-                timestamp: chrono::Utc::now(),
-            }),
-            event: Arc::new(std::sync::Mutex::new(None)),
+            prepared: PreparedOutboxFanout::new(
+                self.realtime_fanout.clone(),
+                move |playlist: &Playlist| RealtimeEvent::PlaylistCreated {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id,
+                    user_id,
+                    username: username.clone(),
+                    playlist: playlist.clone(),
+                    timestamp: chrono::Utc::now(),
+                },
+            ),
         }
     }
 
@@ -139,16 +121,17 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
         username: String,
     ) -> PreparedPlaylistOutboxFanout {
         PreparedPlaylistOutboxFanout {
-            realtime_fanout: self.realtime_fanout.clone(),
-            event_builder: Arc::new(move |playlist: &Playlist| RealtimeEvent::PlaylistUpdated {
-                event_id: synctv_common::snanoid!(16),
-                room_id,
-                user_id,
-                username: username.clone(),
-                playlist: playlist.clone(),
-                timestamp: chrono::Utc::now(),
-            }),
-            event: Arc::new(std::sync::Mutex::new(None)),
+            prepared: PreparedOutboxFanout::new(
+                self.realtime_fanout.clone(),
+                move |playlist: &Playlist| RealtimeEvent::PlaylistUpdated {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id,
+                    user_id,
+                    username: username.clone(),
+                    playlist: playlist.clone(),
+                    timestamp: chrono::Utc::now(),
+                },
+            ),
         }
     }
 

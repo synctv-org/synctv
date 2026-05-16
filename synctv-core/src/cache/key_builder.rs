@@ -50,6 +50,14 @@ impl KeyBuilder {
         segment.replace(':', "_")
     }
 
+    fn prefixed_key(&self, suffix: &str) -> String {
+        if self.prefix.is_empty() {
+            suffix.to_string()
+        } else {
+            format!("{}:{}", self.prefix, suffix)
+        }
+    }
+
     /// Get the key prefix
     #[must_use]
     pub fn prefix(&self) -> &str {
@@ -157,6 +165,21 @@ impl KeyBuilder {
         format!("{}:session:{}", self.prefix, session_id)
     }
 
+    /// Short-lived auth/session workflow key.
+    ///
+    /// Namespaces are fixed by the owning service (for example OPAQUE, MFA, or
+    /// passkey session stores). The session id is generated server-side and
+    /// sanitized here so shared Redis session storage uses the same prefix rules
+    /// as other auth keys.
+    #[must_use]
+    pub fn session(&self, namespace: &str, session_id: &str) -> String {
+        self.prefixed_key(&format!(
+            "{}:{}",
+            namespace,
+            Self::sanitize_key_segment(session_id)
+        ))
+    }
+
     /// API rate limiting
     ///
     /// Type: String + TTL (window duration)
@@ -180,7 +203,7 @@ impl KeyBuilder {
     /// Value: JSON with `OAuth2State`
     #[must_use]
     pub fn oauth2_state(&self, state_token: &str) -> String {
-        format!("{}:oauth2:state:{}", self.prefix, state_token)
+        self.prefixed_key(&format!("oauth2:state:{state_token}"))
     }
 
     /// Email verification code
@@ -249,13 +272,27 @@ impl KeyBuilder {
         format!("{}:auth:at_blacklist:{}", self.prefix, jti)
     }
 
-    /// Refresh token family revocation key (per `user_id`)
+    /// Refresh token family revocation key (legacy per-user fallback).
     ///
     /// Type: String + TTL (max refresh token lifetime)
     /// Value: Unix timestamp when the family was revoked
     #[must_use]
     pub fn refresh_token_family_revoked(&self, user_id: &str) -> String {
         format!("{}:auth:rt_family_revoked:{}", self.prefix, user_id)
+    }
+
+    /// Refresh token session revocation key (per user login session).
+    ///
+    /// Type: String + TTL (max refresh token lifetime)
+    /// Value: Unix timestamp when the session was revoked
+    #[must_use]
+    pub fn refresh_token_session_revoked(&self, user_id: &str, session_id: &str) -> String {
+        format!(
+            "{}:auth:rt_session_revoked:{}:{}",
+            self.prefix,
+            Self::sanitize_key_segment(user_id),
+            Self::sanitize_key_segment(session_id)
+        )
     }
 
     /// Blacklisted guest token JTI (for revoking guest access)
@@ -282,7 +319,16 @@ impl KeyBuilder {
     /// Value: JSON with ticket data
     #[must_use]
     pub fn ws_ticket(&self, ticket: &str) -> String {
-        format!("{}:ws_ticket:{}", self.prefix, ticket)
+        self.prefixed_key(&format!("ws_ticket:{ticket}"))
+    }
+
+    /// Claimed RTMP publish-key JTI (for single-use enforcement)
+    ///
+    /// Type: String + TTL (publish key lifetime)
+    /// Value: "1" (presence check only)
+    #[must_use]
+    pub fn publish_key_jti(&self, jti: &str) -> String {
+        self.prefixed_key(&format!("publish_key:jti:{jti}"))
     }
 
     /// Cache invalidation stream key
@@ -409,6 +455,27 @@ mod tests {
     }
 
     #[test]
+    fn test_key_builder_empty_prefix_has_no_leading_separator() {
+        let builder = KeyBuilder::new("");
+        assert_eq!(builder.oauth2_state("state_abc"), "oauth2:state:state_abc");
+        assert_eq!(builder.ws_ticket("ticket_abc"), "ws_ticket:ticket_abc");
+        assert_eq!(builder.session("auth:test", "sess:1"), "auth:test:sess_1");
+        assert_eq!(
+            builder.publish_key_jti("jti_abc"),
+            "publish_key:jti:jti_abc"
+        );
+    }
+
+    #[test]
+    fn test_session_key_uses_prefix_and_sanitizes_session_id() {
+        let builder = KeyBuilder::new("synctv:");
+        assert_eq!(
+            builder.session("auth:test", "sess:1"),
+            "synctv:auth:test:sess_1"
+        );
+    }
+
+    #[test]
     fn test_key_builder_from_config_trims_trailing_colon_prefix() {
         let mut config = Config::default();
         config.redis.key_prefix = "tenant-a:".to_string();
@@ -422,11 +489,29 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_token_session_revoked_key_sanitizes_segments() {
+        let builder = KeyBuilder::new("tenant-a");
+        assert_eq!(
+            builder.refresh_token_session_revoked("user:1", "session:1"),
+            "tenant-a:auth:rt_session_revoked:user_1:session_1"
+        );
+    }
+
+    #[test]
     fn test_guest_token_blacklist_key() {
         let builder = KeyBuilder::default();
         assert_eq!(
             builder.guest_token_blacklist("jti_abc123"),
             "synctv:auth:guest_blacklist:jti_abc123"
+        );
+    }
+
+    #[test]
+    fn test_publish_key_jti_key() {
+        let builder = KeyBuilder::default();
+        assert_eq!(
+            builder.publish_key_jti("jti_abc"),
+            "synctv:publish_key:jti:jti_abc"
         );
     }
 

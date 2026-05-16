@@ -7,7 +7,7 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use reqwest::Client;
 use sqlx::PgPool;
 use std::future::Future;
@@ -114,6 +114,7 @@ pub struct SyncTvServer {
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const METRICS_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+const METRICS_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 struct SharedProviderPlaybackRuntime {
@@ -223,8 +224,13 @@ where
         }
     });
 
-    hyper::server::conn::http1::Builder::new()
-        .keep_alive(false)
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(METRICS_HEADER_READ_TIMEOUT)
+        .keep_alive(false);
+
+    builder
         .serve_connection(TokioIo::new(stream), service)
         .await
         .map_err(|error| anyhow::anyhow!("metrics connection error: {error}"))?;

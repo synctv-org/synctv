@@ -280,10 +280,10 @@ impl OAuth2ApiImpl {
         // 2. Exchange code for user info using PKCE verifier from stored state
         let user_info = self
             .oauth2_service
-            .exchange_code_for_user_info_with_control(
+            .exchange_code_for_user_info_with_state_and_control(
                 provider,
                 code,
-                &oauth_state.pkce_verifier,
+                &oauth_state,
                 control,
             )
             .await
@@ -834,12 +834,12 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth2_request_validation_accepts_native_app_redirect_url() {
+    fn test_oauth2_request_validation_accepts_structurally_valid_custom_scheme_redirect_url() {
         crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
             provider: "logto1".to_string(),
             redirect_url: "io.github.synctv://oauth2/callback".to_string(),
         })
-        .expect("native app redirect URL should remain valid");
+        .expect("structural request validation should leave redirect allowlist policy to core");
     }
 
     #[test]

@@ -75,26 +75,11 @@ impl From<AdminUpdateRoomSettingsRequestDef> for crate::admin::UpdateRoomSetting
 
 #[derive(serde::Deserialize)]
 pub struct MovePlaylistRequestDef {
-    #[serde(
-        default,
-        rename = "playlist_id",
-        alias = "playlistId",
-        alias = "playlist"
-    )]
+    #[serde(default, rename = "playlist_id")]
     playlist_id: String,
-    #[serde(
-        default,
-        rename = "before_playlist_id",
-        alias = "beforePlaylistId",
-        alias = "before"
-    )]
+    #[serde(default, rename = "before_playlist_id")]
     before: Option<String>,
-    #[serde(
-        default,
-        rename = "after_playlist_id",
-        alias = "afterPlaylistId",
-        alias = "after"
-    )]
+    #[serde(default, rename = "after_playlist_id")]
     after: Option<String>,
 }
 

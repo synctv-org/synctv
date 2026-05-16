@@ -7,11 +7,8 @@
 //! Run with: cargo test --test logout_blacklist_failure_tests -- --nocapture
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
 use synctv_core::models::UserId;
-use synctv_core::service::{
-    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
-};
+use synctv_core::service::{InMemoryTokenBlacklistStore, TokenBlacklistStore};
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or(0)
@@ -169,39 +166,7 @@ async fn test_blacklist_with_failing_store_returns_error() {
     );
 }
 
-// Test 5: Fallback store succeeds when primary fails
-
-#[tokio::test]
-async fn test_fallback_store_succeeds_when_primary_fails() {
-    let primary = Arc::new(FailingBlacklistStore) as Arc<dyn TokenBlacklistStore>;
-    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
-    let jwt = create_test_jwt_service();
-    let user_id = UserId::new();
-
-    let token = jwt
-        .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
-        .unwrap();
-
-    // Parse token to get JTI
-    let claims = jwt.verify_access_token(&token).unwrap();
-    let now = chrono::Utc::now().timestamp();
-    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
-
-    // Blacklist should succeed via fallback
-    let result = fallback.blacklist(&claims.jti, remaining_ttl).await;
-    assert!(
-        result.is_ok(),
-        "FallbackTokenBlacklistStore should succeed via memory fallback"
-    );
-
-    // Token should be blacklisted in fallback
-    assert!(
-        fallback.is_blacklisted(&claims.jti).await,
-        "Token should be blacklisted in memory fallback"
-    );
-}
-
-// Test 6: Logout behavior simulation - working store
+// Test 5: Logout behavior simulation - working store
 
 /// This test simulates the logout flow with a working blacklist store.
 /// The expected behavior is that logout succeeds.

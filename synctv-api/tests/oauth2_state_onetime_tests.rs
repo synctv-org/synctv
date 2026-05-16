@@ -34,6 +34,7 @@ fn create_test_state(instance_name: &str) -> OAuth2State {
         created_at: chrono::Utc::now(),
         bind_user_id: None,
         pkce_verifier: "test_verifier_abc123".to_string(),
+        nonce: None,
     }
 }
 
@@ -108,6 +109,7 @@ async fn test_oauth2_state_expired_fails() {
         created_at: expired_time,
         bind_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
+        nonce: None,
     };
     let state_token = "test_state_token_expired";
 
@@ -152,6 +154,7 @@ async fn test_oauth2_state_different_tokens_independent() {
         created_at: chrono::Utc::now(),
         bind_user_id: Some(UserId::new()),
         pkce_verifier: "verifier_logto".to_string(),
+        nonce: None,
     };
 
     let token1 = "token_github_123";
@@ -253,6 +256,7 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
         created_at: chrono::Utc::now(),
         bind_user_id: Some(bind_user_id),
         pkce_verifier: "bind_verifier".to_string(),
+        nonce: None,
     };
     let state_token = "bind_state_token";
 

@@ -240,58 +240,11 @@ impl From<synctv_core::provider::ProviderError> for AppError {
     }
 }
 
-/// Convert `synctv_core` errors to HTTP errors
+/// Convert `synctv_core` errors through the API-layer classifier so HTTP and
+/// gRPC preserve one shared core-error mapping table.
 impl From<synctv_core::Error> for AppError {
     fn from(err: synctv_core::Error) -> Self {
-        use synctv_core::Error;
-
-        match err {
-            Error::NotFound(msg) => Self::not_found(msg),
-            Error::AlreadyExists(msg) | Error::Conflict(msg) => Self::conflict(msg),
-            Error::Authentication(msg) => Self::unauthorized(msg),
-            Error::EmailNotVerified => {
-                Self::forbidden("Email not verified. Please verify your email to continue.")
-            }
-            Error::Authorization(msg) => Self::forbidden(msg),
-            Error::InvalidInput(msg) => Self::bad_request(msg),
-            Error::RateLimited(msg) => Self::new(StatusCode::TOO_MANY_REQUESTS, msg),
-            Error::ServiceUnavailable(msg) => {
-                tracing::warn!("Service unavailable: {}", msg);
-                Self::service_unavailable()
-            }
-            Error::LockConflict(msg) => Self::new(
-                StatusCode::CONFLICT,
-                format!("Resource is being modified concurrently, please retry: {msg}"),
-            ),
-            Error::Database(e) => {
-                tracing::error!("Database error: {}", e);
-                Self::service_unavailable()
-            }
-            Error::Redis(e) => {
-                tracing::error!("Redis error: {}", e);
-                Self::service_unavailable()
-            }
-            Error::Serialization(e) => {
-                tracing::error!("Serialization error: {}", e);
-                Self::internal_server_error("Data processing error")
-            }
-            Error::Deserialization { context } => {
-                tracing::error!("Deserialization error: {}", context);
-                Self::internal_server_error("Data processing error")
-            }
-            Error::Internal(msg) => {
-                tracing::error!("Internal error: {}", msg);
-                Self::internal_server_error("Internal server error")
-            }
-            Error::OptimisticLockConflict => Self::new(
-                StatusCode::CONFLICT,
-                "Resource was modified concurrently, please retry",
-            ),
-            Error::Timeout(msg) => {
-                tracing::warn!("Backend timeout: {}", msg);
-                Self::new(StatusCode::REQUEST_TIMEOUT, msg)
-            }
-        }
+        Self::from(crate::impls::ApiError::from(err))
     }
 }
 
@@ -337,7 +290,7 @@ impl From<crate::impls::ApiError> for AppError {
                 }
             }
             ErrorKind::ServiceUnavailable => Self::service_unavailable(),
-            ErrorKind::Timeout => Self::new(StatusCode::REQUEST_TIMEOUT, msg),
+            ErrorKind::Timeout => Self::new(StatusCode::GATEWAY_TIMEOUT, msg),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
                 Self::internal("Internal error")
@@ -355,49 +308,6 @@ impl From<crate::impls::ApiError> for AppError {
 #[must_use]
 pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
-}
-
-/// Map an `AppError` back into the typed API error model when an HTTP helper
-/// must run inside an impls-layer executor closure.
-///
-/// Prefer returning `ApiError` directly from new impls code. This bridge is a
-/// narrow compatibility path for legacy HTTP helpers that still need to run
-/// inside impls-layer executor closures; it is not a lossless `AppError`
-/// serializer.
-#[must_use]
-pub(crate) fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
-    use crate::impls::{error_codes, ApiError};
-
-    let AppError {
-        status,
-        message,
-        error_code,
-        retry_after_seconds,
-        extra_headers: _,
-    } = err;
-
-    match status {
-        StatusCode::BAD_REQUEST => ApiError::InvalidInput(message),
-        StatusCode::UNAUTHORIZED => ApiError::Authentication(message),
-        StatusCode::FORBIDDEN => ApiError::Authorization(message),
-        StatusCode::NOT_FOUND => ApiError::NotFound(message),
-        StatusCode::CONFLICT => match error_code {
-            Some(error_codes::ALREADY_EXISTS) => ApiError::AlreadyExists(message),
-            Some(error_codes::CONFLICT | _) | None => ApiError::Conflict(message),
-        },
-        StatusCode::TOO_MANY_REQUESTS => match retry_after_seconds {
-            Some(retry_after_seconds) => ApiError::RateLimitedWithRetry {
-                message,
-                retry_after_seconds,
-            },
-            None => ApiError::RateLimited(message),
-        },
-        StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(message),
-        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT | StatusCode::SERVICE_UNAVAILABLE => {
-            ApiError::ServiceUnavailable(message)
-        }
-        _ => ApiError::Internal(message),
-    }
 }
 
 #[cfg(test)]
@@ -786,7 +696,22 @@ mod tests {
         let app_err = AppError::from(core_err);
         assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
         // Internal error messages should NOT leak to the client
-        assert_eq!(app_err.message, "Internal server error");
+        assert_eq!(app_err.message, "Internal error");
+        assert_eq!(
+            app_err.error_code,
+            Some(crate::impls::error_codes::INTERNAL_ERROR)
+        );
+    }
+
+    #[test]
+    fn test_from_core_redis_timeout_internal_uses_api_classifier() {
+        let core_err = synctv_core::Error::Internal("Redis timeout: store session".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            app_err.error_code,
+            Some(crate::impls::error_codes::SERVICE_UNAVAILABLE)
+        );
     }
 
     #[test]
@@ -814,10 +739,10 @@ mod tests {
     }
 
     #[test]
-    fn test_from_core_timeout_maps_to_request_timeout() {
+    fn test_from_core_timeout_maps_to_gateway_timeout() {
         let core_err = synctv_core::Error::Timeout("redis lock renewal timed out".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(app_err.status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(app_err.message, "redis lock renewal timed out");
     }
 
@@ -847,7 +772,11 @@ mod tests {
             synctv_core::Error::LockConflict("Lock already held: create_room:user1".to_string());
         let app_err = AppError::from(core_err);
         assert_eq!(app_err.status, StatusCode::CONFLICT);
-        assert!(app_err.message.contains("please retry"));
+        assert_eq!(app_err.message, "Lock already held: create_room:user1");
+        assert_eq!(
+            app_err.error_code,
+            Some(crate::impls::error_codes::CONFLICT)
+        );
     }
 
     #[test]
@@ -939,42 +868,9 @@ mod tests {
     fn test_from_api_error_timeout() {
         let api_err = crate::impls::ApiError::Timeout("request budget exceeded".to_string());
         let app_err = AppError::from(api_err);
-        assert_eq!(app_err.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(app_err.status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(app_err.message, "request budget exceeded");
         assert_eq!(app_err.error_code, Some(crate::impls::error_codes::TIMEOUT));
-    }
-
-    #[test]
-    fn test_app_error_to_api_error_preserves_retry_after_rate_limit() {
-        let err = app_error_to_api_error(AppError::too_many_requests_with_retry("slow down", 7));
-
-        assert!(matches!(
-            err,
-            crate::impls::ApiError::RateLimitedWithRetry {
-                ref message,
-                retry_after_seconds: 7,
-            } if message == "slow down"
-        ));
-    }
-
-    #[test]
-    fn test_app_error_to_api_error_maps_conflict_without_code_as_conflict() {
-        assert!(matches!(
-            app_error_to_api_error(AppError::conflict("concurrent update")),
-            crate::impls::ApiError::Conflict(ref message) if message == "concurrent update"
-        ));
-        assert!(matches!(
-            app_error_to_api_error(AppError::from(crate::impls::ApiError::Conflict(
-                "concurrent update".to_string()
-            ))),
-            crate::impls::ApiError::Conflict(ref message) if message == "concurrent update"
-        ));
-        assert!(matches!(
-            app_error_to_api_error(AppError::from(crate::impls::ApiError::AlreadyExists(
-                "duplicate".to_string()
-            ))),
-            crate::impls::ApiError::AlreadyExists(ref message) if message == "duplicate"
-        ));
     }
 
     #[test]

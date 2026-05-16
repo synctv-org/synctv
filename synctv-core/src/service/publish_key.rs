@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{
+    cache::KeyBuilder,
     models::{MediaId, RoomId, UserId},
     service::auth::JwtService,
     Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
@@ -121,7 +122,7 @@ pub trait JtiStore: Send + Sync {
 /// this store automatically picks up the new master.
 pub struct RedisJtiStore {
     redis_runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    key_builder: KeyBuilder,
     /// Local moka cache for fast-path checks on the same node.
     local_cache: moka::future::Cache<String, ()>,
     /// When true, reject claims if Redis is unavailable instead of falling
@@ -139,7 +140,7 @@ impl RedisJtiStore {
     ) -> Self {
         Self {
             redis_runtime,
-            key_prefix,
+            key_builder: KeyBuilder::new(key_prefix),
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
                 .time_to_live(Duration::from_secs(cache_ttl_secs))
@@ -175,7 +176,7 @@ impl RedisJtiStore {
     ) -> Self {
         Self {
             redis_runtime,
-            key_prefix,
+            key_builder: KeyBuilder::new(key_prefix),
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
                 .time_to_live(Duration::from_secs(cache_ttl_secs))
@@ -210,7 +211,7 @@ impl JtiStore for RedisJtiStore {
         }
 
         // Obtain a fresh connection snapshot (follows Sentinel failover).
-        let redis_key = format!("{}publish_key:jti:{}", self.key_prefix, jti);
+        let redis_key = self.key_builder.publish_key_jti(jti);
         let mut conn =
             crate::redis_runtime_snapshot(&*self.redis_runtime, "claim publish-key JTI").await?;
         let ttl_ms = ttl_secs.saturating_mul(1000);

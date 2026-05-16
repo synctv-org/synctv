@@ -175,19 +175,20 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
     }
 
     // Content Security Policy
-    // Relaxed for a video platform: allows media from any source (needed for
-    // provider instances like Alist, Emby, Bilibili), WebSocket connections,
-    // data URIs for thumbnails, and inline styles for the player UI.
+    // Default API responses should not grant broad media or framing privileges.
+    // Routes that intentionally serve embeddable frontend/media content can set
+    // their own CSP; this middleware preserves existing endpoint-specific
+    // headers.
     if !headers.contains_key("Content-Security-Policy") {
         headers.insert(
             CONTENT_SECURITY_POLICY.clone(),
             axum::http::HeaderValue::from_static(
                 "default-src 'self'; \
-                 media-src * blob:; \
-                 frame-src * blob:; \
+                 media-src 'none'; \
+                 frame-src 'none'; \
                  connect-src 'self' wss: ws:; \
                  img-src 'self' data: https:; \
-                 style-src 'self' 'unsafe-inline'; \
+                 style-src 'self'; \
                  script-src 'self'; \
                  frame-ancestors 'none'; \
                  base-uri 'none'",
@@ -363,7 +364,9 @@ mod tests {
             .unwrap();
 
         assert!(csp.contains("default-src 'self'"));
-        assert!(csp.contains("media-src * blob:"));
+        assert!(csp.contains("media-src 'none'"));
+        assert!(csp.contains("frame-src 'none'"));
+        assert!(csp.contains("style-src 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
     }
 

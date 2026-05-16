@@ -108,6 +108,8 @@ Outer fields:
 }
 ```
 
+By default, SyncTV uses the `issuer` for OIDC discovery. Only configure `auth_url`, `token_url`, and `jwks_url` manually when the IdP does not expose a standard discovery document; `userinfo_url` is optional, and verified ID Token claims are used when it is absent.
+
 </TabItem>
 </Tabs>
 

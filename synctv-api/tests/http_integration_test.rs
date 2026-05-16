@@ -565,7 +565,8 @@ mod security_headers {
             .unwrap();
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
-        assert!(csp.contains("media-src * blob:"));
+        assert!(csp.contains("media-src 'none'"));
+        assert!(csp.contains("frame-src 'none'"));
         assert!(csp.contains("connect-src 'self' wss: ws:"));
     }
 

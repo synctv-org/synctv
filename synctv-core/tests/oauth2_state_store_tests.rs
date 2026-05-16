@@ -42,6 +42,7 @@ fn make_state(instance_name: &str) -> OAuth2State {
         created_at: chrono::Utc::now(),
         bind_user_id: None,
         pkce_verifier: format!("verifier_{instance_name}"),
+        nonce: None,
     }
 }
 
@@ -215,6 +216,7 @@ async fn test_redis_oauth_state_multiple_tokens_isolated() {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
+            nonce: None,
         };
         store
             .store(&format!("token_{i}"), &state, ttl)
@@ -254,6 +256,7 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
         created_at: expired_time,
         bind_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
+        nonce: None,
     };
 
     // Store with long TTL (simulating Redis TTL not being enforced)

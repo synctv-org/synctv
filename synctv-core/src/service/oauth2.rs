@@ -23,6 +23,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::{
+    cache::KeyBuilder,
     models::{oauth2_client::OAuth2Provider, SignupMethod, User, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
@@ -136,7 +137,7 @@ pub fn shared_oauth_state_store(
 pub struct RedisOAuthStateStore {
     /// Redis runtime that yields a fresh connection snapshot per operation.
     conn: std::sync::Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    key_builder: KeyBuilder,
 }
 
 impl RedisOAuthStateStore {
@@ -147,15 +148,6 @@ impl RedisOAuthStateStore {
         run_oauth_state_redis_op(self.conn.operation_timeout(), operation, future).await
     }
 
-    fn normalize_key_prefix(prefix: impl Into<String>) -> String {
-        let key_prefix = prefix.into();
-        if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        }
-    }
-
     #[must_use]
     pub fn from_runtime(
         conn: std::sync::Arc<dyn RedisConnectionRuntime>,
@@ -163,7 +155,7 @@ impl RedisOAuthStateStore {
     ) -> Self {
         Self {
             conn,
-            key_prefix: Self::normalize_key_prefix(key_prefix),
+            key_builder: KeyBuilder::new(key_prefix),
         }
     }
 
@@ -173,11 +165,7 @@ impl RedisOAuthStateStore {
     }
 
     fn redis_key(&self, token_id: &str) -> String {
-        format!("{}{}", self.key_prefix, Self::state_key_suffix(token_id))
-    }
-
-    fn state_key_suffix(token_id: &str) -> String {
-        format!("oauth2:state:{token_id}")
+        self.key_builder.oauth2_state(token_id)
     }
 }
 
@@ -369,6 +357,9 @@ pub struct OAuth2State {
     pub bind_user_id: Option<UserId>,
     /// PKCE code verifier (RFC 7636) - stored server-side, sent during token exchange
     pub pkce_verifier: String,
+    /// Provider nonce for OIDC ID Token replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 /// `OAuth2` user info from provider (service layer)
@@ -765,7 +756,7 @@ impl OAuth2Service {
         let state_token = synctv_common::snanoid!(32);
 
         // Generate authorization URL with PKCE challenge (lock is NOT held here)
-        let (auth_url, pkce_verifier) = Self::run_with_control(control, async {
+        let auth = Self::run_with_control(control, async {
             provider
                 .new_auth_url(&state_token)
                 .await
@@ -779,7 +770,8 @@ impl OAuth2Service {
             redirect_url,
             created_at: chrono::Utc::now(),
             bind_user_id,
-            pkce_verifier,
+            pkce_verifier: auth.pkce_verifier,
+            nonce: auth.nonce,
         };
 
         self.store_state_with_control(&state_token, &oauth_state, control)
@@ -790,14 +782,15 @@ impl OAuth2Service {
             instance_name
         );
 
-        Ok((auth_url, state_token))
+        Ok((auth.auth_url, state_token))
     }
 
     /// Validate redirect URL to prevent open redirect vulnerabilities (CWE-601)
     ///
     /// Accepted forms:
     /// - Relative paths (`/dashboard`)
-    /// - Native-app custom schemes (`mysynctv://oauth2/callback`)
+    /// - Native-app custom schemes matching the configured redirect domain allowlist
+    ///   (`com.example.app:/oauth2/callback` when `app.example.com` is allowed)
     /// - Loopback HTTP URLs for native clients (`http://127.0.0.1:34567/callback`)
     /// - Absolute HTTP/HTTPS URLs matching the configured allowlist
     fn validate_redirect_url_with_allowlist(url: &str, allowed_domains: &[String]) -> Result<()> {
@@ -833,12 +826,13 @@ impl OAuth2Service {
                 }
 
                 if scheme != "http" && scheme != "https" {
-                    if Self::is_native_custom_scheme_redirect(&parsed_url) {
+                    if Self::is_allowed_native_custom_scheme_redirect(&parsed_url, allowed_domains)
+                    {
                         return Ok(());
                     }
 
                     return Err(Error::InvalidInput(format!(
-                        "Invalid URL scheme: {scheme}. Only http, https, or native-app custom schemes are allowed"
+                        "Invalid URL scheme: {scheme}. Only http, https, or configured native-app custom schemes are allowed"
                     )));
                 }
 
@@ -853,25 +847,7 @@ impl OAuth2Service {
                             .to_string(),
                     ));
                 }
-                let domain_matched = allowed_domains.iter().any(|d| {
-                    // Reject TLD-only entries (no dots) to prevent overly broad matching.
-                    // e.g. "com" in the allowlist should NOT allow all.com domains.
-                    if !d.contains('.') {
-                        return false;
-                    }
-                    // Exact match or single-level subdomain only (e.g. "sub.example.com"
-                    // matches allowlist entry "example.com", but "deep.sub.example.com" does not)
-                    if host == d {
-                        return true;
-                    }
-                    let suffix = format!(".{d}");
-                    if let Some(prefix) = host.strip_suffix(&suffix) {
-                        // Only allow single-level subdomain: prefix must not contain dots
-                        !prefix.contains('.')
-                    } else {
-                        false
-                    }
-                });
+                let domain_matched = Self::redirect_host_matches_allowlist(host, allowed_domains);
                 if !domain_matched {
                     return Err(Error::InvalidInput(format!(
                         "Redirect URL domain '{host}' is not in the allowed domains list"
@@ -886,7 +862,10 @@ impl OAuth2Service {
         }
     }
 
-    fn is_native_custom_scheme_redirect(parsed_url: &url::Url) -> bool {
+    fn is_allowed_native_custom_scheme_redirect(
+        parsed_url: &url::Url,
+        allowed_domains: &[String],
+    ) -> bool {
         let scheme = parsed_url.scheme();
         if matches!(
             scheme,
@@ -911,11 +890,50 @@ impl OAuth2Service {
             return false;
         }
 
-        !parsed_url.path().is_empty() || parsed_url.host_str().is_some()
+        if parsed_url.path().is_empty() && parsed_url.host_str().is_none() {
+            return false;
+        }
+
+        let reversed_scheme_domain = match Self::reverse_domain_from_native_scheme(scheme) {
+            Some(domain) => domain,
+            None => return false,
+        };
+
+        Self::redirect_host_matches_allowlist(&reversed_scheme_domain, allowed_domains)
     }
 
     fn is_loopback_host(host: &str) -> bool {
         matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    }
+
+    fn reverse_domain_from_native_scheme(scheme: &str) -> Option<String> {
+        let parts = scheme.split('.').collect::<Vec<_>>();
+        if parts.len() < 3 || parts.iter().any(|part| part.is_empty()) {
+            return None;
+        }
+
+        Some(parts.into_iter().rev().collect::<Vec<_>>().join("."))
+    }
+
+    fn redirect_host_matches_allowlist(host: &str, allowed_domains: &[String]) -> bool {
+        allowed_domains
+            .iter()
+            .any(|domain| Self::redirect_domain_matches(host, domain))
+    }
+
+    fn redirect_domain_matches(host: &str, allowed_domain: &str) -> bool {
+        // Reject TLD-only entries (no dots) to prevent overly broad matching.
+        // e.g. "com" in the allowlist should NOT allow all.com domains.
+        if !allowed_domain.contains('.') {
+            return false;
+        }
+        if host == allowed_domain {
+            return true;
+        }
+
+        let suffix = format!(".{allowed_domain}");
+        host.strip_suffix(&suffix)
+            .is_some_and(|prefix| !prefix.contains('.'))
     }
 
     /// Verify `OAuth2` state during callback
@@ -954,6 +972,41 @@ impl OAuth2Service {
         pkce_verifier: &str,
         control: Option<&ExecutionControl>,
     ) -> Result<OAuth2UserInfo> {
+        self.exchange_code_for_user_info_with_nonce_and_control(
+            instance_name,
+            code,
+            pkce_verifier,
+            None,
+            control,
+        )
+        .await
+    }
+
+    pub async fn exchange_code_for_user_info_with_state_and_control(
+        &self,
+        instance_name: &str,
+        code: &str,
+        oauth_state: &OAuth2State,
+        control: Option<&ExecutionControl>,
+    ) -> Result<OAuth2UserInfo> {
+        self.exchange_code_for_user_info_with_nonce_and_control(
+            instance_name,
+            code,
+            &oauth_state.pkce_verifier,
+            oauth_state.nonce.as_deref(),
+            control,
+        )
+        .await
+    }
+
+    async fn exchange_code_for_user_info_with_nonce_and_control(
+        &self,
+        instance_name: &str,
+        code: &str,
+        pkce_verifier: &str,
+        nonce: Option<&str>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<OAuth2UserInfo> {
         let entry = self.provider_entry(instance_name).await?;
         let provider = entry.provider;
         let provider_type = entry.provider_type;
@@ -963,7 +1016,7 @@ impl OAuth2Service {
         // Network I/O without holding the lock
         let user_info = Self::run_with_control(control, async {
             provider
-                .get_user_info(code, pkce_verifier)
+                .get_user_info(code, pkce_verifier, nonce)
                 .await
                 .internal_with_err("Failed to get user info")
         })
@@ -1466,6 +1519,7 @@ impl OAuth2Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oauth2::OAuth2Authorization;
     use crate::oauth2::Provider as OAuth2ProviderTrait;
     use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
@@ -1587,16 +1641,17 @@ mod tests {
             "mock"
         }
 
-        async fn new_auth_url(&self, state: &str) -> Result<(String, String)> {
+        async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization> {
             // Append state to URL like a real provider would
             let url = format!("{}&state={state}", self.auth_url);
-            Ok((url, self.pkce_verifier.clone()))
+            Ok(OAuth2Authorization::new(url, self.pkce_verifier.clone()))
         }
 
         async fn get_user_info(
             &self,
             _code: &str,
             _pkce_verifier: &str,
+            _nonce: Option<&str>,
         ) -> Result<crate::oauth2::OAuth2UserInfo> {
             if let Some(ref err) = self.exchange_error {
                 return Err(Error::Internal(err.clone()));
@@ -1773,10 +1828,32 @@ mod tests {
     }
 
     #[test]
-    fn test_redirect_native_custom_scheme_allowed() {
-        let result =
-            OAuth2Service::validate_redirect_url_with_allowlist("mysynctv://oauth2/callback", &[]);
+    fn test_redirect_native_custom_scheme_rejected_without_allowlist() {
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "io.github.synctv://oauth2/callback",
+            &[],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_redirect_native_custom_scheme_allowed_when_reverse_domain_matches() {
+        let domains = vec!["github.io".to_string()];
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "io.github.synctv://oauth2/callback",
+            &domains,
+        );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_redirect_native_custom_scheme_rejects_non_reverse_domain_scheme() {
+        let domains = vec!["github.io".to_string()];
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "mysynctv://oauth2/callback",
+            &domains,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1816,6 +1893,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "verifier123".to_string(),
+            nonce: None,
         };
 
         service.store_state("token_abc", &state).await.unwrap();
@@ -1836,6 +1914,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "v".to_string(),
+            nonce: None,
         };
 
         service.store_state("token_once", &state).await.unwrap();
@@ -1875,6 +1954,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: Some(user_id),
             pkce_verifier: "bind_verifier".to_string(),
+            nonce: None,
         };
 
         service.store_state("bind_token", &state).await.unwrap();
@@ -1895,6 +1975,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "pkce_v".to_string(),
+            nonce: None,
         };
 
         service.store_state("verify_tok", &state).await.unwrap();
@@ -2124,8 +2205,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_authorization_url_accepts_native_client_redirects() {
-        let service = create_test_service();
+    async fn test_get_authorization_url_accepts_configured_native_client_redirects() {
+        let service = create_test_service_with_domains(vec!["github.io".to_string()]);
         service
             .register_provider(
                 "github".to_string(),
@@ -2135,14 +2216,26 @@ mod tests {
             .await;
 
         let (_, native_state_token) = service
-            .get_authorization_url("github", Some("mysynctv://oauth2/callback".to_string()))
+            .get_authorization_url(
+                "github",
+                Some("io.github.synctv://oauth2/callback".to_string()),
+            )
             .await
-            .expect("native custom schemes should not be rejected after HTTP validation");
+            .expect("configured native custom scheme should be accepted");
         let native_state = service.verify_state(&native_state_token).await.unwrap();
         assert_eq!(
             native_state.redirect_url.as_deref(),
-            Some("mysynctv://oauth2/callback")
+            Some("io.github.synctv://oauth2/callback")
         );
+
+        let service = create_test_service();
+        service
+            .register_provider(
+                "github".to_string(),
+                OAuth2Provider::GitHub,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
 
         let (_, loopback_state_token) = service
             .get_authorization_url(
@@ -2407,6 +2500,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: Some(UserId::expect_positive(93_004)),
             pkce_verifier: "S256_challenge_verifier".to_string(),
+            nonce: Some("oidc_nonce_123".to_string()),
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2415,6 +2509,7 @@ mod tests {
         assert_eq!(deserialized.instance_name, state.instance_name);
         assert_eq!(deserialized.redirect_url, state.redirect_url);
         assert_eq!(deserialized.pkce_verifier, state.pkce_verifier);
+        assert_eq!(deserialized.nonce, state.nonce);
         assert_eq!(
             deserialized.bind_user_id.as_ref().unwrap().to_string(),
             "93004"
@@ -2429,6 +2524,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "v".to_string(),
+            nonce: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2452,6 +2548,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 bind_user_id: None,
                 pkce_verifier: format!("verifier_{i}"),
+                nonce: None,
             };
             service
                 .store_state(&format!("token_{i}"), &state)
@@ -2544,6 +2641,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "concurrent_verifier".to_string(),
+            nonce: None,
         };
 
         service
@@ -2633,6 +2731,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 bind_user_id: None,
                 pkce_verifier: format!("verifier_{i}"),
+                nonce: None,
             };
             service
                 .store_state(&format!("isolated_token_{i}"), &state)
@@ -2675,6 +2774,7 @@ mod tests {
             created_at: expired_time,
             bind_user_id: None,
             pkce_verifier: "expired_verifier".to_string(),
+            nonce: None,
         };
 
         // Store the state directly (bypassing normal TTL enforcement)
@@ -2704,6 +2804,7 @@ mod tests {
             created_at: within_ttl_time,
             bind_user_id: None,
             pkce_verifier: "valid_verifier".to_string(),
+            nonce: None,
         };
 
         service
@@ -2733,6 +2834,7 @@ mod tests {
             created_at: past_boundary_time,
             bind_user_id: None,
             pkce_verifier: "boundary_verifier".to_string(),
+            nonce: None,
         };
 
         service.store_state("boundary_token", &state).await.unwrap();
@@ -2762,6 +2864,7 @@ mod tests {
             created_at: expired_time,
             bind_user_id: None,
             pkce_verifier: "expired".to_string(),
+            nonce: None,
         };
 
         service
@@ -2927,6 +3030,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "test_verifier".to_string(),
+            nonce: None,
         };
 
         store
@@ -2960,6 +3064,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "v".to_string(),
+            nonce: None,
         };
 
         // Store multiple entries
@@ -3003,6 +3108,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     bind_user_id: None,
                     pkce_verifier: format!("verifier_{i}"),
+                    nonce: None,
                 };
 
                 // Store the state
@@ -3050,6 +3156,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "v".to_string(),
+            nonce: None,
         };
         store
             .store("shared_token", &state, std::time::Duration::from_mins(5))

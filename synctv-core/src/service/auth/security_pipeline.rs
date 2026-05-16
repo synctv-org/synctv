@@ -600,6 +600,7 @@ mod tests {
             iat: now.timestamp(),
             exp: (now + chrono::Duration::hours(1)).timestamp(),
             pv,
+            sid: None,
             amr: None,
             iss: None,
             aud: None,

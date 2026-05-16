@@ -4,12 +4,12 @@ use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
     validate_provider_url,
 };
-use crate::oauth2::{OAuth2UserInfo, Provider};
+use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
     basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -111,20 +111,27 @@ impl Provider for LogtoProvider {
         "logto"
     }
 
-    async fn new_auth_url(&self, state: &str) -> Result<(String, String), Error> {
+    async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization, Error> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (auth_url, _csrf_token) = self
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
+            .add_scope(Scope::new("openid".to_string()))
+            .add_scope(Scope::new("profile".to_string()))
+            .add_scope(Scope::new("email".to_string()))
             .set_pkce_challenge(pkce_challenge)
             .url();
-        Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
+        Ok(OAuth2Authorization::new(
+            auth_url.to_string(),
+            pkce_verifier.secret().clone(),
+        ))
     }
 
     async fn get_user_info(
         &self,
         code: &str,
         pkce_verifier: &str,
+        _nonce: Option<&str>,
     ) -> Result<OAuth2UserInfo, Error> {
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
@@ -282,7 +289,9 @@ mod tests {
         .unwrap();
 
         let state = "logto_state_xyz";
-        let (auth_url, pkce_verifier) = provider.new_auth_url(state).await.unwrap();
+        let auth = provider.new_auth_url(state).await.unwrap();
+        let auth_url = auth.auth_url;
+        let pkce_verifier = auth.pkce_verifier;
 
         // Auth URL should use the custom endpoint's OIDC auth path
         assert!(auth_url.starts_with("https://auth.logto.io/oidc/auth"));
@@ -292,6 +301,9 @@ mod tests {
         assert!(auth_url.contains(&format!("state={state}")));
         // Auth URL should contain redirect_uri
         assert!(auth_url.contains("redirect_uri="));
+        assert!(auth_url.contains("scope=openid"));
+        assert!(auth_url.contains("+profile"));
+        assert!(auth_url.contains("+email"));
         // Auth URL should contain PKCE code_challenge
         assert!(auth_url.contains("code_challenge="));
         assert!(auth_url.contains("code_challenge_method=S256"));
@@ -309,7 +321,7 @@ mod tests {
         )
         .unwrap();
 
-        let (auth_url, _) = provider.new_auth_url("state").await.unwrap();
+        let auth_url = provider.new_auth_url("state").await.unwrap().auth_url;
         // Should not have double slashes
         assert!(auth_url.starts_with("https://logto.example.com/oidc/auth"));
         assert!(!auth_url.contains("//oidc"));

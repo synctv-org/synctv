@@ -5,7 +5,7 @@ use std::time::Duration;
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{Error, InternalExt, RedisConnectionRuntime, Result};
+use crate::{cache::KeyBuilder, Error, InternalExt, RedisConnectionRuntime, Result};
 
 static CONSUME_REDIS_VALUE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     redis::Script::new(
@@ -21,7 +21,7 @@ static CONSUME_REDIS_VALUE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
 
 pub(crate) struct RedisJsonSessionStore {
     runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    key_builder: KeyBuilder,
 }
 
 impl RedisJsonSessionStore {
@@ -30,21 +30,14 @@ impl RedisJsonSessionStore {
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
-        let key_prefix = key_prefix.into();
-        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        };
-
         Self {
             runtime,
-            key_prefix,
+            key_builder: KeyBuilder::new(key_prefix),
         }
     }
 
     fn redis_key(&self, namespace: &str, session_id: &str) -> String {
-        format!("{}{namespace}:{session_id}", self.key_prefix)
+        self.key_builder.session(namespace, session_id)
     }
 
     async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
@@ -148,6 +141,10 @@ mod tests {
         assert_eq!(
             store.redis_key("auth:test", "sess1"),
             "synctv:auth:test:sess1"
+        );
+        assert_eq!(
+            store.redis_key("auth:test", "sess:1"),
+            "synctv:auth:test:sess_1"
         );
 
         let store = RedisJsonSessionStore::new(Arc::new(NoopRuntime), "synctv:");

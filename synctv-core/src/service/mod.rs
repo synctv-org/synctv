@@ -52,8 +52,7 @@ pub use auth::security_pipeline::{
     BlacklistEnforcement, SecurityPipelineBuildError, SecurityPipelineBuilder,
 };
 pub use auth::token_blacklist::{
-    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, PgTokenBlacklistStore,
-    RedisSyncableTokenBlacklistStore, SyncStats, TieredTokenBlacklistStore,
+    InMemoryTokenBlacklistStore, PgTokenBlacklistStore, TieredTokenBlacklistStore,
 };
 pub use auth::{
     brute_force_protection_from_shared_state_profile, hash_password, verify_password,

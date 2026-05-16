@@ -22,6 +22,7 @@ use crate::http::{
     error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppError, AppResult,
     AppState,
 };
+use crate::impls::ApiError;
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::common::ProviderInstanceQuery;
 use crate::proto::providers::emby::GetBindsResponse;
@@ -83,7 +84,7 @@ fn build_thumbnail_proxy_action(
     api_key: &str,
     max_height: u32,
     max_width: u32,
-) -> Result<ProxyAction, AppError> {
+) -> Result<ProxyAction, ApiError> {
     let thumbnail_path = if max_width > 0 {
         format!(
             "/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90"
@@ -93,7 +94,7 @@ fn build_thumbnail_proxy_action(
     };
 
     let url = synctv_core::provider::emby::emby_server_url(host, &thumbnail_path)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
 
     Ok(ProxyAction::FetchAndForward {
         url,
@@ -110,16 +111,18 @@ fn build_thumbnail_proxy_action_from_credential(
     credential: &ProviderCredential,
     max_height: u32,
     max_width: u32,
-) -> Result<ProxyAction, AppError> {
+) -> Result<ProxyAction, ApiError> {
     if item_id.trim().is_empty() {
-        return Err(AppError::bad_request("item_id must not be empty"));
+        return Err(ApiError::InvalidInput(
+            "item_id must not be empty".to_string(),
+        ));
     }
 
     match credential {
         ProviderCredential::Emby { host, api_key, .. } => {
             build_thumbnail_proxy_action(item_id.trim(), host, api_key, max_height, max_width)
         }
-        _ => Err(AppError::internal(
+        _ => Err(ApiError::Internal(
             "Stored credential is not an Emby credential".to_string(),
         )),
     }
@@ -207,6 +210,20 @@ fn authorize_thumbnail_request(
         ..scope
     };
     verify_signed_thumbnail_access(signing_key, public_auth_user_id, raw_query, scope).map(Some)
+}
+
+fn app_error_to_thumbnail_api_error(error: AppError) -> ApiError {
+    match error.status {
+        axum::http::StatusCode::UNAUTHORIZED => ApiError::Authentication(error.message),
+        axum::http::StatusCode::FORBIDDEN => ApiError::Authorization(error.message),
+        axum::http::StatusCode::BAD_REQUEST => ApiError::InvalidInput(error.message),
+        axum::http::StatusCode::NOT_FOUND => ApiError::NotFound(error.message),
+        axum::http::StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(error.message),
+        axum::http::StatusCode::TOO_MANY_REQUESTS => ApiError::RateLimited(error.message),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE => ApiError::ServiceUnavailable(error.message),
+        _ if error.status.is_server_error() => ApiError::Internal(error.message),
+        _ => ApiError::InvalidInput(error.message),
+    }
 }
 
 pub(crate) fn sign_emby_thumbnail_url(
@@ -604,7 +621,7 @@ pub(crate) async fn thumbnail(
     let raw_query = raw_query.as_deref().unwrap_or("");
     let operation_state = state.clone();
     let request_meta = provider_request_metadata(request_meta);
-    let response = state
+    let action = state
         .shared_api_runtime
         .client_api
         .execute_user_endpoint(
@@ -633,7 +650,7 @@ pub(crate) async fn thumbnail(
                     credential_owner_id,
                     scope,
                 )
-                .map_err(crate::http::error::app_error_to_api_error)?
+                .map_err(app_error_to_thumbnail_api_error)?
                 {
                     let room_id = state
                         .shared_api_runtime
@@ -679,16 +696,15 @@ pub(crate) async fn thumbnail(
                 })?;
                 let action = build_thumbnail_proxy_action_from_credential(
                     &item_id, &parsed, max_height, max_width,
-                )
-                .map_err(crate::http::error::app_error_to_api_error)?;
+                )?;
 
-                super::execute_proxy_action_with_state(&state, action, &headers, None)
-                    .await
-                    .map_err(crate::http::error::app_error_to_api_error)
+                Ok::<ProxyAction, ApiError>(action)
             },
         )
         .await
         .map_err(map_api_error)?;
+
+    let response = super::execute_proxy_action_with_state(&state, action, &headers, None).await?;
 
     Ok(response)
 }

@@ -815,8 +815,6 @@ pub struct UserService {
     /// Explicit registration policy override for tests that exercise public
     /// registration flows without bootstrapping runtime settings.
     password_registration_policy_override_for_tests: Option<RegistrationPolicy>,
-    legacy_password_registration_enabled_for_tests: bool,
-    legacy_password_login_enabled_for_tests: bool,
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
@@ -1032,17 +1030,20 @@ impl UserService {
             }
         }
 
-        let access_token = self.jwt_service.sign_token_with_auth_context(
+        let session_id = synctv_common::snanoid!(32);
+        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Access,
             user.password_version,
             token_auth_context,
+            Some(&session_id),
         )?;
-        let refresh_token = self.jwt_service.sign_token_with_auth_context(
+        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Refresh,
             user.password_version,
             token_auth_context,
+            Some(&session_id),
         )?;
 
         Ok((access_token, refresh_token))
@@ -1800,8 +1801,6 @@ impl UserService {
             realtime_outbox: runtime.realtime_outbox,
             settings_registry: runtime.settings_registry,
             password_registration_policy_override_for_tests: None,
-            legacy_password_registration_enabled_for_tests: false,
-            legacy_password_login_enabled_for_tests: false,
             password_hasher: runtime
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
@@ -1841,20 +1840,11 @@ impl UserService {
         });
     }
 
-    /// Allow tests for legacy password-hash behavior to use plaintext login.
-    ///
-    /// Production local password login goes through OPAQUE and must not fall
-    /// back to server-verifiable password hashes.
-    pub const fn enable_legacy_password_login_for_tests(&mut self) {
-        self.legacy_password_login_enabled_for_tests = true;
-    }
+    /// Kept for older tests/helpers. Legacy password mode is enabled by default.
+    pub const fn enable_legacy_password_login_for_tests(&mut self) {}
 
-    /// Allow tests for legacy password-hash behavior to persist legacy hashes.
-    ///
-    /// Production password registration uses OPAQUE-only credential material.
-    pub const fn enable_legacy_password_registration_for_tests(&mut self) {
-        self.legacy_password_registration_enabled_for_tests = true;
-    }
+    /// Kept for older tests/helpers. Legacy password registration is enabled by default.
+    pub const fn enable_legacy_password_registration_for_tests(&mut self) {}
 
     /// Enable email verification requirement for login (call when email service is configured)
     pub const fn set_email_verification_required(&mut self, required: bool) {
@@ -2723,19 +2713,10 @@ impl UserService {
             ));
         }
 
-        let (legacy_password_hash, opaque_record) =
-            if self.legacy_password_registration_enabled_for_tests {
-                let (password_hash, opaque_record) = self
-                    .build_password_credentials_for_new_user(&username, &password)
-                    .await?;
-                (Some(password_hash), opaque_record)
-            } else {
-                let opaque_record = self.opaque_password_service.register_password(
-                    &Self::opaque_credential_identifier_for_new_user(&username),
-                    &password,
-                )?;
-                (None, opaque_record)
-            };
+        let (password_hash, opaque_record) = self
+            .build_password_credentials_for_new_user(&username, &password)
+            .await?;
+        let legacy_password_hash = Some(password_hash);
 
         // Signup review is an approval workflow, not an account lifecycle state.
         // Pending registrations live in `user_registration_requests` and do not
@@ -2813,15 +2794,20 @@ impl UserService {
         }
 
         // Generate JWT tokens (role will be fetched from DB on each request)
-        let access_token = self.jwt_service.sign_token(
+        let session_id = synctv_common::snanoid!(32);
+        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Access,
             created_user.password_version,
+            None,
+            Some(&session_id),
         )?;
-        let refresh_token = self.jwt_service.sign_token(
+        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Refresh,
             created_user.password_version,
+            None,
+            Some(&session_id),
         )?;
 
         Ok((created_user, Some(access_token), Some(refresh_token)))
@@ -2952,15 +2938,20 @@ impl UserService {
             return Ok((created_user, None, None));
         }
 
-        let access_token = self.jwt_service.sign_token(
+        let session_id = synctv_common::snanoid!(32);
+        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Access,
             created_user.password_version,
+            None,
+            Some(&session_id),
         )?;
-        let refresh_token = self.jwt_service.sign_token(
+        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Refresh,
             created_user.password_version,
+            None,
+            Some(&session_id),
         )?;
 
         Ok((created_user, Some(access_token), Some(refresh_token)))
@@ -2983,19 +2974,10 @@ impl UserService {
             Self::validate_email(email)?;
         }
         self.validate_password(&password)?;
-        let (legacy_password_hash, opaque_record) =
-            if self.legacy_password_registration_enabled_for_tests {
-                let (password_hash, opaque_record) = self
-                    .build_password_credentials_for_new_user(&username, &password)
-                    .await?;
-                (Some(password_hash), opaque_record)
-            } else {
-                let opaque_record = self.opaque_password_service.register_password(
-                    &Self::opaque_credential_identifier_for_new_user(&username),
-                    &password,
-                )?;
-                (None, opaque_record)
-            };
+        let (password_hash, opaque_record) = self
+            .build_password_credentials_for_new_user(&username, &password)
+            .await?;
+        let legacy_password_hash = Some(password_hash);
         let user = User::new(
             username,
             email,
@@ -3097,12 +3079,21 @@ impl UserService {
 
     /// Generate JWT tokens and populate username cache for a newly created user.
     pub async fn finalize_registration(&self, user: &User) -> Result<(String, String)> {
-        let access_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let session_id = synctv_common::snanoid!(32);
+        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
+            &user.id,
+            TokenType::Access,
+            user.password_version,
+            None,
+            Some(&session_id),
+        )?;
+        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
+            &user.id,
+            TokenType::Refresh,
+            user.password_version,
+            None,
+            Some(&session_id),
+        )?;
         self.cache_username_best_effort(&user.id, &user.username, "finalize_registration")
             .await;
         Ok((access_token, refresh_token))
@@ -3140,16 +3131,6 @@ impl UserService {
         control: Option<&ExecutionControl>,
     ) -> Result<AuthenticatedLogin> {
         let normalized_identifier = Self::normalize_login_identifier(&identifier);
-
-        if !self.legacy_password_login_enabled_for_tests {
-            self.brute_force
-                .record_ip_failure_with_control(client_ip, control)
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(error = %error, "Failed to record disabled legacy password login attempt");
-                });
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
 
         // Check brute-force lockout before expensive Argon2 verification.
         // This applies to all usernames (existing or not) to prevent
@@ -3482,8 +3463,8 @@ impl UserService {
     /// Each refresh token can only be used once:
     /// 1. The old refresh token's JTI is checked against the Redis blacklist.
     /// 2. If the JTI is blacklisted, the request is rejected (possible token theft replay).
-    ///    Additionally, the entire refresh token family for the user is revoked as a
-    ///    precaution (all refresh tokens issued before this moment become invalid).
+    ///    Additionally, the refresh-token family for that login session is revoked as a
+    ///    precaution (all same-session refresh tokens issued before this moment become invalid).
     /// 3. After issuing new tokens, the old JTI is added to the blacklist with a TTL
     ///    equal to the old token's remaining lifetime.
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
@@ -3554,11 +3535,10 @@ impl UserService {
         {
             let old_jti = &claims.jti;
 
-            // Check if the entire refresh token family for this user has been revoked
-            // (triggered when a blacklisted JTI is replayed, indicating possible token theft).
-            let family_key = self
-                .key_builder
-                .refresh_token_family_revoked(&user_id.to_string());
+            // Check if the refresh token family for this login session has been
+            // revoked. Older tokens without a session id fall back to the
+            // user-wide key used before sid was introduced.
+            let family_key = self.refresh_token_family_key(&user_id, claims.sid.as_deref());
             let family_revoked_at = self
                 .token_blacklist
                 .get_family_revoked_at_checked(&family_key)
@@ -3596,11 +3576,11 @@ impl UserService {
                 if already_existed {
                     // A blacklisted JTI is being replayed! This indicates the refresh token
                     // was stolen and both the legitimate user and attacker are trying to use it.
-                    // Revoke the entire refresh token family for this user as a precaution.
+                    // Revoke the refresh-token family for this login session as a precaution.
                     tracing::warn!(
                         user_id = %user_id,
                         jti = %old_jti,
-                        "Blacklisted refresh token JTI replayed — revoking entire token family"
+                        "Blacklisted refresh token JTI replayed - revoking token session"
                     );
 
                     let family_ttl = self
@@ -3623,17 +3603,20 @@ impl UserService {
             Some("oauth2") => Some(TokenAuthContext::OAuth2),
             _ => None,
         };
-        let new_access_token = self.jwt_service.sign_token_with_auth_context(
+        let session_id = claims.sid.as_deref();
+        let new_access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Access,
             user.password_version,
             token_auth_context,
+            session_id,
         )?;
-        let new_refresh_token = self.jwt_service.sign_token_with_auth_context(
+        let new_refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Refresh,
             user.password_version,
             token_auth_context,
+            session_id,
         )?;
 
         Ok((new_access_token, new_refresh_token))
@@ -4261,6 +4244,38 @@ impl UserService {
     pub async fn blacklist_access_token(&self, jti: &str, ttl_secs: u64) -> Result<()> {
         let key = self.key_builder.access_token_blacklist(jti);
         self.token_blacklist.blacklist(&key, ttl_secs).await
+    }
+
+    /// Revoke refresh tokens for one authenticated login session.
+    ///
+    /// Tokens issued before or during the revocation second are rejected by
+    /// `refresh_token_with_control`. New sessions use a different `sid`, so a
+    /// normal logout does not invalidate other devices.
+    pub async fn revoke_refresh_token_session(
+        &self,
+        user_id: &UserId,
+        session_id: Option<&str>,
+        revoked_at: i64,
+    ) -> Result<()> {
+        let key = self.refresh_token_family_key(user_id, session_id);
+        let family_ttl = self
+            .jwt_service
+            .refresh_token_duration_seconds()
+            .saturating_add(3600);
+        self.token_blacklist
+            .set_family_revoked(&key, revoked_at, family_ttl)
+            .await
+    }
+
+    fn refresh_token_family_key(&self, user_id: &UserId, session_id: Option<&str>) -> String {
+        match session_id {
+            Some(session_id) if !session_id.is_empty() => self
+                .key_builder
+                .refresh_token_session_revoked(&user_id.to_string(), session_id),
+            _ => self
+                .key_builder
+                .refresh_token_family_revoked(&user_id.to_string()),
+        }
     }
 
     /// Soft-delete the currently authenticated user's own account.

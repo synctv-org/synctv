@@ -30,6 +30,7 @@ use std::time::Duration;
 use synctv_common::ExecutionControl;
 use tracing::debug;
 
+use crate::cache::KeyBuilder;
 use crate::models::{RoomId, UserId};
 use crate::{Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
 
@@ -185,7 +186,7 @@ pub trait TicketStore: Send + Sync {
 /// this store automatically picks up the new master.
 pub struct RedisTicketStore {
     redis_runtime: Arc<dyn RedisConnectionRuntime>,
-    key_prefix: String,
+    key_builder: KeyBuilder,
 }
 
 impl RedisTicketStore {
@@ -194,15 +195,6 @@ impl RedisTicketStore {
         F: Future<Output = std::result::Result<T, redis::RedisError>>,
     {
         run_ws_ticket_redis_op(self.redis_runtime.operation_timeout(), operation, future).await
-    }
-
-    fn normalize_key_prefix(prefix: impl Into<String>) -> String {
-        let key_prefix = prefix.into();
-        if key_prefix.is_empty() || key_prefix.ends_with(':') {
-            key_prefix
-        } else {
-            format!("{key_prefix}:")
-        }
     }
 
     #[must_use]
@@ -220,7 +212,7 @@ impl RedisTicketStore {
     ) -> Self {
         Self {
             redis_runtime,
-            key_prefix: Self::normalize_key_prefix(key_prefix),
+            key_builder: KeyBuilder::new(key_prefix),
         }
     }
 
@@ -229,7 +221,7 @@ impl RedisTicketStore {
     }
 
     fn redis_key(&self, ticket: &str) -> String {
-        format!("{}ws_ticket:{ticket}", self.key_prefix)
+        self.key_builder.ws_ticket(ticket)
     }
 }
 
@@ -1748,18 +1740,5 @@ mod tests {
 
         assert!(!service.supports_cluster_runtime());
         assert_eq!(service.ticket_ttl_secs(), 45);
-    }
-
-    #[test]
-    fn test_redis_ticket_store_normalizes_prefix_separator() {
-        assert_eq!(
-            RedisTicketStore::normalize_key_prefix("tenant-a:"),
-            "tenant-a:"
-        );
-        assert_eq!(
-            RedisTicketStore::normalize_key_prefix("tenant-a"),
-            "tenant-a:"
-        );
-        assert_eq!(RedisTicketStore::normalize_key_prefix(""), "");
     }
 }

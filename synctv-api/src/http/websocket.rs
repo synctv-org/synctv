@@ -324,8 +324,7 @@ async fn extract_handshake_auth(
                         Some(handshake_control),
                     )
                     .await
-                    .map_err(map_websocket_ticket_validation_error)
-                    .map_err(crate::http::error::app_error_to_api_error)?;
+                    .map_err(map_websocket_ticket_validation_api_error)?;
 
                 Ok(HandshakeAuthContext {
                     user_id: pending.user_id,
@@ -359,6 +358,16 @@ fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError 
             crate::http::error::map_auth_authorization_error(&error)
         }
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
+    }
+}
+
+fn map_websocket_ticket_validation_api_error(error: synctv_core::Error) -> ApiError {
+    match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
+        AuthErrorCategory::Authentication => {
+            ApiError::Authentication("Invalid or expired ticket".to_string())
+        }
+        AuthErrorCategory::Authorization => ApiError::from(error),
+        AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => ApiError::from(error),
     }
 }
 
@@ -1966,6 +1975,31 @@ mod tests {
 
         assert_eq!(err.status, StatusCode::FORBIDDEN);
         assert_eq!(err.message, "Ticket not valid for this room");
+    }
+
+    #[test]
+    fn test_map_websocket_ticket_validation_api_error_keeps_ticket_semantics() {
+        let invalid = map_websocket_ticket_validation_api_error(
+            synctv_core::Error::Authentication("invalid".to_string()),
+        );
+        assert!(
+            matches!(invalid, ApiError::Authentication(message) if message == "Invalid or expired ticket")
+        );
+
+        let mismatch = map_websocket_ticket_validation_api_error(
+            synctv_core::Error::Authorization("Ticket not valid for this room".to_string()),
+        );
+        assert!(
+            matches!(mismatch, ApiError::Authorization(message) if message == "Ticket not valid for this room")
+        );
+
+        let outage =
+            map_websocket_ticket_validation_api_error(synctv_core::Error::ServiceUnavailable(
+                "Authentication service temporarily unavailable".to_string(),
+            ));
+        assert!(
+            matches!(outage, ApiError::ServiceUnavailable(message) if message.contains("temporarily unavailable"))
+        );
     }
 
     #[test]

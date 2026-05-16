@@ -103,6 +103,18 @@ pub trait BruteForceProtectionService: Send + Sync {
         ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<()>;
+    async fn check_subject_key_allowed_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
+    async fn record_subject_key_failure_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
     async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()>;
     async fn record_ip_failure_with_control(
         &self,
@@ -119,6 +131,11 @@ pub trait BruteForceProtectionService: Send + Sync {
     async fn reset_with_control(
         &self,
         username: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
+    async fn reset_subject_key_with_control(
+        &self,
+        subject_key: &str,
         control: Option<&ExecutionControl>,
     ) -> Result<()>;
     async fn reset_ip(&self, ip: &IpAddr) -> Result<()>;
@@ -176,6 +193,28 @@ where
             .await
     }
 
+    async fn check_subject_key_allowed_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .check_subject_key_allowed_with_control(subject_key, ip, control)
+            .await
+    }
+
+    async fn record_subject_key_failure_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .record_subject_key_failure_with_control(subject_key, ip, control)
+            .await
+    }
+
     async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
         self.as_ref().record_ip_failure(ip).await
     }
@@ -214,6 +253,16 @@ where
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
         self.as_ref().reset_with_control(username, control).await
+    }
+
+    async fn reset_subject_key_with_control(
+        &self,
+        subject_key: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .reset_subject_key_with_control(subject_key, control)
+            .await
     }
 
     async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
@@ -1107,6 +1156,45 @@ impl BruteForceProtection {
         ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
+        let key = self.key_builder.login_attempts(username);
+        self.check_subject_key_allowed_with_control_and_message(
+            &key,
+            ip,
+            control,
+            "Login attempt",
+            "Too many failed login attempts",
+        )
+        .await
+    }
+
+    /// Check if an attempt is allowed for an already-built subject key.
+    ///
+    /// This is for non-login domains that share attempt tracking mechanics but
+    /// must own their own key namespace, such as room password verification.
+    pub async fn check_subject_key_allowed_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.check_subject_key_allowed_with_control_and_message(
+            subject_key,
+            ip,
+            control,
+            "Attempt",
+            "Too many failed attempts",
+        )
+        .await
+    }
+
+    async fn check_subject_key_allowed_with_control_and_message(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+        log_subject: &'static str,
+        user_message_prefix: &'static str,
+    ) -> Result<()> {
         // Check IP-level lockout first
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
@@ -1121,19 +1209,18 @@ impl BruteForceProtection {
                         ip = %ip_addr,
                         attempts = ip_attempts,
                         remaining_secs = remaining,
-                        "Login attempt blocked: IP temporarily locked"
+                        "{} blocked: IP temporarily locked",
+                        log_subject
                     );
                     return Err(Error::Authentication(format!(
-                        "Too many failed login attempts. Please try again in {remaining} seconds.",
+                        "{user_message_prefix}. Please try again in {remaining} seconds.",
                     )));
                 }
             }
         }
 
-        // Check per-username lockout
-        let key = self.key_builder.login_attempts(username);
         let (attempts, last_failure_at) =
-            run_with_control(control, self.username_tracker.get_attempts(&key)).await?;
+            run_with_control(control, self.username_tracker.get_attempts(subject_key)).await?;
         let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
@@ -1141,14 +1228,15 @@ impl BruteForceProtection {
             if elapsed < lockout_secs {
                 let remaining = lockout_secs - elapsed;
                 tracing::warn!(
-                    username = %username,
+                    subject_key = %subject_key,
                     attempts = attempts,
                     lockout_secs = lockout_secs,
                     remaining_secs = remaining,
-                    "Login attempt blocked: account temporarily locked"
+                    "{} blocked: subject temporarily locked",
+                    log_subject
                 );
                 return Err(Error::Authentication(format!(
-                    "Too many failed login attempts. Please try again in {remaining} seconds.",
+                    "{user_message_prefix}. Please try again in {remaining} seconds.",
                 )));
             }
         }
@@ -1173,6 +1261,17 @@ impl BruteForceProtection {
         ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
+        let key = self.key_builder.login_attempts(username);
+        self.record_subject_key_failure_with_control(&key, ip, control)
+            .await
+    }
+
+    pub async fn record_subject_key_failure_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
 
         // Record IP-level failure
@@ -1186,12 +1285,10 @@ impl BruteForceProtection {
             .await?;
         }
 
-        // Record username-level failure
-        let key = self.key_builder.login_attempts(username);
         run_with_control(
             control,
             self.username_tracker
-                .record_failure(&key, now, self.config.attempts_ttl_secs),
+                .record_failure(subject_key, now, self.config.attempts_ttl_secs),
         )
         .await?;
         Ok(())
@@ -1288,7 +1385,15 @@ impl BruteForceProtection {
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
         let key = self.key_builder.login_attempts(username);
-        run_with_control(control, self.username_tracker.reset(&key)).await?;
+        self.reset_subject_key_with_control(&key, control).await
+    }
+
+    pub async fn reset_subject_key_with_control(
+        &self,
+        subject_key: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        run_with_control(control, self.username_tracker.reset(subject_key)).await?;
         Ok(())
     }
 
@@ -1341,6 +1446,24 @@ impl BruteForceProtectionService for BruteForceProtection {
         Self::record_failure_with_control(self, username, ip, control).await
     }
 
+    async fn check_subject_key_allowed_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::check_subject_key_allowed_with_control(self, subject_key, ip, control).await
+    }
+
+    async fn record_subject_key_failure_with_control(
+        &self,
+        subject_key: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::record_subject_key_failure_with_control(self, subject_key, ip, control).await
+    }
+
     async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
         Self::record_ip_failure(self, ip).await
     }
@@ -1375,6 +1498,14 @@ impl BruteForceProtectionService for BruteForceProtection {
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
         Self::reset_with_control(self, username, control).await
+    }
+
+    async fn reset_subject_key_with_control(
+        &self,
+        subject_key: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::reset_subject_key_with_control(self, subject_key, control).await
     }
 
     async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {

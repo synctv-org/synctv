@@ -361,7 +361,6 @@ async fn set_registered_grpc_services_serving(
     }
 }
 
-#[cfg(test)]
 async fn set_registered_grpc_services_not_serving(
     health_reporter: &tonic_health::server::HealthReporter,
     state: GrpcHealthRegistrationState,
@@ -468,6 +467,12 @@ async fn set_registered_grpc_services_not_serving(
             >>()
             .await;
     }
+}
+
+struct BuiltGrpcRouter {
+    router: axum::Router,
+    health_reporter: tonic_health::server::HealthReporter,
+    health_state: GrpcHealthRegistrationState,
 }
 
 fn validate_cluster_grpc_runtime_requirements(
@@ -692,7 +697,9 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
     ))
 }
 
-pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<axum::Router> {
+async fn build_axum_router_with_health(
+    grpc_config: GrpcServerConfig<'_>,
+) -> anyhow::Result<BuiltGrpcRouter> {
     let GrpcServerConfig {
         config,
         jwt_service,
@@ -1244,8 +1251,28 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         .into_axum_router()
         .layer(axum::middleware::from_fn(grpc_transport_only_middleware));
 
-    let _ = health_reporter;
-    Ok(router)
+    Ok(BuiltGrpcRouter {
+        router,
+        health_reporter,
+        health_state: grpc_registration_plan.health_state,
+    })
+}
+
+pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<axum::Router> {
+    Ok(build_axum_router_with_health(grpc_config).await?.router)
+}
+
+async fn wait_for_grpc_shutdown(
+    mut shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    health_reporter: tonic_health::server::HealthReporter,
+    health_state: GrpcHealthRegistrationState,
+) {
+    if let Some(rx) = shutdown_rx.as_mut() {
+        let _ = rx.changed().await;
+    } else {
+        tokio::signal::ctrl_c().await.ok();
+    }
+    set_registered_grpc_services_not_serving(&health_reporter, health_state).await;
 }
 
 /// Build and start the gRPC server
@@ -1253,37 +1280,39 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
     let shutdown_rx = grpc_config.shutdown_rx.clone();
     let grpc_listener = grpc_config.grpc_listener.take();
     let addr: std::net::SocketAddr = grpc_config.config.api_address().parse()?;
-    let router = build_axum_router(grpc_config).await?;
+    let built = build_axum_router_with_health(grpc_config).await?;
 
     if let Some(listener) = grpc_listener {
+        let shutdown = wait_for_grpc_shutdown(
+            shutdown_rx,
+            built.health_reporter.clone(),
+            built.health_state,
+        );
         axum::serve(
             listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            built
+                .router
+                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_graceful_shutdown(async move {
-            if let Some(mut rx) = shutdown_rx {
-                let _ = rx.changed().await;
-            } else {
-                tokio::signal::ctrl_c().await.ok();
-            }
-        })
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
     } else {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind API address {addr}: {e}"))?;
+        let shutdown = wait_for_grpc_shutdown(
+            shutdown_rx,
+            built.health_reporter.clone(),
+            built.health_state,
+        );
         axum::serve(
             listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            built
+                .router
+                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_graceful_shutdown(async move {
-            if let Some(mut rx) = shutdown_rx {
-                let _ = rx.changed().await;
-            } else {
-                tokio::signal::ctrl_c().await.ok();
-            }
-        })
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
     }
@@ -1302,8 +1331,8 @@ mod tests {
         should_mark_notification_service_serving, should_mark_oauth2_service_serving,
         should_mark_provider_services_serving, should_register_cluster_grpc_service,
         should_register_email_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements, FallbackHttpAppStateDeps,
-        GrpcHealthRegistrationState,
+        validate_cluster_grpc_runtime_requirements, wait_for_grpc_shutdown,
+        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
@@ -2262,6 +2291,53 @@ mod tests {
                 &health_service,
                 <crate::proto::client::notification_service_server::NotificationServiceServer<
                     crate::grpc::NotificationServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::NotServing),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_shutdown_signal_marks_health_not_serving() {
+        let health_reporter = tonic_health::server::HealthReporter::new();
+        let health_service = HealthService::from_health_reporter(health_reporter.clone());
+        let state = GrpcHealthRegistrationState {
+            auth_registered: true,
+            user_registered: false,
+            room_registered: false,
+            public_registered: false,
+            admin_registered: false,
+            email_registered: false,
+            notification_registered: false,
+            oauth2_registered: false,
+            provider_services_registered: false,
+            cluster_service_registered: false,
+            realtime_presence_registered: false,
+            proxy_slice_cache_registered: false,
+            livestream_relay_registered: false,
+        };
+        set_registered_grpc_services_serving(&health_reporter, state).await;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let shutdown_task = tokio::spawn(wait_for_grpc_shutdown(
+            Some(shutdown_rx),
+            health_reporter,
+            state,
+        ));
+
+        shutdown_tx.send(true).expect("send shutdown signal");
+        shutdown_task.await.expect("shutdown task should complete");
+
+        assert_eq!(
+            health_status_for_service(&health_service, "").await,
+            Ok(ServingStatus::NotServing),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::auth_service_server::AuthServiceServer<
+                    crate::grpc::ClientServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
             .await,

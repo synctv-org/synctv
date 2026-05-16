@@ -26,6 +26,9 @@ use std::time::Duration;
 use std::{future::Future, pin::Pin, sync::Arc};
 use url::{Host, Url};
 
+const OAUTH2_PROVIDER_HTTP_TIMEOUT: std::time::Duration =
+    crate::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+
 pub(super) struct OAuth2HttpClient {
     client: reqwest::Client,
 }
@@ -139,7 +142,7 @@ pub(super) fn build_provider_http_client(
         synctv_common::http::SsrfSafeClientBuilder::new()
             .ssrf_guard(ssrf_guard.clone())
             .connect_timeout(std::time::Duration::from_secs(10))
-            .disable_request_timeout()
+            .request_timeout(OAUTH2_PROVIDER_HTTP_TIMEOUT)
             .pool_max_idle_per_host(10)
             .build()
             .internal_with_err("Failed to build HTTP client")?,
@@ -163,7 +166,7 @@ pub(super) fn build_oauth2_http_client(
         synctv_common::http::SsrfSafeClientBuilder::new()
             .ssrf_guard(ssrf_guard.clone())
             .connect_timeout(std::time::Duration::from_secs(10))
-            .disable_request_timeout()
+            .request_timeout(OAUTH2_PROVIDER_HTTP_TIMEOUT)
             .pool_max_idle_per_host(10)
             .build()
             .internal_with_err("Failed to build OAuth2 HTTP client")

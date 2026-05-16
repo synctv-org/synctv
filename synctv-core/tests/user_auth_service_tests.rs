@@ -88,7 +88,7 @@ fn create_user_service(pool: &PgPool) -> UserService {
     create_user_service_with_blacklist(pool, token_blacklist)
 }
 
-fn create_user_service_without_legacy_login_override(pool: &PgPool) -> UserService {
+fn create_user_service_with_default_legacy_mode(pool: &PgPool) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
@@ -719,6 +719,126 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_legacy_refresh_token_replay_revokes_legacy_descendants() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let service = create_user_service_with_blacklist(&pool, token_blacklist);
+
+    let (user, _access, Some(_refresh_token)) = service
+        .register(
+            format!("legacy_replay_user_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "legacy_replay_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens");
+    };
+
+    let jwt = create_jwt_service();
+    let legacy_refresh = jwt
+        .sign_token(
+            &user.id,
+            synctv_core::service::auth::TokenType::Refresh,
+            user.password_version,
+        )
+        .expect("legacy refresh token should be signed");
+    let legacy_claims = jwt
+        .verify_refresh_token(&legacy_refresh)
+        .expect("legacy refresh token should verify");
+    assert!(
+        legacy_claims.sid.is_none(),
+        "legacy refresh token should not have a session id"
+    );
+
+    let (_new_access, new_refresh) = service
+        .refresh_token(legacy_refresh.clone())
+        .await
+        .expect("legacy refresh should rotate successfully");
+    let new_claims = jwt
+        .verify_refresh_token(&new_refresh)
+        .expect("rotated legacy refresh token should verify");
+    assert!(
+        new_claims.sid.is_none(),
+        "rotated legacy refresh token must stay in the legacy revocation scope"
+    );
+
+    let replay_result = service.refresh_token(legacy_refresh).await;
+    assert!(
+        replay_result.is_err(),
+        "replayed legacy refresh token should revoke the legacy token family"
+    );
+
+    let descendant_result = service.refresh_token(new_refresh).await;
+    assert!(
+        descendant_result.is_err(),
+        "legacy refresh descendant should be rejected after family revocation"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_logout_session_revocation_blocks_only_current_refresh_session() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let service = create_user_service_with_blacklist(&pool, token_blacklist);
+
+    let username = format!("logout_session_{}", synctv_common::snanoid!(6));
+    let email = Some(format!(
+        "logout_session_{}@test.com",
+        synctv_common::snanoid!(6)
+    ));
+    let (user, Some(first_access), Some(first_refresh)) = service
+        .register(username.clone(), email, "StrongPass1".to_string(), None)
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens");
+    };
+    let AuthenticatedLogin::Complete {
+        refresh_token: second_refresh,
+        ..
+    } = service
+        .login(username, "StrongPass1".to_string(), None)
+        .await
+        .expect("Second login should succeed")
+    else {
+        panic!("Expected complete login");
+    };
+
+    let jwt = create_jwt_service();
+    let access_claims = jwt
+        .verify_access_token(&first_access)
+        .expect("Access token should be valid");
+    let revoked_at = access_claims.iat.saturating_add(1);
+
+    service
+        .revoke_refresh_token_session(&user.id, access_claims.sid.as_deref(), revoked_at)
+        .await
+        .expect("Logout session revocation should persist");
+
+    let first_result = service.refresh_token(first_refresh).await;
+    assert!(
+        first_result.is_err(),
+        "Refresh token from logged-out session should be rejected"
+    );
+
+    let second_result = service.refresh_token(second_refresh).await;
+    assert!(
+        second_result.is_ok(),
+        "Another login session should not be revoked by current-session logout"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_password_version_mismatch_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
@@ -919,23 +1039,23 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_legacy_password_login_is_disabled_without_test_override() {
+async fn test_legacy_password_login_is_enabled_by_default() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service_without_legacy_login_override(&pool);
+    let service = create_user_service_with_default_legacy_mode(&pool);
 
-    let username = format!("legacy_disabled_{}", synctv_common::snanoid!(6));
+    let username = format!("legacy_default_{}", synctv_common::snanoid!(6));
     service
         .register(
             username.clone(),
             Some(format!(
-                "legacy_disabled_{}@test.com",
+                "legacy_default_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
             "StrongPass1".to_string(),
             None,
         )
         .await
-        .expect("legacy test registration should still create a user");
+        .expect("legacy registration should create a user");
 
     let created = service
         .get_user_by_username(&username)
@@ -944,22 +1064,22 @@ async fn test_legacy_password_login_is_disabled_without_test_override() {
     let row = load_password_credential_row(&pool, created.id).await;
     let legacy_hash: Option<String> = row.try_get("legacy_password_hash").unwrap();
     assert!(
-        legacy_hash.is_none(),
-        "default password registration must persist OPAQUE-only credentials"
+        legacy_hash.is_some(),
+        "default password registration must persist a legacy password hash"
     );
 
     let result = service
         .login(username.clone(), "StrongPass1".to_string(), None)
         .await;
     assert!(
-        matches!(result, Err(Error::Authentication(_))),
-        "legacy password login must be disabled unless tests explicitly opt in"
+        matches!(result, Ok(AuthenticatedLogin::Complete { .. })),
+        "legacy password login must work by default"
     );
 
     let opaque_result = opaque_login(&service, username, "StrongPass1").await;
     assert!(
         opaque_result.is_ok(),
-        "disabling legacy password login must not disable OPAQUE login"
+        "default legacy password mode must not disable OPAQUE login"
     );
 }
 

@@ -77,6 +77,12 @@ pub struct Claims {
     /// Password version at time of token issuance.
     /// Tokens with a `pv` lower than the user's current `password_version` are rejected.
     pub pv: i32,
+    /// Session identifier shared by the access/refresh token pair.
+    ///
+    /// Logout uses this to revoke only the refresh-token family for the current
+    /// login session instead of every session for the user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
     /// Authentication context used when the token was issued.
     ///
     /// Omitted for ordinary local single-factor sessions. 2FA-enabled refresh
@@ -559,6 +565,23 @@ impl JwtService {
         password_version: i32,
         auth_context: Option<TokenAuthContext>,
     ) -> Result<String> {
+        self.sign_token_with_auth_context_and_session(
+            user_id,
+            token_type,
+            password_version,
+            auth_context,
+            None,
+        )
+    }
+
+    pub fn sign_token_with_auth_context_and_session(
+        &self,
+        user_id: &UserId,
+        token_type: TokenType,
+        password_version: i32,
+        auth_context: Option<TokenAuthContext>,
+        session_id: Option<&str>,
+    ) -> Result<String> {
         let now = Utc::now();
         let duration = match token_type {
             TokenType::Access => Duration::hours(u64_to_i64(self.access_token_duration_hours)),
@@ -577,6 +600,7 @@ impl JwtService {
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
             pv: password_version,
+            sid: session_id.map(ToString::to_string),
             amr: auth_context.map(|value| value.as_str().to_string()),
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
@@ -641,6 +665,11 @@ impl JwtService {
         if claims.jti.is_empty() {
             return Err(Error::Authentication(
                 "Refresh token missing jti".to_string(),
+            ));
+        }
+        if matches!(claims.sid.as_deref(), Some("")) {
+            return Err(Error::Authentication(
+                "Refresh token missing session id".to_string(),
             ));
         }
         Ok(claims)
@@ -862,6 +891,38 @@ mod tests {
     }
 
     #[test]
+    fn test_token_pair_can_share_session_id() {
+        let jwt = create_jwt_service();
+        let user_id = UserId::new();
+        let session_id = synctv_common::snanoid!(32);
+
+        let access_token = jwt
+            .sign_token_with_auth_context_and_session(
+                &user_id,
+                TokenType::Access,
+                0,
+                None,
+                Some(&session_id),
+            )
+            .unwrap();
+        let refresh_token = jwt
+            .sign_token_with_auth_context_and_session(
+                &user_id,
+                TokenType::Refresh,
+                0,
+                None,
+                Some(&session_id),
+            )
+            .unwrap();
+
+        let access_claims = jwt.verify_access_token(&access_token).unwrap();
+        let refresh_claims = jwt.verify_refresh_token(&refresh_token).unwrap();
+
+        assert_eq!(access_claims.sid.as_deref(), Some(session_id.as_str()));
+        assert_eq!(refresh_claims.sid.as_deref(), Some(session_id.as_str()));
+    }
+
+    #[test]
     fn test_verify_wrong_token_type() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
@@ -886,6 +947,7 @@ mod tests {
             iat: now.timestamp(),
             exp: (now + Duration::hours(1)).timestamp(),
             pv: 0,
+            sid: None,
             amr: None,
             iss: None,
             aud: None,
@@ -1065,6 +1127,7 @@ mod tests {
             iat: 0,
             exp: 0,
             pv: 0,
+            sid: None,
             amr: None,
             iss: None,
             aud: None,
@@ -1080,6 +1143,7 @@ mod tests {
             iat: 0,
             exp: 0,
             pv: 0,
+            sid: None,
             amr: None,
             iss: None,
             aud: None,
@@ -1095,6 +1159,7 @@ mod tests {
             iat: 0,
             exp: 0,
             pv: 0,
+            sid: None,
             amr: None,
             iss: None,
             aud: None,
@@ -1195,6 +1260,7 @@ mod tests {
             iat: (past - Duration::hours(3)).timestamp(),
             exp: past.timestamp(), // expired 2 hours ago
             pv: 0,
+            sid: None,
             amr: None,
             iss: None,
             aud: None,

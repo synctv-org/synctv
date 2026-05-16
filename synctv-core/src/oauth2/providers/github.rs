@@ -1,12 +1,12 @@
 //! GitHub `OAuth2` provider
 
 use super::{build_oauth2_http_client, build_provider_http_client, map_provider_http_error};
-use crate::oauth2::{OAuth2UserInfo, Provider};
+use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
     basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -139,20 +139,25 @@ impl Provider for GitHubProvider {
         "github"
     }
 
-    async fn new_auth_url(&self, state: &str) -> Result<(String, String), Error> {
+    async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization, Error> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (auth_url, _csrf_token) = self
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
+            .add_scope(Scope::new("user:email".to_string()))
             .set_pkce_challenge(pkce_challenge)
             .url();
-        Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
+        Ok(OAuth2Authorization::new(
+            auth_url.to_string(),
+            pkce_verifier.secret().clone(),
+        ))
     }
 
     async fn get_user_info(
         &self,
         code: &str,
         pkce_verifier: &str,
+        _nonce: Option<&str>,
     ) -> Result<OAuth2UserInfo, Error> {
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
@@ -313,7 +318,9 @@ mod tests {
         .unwrap();
 
         let state = "random_state_value";
-        let (auth_url, pkce_verifier) = provider.new_auth_url(state).await.unwrap();
+        let auth = provider.new_auth_url(state).await.unwrap();
+        let auth_url = auth.auth_url;
+        let pkce_verifier = auth.pkce_verifier;
 
         // Auth URL should contain the GitHub authorize endpoint
         assert!(auth_url.starts_with("https://github.com/login/oauth/authorize"));
@@ -323,6 +330,7 @@ mod tests {
         assert!(auth_url.contains(&format!("state={state}")));
         // Auth URL should contain redirect_uri (URL-encoded)
         assert!(auth_url.contains("redirect_uri="));
+        assert!(auth_url.contains("scope=user%3Aemail"));
         // Auth URL should contain PKCE code_challenge
         assert!(auth_url.contains("code_challenge="));
         assert!(auth_url.contains("code_challenge_method=S256"));
@@ -339,13 +347,13 @@ mod tests {
         )
         .unwrap();
 
-        let (url1, verifier1) = provider.new_auth_url("state1").await.unwrap();
-        let (url2, verifier2) = provider.new_auth_url("state2").await.unwrap();
+        let auth1 = provider.new_auth_url("state1").await.unwrap();
+        let auth2 = provider.new_auth_url("state2").await.unwrap();
 
         // Different states should produce different URLs
-        assert_ne!(url1, url2);
+        assert_ne!(auth1.auth_url, auth2.auth_url);
         // Each call generates a new random PKCE verifier
-        assert_ne!(verifier1, verifier2);
+        assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);
     }
 
     #[test]

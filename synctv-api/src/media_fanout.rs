@@ -9,7 +9,7 @@ use synctv_core::service::{
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 use crate::realtime_fanout::{
-    publish_best_effort, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+    publish_best_effort, PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
 };
 use crate::runtime::RealtimeDeliveryRequirement;
 
@@ -39,38 +39,17 @@ impl PreparedMediaRemovedFanout {
 
 #[derive(Clone)]
 pub struct PreparedMediaOutboxFanout {
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_builder: Arc<dyn Fn(&Media) -> RealtimeEvent + Send + Sync>,
-    event: Arc<std::sync::Mutex<Option<RealtimeEvent>>>,
+    prepared: PreparedOutboxFanout<Media>,
 }
 
 impl PreparedMediaOutboxFanout {
     #[must_use]
     pub fn outbox_factory(&self) -> Option<RealtimeOutboxMediaEventFactory> {
-        if !self.realtime_fanout.is_distributed_enabled() {
-            return None;
-        }
-
-        let prepared = self.clone();
-        Some(Arc::new(move |media: &Media| {
-            let event = (prepared.event_builder)(media);
-            *prepared
-                .event
-                .lock()
-                .expect("media fanout event mutex should not be poisoned") = Some(event.clone());
-            prepared.realtime_fanout.outbox_event(&event)
-        }))
+        self.prepared.outbox_factory()
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        if let Some(event) = self
-            .event
-            .lock()
-            .expect("media fanout event mutex should not be poisoned")
-            .take()
-        {
-            self.realtime_fanout.publish_after_outbox_commit(event);
-        }
+        self.prepared.publish_after_outbox_commit();
     }
 }
 
@@ -387,11 +366,12 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         username: String,
     ) -> PreparedMediaOutboxFanout {
         PreparedMediaOutboxFanout {
-            realtime_fanout: self.realtime_fanout.clone(),
-            event_builder: Arc::new(move |media: &Media| {
-                media_added_event(&room_id, &user_id, &username, &media.id, &media.name)
-            }),
-            event: Arc::new(std::sync::Mutex::new(None)),
+            prepared: PreparedOutboxFanout::new(
+                self.realtime_fanout.clone(),
+                move |media: &Media| {
+                    media_added_event(&room_id, &user_id, &username, &media.id, &media.name)
+                },
+            ),
         }
     }
 
@@ -402,11 +382,12 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         username: String,
     ) -> PreparedMediaOutboxFanout {
         PreparedMediaOutboxFanout {
-            realtime_fanout: self.realtime_fanout.clone(),
-            event_builder: Arc::new(move |media: &Media| {
-                media_updated_event(&room_id, &user_id, &username, &media.id, &media.name)
-            }),
-            event: Arc::new(std::sync::Mutex::new(None)),
+            prepared: PreparedOutboxFanout::new(
+                self.realtime_fanout.clone(),
+                move |media: &Media| {
+                    media_updated_event(&room_id, &user_id, &username, &media.id, &media.name)
+                },
+            ),
         }
     }
 

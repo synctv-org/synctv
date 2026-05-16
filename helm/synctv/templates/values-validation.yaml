@@ -1,0 +1,28 @@
+{{- /*
+Validate production-impacting value combinations before rendering resources.
+*/ -}}
+{{- $clusterEnabled := .Values.config.cluster.enabled | default false -}}
+{{- $allowStandaloneReplicas := .Values.safety.allowStandaloneReplicas | default false -}}
+{{- $replicaCount := int (.Values.replicaCount | default 1) -}}
+{{- $autoscalingEnabled := .Values.autoscaling.enabled | default false -}}
+{{- $hpaMinReplicas := int (.Values.autoscaling.minReplicas | default 1) -}}
+{{- $hpaMaxReplicas := int (.Values.autoscaling.maxReplicas | default $hpaMinReplicas) -}}
+{{- if and (not $clusterEnabled) (not $allowStandaloneReplicas) (gt $replicaCount 1) -}}
+{{- fail "replicaCount > 1 requires config.cluster.enabled=true, or set safety.allowStandaloneReplicas=true to acknowledge independent standalone pods" -}}
+{{- end -}}
+{{- if and (not $clusterEnabled) (not $allowStandaloneReplicas) $autoscalingEnabled (gt $hpaMaxReplicas 1) -}}
+{{- fail "autoscaling.maxReplicas > 1 requires config.cluster.enabled=true, or set safety.allowStandaloneReplicas=true to acknowledge independent standalone pods" -}}
+{{- end -}}
+{{- if and $autoscalingEnabled (lt $hpaMaxReplicas $hpaMinReplicas) -}}
+{{- fail "autoscaling.maxReplicas must be greater than or equal to autoscaling.minReplicas" -}}
+{{- end -}}
+{{- if and .Values.podDisruptionBudget.enabled .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable -}}
+{{- fail "podDisruptionBudget.minAvailable and podDisruptionBudget.maxUnavailable are mutually exclusive" -}}
+{{- end -}}
+{{- $builtinStunEnabled := .Values.config.webrtc.enableBuiltinStun | default false -}}
+{{- $stunServiceEnabled := .Values.stunService.enabled | default false -}}
+{{- $stunServiceType := .Values.stunService.type | default "ClusterIP" -}}
+{{- $stunExternalAddr := .Values.config.webrtc.stunExternalAddr | default "" -}}
+{{- if and $builtinStunEnabled $stunServiceEnabled $stunExternalAddr (eq $stunServiceType "ClusterIP") -}}
+{{- fail "config.webrtc.stunExternalAddr with stunService.type=ClusterIP is not client-reachable; use stunService.type=LoadBalancer/NodePort or disable stunService" -}}
+{{- end -}}

@@ -27,7 +27,9 @@ impl<T> std::ops::DerefMut for ProtoQuery<T> {
 }
 
 fn map_query_rejection(rejection: &QueryRejection) -> super::AppError {
-    super::AppError::new(rejection.status(), rejection.body_text())
+    let mut error = super::AppError::new(rejection.status(), rejection.body_text());
+    error.error_code = Some(crate::impls::error_codes::INVALID_ARGUMENT);
+    error
 }
 
 impl<S, T> FromRequestParts<S> for ProtoQuery<T>
@@ -42,5 +44,48 @@ where
             .await
             .map_err(|rejection| map_query_rejection(&rejection))?;
         Ok(Self(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+        response::IntoResponse,
+        routing::get,
+        Router,
+    };
+    use serde::Deserialize;
+    use tower::ServiceExt;
+
+    #[derive(Debug, Deserialize)]
+    struct PageQuery {
+        page: i32,
+    }
+
+    async fn query_handler(ProtoQuery(query): ProtoQuery<PageQuery>) -> &'static str {
+        assert_eq!(query.page, 1);
+        "ok"
+    }
+
+    #[tokio::test]
+    async fn proto_query_rejection_uses_app_error_code() {
+        let app = Router::new().route("/test", get(query_handler));
+        let request = Request::builder()
+            .uri("/test?page=abc")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap().into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["status"], 400);
+        assert_eq!(json["code"], crate::impls::error_codes::INVALID_ARGUMENT);
+        assert!(json["error"].as_str().unwrap_or_default().contains("page"));
     }
 }

@@ -1,14 +1,18 @@
 pub mod json_bytes {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        match serde_json::from_slice::<serde_json::Value>(bytes) {
-            Ok(value) => value.serialize(serializer),
-            Err(_) => bytes.serialize(serializer),
+        if bytes.is_empty() {
+            return bytes.serialize(serializer);
         }
+
+        let value = serde_json::from_slice::<serde_json::Value>(bytes).map_err(|error| {
+            S::Error::custom(format!("JSON bytes field contains invalid JSON: {error}"))
+        })?;
+        value.serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>

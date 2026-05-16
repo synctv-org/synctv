@@ -38,7 +38,8 @@ The default installation deploys:
 - Redis 8
 
 These database services are internal-only and are not exposed outside the cluster. For temporary external access, prefer `kubectl port-forward`.
-The chart defaults to single-replica mode with `config.cluster.enabled=false`. Before scaling beyond one replica, enable cluster mode. Local HLS backends work through publisher-node gRPC proxying, while `shared_file` with a real shared filesystem (`persistence.hls.existingClaim`) or `oss` with S3-compatible object storage is recommended for production HLS traffic.
+The chart defaults to single-replica mode with `config.cluster.enabled=false`. Scaling beyond one replica requires cluster mode; the chart fails rendering for `replicaCount > 1` or `autoscaling.maxReplicas > 1` unless `config.cluster.enabled=true`. Local HLS backends work through publisher-node gRPC proxying, while `shared_file` with a real shared filesystem (`persistence.hls.existingClaim`) or `oss` with S3-compatible object storage is recommended for production HLS traffic.
+Set `safety.allowStandaloneReplicas=true` only when you intentionally want multiple independent standalone pods.
 
 Install the released OCI chart:
 
@@ -235,13 +236,14 @@ The chart creates separate Services for application traffic:
 
 - `{{ release-name }}` exposes HTTP/REST.
 - `{{ release-name }}-rtmp` exposes RTMP ingest when `rtmpService.enabled=true`.
-- `{{ release-name }}-stun` exposes the built-in UDP STUN listener when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true`.
+- `{{ release-name }}-stun` exposes the built-in UDP STUN listener when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true`; it is disabled by default because a ClusterIP STUN Service is not reachable by public WebRTC clients.
 - `{{ release-name }}-metrics` exposes metrics when `metrics.enabled=true`.
 - `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
 
 Important transport defaults:
 
 - `config.server.grpcCompressionEnabled=true` enables gzip negotiation for public gRPC traffic and cluster gRPC calls.
+- To expose the built-in STUN server, set `stunService.enabled=true`, use `stunService.type=LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to the public client-reachable address.
 - `config.redis.responseTimeoutSeconds=5` bounds how long a Redis command can wait for a response.
 - `config.redis.pipelineBufferSize=512` controls the Redis connection manager pipeline buffer for bursty short-command workloads.
 
@@ -525,6 +527,7 @@ alerting:
 - [ ] Configure ingress and enable TLS when exposing SyncTV outside the cluster
 - [ ] Set appropriate resource limits
 - [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared_file/OSS for production traffic
+- [ ] Enable `config.cluster.enabled=true` before using multiple replicas or autoscaling beyond one pod
 - [ ] Enable autoscaling (HPA)
 - [ ] Configure pod disruption budget
 - [ ] Enable network policies

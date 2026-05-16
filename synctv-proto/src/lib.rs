@@ -660,6 +660,37 @@ mod tests {
     }
 
     #[test]
+    fn http_json_json_bytes_serialization_rejects_invalid_json_bytes() {
+        let response = crate::client::PlaylistBrowsePathNode {
+            playlist_id: "playlist-1".to_string(),
+            name: "Season 1".to_string(),
+            target: vec![0xff, 0x00, b'n'],
+        };
+
+        let error = serde_json::to_string(&response)
+            .expect_err("invalid JSON bytes must not serialize as lossy byte arrays");
+
+        assert!(
+            error.to_string().contains("invalid JSON"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn http_json_json_bytes_empty_value_serializes_as_empty_array() {
+        let response = crate::client::PlaylistBrowsePathNode {
+            playlist_id: "playlist-1".to_string(),
+            name: "Season 1".to_string(),
+            target: Vec::new(),
+        };
+
+        let json =
+            serde_json::to_value(&response).expect("empty JSON bytes should remain serializable");
+
+        assert_eq!(json["target"], serde_json::json!([]));
+    }
+
+    #[test]
     fn http_json_edit_media_request_allows_path_supplied_media_id() {
         let json = r#"{"name":"Updated title"}"#;
 

@@ -137,6 +137,82 @@ helm template synctv "$chart_dir" \
   --set config.security.ssrf.allowedIpRanges[0]=10.0.8.0/24 \
   >"$tmp_dir/security.yaml"
 
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set replicaCount=2 \
+  >"$tmp_dir/standalone-replicas.yaml" 2>"$tmp_dir/standalone-replicas.err"; then
+  fail "replicaCount=2 without cluster mode must fail validation"
+fi
+require_rendered 'replicaCount > 1 requires config.cluster.enabled=true' \
+  "$tmp_dir/standalone-replicas.err" \
+  "standalone replica safety validation"
+
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set autoscaling.enabled=true \
+  >"$tmp_dir/standalone-hpa.yaml" 2>"$tmp_dir/standalone-hpa.err"; then
+  fail "autoscaling beyond one pod without cluster mode must fail validation"
+fi
+require_rendered 'autoscaling.maxReplicas > 1 requires config.cluster.enabled=true' \
+  "$tmp_dir/standalone-hpa.err" \
+  "standalone HPA safety validation"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set replicaCount=2 \
+  --set config.cluster.enabled=true \
+  >"$tmp_dir/cluster-replicas.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set replicaCount=2 \
+  --set safety.allowStandaloneReplicas=true \
+  >"$tmp_dir/acknowledged-standalone-replicas.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set podDisruptionBudget.enabled=true \
+  >"$tmp_dir/pdb-default.yaml"
+require_rendered 'maxUnavailable: 1' \
+  "$tmp_dir/pdb-default.yaml" \
+  "default PodDisruptionBudget maxUnavailable"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set podDisruptionBudget.enabled=true \
+  --set podDisruptionBudget.minAvailable=2 \
+  >"$tmp_dir/pdb-legacy-min-available.yaml"
+require_rendered 'minAvailable: 2' \
+  "$tmp_dir/pdb-legacy-min-available.yaml" \
+  "legacy PodDisruptionBudget minAvailable override"
+forbid_rendered 'maxUnavailable: 1' \
+  "$tmp_dir/pdb-legacy-min-available.yaml" \
+  "default PodDisruptionBudget maxUnavailable with minAvailable override"
+
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set stunService.enabled=true \
+  --set config.webrtc.stunExternalAddr=203.0.113.10:3478 \
+  >"$tmp_dir/clusterip-stun.yaml" 2>"$tmp_dir/clusterip-stun.err"; then
+  fail "ClusterIP STUN service with external STUN address must fail validation"
+fi
+require_rendered 'stunService.type=ClusterIP is not client-reachable' \
+  "$tmp_dir/clusterip-stun.err" \
+  "ClusterIP STUN external-address validation"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set stunService.enabled=true \
+  --set stunService.type=LoadBalancer \
+  --set config.webrtc.stunExternalAddr=203.0.113.10:3478 \
+  >"$tmp_dir/loadbalancer-stun.yaml"
+require_rendered 'kind: Service' \
+  "$tmp_dir/loadbalancer-stun.yaml" \
+  "LoadBalancer STUN service"
+require_rendered 'name: synctv-stun' \
+  "$tmp_dir/loadbalancer-stun.yaml" \
+  "LoadBalancer STUN service name"
+
 require_rendered 'image: registry.example.com/synctvorg/synctv:' \
   "$tmp_dir/security.yaml" \
   "global SyncTV image registry"

@@ -13,6 +13,12 @@ global:
   imagePullSecrets: []
   storageClass: ""
 
+## Safety gates for production-impacting Helm values.
+safety:
+  ## SyncTV runs without cross-pod coordination when config.cluster.enabled=false.
+  ## Keep this false unless you intentionally accept independent standalone pods.
+  allowStandaloneReplicas: false
+
 ## Backing data services for SyncTV itself.
 ## mode:
 ## - standard: chart-managed StatefulSet/Service
@@ -168,9 +174,10 @@ rtmpService:
 ## Built-in STUN Service Configuration
 ## Rendered only when config.webrtc.enableBuiltinStun=true. Many cloud
 ## providers handle UDP load balancers differently from TCP load balancers, so
-## STUN has its own Service rather than sharing the API/RTMP Service.
+## STUN has its own Service rather than sharing the API/RTMP Service. Enable it
+## only when you expose it through a client-reachable NodePort or LoadBalancer.
 stunService:
-  enabled: true
+  enabled: false
   type: ClusterIP
   annotations: {}
   loadBalancerIP: ""
@@ -231,7 +238,8 @@ autoscaling:
 ## Pod Disruption Budget
 podDisruptionBudget:
   enabled: false
-  minAvailable: 2
+  minAvailable: ""
+  maxUnavailable: ""
 
 ## Health Checks
 startupProbe:

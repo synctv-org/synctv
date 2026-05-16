@@ -117,7 +117,8 @@ The SyncTV process serves HTTP REST and gRPC on the same container port. The Hel
 
 | Service | Purpose | Port name |
 | --- | --- | --- |
-| `synctv` | HTTP/REST plus RTMP and STUN ports | `api`, `rtmp`, `stun` |
+| `synctv` | HTTP/REST plus RTMP ports | `api`, `rtmp` |
+| `synctv-stun` | Built-in UDP STUN when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true` | `stun` |
 | `synctv-metrics` | Dedicated metrics endpoint when `metrics.enabled=true` | `metrics` |
 | `synctv-grpc` | Dedicated gRPC entry | `grpc` |
 
@@ -128,6 +129,8 @@ Why split them:
 - Metrics selectors can target the dedicated metrics Service without accidentally scraping public API/RTMP or gRPC Services.
 
 `config.server.grpcCompressionEnabled` defaults to `true` and allows gRPC peers to negotiate gzip compression. Keep it enabled for cross-node calls, Ingress forwarding, and larger batch responses. Disable it only when gRPC traffic is local and CPU is tighter than bandwidth.
+
+`stunService.enabled` defaults to `false`. Enable it only when you expose the built-in STUN listener through a client-reachable `LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to that public address. A `ClusterIP` STUN Service is only reachable inside the cluster and should not be advertised to public WebRTC clients.
 
 ## Ingress
 

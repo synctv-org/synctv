@@ -19,8 +19,10 @@ use synctv_core::provider::proxy::ProxyAction;
 use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppError, AppResult,
-    AppState,
+    error::map_api_error,
+    middleware::RequestMetadata,
+    validation::{ProtoJson, ProtoQuery},
+    AppError, AppResult, AppState,
 };
 use crate::impls::ApiError;
 use crate::impls::EndpointRateLimitCategory;
@@ -341,7 +343,7 @@ pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<crate::proto::providers::emby::LoginRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
@@ -400,7 +402,7 @@ pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<crate::proto::providers::emby::ListRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
@@ -459,7 +461,7 @@ pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<crate::proto::providers::emby::GetMeRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
@@ -518,7 +520,7 @@ pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<crate::proto::providers::emby::LogoutRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 

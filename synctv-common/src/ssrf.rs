@@ -240,6 +240,11 @@ impl SsrfPolicy {
         let host = normalize_host(host);
         !self.allowed_hosts.contains(&host) && self.denied_hosts.contains(&host)
     }
+
+    fn allows_non_default_ports_for_ip(&self, ip: &IpAddr) -> bool {
+        self.allow_private_network_targets && contains_ip(&self.default_denied_ip_ranges, ip)
+            || contains_ip(&self.extra_allowed_ip_ranges, ip)
+    }
 }
 
 impl Resolve for SsrfDnsResolver {
@@ -250,7 +255,6 @@ impl Resolve for SsrfDnsResolver {
             return Box::pin(std::future::ready(Err(err)));
         }
 
-        let acl = self.acl.clone();
         let resolver = self.inner.clone();
         let policy = self.policy.clone();
 
@@ -260,10 +264,7 @@ impl Resolve for SsrfDnsResolver {
             let filtered = addresses
                 .iter()
                 .copied()
-                .filter(|addr| {
-                    policy.is_ip_allowed_for_host(&host, &addr.ip())
-                        && acl.is_port_allowed(addr.port()).is_allowed()
-                })
+                .filter(|addr| policy.is_ip_allowed_for_host(&host, &addr.ip()))
                 .collect::<Vec<SocketAddr>>();
 
             if !addresses.is_empty() && filtered.is_empty() {
@@ -334,6 +335,32 @@ impl SsrfGuard {
         self.inner
             .as_ref()
             .is_some_and(|inner| inner.policy.is_host_blocked(host))
+    }
+
+    /// Check if a port is blocked for a concrete IP target.
+    ///
+    /// When private-network targets or explicit IP ranges are allowed, their
+    /// non-default service ports must be reachable as part of the same trusted
+    /// deployment decision.
+    #[must_use]
+    pub fn is_port_blocked_for_ip(&self, port: u16, ip: &IpAddr) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            !inner.policy.allows_non_default_ports_for_ip(ip)
+                && inner.acl.is_port_allowed(port).is_denied()
+        })
+    }
+
+    /// Check if a port is blocked for a hostname URL target.
+    ///
+    /// DNS filtering cannot use the URL port because reqwest's resolver API
+    /// only receives a hostname. Callers that validate full URLs must run this
+    /// check before connecting.
+    #[must_use]
+    pub fn is_port_blocked_for_host(&self, port: u16, host: &str) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            !inner.policy.allowed_hosts.contains(&normalize_host(host))
+                && inner.acl.is_port_allowed(port).is_denied()
+        })
     }
 
     /// Access the underlying ACL for advanced use.
@@ -717,6 +744,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dns_resolver_allows_public_ip_with_zero_port() {
+        let guard = SsrfGuard::strict_policy();
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([8, 8, 8, 8], 0))]);
+
+        let resolved = resolver
+            .resolve("example.com".parse().expect("valid DNS name"))
+            .await
+            .expect("DNS resolution should not reject public IPs just because DNS uses port 0")
+            .collect::<Vec<_>>();
+
+        assert_eq!(resolved, vec![SocketAddr::from(([8, 8, 8, 8], 0))]);
+    }
+
+    #[tokio::test]
     async fn test_dns_resolver_blocks_metadata_ip_for_explicit_allowed_host() {
         let guard = SsrfGuard::builder()
             .extra_allowed_host("internal.example".to_string())
@@ -772,6 +813,49 @@ mod tests {
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+    }
+
+    #[test]
+    fn test_allow_private_network_targets_allows_non_default_ports_for_private_ips() {
+        let guard = SsrfGuard::builder()
+            .allow_private_network_targets(true)
+            .build();
+
+        assert!(!guard.is_port_blocked_for_ip(18000, &IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!guard.is_port_blocked_for_ip(15244, &IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(guard.is_port_blocked_for_ip(18000, &IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn test_extra_allowed_ip_range_allows_non_default_ports_for_that_range() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_ip_range(
+                "10.0.8.0/24"
+                    .parse()
+                    .expect("test CIDR must parse successfully"),
+            )
+            .build();
+
+        assert!(!guard.is_port_blocked_for_ip(8080, &IpAddr::V4(Ipv4Addr::new(10, 0, 8, 42))));
+        assert!(guard.is_port_blocked_for_ip(8080, &IpAddr::V4(Ipv4Addr::new(10, 0, 9, 42))));
+    }
+
+    #[test]
+    fn test_hostname_port_acl_blocks_non_default_public_ports() {
+        let guard = SsrfGuard::strict_policy();
+
+        assert!(guard.is_port_blocked_for_host(25, "public.example"));
+        assert!(!guard.is_port_blocked_for_host(443, "public.example"));
+    }
+
+    #[test]
+    fn test_explicit_allowed_host_allows_non_default_ports() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("media.internal".to_string())
+            .build();
+
+        assert!(!guard.is_port_blocked_for_host(18000, "media.internal"));
+        assert!(guard.is_port_blocked_for_host(18000, "public.example"));
     }
 
     // Builder tests

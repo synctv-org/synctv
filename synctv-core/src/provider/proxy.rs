@@ -169,6 +169,69 @@ pub fn selected_range_header(ctx: &ProxyRequestContext<'_>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// Return the target URL embedded in a signed proxy request.
+///
+/// M3U8 playlist rewriting signs every segment URL into `url=...`; providers use
+/// this to turn the `{version}?url=...` segment request back into a stream fetch.
+#[must_use]
+pub fn signed_target_url(ctx: &ProxyRequestContext<'_>) -> Option<String> {
+    ctx.verified_claims
+        .and_then(|claims| claims.target_url.clone())
+        .or_else(|| {
+            ctx.query_string
+                .and_then(|query| {
+                    query.split('&').find_map(|pair| {
+                        let (key, value) = pair.split_once('=')?;
+                        if key == "url" {
+                            urlencoding::decode(value)
+                                .ok()
+                                .map(std::borrow::Cow::into_owned)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .filter(|url| !url.trim().is_empty())
+        })
+}
+
+#[must_use]
+pub fn target_url_is_m3u8(url: &str) -> bool {
+    url::Url::parse(url).map_or_else(
+        |_| url.split('?').next().unwrap_or(url).ends_with(".m3u8"),
+        |parsed| parsed.path().ends_with(".m3u8"),
+    )
+}
+
+#[must_use]
+pub fn m3u8_segment_proxy_base(ctx: &ProxyRequestContext<'_>, version: &str) -> String {
+    format!("{}/{version}", ctx.proxy_base)
+}
+
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn action_for_signed_target_url(
+    ctx: &ProxyRequestContext<'_>,
+    version: &str,
+    url: String,
+    headers: HashMap<String, String>,
+) -> ProxyAction {
+    if target_url_is_m3u8(&url) {
+        ProxyAction::M3u8Rewrite {
+            url,
+            headers,
+            proxy_base: m3u8_segment_proxy_base(ctx, version),
+            proxy_url_claims: ctx.verified_claims.cloned(),
+        }
+    } else {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header: selected_range_header(ctx),
+        }
+    }
+}
+
 /// Optional trait for providers that support HTTP proxy routes.
 #[async_trait]
 pub trait ProviderProxy: Send + Sync {

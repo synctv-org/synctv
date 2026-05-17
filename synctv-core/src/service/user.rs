@@ -3769,6 +3769,21 @@ impl UserService {
         Ok(updated)
     }
 
+    /// Update only a user's global role.
+    pub async fn update_role(
+        &self,
+        user_id: &UserId,
+        role: crate::models::UserRole,
+        old_version: i32,
+    ) -> Result<User> {
+        let updated = self
+            .repository
+            .update_role(user_id, role, old_version)
+            .await?;
+        self.notify_user_invalidation(user_id).await;
+        Ok(updated)
+    }
+
     /// Set user password (admin use, no old password required)
     ///
     /// After updating the password, all existing access and refresh tokens for the

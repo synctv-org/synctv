@@ -334,6 +334,13 @@ impl OAuth2ProviderConfigs {
     }
 
     pub fn validate(&self) -> crate::Result<()> {
+        self.validate_with_ssrf_guard(&synctv_common::ssrf::SsrfGuard::strict_policy())
+    }
+
+    pub fn validate_with_ssrf_guard(
+        &self,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> crate::Result<()> {
         for (instance_name, provider_config) in &self.0 {
             validate_oauth2_instance_name(instance_name)?;
             let provider_type = provider_config.provider_type.trim();
@@ -349,15 +356,13 @@ impl OAuth2ProviderConfigs {
                 )));
             }
             let provider_config = provider_config.provider_config_value();
-            crate::oauth2::providers::provider_registry(
-                synctv_common::ssrf::SsrfGuard::strict_policy(),
-            )
-            .create_provider(provider_type, &provider_config)
-            .map_err(|error| {
-                crate::Error::InvalidInput(format!(
-                    "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"
-                ))
-            })?;
+            crate::oauth2::providers::provider_registry(ssrf_guard.clone())
+                .create_provider(provider_type, &provider_config)
+                .map_err(|error| {
+                    crate::Error::InvalidInput(format!(
+                        "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"
+                    ))
+                })?;
         }
         Ok(())
     }
@@ -545,7 +550,21 @@ impl SettingsRegistry {
     /// Create a new settings registry with all setting instances
     #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
+        Self::new_with_ssrf_guard(
+            settings_service,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    /// Create a new settings registry using the runtime SSRF policy for
+    /// settings that validate outbound provider URLs.
+    #[must_use]
+    pub fn new_with_ssrf_guard(
+        settings_service: Arc<SettingsService>,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
         let storage = Arc::new(SettingsStorage::new(settings_service));
+        let oauth2_ssrf_guard = ssrf_guard.clone();
 
         Self {
             storage: storage.clone(),
@@ -697,7 +716,9 @@ impl SettingsRegistry {
                 "oauth2.providers",
                 storage.clone(),
                 OAuth2ProviderConfigs::default(),
-                OAuth2ProviderConfigs::validate
+                move |configs: &OAuth2ProviderConfigs| {
+                    configs.validate_with_ssrf_guard(&oauth2_ssrf_guard)
+                }
             ),
 
             // Proxy settings

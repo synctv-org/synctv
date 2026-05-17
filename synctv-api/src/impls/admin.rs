@@ -1567,7 +1567,10 @@ impl AdminApiImpl {
             creator_id: if req.creator_id.is_empty() {
                 None
             } else {
-                Some(req.creator_id)
+                Some(crate::impls::proto_validated_user_id(
+                    req.creator_id,
+                    &self.public_id_codec,
+                )?)
             },
             sort_by: match crate::proto::admin::RoomListSortBy::try_from(req.sort_by) {
                 Ok(crate::proto::admin::RoomListSortBy::Name) => {
@@ -2564,13 +2567,9 @@ impl AdminApiImpl {
         }
 
         let old_version = user.version;
-        let updated_user = synctv_core::models::User {
-            role: new_role,
-            ..user
-        };
-
-        self.user_service
-            .update_user(&updated_user, old_version)
+        let updated_user = self
+            .user_service
+            .update_role(&uid, new_role, old_version)
             .await
             .map_err(ApiError::from)?;
 
@@ -2928,17 +2927,15 @@ impl AdminApiImpl {
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
 
-        let mut user = self
+        let user = self
             .user_service
             .get_user(&uid)
             .await
             .map_err(ApiError::from)?;
         let old_username = user.username.clone();
-        let old_version = user.version;
-        user.username = req.new_username;
         let updated = self
             .user_service
-            .update_user(&user, old_version)
+            .update_profile(&uid, Some(req.new_username))
             .await
             .map_err(ApiError::from)?;
 
@@ -3810,7 +3807,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::AddAdminResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
-        let mut user = self
+        let user = self
             .user_service
             .get_user(&uid)
             .await
@@ -3822,11 +3819,9 @@ impl AdminApiImpl {
             ));
         }
 
-        let old_version = user.version;
-        user.role = UserRole::Admin;
         let updated = self
             .user_service
-            .update_user(&user, old_version)
+            .update_role(&uid, UserRole::Admin, user.version)
             .await
             .map_err(ApiError::from)?;
 
@@ -3858,7 +3853,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::RemoveAdminResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
-        let mut user = self
+        let user = self
             .user_service
             .get_user(&uid)
             .await
@@ -3874,10 +3869,8 @@ impl AdminApiImpl {
         }
 
         let target_username = user.username.clone();
-        let old_version = user.version;
-        user.role = UserRole::User;
         self.user_service
-            .update_user(&user, old_version)
+            .update_role(&uid, UserRole::User, user.version)
             .await
             .map_err(ApiError::from)?;
 
@@ -8122,6 +8115,78 @@ mod tests {
             created.status,
             synctv_proto::common::UserStatus::Active as i32
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_user_username_preserves_missing_email() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+
+        let admin_user = user_repo
+            .create(&synctv_core::models::User {
+                id: UserId::new(),
+                username: "root_update_username".to_string(),
+                email: Some("root_update_username@example.com".to_string()),
+                password_hash: "hash".to_string(),
+                role: UserRole::Root,
+                status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                email_verified: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+                password_changed_at: chrono::Utc::now(),
+                password_version: 0,
+                version: 0,
+            })
+            .await
+            .expect("create root admin");
+        let target_user = user_repo
+            .create(&synctv_core::models::User {
+                id: UserId::new(),
+                username: "target_update_username".to_string(),
+                email: None,
+                password_hash: "hash".to_string(),
+                role: UserRole::User,
+                status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                email_verified: false,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+                password_changed_at: chrono::Utc::now(),
+                password_version: 0,
+                version: 0,
+            })
+            .await
+            .expect("create target user");
+
+        let response = admin_api
+            .update_user_username(
+                crate::proto::admin::UpdateUserUsernameRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    new_username: "target_update_renamed".to_string(),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("username-only update should not require binding email");
+
+        let updated = response.user.expect("updated user");
+        assert_eq!(updated.username, "target_update_renamed");
+        assert_eq!(updated.email, "");
     }
 
     #[tokio::test]

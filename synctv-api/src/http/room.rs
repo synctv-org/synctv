@@ -11,7 +11,7 @@ use futures::FutureExt;
 use std::future::Future;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use super::validation::ProtoQuery;
+use super::validation::{ProtoJson, ProtoQuery};
 use super::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
@@ -354,7 +354,7 @@ where
 pub async fn create_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<CreateRoomRequest>,
+    ProtoJson(req): ProtoJson<CreateRoomRequest>,
 ) -> AppResult<Json<CreateRoomResponse>> {
     tracing::info!(room_name = %req.name, "Creating new room");
 
@@ -443,7 +443,7 @@ pub async fn join_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(mut req): Json<crate::proto::client::JoinRoomRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::JoinRoomRequest>,
 ) -> AppResult<Json<JoinRoomResponse>> {
     let request_meta = request_meta
         .0
@@ -586,7 +586,7 @@ pub async fn add_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<AddMediaBody>,
+    ProtoJson(req): ProtoJson<AddMediaBody>,
 ) -> AppResult<Json<AddMediaResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -677,7 +677,7 @@ pub async fn delete_entries(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<DeleteEntriesBody>,
+    ProtoJson(req): ProtoJson<DeleteEntriesBody>,
 ) -> AppResult<Json<DeleteEntriesResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -720,7 +720,7 @@ pub async fn move_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<MoveMediaRequest>,
+    ProtoJson(req): ProtoJson<MoveMediaRequest>,
 ) -> AppResult<Json<MoveMediaResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -763,7 +763,7 @@ pub async fn list_playlist_items(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<ListPlaylistItemsRequest>,
+    ProtoJson(req): ProtoJson<ListPlaylistItemsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
@@ -806,7 +806,7 @@ pub async fn start_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<StartPlaybackBody>,
+    ProtoJson(req): ProtoJson<StartPlaybackBody>,
 ) -> AppResult<Json<StartPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -849,7 +849,7 @@ pub async fn stop_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<StopPlaybackBody>,
+    ProtoJson(req): ProtoJson<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1055,7 +1055,7 @@ pub async fn set_room_password(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<SetRoomPasswordBody>,
+    ProtoJson(req): ProtoJson<SetRoomPasswordBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1136,7 +1136,7 @@ pub async fn push_media_batch(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<AddMediaBatchBody>,
+    ProtoJson(req): ProtoJson<AddMediaBatchBody>,
 ) -> AppResult<Json<crate::proto::client::AddMediaBatchResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1180,7 +1180,7 @@ pub async fn edit_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    Json(mut req): Json<crate::proto::client::EditMediaRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::EditMediaRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.media_id = media_id;
@@ -1387,7 +1387,7 @@ pub async fn update_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<UpdateRoomSettingsBody>,
+    ProtoJson(req): ProtoJson<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1430,7 +1430,7 @@ pub async fn transfer_room_ownership(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<TransferRoomOwnershipBody>,
+    ProtoJson(req): ProtoJson<TransferRoomOwnershipBody>,
 ) -> AppResult<Json<TransferRoomOwnershipResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1476,7 +1476,7 @@ pub async fn update_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<UpdatePlayback>,
+    ProtoJson(req): ProtoJson<UpdatePlayback>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1604,7 +1604,7 @@ pub async fn create_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<CreatePlaylistBody>,
+    ProtoJson(req): ProtoJson<CreatePlaylistBody>,
 ) -> AppResult<Json<CreatePlaylistResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1649,7 +1649,7 @@ pub async fn update_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    Json(mut req): Json<crate::proto::client::UpdatePlaylistRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::UpdatePlaylistRequest>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
@@ -1696,7 +1696,7 @@ pub async fn move_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    Json(mut req): Json<crate::proto::client::MovePlaylistRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::MovePlaylistRequest>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,

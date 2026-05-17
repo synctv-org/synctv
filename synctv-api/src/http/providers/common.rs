@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::super::middleware::RequestMetadata;
-use super::super::validation::ProtoQuery;
+use super::super::validation::{ProtoJson, ProtoQuery};
 use super::super::{
     admin_execute::{
         execute_admin_endpoint, execute_admin_endpoint_with_control, request_metadata,
@@ -150,7 +150,7 @@ pub(crate) async fn list_provider_instances(
 pub(crate) async fn add_provider_instance(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<AddProviderInstanceRequest>,
+    ProtoJson(req): ProtoJson<AddProviderInstanceRequest>,
 ) -> Result<Json<AddProviderInstanceResponse>, super::super::AppError> {
     let resp = execute_admin_endpoint_with_control(
         &state,
@@ -191,7 +191,7 @@ pub(crate) async fn update_provider_instance(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<DeleteProviderInstanceRequest>,
-    Json(mut req): Json<UpdateProviderInstanceRequest>,
+    ProtoJson(mut req): ProtoJson<UpdateProviderInstanceRequest>,
 ) -> Result<Json<UpdateProviderInstanceResponse>, super::super::AppError> {
     req.name = path.name;
     let resp = execute_admin_endpoint_with_control(

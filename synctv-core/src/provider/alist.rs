@@ -217,33 +217,11 @@ fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
     })
 }
 
-fn proxy_target_url_from_query(query_string: Option<&str>) -> Option<String> {
-    query_string
-        .and_then(|query| {
-            query.split('&').find_map(|pair| {
-                let (key, value) = pair.split_once('=')?;
-                if key == "url" {
-                    urlencoding::decode(value)
-                        .ok()
-                        .map(std::borrow::Cow::into_owned)
-                } else {
-                    None
-                }
-            })
-        })
-        .filter(|url| !url.trim().is_empty())
-}
-
 fn signed_m3u8_segment_proxy_base(
     ctx: &super::proxy::ProxyRequestContext<'_>,
     version: &str,
 ) -> String {
-    if let Some(claims) = ctx.verified_claims {
-        let signed_query = ctx.services.signing_key.build_signed_query(claims);
-        format!("{}/{version}?{signed_query}", ctx.proxy_base)
-    } else {
-        format!("{}/{version}", ctx.proxy_base)
-    }
+    format!("{}/{version}", ctx.proxy_base)
 }
 
 /// Alist `MediaProvider`
@@ -1197,21 +1175,15 @@ impl super::proxy::ProviderProxy for AlistProvider {
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
 
-        if let Some(url) = ctx
-            .verified_claims
-            .and_then(|claims| claims.target_url.clone())
-            .or_else(|| proxy_target_url_from_query(ctx.query_string))
-        {
+        if let Some(url) = super::proxy::signed_target_url(ctx) {
             let headers = versioned
                 .result
                 .playback_infos
                 .get(&versioned.result.default_mode)
                 .map_or_else(HashMap::new, |info| info.headers.clone());
-            return Ok(super::proxy::ProxyAction::FetchAndForward {
-                url,
-                headers,
-                range_header: super::proxy::selected_range_header(ctx),
-            });
+            return Ok(super::proxy::action_for_signed_target_url(
+                ctx, version, url, headers,
+            ));
         }
 
         if let Some(rest) = rest {

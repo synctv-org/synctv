@@ -6,7 +6,11 @@ use axum::{
     Json,
 };
 
-use super::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use super::{
+    middleware::RequestMetadata,
+    validation::{ProtoJson, ProtoQuery},
+    AppResult, AppState,
+};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
@@ -116,7 +120,7 @@ pub async fn get_user_preferences(
 pub async fn update_user_preferences(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<UpdateUserPreferencesRequest>,
+    ProtoJson(req): ProtoJson<UpdateUserPreferencesRequest>,
 ) -> AppResult<Json<UpdateUserPreferencesResponse>> {
     let request_meta = request_meta
         .0
@@ -156,7 +160,7 @@ pub async fn update_user_preferences(
 pub async fn update_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<UpdateUserRequest>,
+    ProtoJson(req): ProtoJson<UpdateUserRequest>,
 ) -> AppResult<Json<UpdateUserResponse>> {
     let UpdateUserRequest { username } = req;
 
@@ -216,7 +220,7 @@ pub async fn update_user(
 pub async fn start_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<StartOpaquePasswordUpdateRequest>,
+    ProtoJson(req): ProtoJson<StartOpaquePasswordUpdateRequest>,
 ) -> AppResult<Json<StartOpaquePasswordUpdateResponse>> {
     let request_meta = request_meta
         .0
@@ -259,7 +263,7 @@ pub async fn start_opaque_password_update(
 pub async fn finish_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<FinishOpaquePasswordUpdateRequest>,
+    ProtoJson(req): ProtoJson<FinishOpaquePasswordUpdateRequest>,
 ) -> AppResult<Json<FinishOpaquePasswordUpdateResponse>> {
     let request_meta = request_meta
         .0
@@ -302,7 +306,7 @@ pub async fn finish_opaque_password_update(
 pub async fn start_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<StartPasskeyBindRequest>,
+    ProtoJson(req): ProtoJson<StartPasskeyBindRequest>,
 ) -> AppResult<Json<StartPasskeyBindResponse>> {
     let request_meta = request_meta
         .0
@@ -341,7 +345,7 @@ pub async fn start_passkey_bind(
 pub async fn finish_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<FinishPasskeyBindRequest>,
+    ProtoJson(req): ProtoJson<FinishPasskeyBindRequest>,
 ) -> AppResult<Json<PasskeyCredentialResponse>> {
     let request_meta = request_meta
         .0

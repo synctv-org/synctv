@@ -505,6 +505,48 @@ impl UserRepository {
             .await
     }
 
+    /// Update only the user's global role with optimistic locking.
+    pub async fn update_role(
+        &self,
+        user_id: &UserId,
+        role: crate::models::UserRole,
+        old_version: i32,
+    ) -> Result<User> {
+        let sql = format!(
+            r"
+            WITH updated_user AS (
+                UPDATE users
+                SET role = $2,
+                    updated_at = $3,
+                    version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL AND version = $4
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            )
+            SELECT {USER_SELECT_COLUMNS}
+            FROM updated_user u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id)
+            .bind(role)
+            .bind(Utc::now())
+            .bind(old_version)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(updated) = u {
+            Ok(updated)
+        } else {
+            let exists = self.get_by_id(user_id).await?.is_some();
+            if exists {
+                Err(Error::OptimisticLockConflict)
+            } else {
+                Err(Error::NotFound(format!("User {user_id} not found")))
+            }
+        }
+    }
+
     /// Update user with optimistic locking using a provided executor.
     pub async fn update_with_executor<'e, E>(
         &self,

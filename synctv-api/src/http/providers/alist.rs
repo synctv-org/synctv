@@ -10,7 +10,11 @@ use axum::{
 };
 use futures::FutureExt;
 
-use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use crate::http::{
+    middleware::RequestMetadata,
+    validation::{ProtoJson, ProtoQuery},
+    AppResult, AppState,
+};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::alist::{
     GetBindsResponse, GetMeRequest, ListRequest, LoginRequest, LogoutRequest, SearchRequest,
@@ -69,7 +73,7 @@ pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<LoginRequest>,
+    ProtoJson(mut req): ProtoJson<LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
@@ -131,7 +135,7 @@ pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<ListRequest>,
+    ProtoJson(mut req): ProtoJson<ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
@@ -190,7 +194,7 @@ pub(crate) async fn search(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<SearchRequest>,
+    ProtoJson(mut req): ProtoJson<SearchRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
@@ -249,7 +253,7 @@ pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<GetMeRequest>,
+    ProtoJson(mut req): ProtoJson<GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
@@ -308,7 +312,7 @@ pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<LogoutRequest>,
+    ProtoJson(mut req): ProtoJson<LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 

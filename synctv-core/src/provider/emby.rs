@@ -1089,10 +1089,28 @@ impl super::proxy::ProviderProxy for EmbyProvider {
         ctx: &super::proxy::ProxyRequestContext<'_>,
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
+        let (version, maybe_rest) = sub_path
+            .split_once('/')
+            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
 
-        if let Some((version, rest)) = sub_path.split_once('/') {
+        if !version.is_empty() {
             let versioned =
                 super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
+
+            if let Some(url) = super::proxy::signed_target_url(ctx) {
+                let headers = versioned
+                    .result
+                    .playback_infos
+                    .get(&versioned.result.default_mode)
+                    .map_or_else(HashMap::new, |info| info.headers.clone());
+                return Ok(super::proxy::action_for_signed_target_url(
+                    ctx, version, url, headers,
+                ));
+            }
+
+            let Some(rest) = maybe_rest else {
+                return Err(ProviderError::NotFound);
+            };
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (mode_name, index_str) = subtitle_path
@@ -1170,17 +1188,10 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                     });
                 }
                 "m3u8" => {
-                    // Propagate HMAC signature into M3U8 segment URLs
-                    let proxy_base = if let Some(claims) = ctx.verified_claims {
-                        let signed_query = ctx.services.signing_key.build_signed_query(claims);
-                        format!("{}/{version}?{signed_query}", ctx.proxy_base)
-                    } else {
-                        format!("{}/{version}", ctx.proxy_base)
-                    };
                     return Ok(super::proxy::ProxyAction::M3u8Rewrite {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        proxy_base,
+                        proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
                         proxy_url_claims: ctx.verified_claims.cloned(),
                     });
                 }

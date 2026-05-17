@@ -422,6 +422,8 @@ pub struct OAuth2Service {
     state_store: Arc<dyn OAuthStateStore>,
     /// Factory registry used to build providers without relying on global state.
     provider_registry: crate::oauth2::ProviderRegistry,
+    /// Runtime SSRF policy used when validating dynamic provider settings.
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
     /// Allowlist of permitted redirect domains. Empty means relative paths only.
     allowed_redirect_domains: Arc<Vec<String>>,
     settings_registry: Option<Arc<SettingsRegistry>>,
@@ -468,6 +470,27 @@ impl OAuth2Service {
         provider_registry: crate::oauth2::ProviderRegistry,
         cluster_mode: bool,
     ) -> Result<Self> {
+        Self::new_with_ssrf_guard(
+            repository,
+            state_store,
+            provider_registry,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+            cluster_mode,
+        )
+    }
+
+    /// Create a new `OAuth2` service using the runtime SSRF policy.
+    ///
+    /// # Errors
+    /// Returns `Error::Internal` if `cluster_mode` is true but `state_store`
+    /// does not support cross-node single-use consumption.
+    pub fn new_with_ssrf_guard(
+        repository: UserOAuthProviderRepository,
+        state_store: Arc<dyn OAuthStateStore>,
+        provider_registry: crate::oauth2::ProviderRegistry,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+        cluster_mode: bool,
+    ) -> Result<Self> {
         // Clustered callback handling requires shared single-use state storage.
         if cluster_mode && !state_store.supports_cross_node_single_use() {
             return Err(Error::Internal(
@@ -489,6 +512,7 @@ impl OAuth2Service {
             providers: Arc::new(RwLock::new(HashMap::new())),
             state_store,
             provider_registry,
+            ssrf_guard,
             allowed_redirect_domains: Arc::new(Vec::new()),
             settings_registry: None,
             providers_fingerprint: Arc::new(RwLock::new(None)),
@@ -621,7 +645,7 @@ impl OAuth2Service {
         };
 
         let configs = settings_registry.oauth2_providers.get()?;
-        configs.validate()?;
+        configs.validate_with_ssrf_guard(&self.ssrf_guard)?;
         let fingerprint = configs.to_string();
         {
             let cached = self.providers_fingerprint.read().await;
@@ -1520,6 +1544,8 @@ mod tests {
     use super::*;
     use crate::oauth2::OAuth2Authorization;
     use crate::oauth2::Provider as OAuth2ProviderTrait;
+    use crate::repository::SettingsRepository;
+    use crate::service::SettingsService;
     use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
     use sqlx::PgPool;
@@ -1684,6 +1710,20 @@ mod tests {
         let mut svc = create_test_service();
         svc.set_allowed_redirect_domains(domains);
         svc
+    }
+
+    fn create_test_settings_registry(
+        guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Arc<SettingsRegistry> {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let settings_service = Arc::new(SettingsService::new(
+            SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        Arc::new(SettingsRegistry::new_with_ssrf_guard(
+            settings_service,
+            guard,
+        ))
     }
 
     // Tests: Redirect URL Validation (security-critical)
@@ -2011,6 +2051,43 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].0, "github");
         assert_eq!(providers[0].1, OAuth2Provider::GitHub);
+    }
+
+    #[tokio::test]
+    async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc() {
+        let guard = synctv_common::ssrf::SsrfGuard::builder()
+            .allow_private_network_targets(true)
+            .build();
+        let registry = create_test_settings_registry(&guard);
+        let configs: crate::service::OAuth2ProviderConfigs = r#"{"casdoor_oidc":{"type":"oidc","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}}"#
+            .parse()
+            .expect("test OAuth2 provider config should parse");
+        registry
+            .oauth2_providers
+            .set_for_test(&configs)
+            .expect("test settings seed should validate");
+
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = crate::repository::UserOAuthProviderRepository::new(pool);
+        let service = OAuth2Service::new_with_ssrf_guard(
+            repo,
+            local_oauth_state_store(),
+            crate::oauth2::providers::provider_registry(guard),
+            synctv_common::ssrf::SsrfGuard::builder()
+                .allow_private_network_targets(true)
+                .build(),
+            false,
+        )
+        .expect("OAuth2 service should be created")
+        .with_settings_registry(registry);
+
+        let providers = service
+            .list_available_instances()
+            .await
+            .expect("runtime SSRF policy should allow local Casdoor OIDC issuer");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].0, "casdoor_oidc");
+        assert_eq!(providers[0].1, OAuth2Provider::Oidc);
     }
 
     #[tokio::test]

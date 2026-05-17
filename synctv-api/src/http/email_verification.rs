@@ -22,7 +22,8 @@ use futures::FutureExt;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ProtoJson, AppError, AppResult,
+    AppState,
 };
 use crate::impls::{EmailApiImpl, EndpointRateLimitCategory};
 use crate::proto::client::{
@@ -128,7 +129,7 @@ pub fn create_email_router() -> Router<AppState> {
 pub async fn send_verification_email(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<SendVerificationEmailRequest>,
+    ProtoJson(req): ProtoJson<SendVerificationEmailRequest>,
 ) -> AppResult<Json<SendVerificationEmailResponse>> {
     let result = execute_email_endpoint(
         &state,
@@ -164,7 +165,7 @@ pub async fn send_verification_email(
 pub async fn confirm_email(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<ConfirmEmailRequest>,
+    ProtoJson(req): ProtoJson<ConfirmEmailRequest>,
 ) -> AppResult<Json<ConfirmEmailResponse>> {
     let result = execute_email_endpoint(
         &state,
@@ -203,7 +204,7 @@ pub async fn confirm_email(
 pub async fn request_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<RequestPasswordResetRequest>,
+    ProtoJson(req): ProtoJson<RequestPasswordResetRequest>,
 ) -> AppResult<Json<RequestPasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,
@@ -239,7 +240,7 @@ pub async fn request_password_reset(
 pub async fn start_opaque_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<StartOpaquePasswordResetRequest>,
+    ProtoJson(req): ProtoJson<StartOpaquePasswordResetRequest>,
 ) -> AppResult<Json<StartOpaquePasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,
@@ -275,7 +276,7 @@ pub async fn start_opaque_password_reset(
 pub async fn finish_opaque_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<FinishOpaquePasswordResetRequest>,
+    ProtoJson(req): ProtoJson<FinishOpaquePasswordResetRequest>,
 ) -> AppResult<Json<ConfirmPasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,

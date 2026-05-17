@@ -125,9 +125,16 @@ pub(super) fn validate_provider_url(
     if let Some(port) = parsed.port_or_known_default() {
         if let Some(acl) = guard.acl() {
             if acl.is_port_allowed(port).is_denied() {
-                return Err(Error::InvalidInput(format!(
-                    "{context}: port '{port}' is not allowed"
-                )));
+                let port_allowed_for_ip = match parsed.host() {
+                    Some(Host::Ipv4(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
+                    Some(Host::Ipv6(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
+                    _ => false,
+                };
+                if !port_allowed_for_ip {
+                    return Err(Error::InvalidInput(format!(
+                        "{context}: port '{port}' is not allowed"
+                    )));
+                }
             }
         }
     }
@@ -213,6 +220,11 @@ pub fn provider_registry(
         "logto",
         Arc::new(move |config| logto::logto_factory_with_ssrf_guard(config, &logto_guard)),
     );
+    let casdoor_guard = ssrf_guard.clone();
+    registry.register(
+        "casdoor",
+        Arc::new(move |config| oidc::oidc_factory_with_ssrf_guard(config, &casdoor_guard)),
+    );
     let oidc_guard = ssrf_guard;
     registry.register(
         "oidc",
@@ -253,6 +265,23 @@ mod tests {
         )
         .expect("disabled SSRF policy should allow localhost");
         assert_eq!(parsed.as_str(), "http://localhost:8080/token");
+    }
+
+    #[test]
+    fn validate_provider_url_allows_private_ip_non_default_port_when_configured() {
+        let guard = synctv_common::ssrf::SsrfGuard::builder()
+            .allow_private_network_targets(true)
+            .build();
+        let parsed = validate_provider_url(
+            "http://127.0.0.1:18000/.well-known/openid-configuration",
+            "OIDC issuer URL",
+            &guard,
+        )
+        .expect("private-network policy should allow loopback provider ports");
+        assert_eq!(
+            parsed.as_str(),
+            "http://127.0.0.1:18000/.well-known/openid-configuration"
+        );
     }
 
     #[test]

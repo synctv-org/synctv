@@ -228,6 +228,15 @@ impl SettingsStorage {
         self.inner.read().get(key).cloned()
     }
 
+    /// Set a raw string value in memory without persisting.
+    ///
+    /// This is intended for tests that need to seed settings without a live
+    /// database connection.
+    #[cfg(test)]
+    pub(crate) fn set_raw_for_test(&self, key: &str, value: String) {
+        self.inner.write().insert(key.to_string(), value);
+    }
+
     /// Set raw string value for a key, persisting to database before updating cache.
     pub async fn set_raw(&self, key: &str, value: String) -> Result<()> {
         // Persist to database first — fail fast if the write fails.
@@ -431,6 +440,19 @@ where
         // Convert to string using standard Display trait
         let str_value = value.to_string();
         self.storage.set_raw(self.key, str_value).await?;
+        Ok(())
+    }
+
+    /// Set a value in memory without persisting.
+    ///
+    /// This is intended for tests that need to seed settings without a live
+    /// database connection.
+    #[cfg(test)]
+    pub(crate) fn set_for_test(&self, value: &T) -> Result<()> {
+        if let Some(validator) = self.validator.read().as_ref() {
+            validator(value)?;
+        }
+        self.storage.set_raw_for_test(self.key, value.to_string());
         Ok(())
     }
 

@@ -15,7 +15,11 @@ use super::common::{
     apply_provider_instance_name, execute_provider_user_endpoint,
     execute_provider_user_endpoint_with_control, provider_instance_name,
 };
-use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use crate::http::{
+    middleware::RequestMetadata,
+    validation::{ProtoJson, ProtoQuery},
+    AppResult, AppState,
+};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::bilibili::{
     CheckQrRequest, GetBindsResponse, LoginSmsRequest, LogoutRequest, ParseRequest, SendSmsRequest,
@@ -73,7 +77,7 @@ pub(crate) async fn parse(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<ParseRequest>,
+    ProtoJson(mut req): ProtoJson<ParseRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
@@ -185,7 +189,7 @@ pub(crate) async fn qr_check(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<CheckQrRequest>,
+    ProtoJson(mut req): ProtoJson<CheckQrRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
@@ -297,7 +301,7 @@ pub(crate) async fn sms_send(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<SendSmsRequest>,
+    ProtoJson(mut req): ProtoJson<SendSmsRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::SendSmsResponse>> {
     tracing::info!("Bilibili SMS send request");
 
@@ -351,7 +355,7 @@ pub(crate) async fn sms_login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<LoginSmsRequest>,
+    ProtoJson(mut req): ProtoJson<LoginSmsRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::LoginSmsResponse>> {
     tracing::info!("Bilibili SMS login request");
 
@@ -410,7 +414,7 @@ pub(crate) async fn user_info(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<UserInfoRequest>,
+    ProtoJson(mut req): ProtoJson<UserInfoRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
@@ -513,7 +517,7 @@ pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(mut req): Json<LogoutRequest>,
+    ProtoJson(mut req): ProtoJson<LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 

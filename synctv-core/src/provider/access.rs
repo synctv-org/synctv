@@ -875,4 +875,78 @@ mod tests {
             Some("bound-instance")
         );
     }
+
+    #[tokio::test]
+    async fn invalidate_removes_cached_binding_and_missing_entries_for_all_providers() {
+        let store = Arc::new(InMemoryProviderStore::new(16));
+        let service = test_service(store.clone());
+        let user_id = UserId::expect_positive(7);
+
+        for (provider, server_id, credential) in [
+            (
+                AlistProvider::NAME,
+                "alist-main",
+                ProviderCredential::alist(
+                    "https://alist.example.test".to_string(),
+                    "alice".to_string(),
+                    "hashed-password".to_string(),
+                    None,
+                ),
+            ),
+            (
+                BilibiliProvider::NAME,
+                &UserProviderCredential::bilibili_server_id(),
+                ProviderCredential::bilibili(HashMap::from([(
+                    "SESSDATA".to_string(),
+                    "cookie".to_string(),
+                )])),
+            ),
+            (
+                EmbyProvider::NAME,
+                "emby-main",
+                ProviderCredential::emby(
+                    "https://emby.example.test".to_string(),
+                    "api-key".to_string(),
+                    "emby-user".to_string(),
+                ),
+            ),
+        ] {
+            let record = credential_record(provider, user_id, server_id, None, credential);
+            cache_record(&service, store.as_ref(), &record).await;
+            store
+                .set(
+                    &CachedProviderAccessService::missing_key(provider, user_id, server_id),
+                    &CachedMissing {},
+                    Duration::from_mins(1),
+                )
+                .await
+                .expect("missing cache write succeeds");
+
+            service
+                .invalidate(user_id, provider, server_id)
+                .await
+                .expect("provider access cache invalidates");
+
+            assert!(
+                store
+                    .get_raw(&CachedProviderAccessService::binding_key(
+                        provider, user_id, server_id
+                    ))
+                    .await
+                    .expect("binding cache read succeeds")
+                    .is_none(),
+                "{provider} binding cache should be removed"
+            );
+            assert!(
+                store
+                    .get_raw(&CachedProviderAccessService::missing_key(
+                        provider, user_id, server_id
+                    ))
+                    .await
+                    .expect("missing cache read succeeds")
+                    .is_none(),
+                "{provider} missing cache should be removed"
+            );
+        }
+    }
 }

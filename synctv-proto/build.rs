@@ -467,6 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.ListActiveStreamsRequest.search",
             ".synctv.admin.ListActiveStreamsRequest.sort_by",
             ".synctv.admin.ListActiveStreamsRequest.sort_direction",
+            ".synctv.admin.CreateUserRequest.email",
             ".synctv.client.EditMediaRequest.media_id",
             ".synctv.client.DeleteEntriesRequest.playlist_ids",
             ".synctv.client.DeleteEntriesRequest.media_ids",

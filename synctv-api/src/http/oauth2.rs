@@ -37,7 +37,10 @@ use synctv_proto::client::{
     OAuth2ProviderTypePathRequest, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
-use super::{error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState};
+use super::{
+    error::map_api_error, middleware::RequestMetadata, validation::ProtoJson, AppError, AppResult,
+    AppState,
+};
 use crate::impls::EndpointRateLimitCategory;
 
 fn oauth2_unavailable_error() -> AppError {
@@ -142,7 +145,7 @@ pub async fn exchange_authorization_code(
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
-    Json(mut req): Json<ExchangeAuthorizationCodeRequest>,
+    ProtoJson(mut req): ProtoJson<ExchangeAuthorizationCodeRequest>,
 ) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
     req.provider = path.provider;

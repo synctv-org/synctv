@@ -752,7 +752,8 @@ fn test_dash_pgc_resp_deserialize() {
     });
     let resp: DashPgcResp = serde_json::from_value(json).unwrap();
     assert_eq!(resp.code, 0);
-    assert!((resp.result.dash.duration - 1440.0).abs() < f64::EPSILON);
+    let dash = resp.result.dash.as_ref().expect("dash should deserialize");
+    assert!((dash.duration - 1440.0).abs() < f64::EPSILON);
 }
 
 #[test]

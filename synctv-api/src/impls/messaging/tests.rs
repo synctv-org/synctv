@@ -690,6 +690,7 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for FakePlaybackSn
 #[derive(Clone)]
 struct MutablePlaybackSnapshotService {
     snapshot: Arc<parking_lot::Mutex<crate::proto::client::PlaybackSnapshot>>,
+    dependencies: Arc<parking_lot::Mutex<Vec<synctv_core::provider::ProviderCredentialDependency>>>,
     probe: SnapshotCallProbe,
 }
 
@@ -697,12 +698,20 @@ impl MutablePlaybackSnapshotService {
     fn new(snapshot: crate::proto::client::PlaybackSnapshot) -> Arc<Self> {
         Arc::new(Self {
             snapshot: Arc::new(parking_lot::Mutex::new(snapshot)),
+            dependencies: Arc::new(parking_lot::Mutex::new(Vec::new())),
             probe: SnapshotCallProbe::default(),
         })
     }
 
     fn replace(&self, snapshot: crate::proto::client::PlaybackSnapshot) {
         *self.snapshot.lock() = snapshot;
+    }
+
+    fn replace_dependencies(
+        &self,
+        dependencies: Vec<synctv_core::provider::ProviderCredentialDependency>,
+    ) {
+        *self.dependencies.lock() = dependencies;
     }
 
     async fn wait_for_calls(&self, expected: usize) {
@@ -721,6 +730,16 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for MutablePlaybac
     ) -> Result<crate::proto::client::PlaybackSnapshot, crate::impls::ApiError> {
         self.probe.mark_called();
         Ok(self.snapshot.lock().clone())
+    }
+
+    async fn playback_credential_dependencies(
+        &self,
+        _user_id: &UserId,
+        _room_id: &RoomId,
+        _state: &RoomPlaybackState,
+    ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, crate::impls::ApiError>
+    {
+        Ok(self.dependencies.lock().clone())
     }
 }
 
@@ -2367,6 +2386,238 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
     })
     .await
     .expect("observed playback snapshot should receive future updates");
+
+    connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_provider_credential_change_refreshes_dependent_playback_snapshot() {
+    let message_sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("pb_snap_cred", message_sender.clone()).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
+    let media = synctv_core::repository::MediaRepository::new(fixture.pool.clone())
+        .create(&synctv_core::models::Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: handler.room_id,
+            creator_id: Some(handler.user_id),
+            name: "provider credential dependent media".to_string(),
+            position: 0.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({
+                "url": "https://example.com/provider-credential-dependent.mp4"
+            }),
+            provider_instance_name: None,
+            added_at: now(),
+            updated_at: now(),
+            version: 0,
+        })
+        .await
+        .expect("media should be created for provider credential observe test");
+
+    handler
+        .room_service
+        .update_playback(
+            handler.room_id,
+            handler.user_id,
+            |state| {
+                state.playing_media_id = Some(media.id);
+            },
+            PermissionBits::PLAY_CONTROL,
+        )
+        .await
+        .expect("playback state should be set");
+
+    let snapshot_service =
+        MutablePlaybackSnapshotService::new(crate::proto::client::PlaybackSnapshot {
+            media_id: public_id_codec().encode_media_id(media.id).unwrap(),
+            playlist_id: String::new(),
+            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+            name: "credential-backed media".to_string(),
+            position: 0.0,
+            playback_infos: std::collections::HashMap::new(),
+            default_mode: String::new(),
+            metadata: std::collections::HashMap::new(),
+            version: "snapshot-v1".to_string(),
+            expires_at: Some(4_102_444_800),
+        });
+    snapshot_service.replace_dependencies(vec![
+        synctv_core::provider::ProviderCredentialDependency::new(
+            "bilibili",
+            handler.user_id.to_string(),
+            "bilibili",
+        ),
+    ]);
+    let handler = handler
+        .clone()
+        .with_playback_snapshot_service(snapshot_service.clone());
+
+    prepare_handler_for_run_after_join(&handler, connection_service).await;
+
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+        message: Some(observe_playback_snapshot_message(
+            "playback-snapshot",
+            "snapshot-v1",
+            String::new(),
+            String::new(),
+            Vec::new(),
+            None,
+        )),
+    }]);
+
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+    snapshot_service.wait_for_calls(1).await;
+
+    snapshot_service.replace(crate::proto::client::PlaybackSnapshot {
+        media_id: public_id_codec().encode_media_id(media.id).unwrap(),
+        playlist_id: String::new(),
+        room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+        name: "credential-backed media".to_string(),
+        position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        version: "snapshot-v2".to_string(),
+        expires_at: Some(4_102_444_801),
+    });
+
+    event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
+        event_id: "evt-provider-credential-dependent".to_string(),
+        user_id: handler.user_id,
+        provider: "bilibili".to_string(),
+        server_id: "bilibili".to_string(),
+        timestamp: now(),
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if message_sender.sent_messages().iter().any(|message| {
+                resource_playback_snapshot(message)
+                    .is_some_and(|snapshot| snapshot.version == "snapshot-v2")
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("dependent provider credential change should refresh playback snapshot");
+
+    connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_provider_credential_change_does_not_refresh_unrelated_playback_snapshot() {
+    let message_sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("pb_snap_cred_unrel", message_sender.clone()).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
+    let media = synctv_core::repository::MediaRepository::new(fixture.pool.clone())
+        .create(&synctv_core::models::Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: handler.room_id,
+            creator_id: Some(handler.user_id),
+            name: "provider credential unrelated media".to_string(),
+            position: 0.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({
+                "url": "https://example.com/provider-credential-unrelated.mp4"
+            }),
+            provider_instance_name: None,
+            added_at: now(),
+            updated_at: now(),
+            version: 0,
+        })
+        .await
+        .expect("media should be created for provider credential observe test");
+
+    handler
+        .room_service
+        .update_playback(
+            handler.room_id,
+            handler.user_id,
+            |state| {
+                state.playing_media_id = Some(media.id);
+            },
+            PermissionBits::PLAY_CONTROL,
+        )
+        .await
+        .expect("playback state should be set");
+
+    let snapshot_service =
+        MutablePlaybackSnapshotService::new(crate::proto::client::PlaybackSnapshot {
+            media_id: public_id_codec().encode_media_id(media.id).unwrap(),
+            playlist_id: String::new(),
+            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+            name: "credential-backed media".to_string(),
+            position: 0.0,
+            playback_infos: std::collections::HashMap::new(),
+            default_mode: String::new(),
+            metadata: std::collections::HashMap::new(),
+            version: "snapshot-v1".to_string(),
+            expires_at: Some(4_102_444_800),
+        });
+    snapshot_service.replace_dependencies(vec![
+        synctv_core::provider::ProviderCredentialDependency::new(
+            "bilibili",
+            handler.user_id.to_string(),
+            "bilibili",
+        ),
+    ]);
+    let handler = handler
+        .clone()
+        .with_playback_snapshot_service(snapshot_service.clone());
+
+    prepare_handler_for_run_after_join(&handler, connection_service).await;
+
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+        message: Some(observe_playback_snapshot_message(
+            "playback-snapshot",
+            "snapshot-v1",
+            String::new(),
+            String::new(),
+            Vec::new(),
+            None,
+        )),
+    }]);
+
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+    snapshot_service.wait_for_calls(1).await;
+
+    event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
+        event_id: "evt-provider-credential-unrelated".to_string(),
+        user_id: UserId::expect_positive(handler.user_id.get() + 1),
+        provider: "bilibili".to_string(),
+        server_id: "bilibili".to_string(),
+        timestamp: now(),
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert_eq!(
+        snapshot_service.probe.call_count(),
+        1,
+        "unrelated credential changes must not reload observed playback snapshots"
+    );
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;

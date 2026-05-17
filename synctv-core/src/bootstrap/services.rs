@@ -544,7 +544,10 @@ pub async fn init_services_with_options(
 
     // Initialize Settings registry
     info!("Initializing Settings registry...");
-    let settings_registry = SettingsRegistry::new(settings_service.clone());
+    let settings_registry = SettingsRegistry::new_with_ssrf_guard(
+        settings_service.clone(),
+        &config.security.ssrf_guard(),
+    );
     settings_registry.init(settings_cancel.clone())?;
     info!("Settings registry initialized");
 
@@ -754,15 +757,16 @@ fn init_oauth2_service(
     profile: &SharedStateProfile,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
-    let provider_registry = crate::oauth2::providers::provider_registry(ssrf_guard);
+    let provider_registry = crate::oauth2::providers::provider_registry(ssrf_guard.clone());
     info!("OAuth2 provider registry initialized");
 
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
     let state_store = build_oauth_state_store(profile)?;
-    let oauth2_service = OAuth2Service::new(
+    let oauth2_service = OAuth2Service::new_with_ssrf_guard(
         oauth2_repo,
         state_store,
         provider_registry.clone(),
+        ssrf_guard,
         matches!(profile.state_mode(), SharedStateMode::SharedRequired),
     )
     .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?

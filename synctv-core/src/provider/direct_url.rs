@@ -148,9 +148,16 @@ impl DirectUrlProvider {
         if let Some(port) = parsed.port_or_known_default() {
             if let Some(acl) = guard.acl() {
                 if acl.is_port_allowed(port).is_denied() {
-                    return Err(ProviderError::InvalidConfig(format!(
-                        "DirectUrl port '{port}' is not allowed"
-                    )));
+                    let port_allowed_for_ip = match parsed.host() {
+                        Some(Host::Ipv4(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
+                        Some(Host::Ipv6(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
+                        _ => false,
+                    };
+                    if !port_allowed_for_ip {
+                        return Err(ProviderError::InvalidConfig(format!(
+                            "DirectUrl port '{port}' is not allowed"
+                        )));
+                    }
                 }
             }
         }
@@ -222,10 +229,28 @@ impl ProviderProxy for DirectUrlProvider {
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
+        let (version, maybe_rest) = sub_path
+            .split_once('/')
+            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
 
-        if let Some((version, rest)) = sub_path.split_once('/') {
+        if !version.is_empty() {
             let versioned =
                 super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
+
+            if let Some(url) = super::proxy::signed_target_url(ctx) {
+                let headers = versioned
+                    .result
+                    .playback_infos
+                    .get(&versioned.result.default_mode)
+                    .map_or_else(HashMap::new, |info| info.headers.clone());
+                return Ok(super::proxy::action_for_signed_target_url(
+                    ctx, version, url, headers,
+                ));
+            }
+
+            let Some(rest) = maybe_rest else {
+                return Err(ProviderError::NotFound);
+            };
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (playback_info, index_str) =
@@ -315,17 +340,10 @@ impl ProviderProxy for DirectUrlProvider {
                     });
                 }
                 "m3u8" => {
-                    // Propagate HMAC signature into M3U8 segment URLs
-                    let proxy_base = if let Some(claims) = ctx.verified_claims {
-                        let signed_query = ctx.services.signing_key.build_signed_query(claims);
-                        format!("{}/{version}?{signed_query}", ctx.proxy_base)
-                    } else {
-                        format!("{}/{version}", ctx.proxy_base)
-                    };
                     return Ok(ProxyAction::M3u8Rewrite {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        proxy_base,
+                        proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
                         proxy_url_claims: ctx.verified_claims.cloned(),
                     });
                 }
@@ -427,8 +445,47 @@ impl MediaProvider for DirectUrlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::proxy::ProxyServices;
     use crate::provider::store::InMemoryProviderStore;
     use std::sync::Arc;
+
+    fn fake_proxy_services() -> ProxyServices {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
+        let jwt = crate::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
+            .expect("jwt");
+        let username_cache =
+            crate::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
+        let token_blacklist = Arc::new(
+            crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                1000, 3600, 86400,
+            ),
+        );
+        let key_builder = crate::cache::KeyBuilder::new("test");
+        let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
+        let user_service = crate::service::UserService::new(
+            &pool,
+            jwt,
+            username_cache,
+            crate::config::PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        );
+        let credential_repo = Arc::new(crate::repository::UserProviderCredentialRepository::new(
+            pool.clone(),
+        ));
+        let room_service = crate::service::RoomService::new(pool, user_service);
+        ProxyServices {
+            room_service: Arc::new(room_service),
+            credential_encryption: None,
+            credential_repo,
+            provider_access_service: None,
+            signing_key: Arc::new(crate::proxy_signature::ProxySigningKey::derive_from(
+                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+            )),
+            public_id_codec: Arc::new(crate::PublicIdCodec::default_for_tests()),
+        }
+    }
 
     #[test]
     fn test_detect_format() {
@@ -650,6 +707,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_signed_hls_variant_target_is_rewritten_again() {
+        let store: Arc<dyn crate::provider::store::ProviderStore> =
+            Arc::new(InMemoryProviderStore::new(100));
+        let version = "direct-hls";
+        let result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://cdn.example.com/master.m3u8".to_string()],
+                    format: "m3u8".to_string(),
+                    headers: HashMap::from([(
+                        "Referer".to_string(),
+                        "https://cdn.example.com".to_string(),
+                    )]),
+                    subtitles: vec![],
+                    expires_at: None,
+                    cors_proxy_required: true,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            metadata: HashMap::new(),
+        };
+        store
+            .set(
+                &format!("v:{version}"),
+                &VersionedPlayback {
+                    version: version.to_string(),
+                    result,
+                    expires_at: chrono::Utc::now().timestamp() + 3600,
+                },
+                Duration::from_mins(5),
+            )
+            .await
+            .unwrap();
+        let services = fake_proxy_services();
+        let claims = crate::proxy_signature::ProxyUrlClaims {
+            provider: "direct_url".to_string(),
+            version: version.to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+            target_url: Some("https://cdn.example.com/variant.m3u8?token=abc".to_string()),
+        };
+        let ctx = ProxyRequestContext {
+            sub_path: version,
+            query_string: None,
+            store: Some(&store),
+            proxy_base: "/api/providers/proxy/direct_url",
+            services: &services,
+            verified_claims: Some(&claims),
+            request_context: None,
+            request_headers: &http::HeaderMap::new(),
+        };
+
+        let action = DirectUrlProvider::new().resolve_proxy(&ctx).await.unwrap();
+        match action {
+            ProxyAction::M3u8Rewrite {
+                url,
+                headers,
+                proxy_base,
+                ..
+            } => {
+                assert_eq!(url, "https://cdn.example.com/variant.m3u8?token=abc");
+                assert_eq!(
+                    headers.get("Referer").map(String::as_str),
+                    Some("https://cdn.example.com")
+                );
+                assert_eq!(proxy_base, "/api/providers/proxy/direct_url/direct-hls");
+            }
+            other => panic!("Expected M3u8Rewrite, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_validate_source_config_allows_blocked_hosts_and_ips_when_ssrf_is_explicitly_disabled(
     ) {
         let provider =
@@ -680,6 +811,22 @@ mod tests {
             )
             .await
             .expect("disabled SSRF policy should allow non-default ports");
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_allows_private_ip_non_default_port_when_configured() {
+        let provider = DirectUrlProvider::new_with_ssrf_guard(
+            synctv_common::ssrf::SsrfGuard::builder()
+                .allow_private_network_targets(true)
+                .build(),
+        );
+        provider
+            .validate_source_config(
+                &ProviderContext::new("synctv"),
+                SourceConfig::media(&json!({ "url": "http://127.0.0.1:8080/video.mp4" })),
+            )
+            .await
+            .expect("private-network policy should allow loopback service ports");
     }
 
     #[tokio::test]

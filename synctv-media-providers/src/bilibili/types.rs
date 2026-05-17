@@ -425,7 +425,7 @@ pub struct DashVideo {
     pub bandwidth: u64,
     #[serde(default)]
     pub sar: String,
-    #[serde(rename = "startWithSap")]
+    #[serde(default, rename = "startWithSap")]
     pub start_with_sap: u64,
     #[serde(rename = "SegmentBase")]
     pub segment_base: SegmentBase,
@@ -444,7 +444,7 @@ pub struct DashAudio {
     pub bandwidth: u64,
     #[serde(default, rename = "audioSamplingRate")]
     pub audio_sampling_rate: u32,
-    #[serde(rename = "startWithSap")]
+    #[serde(default, rename = "startWithSap")]
     pub start_with_sap: u64,
     #[serde(rename = "SegmentBase")]
     pub segment_base: SegmentBase,
@@ -468,7 +468,12 @@ pub struct DashPgcResp {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashPgcResult {
-    pub dash: DashInfo,
+    #[serde(default)]
+    pub code: i32,
+    #[serde(default)]
+    pub dash: Option<DashInfo>,
+    #[serde(default)]
+    pub durl: Vec<DurlInfo>,
     #[serde(default)]
     pub support_formats: Vec<SupportFormat>,
 }
@@ -650,4 +655,53 @@ pub struct UrlInfoEntry {
     pub host: String,
     #[serde(default)]
     pub extra: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dash_video_response_accepts_missing_start_with_sap() {
+        let response: DashVideoResp = serde_json::from_value(serde_json::json!({
+            "code": 0,
+            "message": "0",
+            "ttl": 1,
+            "data": {
+                "dash": {
+                    "duration": 120.0,
+                    "minBufferTime": 1.5,
+                    "video": [{
+                        "id": 80,
+                        "baseUrl": "https://upos.example/video.m4s",
+                        "mimeType": "video/mp4",
+                        "codecs": "avc1.640028",
+                        "width": 1920,
+                        "height": 1080,
+                        "frameRate": "30",
+                        "bandwidth": 1_000_000,
+                        "SegmentBase": {
+                            "Initialization": "0-1000",
+                            "indexRange": "1001-2000"
+                        }
+                    }],
+                    "audio": [{
+                        "id": 30280,
+                        "baseUrl": "https://upos.example/audio.m4s",
+                        "mimeType": "audio/mp4",
+                        "codecs": "mp4a.40.2",
+                        "bandwidth": 128_000,
+                        "SegmentBase": {
+                            "Initialization": "0-999",
+                            "indexRange": "1000-1999"
+                        }
+                    }]
+                }
+            }
+        }))
+        .expect("Bilibili DASH responses may omit startWithSap for PGC playback");
+
+        assert_eq!(response.data.dash.video[0].start_with_sap, 0);
+        assert_eq!(response.data.dash.audio[0].start_with_sap, 0);
+    }
 }

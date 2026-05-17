@@ -6,6 +6,7 @@ use axum::{
 };
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
+use crate::http::validation::{ProtoJson, ProtoQuery};
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 
@@ -42,7 +43,7 @@ pub async fn add_member(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<AddMemberBody>,
+    ProtoJson(req): ProtoJson<AddMemberBody>,
 ) -> AppResult<Json<crate::proto::client::AddMemberResponse>> {
     let room_id = path.room_id;
     let request_meta = request_metadata(request_meta);
@@ -83,9 +84,7 @@ pub async fn list_room_join_reviews(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    crate::http::validation::ProtoQuery(req): crate::http::validation::ProtoQuery<
-        crate::proto::client::ListRoomJoinReviewsRequest,
-    >,
+    ProtoQuery(req): ProtoQuery<crate::proto::client::ListRoomJoinReviewsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListRoomJoinReviewsResponse>> {
     let crate::proto::client::RoomPathRequest { room_id } = path;
     let request_meta = request_metadata(request_meta);
@@ -182,7 +181,7 @@ pub async fn reject_room_join_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomJoinReviewPathRequest>,
-    Json(mut req): Json<crate::proto::client::RejectRoomJoinReviewRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::RejectRoomJoinReviewRequest>,
 ) -> AppResult<Json<crate::proto::client::RejectRoomJoinReviewResponse>> {
     let crate::proto::client::RoomJoinReviewPathRequest {
         room_id,
@@ -282,7 +281,7 @@ pub async fn set_member_permissions(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
-    Json(mut req): Json<crate::proto::client::UpdateMemberPermissionsRequest>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::UpdateMemberPermissionsRequest>,
 ) -> AppResult<Json<crate::proto::client::UpdateMemberPermissionsResponse>> {
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     req.user_id = user_id;
@@ -332,7 +331,7 @@ pub async fn ban_member(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<BanMemberBody>,
+    ProtoJson(req): ProtoJson<BanMemberBody>,
 ) -> AppResult<Json<crate::proto::client::BanMemberResponse>> {
     let room_id = path.room_id;
     let request_meta = request_metadata(request_meta);

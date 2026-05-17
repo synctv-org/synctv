@@ -8,7 +8,7 @@
 
 use crate::http::error::AppResult;
 use crate::http::middleware::RequestMetadata;
-use crate::http::validation::ProtoQuery;
+use crate::http::validation::{ProtoJson, ProtoQuery};
 use crate::http::AppState;
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
@@ -147,7 +147,7 @@ pub async fn get_notification(
 pub async fn mark_as_read(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<MarkAsReadRequest>,
+    ProtoJson(req): ProtoJson<MarkAsReadRequest>,
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
     let request_meta = request_meta

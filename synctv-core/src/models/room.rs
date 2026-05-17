@@ -357,7 +357,7 @@ pub struct RoomListQuery {
     #[serde(default)]
     pub is_banned: Option<bool>,
     /// Filter by creator
-    pub creator_id: Option<String>,
+    pub creator_id: Option<super::UserId>,
     #[serde(default)]
     pub sort_by: RoomListSortBy,
     #[serde(default)]

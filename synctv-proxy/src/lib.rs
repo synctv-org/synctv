@@ -769,6 +769,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_proxy_ssrf_rejects_hostname_non_default_ports() {
+        let url = url::Url::parse("https://public.example:25/video.mp4").unwrap();
+        let err = validate_target_url_against_ssrf(
+            &url,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect_err("strict SSRF policy should reject disallowed hostname ports");
+
+        assert!(
+            err.to_string().contains("target port `25` is blocked"),
+            "unexpected SSRF error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_proxy_ssrf_allows_hostname_default_ports() {
+        let url = url::Url::parse("https://public.example/video.mp4").unwrap();
+        validate_target_url_against_ssrf(&url, &synctv_common::ssrf::SsrfGuard::strict_policy())
+            .expect("strict SSRF policy should allow default HTTPS ports for public hostnames");
+    }
+
     // URL scheme validation tests
 
     #[tokio::test]

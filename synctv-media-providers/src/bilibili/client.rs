@@ -38,7 +38,7 @@ static RE_EPID: LazyLock<Regex> =
 static RE_SSID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"ss(\d+)").expect("invalid SSID regex"));
 static RE_LIVE_ROOM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"/live/(\d+)").expect("invalid live room regex"));
+    LazyLock::new(|| Regex::new(r"(?:/live)?/(\d+)(?:[/?#]|$)").expect("invalid live room regex"));
 
 use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
@@ -1803,7 +1803,10 @@ impl BilibiliClient {
                     });
                 }
 
-                let dash_info = json.result.dash;
+                let dash_info = json.result.dash.ok_or_else(|| BilibiliError::Api {
+                    code: i64::from(json.result.code),
+                    message: "PGC playurl response did not include DASH streams".to_string(),
+                })?;
                 let (regular_dash, hevc_dash) =
                     parse_dash_info(&dash_info, &json.result.support_formats);
 
@@ -3630,6 +3633,16 @@ mod tests {
             BilibiliClient::match_url("https://live.bilibili.com/live/12345").unwrap();
         assert_eq!(media_type, "live");
         assert_eq!(id, "12345");
+
+        let (media_type, id) =
+            BilibiliClient::match_url("https://live.bilibili.com/76?live_from=85002").unwrap();
+        assert_eq!(media_type, "live");
+        assert_eq!(id, "76");
+
+        let (media_type, id) =
+            BilibiliClient::match_url("https://live.bilibili.com/21452505#main").unwrap();
+        assert_eq!(media_type, "live");
+        assert_eq!(id, "21452505");
     }
 
     #[test]

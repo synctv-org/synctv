@@ -879,6 +879,20 @@ mod tests {
     }
 
     #[test]
+    fn http_json_admin_create_user_request_defaults_optional_email() {
+        let json = r#"{"username":"alice","password":"StrongPass123","role":3,"status":1}"#;
+
+        let decoded: crate::admin::CreateUserRequest =
+            serde_json::from_str(json).expect("optional email should default");
+
+        assert_eq!(decoded.username, "alice");
+        assert_eq!(decoded.password, "StrongPass123");
+        assert_eq!(decoded.email, "");
+        assert_eq!(decoded.role, crate::common::UserRole::User as i32);
+        assert_eq!(decoded.status, crate::common::UserStatus::Active as i32);
+    }
+
+    #[test]
     fn http_json_provider_common_add_provider_instance_request_defaults_optional_scalars() {
         let json = r#"{"name":"emby-main","endpoint":"https://provider.example.com"}"#;
 

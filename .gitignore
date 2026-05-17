@@ -13,6 +13,7 @@ target/
 *.key
 .env
 .env.postgres
+.env.redis
 .env.synctv
 synctv.yaml
 

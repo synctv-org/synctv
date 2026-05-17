@@ -25,6 +25,7 @@ use synctv_livestream::error::StreamError;
 const MAX_CONSECUTIVE_DROPS: u32 = 100;
 
 fn map_stream_error(context: &str, error: &StreamError) -> AppError {
+    tracing::warn!(context, error = %error, "Livestream request failed");
     let api_error = crate::impls::map_livestream_stream_error(error);
     if matches!(api_error, crate::impls::ApiError::Internal(_)) {
         tracing::error!(context, error = %error, "Livestream internal error");

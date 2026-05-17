@@ -8,7 +8,7 @@ use super::{
     store::VersionedPlayback,
     MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
-use crate::models::{MediaId, RoomId};
+use crate::models::{MediaId, RoomId, TypedId};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
@@ -79,33 +79,69 @@ impl RtmpProvider {
         Ok(())
     }
 
+    fn metadata_typed_id<T>(
+        versioned: &VersionedPlayback,
+        field: &'static str,
+        parse_public_id: impl FnOnce(&str) -> Result<T, ProviderError>,
+    ) -> Result<T, ProviderError>
+    where
+        T: TypedId,
+    {
+        let value = versioned
+            .result
+            .metadata
+            .get(field)
+            .ok_or_else(|| ProviderError::ApiError(format!("Live playback missing {field}")))?;
+
+        if let Some(id) = value.as_i64() {
+            return T::try_from(id).map_err(|error| {
+                ProviderError::InvalidConfig(format!(
+                    "Invalid {field} in live playback metadata: {error}"
+                ))
+            });
+        }
+
+        if let Some(id) = value.as_u64() {
+            let id = i64::try_from(id).map_err(|_| {
+                ProviderError::InvalidConfig(format!(
+                    "Invalid {field} in live playback metadata: exceeds i64"
+                ))
+            })?;
+            return T::try_from(id).map_err(|error| {
+                ProviderError::InvalidConfig(format!(
+                    "Invalid {field} in live playback metadata: {error}"
+                ))
+            });
+        }
+
+        let value = value.as_str().ok_or_else(|| {
+            ProviderError::InvalidConfig(format!(
+                "Invalid {field} in live playback metadata: expected public ID string or numeric ID"
+            ))
+        })?;
+
+        parse_public_id(value)
+    }
+
     fn build_proxy_action(
         rest: &str,
         versioned: &VersionedPlayback,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
-        let room_id = versioned
-            .result
-            .metadata
-            .get("room_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
-        let media_id = versioned
-            .result
-            .metadata
-            .get("media_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
-        let room_id = super::proxy::parse_proxy_room_id(
-            &ctx.services.public_id_codec,
-            room_id,
-            "live stream playback metadata",
-        )?;
-        let media_id = super::proxy::parse_proxy_media_id(
-            &ctx.services.public_id_codec,
-            media_id,
-            "live stream playback metadata",
-        )?;
+        let room_id = Self::metadata_typed_id(versioned, "room_id", |room_id| {
+            super::proxy::parse_proxy_room_id(
+                &ctx.services.public_id_codec,
+                room_id,
+                "live stream playback metadata",
+            )
+        })?;
+        let media_id = Self::metadata_typed_id(versioned, "media_id", |media_id| {
+            super::proxy::parse_proxy_media_id(
+                &ctx.services.public_id_codec,
+                media_id,
+                "live stream playback metadata",
+            )
+        })?;
 
         match rest {
             stream if stream == "stream" || stream.starts_with("stream/") => {
@@ -506,6 +542,73 @@ mod tests {
             } => {
                 assert_eq!(user_id, UserId::expect_positive(1));
                 assert_eq!(expires_at, claims.expires_at);
+            }
+            other => panic!("expected LiveFlv action, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_proxy_accepts_generated_numeric_live_metadata() {
+        use crate::provider::store::VersionedPlayback;
+        use crate::proxy_signature::ProxyUrlClaims;
+
+        let services = fake_proxy_services();
+        let room_id = RoomId::expect_positive(10);
+        let media_id = MediaId::expect_positive(100);
+        let versioned = VersionedPlayback {
+            version: "v1".to_string(),
+            result: crate::provider::build_live_playback(media_id, room_id),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        let claims = ProxyUrlClaims {
+            provider: "rtmp".to_string(),
+            version: "v1".to_string(),
+            room_id: services
+                .public_id_codec
+                .encode_room_id(room_id)
+                .expect("room id should encode"),
+            user_id: services
+                .public_id_codec
+                .encode_user_id(UserId::expect_positive(1))
+                .expect("user id should encode"),
+            expires_at: chrono::Utc::now().timestamp() + 30,
+            target_url: None,
+        };
+        let ctx = ProxyRequestContext {
+            sub_path: "v1/stream",
+            query_string: None,
+            store: None,
+            proxy_base: "/api/providers/proxy/rtmp",
+            services: &services,
+            verified_claims: Some(&claims),
+            request_context: None,
+            request_headers: &http::HeaderMap::new(),
+        };
+
+        let hls = RtmpProvider::build_proxy_action("m3u8", &versioned, &ctx).unwrap();
+        match hls {
+            ProxyAction::LiveHlsPlaylist {
+                room_id: resolved_room_id,
+                media_id: resolved_media_id,
+                ..
+            } => {
+                assert_eq!(resolved_room_id, room_id);
+                assert_eq!(resolved_media_id, media_id);
+            }
+            other => panic!("expected LiveHlsPlaylist action, got {other:?}"),
+        }
+
+        let flv = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap();
+        match flv {
+            ProxyAction::LiveFlv {
+                room_id: resolved_room_id,
+                media_id: resolved_media_id,
+                user_id,
+                ..
+            } => {
+                assert_eq!(resolved_room_id, room_id);
+                assert_eq!(resolved_media_id, media_id);
+                assert_eq!(user_id, UserId::expect_positive(1));
             }
             other => panic!("expected LiveFlv action, got {other:?}"),
         }

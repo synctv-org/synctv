@@ -15,6 +15,7 @@ use synctv_core::provider::{
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     BilibiliProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
 };
+use synctv_core::proxy_signature::ProxyUrlClaims;
 
 fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderManager> {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
@@ -383,6 +384,101 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
 
     let p = provider();
     let fake_services = fake_proxy_services();
+    let claims = ProxyUrlClaims {
+        provider: "bilibili".to_string(),
+        version: version.to_string(),
+        room_id: "room-1".to_string(),
+        user_id: "user-1".to_string(),
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+        target_url: None,
+    };
+    let ctx = ProxyRequestContext {
+        sub_path: sub_path.as_ref(),
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: Some(&claims),
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+
+    let action = p
+        .resolve_proxy(&ctx)
+        .await
+        .expect("signed DASH stream path should resolve");
+
+    match action {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
+            assert_eq!(url, "https://cdn.bilibili.com/video-720.m4s");
+            assert_eq!(
+                headers.get("Referer").map(String::as_str),
+                Some("https://www.bilibili.com")
+            );
+        }
+        other => panic!("Expected FetchAndForward, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
+    let store = new_store();
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+    );
+    let version = "vhls";
+    let mut result = PlaybackResult {
+        playback_infos: HashMap::from([(
+            "10000P_250".to_string(),
+            PlaybackInfo {
+                urls: vec![
+                    "https://cdn.bilibili.com/live-primary.m3u8".to_string(),
+                    "https://cdn.bilibili.com/live-backup.m3u8".to_string(),
+                ],
+                format: "m3u8".to_string(),
+                headers: HashMap::from([(
+                    "Referer".to_string(),
+                    "https://live.bilibili.com".to_string(),
+                )]),
+                subtitles: vec![],
+                expires_at: None,
+                cors_proxy_required: true,
+            },
+        )]),
+        default_mode: "10000P_250".to_string(),
+        metadata: HashMap::new(),
+    };
+    let stored = VersionedPlayback {
+        version: version.to_string(),
+        result: result.clone(),
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+    };
+    store_versioned(&store, &stored).await;
+
+    sign_playback_urls(
+        &mut result,
+        "bilibili",
+        version,
+        &signing_key,
+        "room-1",
+        "user-1",
+        chrono::Utc::now().timestamp() + 3600,
+    );
+
+    let hls_url = result.playback_infos["10000P_250"].urls[1].clone();
+    let sub_path_with_query = hls_url
+        .strip_prefix("/api/providers/proxy/bilibili/")
+        .expect("signed HLS url should use bilibili proxy prefix");
+    let sub_path = urlencoding::decode(
+        sub_path_with_query
+            .split('?')
+            .next()
+            .expect("signed HLS url should include sub_path"),
+    )
+    .expect("signed HLS path should be valid percent-encoding");
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: sub_path.as_ref(),
         store: Some(&store),
@@ -397,11 +493,176 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
     let action = p
         .resolve_proxy(&ctx)
         .await
-        .expect("signed DASH stream path should resolve");
+        .expect("signed HLS path should resolve");
+
+    match action {
+        ProxyAction::M3u8Rewrite {
+            url,
+            headers,
+            proxy_base,
+            ..
+        } => {
+            assert_eq!(url, "https://cdn.bilibili.com/live-backup.m3u8");
+            assert_eq!(
+                headers.get("Referer").map(String::as_str),
+                Some("https://live.bilibili.com")
+            );
+            assert_eq!(proxy_base, "/api/providers/proxy/bilibili/vhls");
+        }
+        other => panic!("Expected M3u8Rewrite, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_signed_hls_segment_target_url_resolves_for_rewritten_playlist() {
+    let store = new_store();
+    let version = "vhlsseg";
+    let vp = make_versioned(
+        version,
+        "https://cdn.bilibili.com/live-primary.m3u8",
+        HashMap::from([(
+            "Referer".to_string(),
+            "https://live.bilibili.com".to_string(),
+        )]),
+        vec![],
+        3600,
+    );
+    store_versioned(&store, &vp).await;
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let claims = ProxyUrlClaims {
+        provider: "bilibili".to_string(),
+        version: version.to_string(),
+        room_id: "room-1".to_string(),
+        user_id: "user-1".to_string(),
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+        target_url: Some("https://cdn.bilibili.com/segment-1.m4s".to_string()),
+    };
+    let ctx = ProxyRequestContext {
+        sub_path: version,
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: Some(&claims),
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+
+    let action = p
+        .resolve_proxy(&ctx)
+        .await
+        .expect("rewritten HLS segment target should resolve");
 
     match action {
         ProxyAction::FetchAndForward { url, headers, .. } => {
-            assert_eq!(url, "https://cdn.bilibili.com/video-720.m4s");
+            assert_eq!(url, "https://cdn.bilibili.com/segment-1.m4s");
+            assert_eq!(
+                headers.get("Referer").map(String::as_str),
+                Some("https://live.bilibili.com")
+            );
+        }
+        other => panic!("Expected FetchAndForward, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_signed_hls_variant_target_url_is_rewritten_again() {
+    let store = new_store();
+    let version = "vhlsvariant";
+    let vp = make_versioned(
+        version,
+        "https://cdn.bilibili.com/live-primary.m3u8",
+        HashMap::from([(
+            "Referer".to_string(),
+            "https://live.bilibili.com".to_string(),
+        )]),
+        vec![],
+        3600,
+    );
+    store_versioned(&store, &vp).await;
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let claims = ProxyUrlClaims {
+        provider: "bilibili".to_string(),
+        version: version.to_string(),
+        room_id: "room-1".to_string(),
+        user_id: "user-1".to_string(),
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+        target_url: Some("https://cdn.bilibili.com/variant.m3u8?token=abc".to_string()),
+    };
+    let ctx = ProxyRequestContext {
+        sub_path: version,
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: Some(&claims),
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+
+    let action = p
+        .resolve_proxy(&ctx)
+        .await
+        .expect("rewritten HLS variant target should resolve");
+
+    match action {
+        ProxyAction::M3u8Rewrite {
+            url,
+            headers,
+            proxy_base,
+            ..
+        } => {
+            assert_eq!(url, "https://cdn.bilibili.com/variant.m3u8?token=abc");
+            assert_eq!(
+                headers.get("Referer").map(String::as_str),
+                Some("https://live.bilibili.com")
+            );
+            assert_eq!(proxy_base, "/api/providers/proxy/bilibili/vhlsvariant");
+        }
+        other => panic!("Expected M3u8Rewrite, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_default_single_stream_proxy_path_resolves_first_url() {
+    let store = new_store();
+    let vp = make_versioned(
+        "vdefault",
+        "https://cdn.bilibili.com/fallback.mp4",
+        HashMap::from([(
+            "Referer".to_string(),
+            "https://www.bilibili.com".to_string(),
+        )]),
+        vec![],
+        3600,
+    );
+    store_versioned(&store, &vp).await;
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let ctx = ProxyRequestContext {
+        sub_path: "vdefault/stream",
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: None,
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+
+    let action = p
+        .resolve_proxy(&ctx)
+        .await
+        .expect("default single stream path should resolve first URL");
+
+    match action {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
+            assert_eq!(url, "https://cdn.bilibili.com/fallback.mp4");
             assert_eq!(
                 headers.get("Referer").map(String::as_str),
                 Some("https://www.bilibili.com")

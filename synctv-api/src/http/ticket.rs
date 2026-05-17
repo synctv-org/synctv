@@ -18,6 +18,7 @@ use axum::{extract::State, Json};
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::middleware::RequestMetadata;
+use super::validation::ProtoJson;
 use super::{AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
@@ -70,7 +71,7 @@ pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTick
 pub async fn create_ticket(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<CreateWebSocketTicketRequest>,
+    ProtoJson(req): ProtoJson<CreateWebSocketTicketRequest>,
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));

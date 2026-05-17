@@ -1086,7 +1086,7 @@ mod websocket_e2e {
         token: &str,
     ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
     {
-        let url = format!("ws://{addr}/ws/rooms/{room_id}");
+        let url = format!("ws://{addr}/ws/rooms/{room_id}?format=protobuf");
         let request = tungstenite::http::Request::builder()
             .uri(&url)
             .header("Authorization", format!("Bearer {token}"))
@@ -1125,7 +1125,7 @@ mod websocket_e2e {
         ),
         tokio_tungstenite::tungstenite::Error,
     > {
-        let url = format!("ws://{addr}/ws/rooms/{room_id}");
+        let url = format!("ws://{addr}/ws/rooms/{room_id}?format=protobuf");
         let request = tungstenite::http::Request::builder()
             .uri(&url)
             .header("Authorization", format!("Bearer {token}"))
@@ -4745,7 +4745,7 @@ mod websocket_connection_limit_timing {
 
     /// Build a WebSocket request with Authorization header (no `?token=` query param).
     fn ws_request(addr: &str, room_id: &str, token: &str) -> tungstenite::http::Request<()> {
-        let url = format!("ws://{addr}/ws/rooms/{room_id}");
+        let url = format!("ws://{addr}/ws/rooms/{room_id}?format=protobuf");
         tungstenite::http::Request::builder()
             .uri(&url)
             .header("Authorization", format!("Bearer {token}"))

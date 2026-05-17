@@ -694,6 +694,26 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
             get(room::get_media),
         )
         .route("/api/rooms/{room_id}/playback", get(room::get_playback))
+        .route(
+            "/api/rooms/{room_id}/watch/playback-state",
+            get(room::watch_playback_state),
+        )
+        .route(
+            "/api/rooms/{room_id}/watch/playback-snapshot",
+            get(room::watch_playback_snapshot),
+        )
+        .route(
+            "/api/rooms/{room_id}/watch/room-settings",
+            get(room::watch_room_settings),
+        )
+        .route(
+            "/api/rooms/{room_id}/watch/playlist-items",
+            get(room::watch_playlist_items),
+        )
+        .route(
+            "/api/rooms/{room_id}/watch/room-members",
+            get(room::watch_room_members),
+        )
 }
 
 fn register_extracted_user_routes() -> Router<AppState> {

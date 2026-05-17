@@ -75,7 +75,7 @@ use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
 use crate::impls::room_settings_snapshot::{
     default_room_settings_snapshot_service, RoomSettingsSnapshotService,
 };
-use crate::proto::client::{ClientMessage, ServerMessage};
+use crate::proto::client::{ClientMessage, ObserveResource, ServerMessage};
 #[cfg(test)]
 use crate::resource_change::ResourceInvalidation;
 use crate::runtime::{
@@ -514,6 +514,532 @@ pub trait MessageSender: Send + Sync {
     /// Default implementation is a no-op (gRPC uses HTTP/2 PING automatically).
     fn ping(&self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchResourceKind {
+    PlaybackState,
+    PlaybackSnapshot,
+    RoomSettings,
+    PlaylistItems,
+    RoomMembers,
+}
+
+impl WatchResourceKind {
+    fn observe_id(self) -> &'static str {
+        match self {
+            Self::PlaybackState => "playback_state",
+            Self::PlaybackSnapshot => "playback_snapshot",
+            Self::RoomSettings => "room_settings",
+            Self::PlaylistItems => "playlist_items",
+            Self::RoomMembers => "room_members",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ResourceWatchSessionConfig {
+    pub room_id: RoomId,
+    pub principal: RealtimePrincipal,
+    pub room_service: Arc<RoomService>,
+    pub event_service: Arc<dyn RealtimeEventService>,
+    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub sender: Arc<dyn MessageSender>,
+    pub playback_snapshot_service: Option<Arc<dyn PlaybackSnapshotService>>,
+    pub playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
+    pub room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
+    pub room_settings_snapshot_service: Option<Arc<dyn RoomSettingsSnapshotService>>,
+}
+
+pub struct ResourceWatchSession {
+    room_id: RoomId,
+    principal: RealtimePrincipal,
+    user_id: UserId,
+    connection_id: String,
+    room_service: Arc<RoomService>,
+    event_service: Arc<dyn RealtimeEventService>,
+    connection_service: Arc<dyn RealtimeConnectionService>,
+    public_id_codec: Arc<crate::PublicIdCodec>,
+    resource_observer: Arc<ResourceObserver>,
+}
+
+pub struct PreparedResourceWatchSession {
+    session: ResourceWatchSession,
+    event_rx: tokio::sync::mpsc::Receiver<RealtimeEvent>,
+}
+
+impl ResourceWatchSession {
+    pub fn new(config: ResourceWatchSessionConfig) -> Self {
+        let ResourceWatchSessionConfig {
+            room_id,
+            principal,
+            room_service,
+            event_service,
+            connection_service,
+            public_id_codec,
+            sender,
+            playback_snapshot_service,
+            playlist_items_snapshot_service,
+            room_members_snapshot_service,
+            room_settings_snapshot_service,
+        } = config;
+        let user_id = principal.connection_user_id();
+        let connection_id = StreamMessageHandler::generate_connection_id();
+        let room_settings_snapshot_service = room_settings_snapshot_service
+            .unwrap_or_else(|| default_room_settings_snapshot_service(Arc::clone(&room_service)));
+        let observer = ResourceObserver::new(ResourceObserverParams {
+            room_id,
+            user_id,
+            actor: principal.room_actor(room_id),
+            connection_id: connection_id.clone(),
+            room_service: Arc::clone(&room_service),
+            public_id_codec: Arc::clone(&public_id_codec),
+            sender,
+            room_settings_snapshot_service,
+        });
+        let observer = Arc::new(observer);
+        observer.set_playback_snapshot_service(playback_snapshot_service);
+        observer.set_playlist_items_snapshot_service(playlist_items_snapshot_service);
+        observer.set_room_members_snapshot_service(room_members_snapshot_service);
+
+        Self {
+            room_id,
+            principal,
+            user_id,
+            connection_id,
+            room_service,
+            event_service,
+            connection_service,
+            public_id_codec,
+            resource_observer: observer,
+        }
+    }
+
+    pub async fn run(
+        self,
+        observe: ObserveResource,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(), String> {
+        self.prepare(&observe).await?.run(cancel_token).await
+    }
+
+    pub async fn prepare(
+        self,
+        observe: &ObserveResource,
+    ) -> Result<PreparedResourceWatchSession, RealtimeJoinError> {
+        self.connection_service
+            .register_actor(
+                self.connection_id.clone(),
+                self.user_id,
+                self.public_actor_id(),
+            )
+            .await
+            .map_err(|error| {
+                tracing::warn!(error = %error, "Failed to register resource watch connection");
+                RealtimeJoinError::from(
+                    crate::runtime::RealtimeAdmissionError::from_runtime_message(error),
+                )
+            })?;
+
+        if let Err(error) = self
+            .connection_service
+            .join_room(&self.connection_id, self.room_id)
+            .await
+        {
+            self.connection_service
+                .unregister(&self.connection_id)
+                .await;
+            return Err(RealtimeJoinError::from(
+                crate::runtime::RealtimeAdmissionError::from_runtime_message(error),
+            ));
+        }
+
+        if let Err(error) = self.ensure_realtime_room_access().await {
+            self.connection_service
+                .unregister(&self.connection_id)
+                .await;
+            return Err(RealtimeJoinError::from(error));
+        }
+
+        if let Err(error) = self.ensure_observe_resource_allowed(observe).await {
+            self.connection_service
+                .unregister(&self.connection_id)
+                .await;
+            return Err(RealtimeJoinError::PermissionDenied(error));
+        }
+
+        let event_rx = match self
+            .event_service
+            .subscribe_with_id(self.room_id, self.user_id, self.connection_id.clone())
+            .await
+            .map(|(event_rx, _connection_id)| event_rx)
+        {
+            Ok(event_rx) => event_rx,
+            Err(error) => {
+                self.connection_service
+                    .unregister(&self.connection_id)
+                    .await;
+                return Err(RealtimeJoinError::Internal(format!(
+                    "Failed to subscribe to realtime events: {error}"
+                )));
+            }
+        };
+
+        if let Err(error) = self
+            .resource_observer
+            .handle_observe_resource(observe)
+            .await
+        {
+            self.event_service.unsubscribe(&self.connection_id);
+            self.connection_service
+                .unregister(&self.connection_id)
+                .await;
+            return Err(RealtimeJoinError::from(error));
+        }
+
+        Ok(PreparedResourceWatchSession {
+            session: self,
+            event_rx,
+        })
+    }
+
+    fn public_actor_id(&self) -> String {
+        self.principal.public_actor_id(&self.public_id_codec)
+    }
+}
+
+impl PreparedResourceWatchSession {
+    pub async fn run(
+        self,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(), String> {
+        let Self {
+            session,
+            mut event_rx,
+        } = self;
+        let mut disconnect_rx = session.connection_service.subscribe_disconnect();
+        let mut admin_rx = session.event_service.subscribe_admin_events();
+
+        let result = async {
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => break Ok(()),
+                    event = event_rx.recv() => {
+                        let Some(event) = event else {
+                            break Err("Realtime event channel closed".to_string());
+                        };
+                        if watch_admin_event_matches(&event, &session.user_id, &session.room_id) {
+                            tracing::info!(
+                                user_id = %session.user_id,
+                                room_id = %session.room_id,
+                                "Resource watch terminating after room access event"
+                            );
+                            break Ok(());
+                        }
+                        if let Err(error) = session
+                            .resource_observer
+                            .room_hub
+                            .refresh_for_room_event(&event, Some(&session.connection_id))
+                            .await
+                        {
+                            break Err(error);
+                        }
+                    }
+                    signal = disconnect_rx.recv() => {
+                        match signal {
+                            Ok(signal) => {
+                                if watch_disconnect_signal_matches(
+                                    &signal,
+                                    &session.user_id,
+                                    &session.room_id,
+                                    &session.connection_id,
+                                ) {
+                                    tracing::info!(
+                                        user_id = %session.user_id,
+                                        room_id = %session.room_id,
+                                        connection_id = %session.connection_id,
+                                        "Resource watch terminating after disconnect signal"
+                                    );
+                                    break Ok(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    lagged = n,
+                                    user_id = %session.user_id,
+                                    room_id = %session.room_id,
+                                    "Resource watch disconnect signal channel lagged, re-subscribing and verifying access"
+                                );
+                                disconnect_rx = session.connection_service.subscribe_disconnect();
+                                if let Err(reason) = session.ensure_realtime_room_access().await {
+                                    tracing::info!(
+                                        user_id = %session.user_id,
+                                        room_id = %session.room_id,
+                                        reason,
+                                        "Resource watch access is no longer valid after disconnect signal lag"
+                                    );
+                                    break Ok(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break Err("Disconnect signal channel closed".to_string());
+                            }
+                        }
+                    }
+                    admin_event = admin_rx.recv() => {
+                        match admin_event {
+                            Ok(RealtimeEvent::ProviderCredentialChanged { ref event_id, ref user_id, ref provider, ref server_id, .. }) => {
+                                session.resource_observer
+                                    .handle_provider_credential_changed_admin_event(
+                                        event_id,
+                                        user_id,
+                                        provider,
+                                        server_id,
+                                )
+                                    .await;
+                            }
+                            Ok(RealtimeEvent::CacheInvalidate { ref event_id, ref targets, .. }) => {
+                                session.resource_observer
+                                    .handle_cache_invalidate_admin_event(event_id, targets)
+                                    .await;
+                            }
+                            Ok(event) => {
+                                if watch_admin_event_matches(&event, &session.user_id, &session.room_id) {
+                                    tracing::info!(
+                                        user_id = %session.user_id,
+                                        room_id = %session.room_id,
+                                        "Resource watch terminating after admin event"
+                                    );
+                                    break Ok(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    lagged = n,
+                                    user_id = %session.user_id,
+                                    room_id = %session.room_id,
+                                    "Resource watch admin event channel lagged, re-subscribing and verifying access"
+                                );
+                                admin_rx = session.event_service.subscribe_admin_events();
+                                if let Err(reason) = session.ensure_realtime_room_access().await {
+                                    tracing::info!(
+                                        user_id = %session.user_id,
+                                        room_id = %session.room_id,
+                                        reason,
+                                        "Resource watch access is no longer valid after admin event lag"
+                                    );
+                                    break Ok(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break Err("Admin event channel closed".to_string());
+                            }
+                        }
+                    }
+                    () = async {
+                        match session
+                            .resource_observer
+                            .next_playback_snapshot_refresh_deadline()
+                            .await {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        if let Err(error) = session
+                            .resource_observer
+                            .refresh_expired_playback_snapshot_observations()
+                            .await
+                        {
+                            break Err(error);
+                        }
+                    }
+                }
+            }
+        }
+        .await;
+
+        session.resource_observer.clear_observations().await;
+        session.event_service.unsubscribe(&session.connection_id);
+        session
+            .connection_service
+            .unregister(&session.connection_id)
+            .await;
+        result
+    }
+}
+
+impl ResourceWatchSession {
+    async fn ensure_realtime_room_access(&self) -> Result<(), String> {
+        let room = self
+            .room_service
+            .get_room(&self.room_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if room.is_banned {
+            return Err("This room has been banned".to_string());
+        }
+        if room.status.is_closed() {
+            return Err("This room is closed and not accepting new connections".to_string());
+        }
+        if self.principal.is_guest() {
+            return self.ensure_guest_admission_for_action().await;
+        }
+        match probe_realtime_membership_access_with_room(&self.room_service, &room, &self.user_id)
+            .await
+        {
+            Ok(RealtimeMembershipAccess::Allowed(_)) => Ok(()),
+            Ok(RealtimeMembershipAccess::Denied(reason)) => Err(reason),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    async fn ensure_guest_admission_for_action(&self) -> Result<(), String> {
+        match guest_admission_denial_reason(
+            &self.room_service,
+            &self.room_id,
+            &self.user_id,
+            &self.principal,
+        )
+        .await
+        {
+            Ok(Some(reason)) => Err(reason),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    async fn check_realtime_permission(&self, permission: u64) -> Result<(), String> {
+        if self.principal.is_guest() {
+            let permissions = self
+                .room_service
+                .get_guest_permissions(&self.room_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if permissions.has(permission) {
+                Ok(())
+            } else {
+                Err("Guests do not have permission to perform this action".to_string())
+            }
+        } else {
+            self.room_service
+                .check_permission(&self.room_id, &self.user_id, permission)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    async fn ensure_observe_resource_allowed(
+        &self,
+        observe: &ObserveResource,
+    ) -> Result<(), String> {
+        if !self.principal.is_guest() {
+            return Ok(());
+        }
+
+        let Some(resource) = observe.resource.as_ref() else {
+            self.ensure_guest_admission_for_action().await?;
+            return Ok(());
+        };
+
+        match resource {
+            crate::proto::client::observe_resource::Resource::PlaybackState(_)
+            | crate::proto::client::observe_resource::Resource::RoomSettings(_) => {
+                self.ensure_guest_admission_for_action().await?;
+                Ok(())
+            }
+            crate::proto::client::observe_resource::Resource::PlaylistItems(_) => {
+                Err("Guests cannot observe playlist items".to_string())
+            }
+            crate::proto::client::observe_resource::Resource::RoomMembers(_) => {
+                self.ensure_guest_admission_for_action().await?;
+                self.check_realtime_permission(PermissionBits::VIEW_MEMBER_LIST)
+                    .await
+            }
+            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => Err(
+                "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+pub fn watch_playback_state_observe(
+    req: crate::proto::client::WatchPlaybackStateRequest,
+) -> ObserveResource {
+    build_watch_observe(
+        WatchResourceKind::PlaybackState,
+        req.options,
+        crate::proto::client::observe_resource::Resource::PlaybackState(
+            crate::proto::client::ObservePlaybackState {},
+        ),
+    )
+}
+
+pub fn watch_playback_snapshot_observe(
+    req: crate::proto::client::WatchPlaybackSnapshotRequest,
+) -> ObserveResource {
+    build_watch_observe(
+        WatchResourceKind::PlaybackSnapshot,
+        req.options,
+        crate::proto::client::observe_resource::Resource::PlaybackSnapshot(
+            req.playback_snapshot.unwrap_or_default(),
+        ),
+    )
+}
+
+pub fn watch_room_settings_observe(
+    req: crate::proto::client::WatchRoomSettingsRequest,
+) -> ObserveResource {
+    build_watch_observe(
+        WatchResourceKind::RoomSettings,
+        req.options,
+        crate::proto::client::observe_resource::Resource::RoomSettings(
+            crate::proto::client::ObserveRoomSettings {},
+        ),
+    )
+}
+
+pub fn watch_playlist_items_observe(
+    req: crate::proto::client::WatchPlaylistItemsRequest,
+) -> ObserveResource {
+    build_watch_observe(
+        WatchResourceKind::PlaylistItems,
+        req.options,
+        crate::proto::client::observe_resource::Resource::PlaylistItems(
+            crate::proto::client::ObservePlaylistItems {
+                request: req.request,
+            },
+        ),
+    )
+}
+
+pub fn watch_room_members_observe(
+    req: crate::proto::client::WatchRoomMembersRequest,
+) -> ObserveResource {
+    build_watch_observe(
+        WatchResourceKind::RoomMembers,
+        req.options,
+        crate::proto::client::observe_resource::Resource::RoomMembers(
+            crate::proto::client::ObserveRoomMembers {
+                request: req.request,
+            },
+        ),
+    )
+}
+
+fn build_watch_observe(
+    kind: WatchResourceKind,
+    options: Option<crate::proto::client::WatchOptions>,
+    resource: crate::proto::client::observe_resource::Resource,
+) -> ObserveResource {
+    let options = options.unwrap_or_default();
+    ObserveResource {
+        observe_id: kind.observe_id().to_string(),
+        version: options.version,
+        delivery_mode: options.delivery_mode,
+        resource: Some(resource),
     }
 }
 
@@ -1146,115 +1672,13 @@ impl StreamMessageHandler {
     }
 
     async fn guest_admission_denial_reason(&self) -> Result<Option<String>, RealtimeJoinError> {
-        let room = self.room_service.get_room(&self.room_id).await.map_err(|error| {
-            tracing::warn!(
-                error = %error,
-                room_id = %self.room_id,
-                user_id = %self.user_id,
-                "Failed to re-validate guest room access during pre_join; rejecting connection because final admission must fail closed"
-            );
-            RealtimeJoinError::ServiceUnavailable(
-                "Room re-validation temporarily unavailable".to_string(),
-            )
-        })?;
-
-        if room.is_banned {
-            return Ok(Some("This room has been banned".to_string()));
-        }
-        if room.status == RoomStatus::Closed {
-            return Ok(Some(
-                "This room is closed and not accepting new connections".to_string(),
-            ));
-        }
-
-        let policy_denial = self
-            .room_service
-            .check_guest_allowed(
-                &self.room_id,
-                self.room_service.settings_registry().map(AsRef::as_ref),
-            )
-            .await
-            .map_or_else(
-                |error| match guest_policy_error_to_denial_reason(error) {
-                    Ok(reason) => Ok(reason),
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            room_id = %self.room_id,
-                            user_id = %self.user_id,
-                            "Failed to validate guest policy during pre_join"
-                        );
-                        Err(RealtimeJoinError::ServiceUnavailable(
-                            "Guest policy validation temporarily unavailable".to_string(),
-                        ))
-                    }
-                },
-                |()| Ok(None),
-            )?;
-        if let Some(reason) = policy_denial {
-            return Ok(Some(reason));
-        }
-
-        if let Some(identity) = self.principal.guest_identity() {
-            match self
-                .guest_token_blacklist_denial_reason(&identity.token_jti)
-                .await
-            {
-                Ok(Some(reason)) => return Ok(Some(reason)),
-                Ok(None) => {}
-                Err(error) => return Err(error),
-            }
-
-            let current_version = self
-                .room_service
-                .get_room_guest_version(&self.room_id)
-                .await
-                .map_err(|error| {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %self.room_id,
-                        user_id = %self.user_id,
-                        "Failed to validate guest token version during pre_join"
-                    );
-                    RealtimeJoinError::ServiceUnavailable(
-                        "Guest access validation temporarily unavailable".to_string(),
-                    )
-                })?;
-            if identity.room_guest_version < current_version {
-                return Ok(Some(
-                    "Guest access for this room has been revoked".to_string(),
-                ));
-            }
-        }
-
-        Ok(None)
-    }
-
-    async fn guest_token_blacklist_denial_reason(
-        &self,
-        token_jti: &str,
-    ) -> Result<Option<String>, RealtimeJoinError> {
-        let user_service = self.room_service.user_service();
-        let key = user_service.key_builder().guest_token_blacklist(token_jti);
-        match user_service
-            .token_blacklist_store()
-            .is_blacklisted_checked(&key)
-            .await
-        {
-            Ok(true) => Ok(Some("Guest token has been revoked".to_string())),
-            Ok(false) => Ok(None),
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %self.room_id,
-                    user_id = %self.user_id,
-                    "Failed to validate guest token blacklist during realtime admission check"
-                );
-                Err(RealtimeJoinError::ServiceUnavailable(
-                    "Guest access validation temporarily unavailable".to_string(),
-                ))
-            }
-        }
+        guest_admission_denial_reason(
+            &self.room_service,
+            &self.room_id,
+            &self.user_id,
+            &self.principal,
+        )
+        .await
     }
 
     async fn prepare_initial_realtime_join_state(
@@ -4476,6 +4900,125 @@ impl StreamMessageHandler {
     }
 }
 
+async fn guest_admission_denial_reason(
+    room_service: &RoomService,
+    room_id: &RoomId,
+    user_id: &UserId,
+    principal: &RealtimePrincipal,
+) -> Result<Option<String>, RealtimeJoinError> {
+    let room = room_service.get_room(room_id).await.map_err(|error| {
+        tracing::warn!(
+            error = %error,
+            room_id = %room_id,
+            user_id = %user_id,
+            "Failed to re-validate guest room access; rejecting connection because final admission must fail closed"
+        );
+        RealtimeJoinError::ServiceUnavailable(
+            "Room re-validation temporarily unavailable".to_string(),
+        )
+    })?;
+
+    if room.is_banned {
+        return Ok(Some("This room has been banned".to_string()));
+    }
+    if room.status == RoomStatus::Closed {
+        return Ok(Some(
+            "This room is closed and not accepting new connections".to_string(),
+        ));
+    }
+
+    let policy_denial = room_service
+        .check_guest_allowed(room_id, room_service.settings_registry().map(AsRef::as_ref))
+        .await
+        .map_or_else(
+            |error| match guest_policy_error_to_denial_reason(error) {
+                Ok(reason) => Ok(reason),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        user_id = %user_id,
+                        "Failed to validate guest policy"
+                    );
+                    Err(RealtimeJoinError::ServiceUnavailable(
+                        "Guest policy validation temporarily unavailable".to_string(),
+                    ))
+                }
+            },
+            |()| Ok(None),
+        )?;
+    if let Some(reason) = policy_denial {
+        return Ok(Some(reason));
+    }
+
+    if let Some(identity) = principal.guest_identity() {
+        match guest_token_blacklist_denial_reason(
+            room_service,
+            room_id,
+            user_id,
+            &identity.token_jti,
+        )
+        .await
+        {
+            Ok(Some(reason)) => return Ok(Some(reason)),
+            Ok(None) => {}
+            Err(error) => return Err(error),
+        }
+
+        let current_version =
+            room_service
+                .get_room_guest_version(room_id)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        user_id = %user_id,
+                        "Failed to validate guest token version"
+                    );
+                    RealtimeJoinError::ServiceUnavailable(
+                        "Guest access validation temporarily unavailable".to_string(),
+                    )
+                })?;
+        if identity.room_guest_version < current_version {
+            return Ok(Some(
+                "Guest access for this room has been revoked".to_string(),
+            ));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn guest_token_blacklist_denial_reason(
+    room_service: &RoomService,
+    room_id: &RoomId,
+    user_id: &UserId,
+    token_jti: &str,
+) -> Result<Option<String>, RealtimeJoinError> {
+    let user_service = room_service.user_service();
+    let key = user_service.key_builder().guest_token_blacklist(token_jti);
+    match user_service
+        .token_blacklist_store()
+        .is_blacklisted_checked(&key)
+        .await
+    {
+        Ok(true) => Ok(Some("Guest token has been revoked".to_string())),
+        Ok(false) => Ok(None),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                user_id = %user_id,
+                "Failed to validate guest token blacklist during realtime admission check"
+            );
+            Err(RealtimeJoinError::ServiceUnavailable(
+                "Guest access validation temporarily unavailable".to_string(),
+            ))
+        }
+    }
+}
+
 async fn probe_realtime_membership_access_with_room(
     room_service: &RoomService,
     room: &synctv_core::models::Room,
@@ -4574,6 +5117,45 @@ fn admin_event_requires_skip_cleanup(
             room_id: rid,
             ..
         } => uid == user_id && rid == room_id,
+        _ => false,
+    }
+}
+
+#[inline]
+fn watch_disconnect_signal_matches(
+    signal: &synctv_realtime::sync::DisconnectSignal,
+    user_id: &UserId,
+    room_id: &RoomId,
+    connection_id: &str,
+) -> bool {
+    match signal {
+        synctv_realtime::sync::DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
+        synctv_realtime::sync::DisconnectSignal::User(uid) => uid == user_id,
+        synctv_realtime::sync::DisconnectSignal::Room(rid) => rid == room_id,
+        synctv_realtime::sync::DisconnectSignal::UserFromRoom {
+            user_id: uid,
+            room_id: rid,
+        } => uid == user_id && rid == room_id,
+    }
+}
+
+#[inline]
+fn watch_admin_event_matches(event: &RealtimeEvent, user_id: &UserId, room_id: &RoomId) -> bool {
+    match event {
+        RealtimeEvent::KickUser { user_id: uid, .. } => uid == user_id,
+        RealtimeEvent::KickUserFromRoom {
+            user_id: uid,
+            room_id: rid,
+            ..
+        }
+        | RealtimeEvent::UserLeft {
+            user_id: uid,
+            room_id: rid,
+            ..
+        } => uid == user_id && rid == room_id,
+        RealtimeEvent::RoomDeleted { room_id: rid, .. }
+        | RealtimeEvent::RoomBanned { room_id: rid, .. }
+        | RealtimeEvent::RoomOwnerInactive { room_id: rid, .. } => rid == room_id,
         _ => false,
     }
 }

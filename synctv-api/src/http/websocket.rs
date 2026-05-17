@@ -1,4 +1,4 @@
-//! WebSocket handler with binary proto transmission
+//! WebSocket handler for room realtime messaging.
 //!
 //! This handler uses the unified `StreamMessage` trait from impls layer,
 //! enabling full code reuse between gRPC and WebSocket.
@@ -102,7 +102,37 @@ impl Drop for MetricsGuard {
     }
 }
 
-type WsQuery = crate::proto::client::WebSocketConnectRequest;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RealtimeTransportFormat {
+    Json,
+    Protobuf,
+}
+
+impl RealtimeTransportFormat {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self, AppError> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("json") => Ok(Self::Json),
+            Some("protobuf" | "proto") => Ok(Self::Protobuf),
+            Some(other) => Err(AppError::bad_request(format!(
+                "Invalid format '{other}'. Expected json or protobuf"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct WsQuery {
+    #[serde(default)]
+    ticket: String,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+fn websocket_connect_request(query: &WsQuery) -> crate::proto::client::WebSocketConnectRequest {
+    crate::proto::client::WebSocketConnectRequest {
+        ticket: query.ticket.clone(),
+    }
+}
 
 /// Authentication method used for WebSocket connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +570,7 @@ async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<S
 struct WebSocketStream {
     receiver: futures::stream::SplitStream<axum::extract::ws::WebSocket>,
     sender: WebSocketMessageSender,
+    format: RealtimeTransportFormat,
     is_alive: Arc<std::sync::atomic::AtomicBool>,
     /// Raw channel for sending WebSocket control frames (Ping)
     raw_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
@@ -551,7 +582,17 @@ impl StreamMessage for WebSocketStream {
         loop {
             match self.receiver.next().await {
                 Some(Ok(axum::extract::ws::Message::Binary(bytes))) => {
-                    return Some(ProtoCodec::decode_client_message(&bytes));
+                    if self.format == RealtimeTransportFormat::Protobuf {
+                        return Some(ProtoCodec::decode_client_message(&bytes));
+                    }
+                }
+                Some(Ok(axum::extract::ws::Message::Text(text))) => {
+                    if self.format == RealtimeTransportFormat::Json {
+                        return Some(
+                            serde_json::from_str::<ClientMessage>(&text)
+                                .map_err(|e| format!("Failed to decode JSON message: {e}")),
+                        );
+                    }
                 }
                 Some(Ok(axum::extract::ws::Message::Close(_))) => {
                     return None; // Graceful close
@@ -559,7 +600,7 @@ impl StreamMessage for WebSocketStream {
                 Some(Err(e)) => return Some(Err(format!("WebSocket error: {e}"))),
                 None => return None, // Stream ended
                 Some(Ok(_)) => {
-                    // Ignore non-binary messages (text, ping, pong) and continue loop
+                    // Ignore control frames and frames for the other transport format.
                 }
             }
         }
@@ -591,6 +632,7 @@ impl StreamMessage for WebSocketStream {
 struct WebSocketMessageSender {
     normal_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
     critical_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    format: RealtimeTransportFormat,
     /// Count of consecutive message drops (channel full). When this exceeds
     /// `SLOW_CLIENT_DROP_THRESHOLD` the `send()` method returns an error to trigger
     /// a graceful disconnect for the slow client.
@@ -601,10 +643,12 @@ impl WebSocketMessageSender {
     fn new(
         normal_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
         critical_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+        format: RealtimeTransportFormat,
     ) -> Self {
         Self {
             normal_sender,
             critical_sender,
+            format,
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -615,7 +659,23 @@ impl WebSocketMessageSender {
         Self {
             normal_sender: self.normal_sender.clone(),
             critical_sender: self.critical_sender.clone(),
+            format: self.format,
             consecutive_drops: Arc::clone(&self.consecutive_drops),
+        }
+    }
+
+    fn encode_message(
+        &self,
+        message: &ServerMessage,
+    ) -> Result<axum::extract::ws::Message, String> {
+        match self.format {
+            RealtimeTransportFormat::Json => serde_json::to_string(message)
+                .map(Into::into)
+                .map(axum::extract::ws::Message::Text)
+                .map_err(|e| format!("Failed to encode JSON message: {e}")),
+            RealtimeTransportFormat::Protobuf => ProtoCodec::encode_server_message(message)
+                .map(Into::into)
+                .map(axum::extract::ws::Message::Binary),
         }
     }
 }
@@ -842,9 +902,7 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
 
 impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
     fn send(&self, message: ServerMessage) -> Result<(), String> {
-        // Encode to binary proto
-        let bytes = ProtoCodec::encode_server_message(&message)?;
-        let ws_msg = axum::extract::ws::Message::Binary(bytes.into());
+        let ws_msg = self.encode_message(&message)?;
 
         let critical = is_critical_message(&message);
 
@@ -961,6 +1019,7 @@ pub async fn websocket_handler(
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
     let room_id = path.room_id;
+    let transport_format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let request_meta = websocket_request_metadata(state.config.as_ref(), &headers, peer_ip.0)?;
     let handshake_control = ExecutionControl::from_timeout(request_meta.timeout);
 
@@ -1000,6 +1059,7 @@ pub async fn websocket_handler(
                 prepared.username,
                 prepared.connection_id,
                 prepared.reservation,
+                transport_format,
             )
         }))
 }
@@ -1133,7 +1193,7 @@ async fn prepare_websocket_upgrade(
     request_meta: &ApiRequestMetadata,
     handshake_control: &ExecutionControl,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
-    crate::impls::validation::validate_websocket_connect_request(query)
+    crate::impls::validation::validate_websocket_connect_request(&websocket_connect_request(query))
         .map_err(crate::http::error::map_api_error)?;
 
     validate_websocket_origin(
@@ -1226,6 +1286,7 @@ async fn handle_socket(
     _username: String,
     connection_id: String,
     reservation: HandshakeReservation,
+    transport_format: RealtimeTransportFormat,
 ) {
     let user_id = auth.user_id;
     let principal = auth.principal.clone();
@@ -1264,7 +1325,8 @@ async fn handle_socket(
 
     // Create WebSocket sender - wrapped in Arc for sharing with handler.
     // All senders share the same consecutive-drop counter via clone_sender().
-    let ws_sender_primary = WebSocketMessageSender::new(tx.clone(), critical_tx.clone());
+    let ws_sender_primary =
+        WebSocketMessageSender::new(tx.clone(), critical_tx.clone(), transport_format);
     let ws_sender_for_handler = Arc::new(ws_sender_primary.clone_sender());
     let raw_sender_for_ping = tx.clone();
     let ws_sender = ws_sender_primary;
@@ -1352,6 +1414,7 @@ async fn handle_socket(
         let mut stream = WebSocketStream {
             receiver: ws_receiver,
             sender: ws_sender,
+            format: transport_format,
             is_alive,
             raw_sender: raw_sender_for_ping,
         };
@@ -1454,6 +1517,7 @@ mod tests {
     fn test_ws_query_no_auth() {
         let query = WsQuery {
             ticket: String::new(),
+            ..Default::default()
         };
         assert!(query.ticket.is_empty());
     }
@@ -1462,8 +1526,40 @@ mod tests {
     fn test_ws_query_with_ticket() {
         let query = WsQuery {
             ticket: "ticket_abc".to_string(),
+            ..Default::default()
         };
         assert_eq!(query.ticket, "ticket_abc");
+    }
+
+    #[test]
+    fn test_realtime_transport_format_defaults_to_json() {
+        assert_eq!(
+            RealtimeTransportFormat::parse(None).expect("missing format should default"),
+            RealtimeTransportFormat::Json
+        );
+        assert_eq!(
+            RealtimeTransportFormat::parse(Some("")).expect("empty format should default"),
+            RealtimeTransportFormat::Json
+        );
+    }
+
+    #[test]
+    fn test_realtime_transport_format_accepts_protobuf_aliases() {
+        assert_eq!(
+            RealtimeTransportFormat::parse(Some("protobuf")).expect("protobuf format"),
+            RealtimeTransportFormat::Protobuf
+        );
+        assert_eq!(
+            RealtimeTransportFormat::parse(Some("proto")).expect("proto format"),
+            RealtimeTransportFormat::Protobuf
+        );
+    }
+
+    #[test]
+    fn test_realtime_transport_format_rejects_unknown_values() {
+        let err = RealtimeTransportFormat::parse(Some("xml")).expect_err("invalid format");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid format"));
     }
 
     #[test]
@@ -1620,6 +1716,7 @@ mod tests {
         let headers = HeaderMap::new();
         let query = WsQuery {
             ticket: "ticket_abc".to_string(),
+            ..Default::default()
         };
 
         // No Authorization header
@@ -1633,6 +1730,7 @@ mod tests {
         let headers = HeaderMap::new();
         let query = WsQuery {
             ticket: String::new(),
+            ..Default::default()
         };
 
         assert!(headers.get("Authorization").is_none());
@@ -2511,7 +2609,8 @@ mod tests {
 
         let (critical_tx, _critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let sender = WebSocketMessageSender::new(tx.clone(), critical_tx);
+        let sender =
+            WebSocketMessageSender::new(tx.clone(), critical_tx, RealtimeTransportFormat::Protobuf);
 
         tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
             .expect("fill the channel");
@@ -2539,7 +2638,8 @@ mod tests {
 
         let (critical_tx, mut critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let sender = WebSocketMessageSender::new(tx.clone(), critical_tx);
+        let sender =
+            WebSocketMessageSender::new(tx.clone(), critical_tx, RealtimeTransportFormat::Protobuf);
 
         tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
             .expect("fill normal queue");

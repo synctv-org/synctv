@@ -6412,10 +6412,14 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
         .await
         .expect("blacklist guest token");
 
-    let reason = handler
-        .guest_token_blacklist_denial_reason(&identity.token_jti)
-        .await
-        .expect("blacklist check should succeed");
+    let reason = super::guest_token_blacklist_denial_reason(
+        &handler.room_service,
+        &handler.room_id,
+        &handler.user_id,
+        &identity.token_jti,
+    )
+    .await
+    .expect("blacklist check should succeed");
 
     assert_eq!(reason.as_deref(), Some("Guest token has been revoked"));
 
@@ -7500,6 +7504,254 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
         &uid,
         &rid,
     ));
+}
+
+#[test]
+fn test_watch_disconnect_signal_matches_revocation_targets() {
+    let rid = room_id();
+    let uid = user_id();
+    let other_uid = UserId::expect_positive(2);
+    let other_rid = RoomId::expect_positive(2);
+    let connection_id = "conn_watch";
+
+    assert!(super::watch_disconnect_signal_matches(
+        &synctv_realtime::sync::DisconnectSignal::Connection(connection_id.to_string()),
+        &uid,
+        &rid,
+        connection_id,
+    ));
+    assert!(super::watch_disconnect_signal_matches(
+        &synctv_realtime::sync::DisconnectSignal::User(uid),
+        &uid,
+        &rid,
+        connection_id,
+    ));
+    assert!(super::watch_disconnect_signal_matches(
+        &synctv_realtime::sync::DisconnectSignal::Room(rid),
+        &uid,
+        &rid,
+        connection_id,
+    ));
+    assert!(super::watch_disconnect_signal_matches(
+        &synctv_realtime::sync::DisconnectSignal::UserFromRoom {
+            user_id: uid,
+            room_id: rid,
+        },
+        &uid,
+        &rid,
+        connection_id,
+    ));
+    assert!(!super::watch_disconnect_signal_matches(
+        &synctv_realtime::sync::DisconnectSignal::User(other_uid),
+        &uid,
+        &rid,
+        connection_id,
+    ));
+    assert!(!super::watch_disconnect_signal_matches(
+        &synctv_realtime::sync::DisconnectSignal::UserFromRoom {
+            user_id: uid,
+            room_id: other_rid,
+        },
+        &uid,
+        &rid,
+        connection_id,
+    ));
+}
+
+#[test]
+fn test_watch_admin_event_matches_access_revocation_events() {
+    let rid = room_id();
+    let uid = user_id();
+    let other_uid = UserId::expect_positive(2);
+    let other_rid = RoomId::expect_positive(2);
+    let now = chrono::Utc::now();
+
+    assert!(super::watch_admin_event_matches(
+        &RealtimeEvent::KickUser {
+            event_id: "evt-1".to_string(),
+            user_id: uid,
+            reason: "ban".to_string(),
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(super::watch_admin_event_matches(
+        &RealtimeEvent::KickUserFromRoom {
+            event_id: "evt-2".to_string(),
+            room_id: rid,
+            user_id: uid,
+            reason: "kick".to_string(),
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(super::watch_admin_event_matches(
+        &RealtimeEvent::UserLeft {
+            event_id: "evt-3".to_string(),
+            room_id: rid,
+            user_id: uid,
+            username: "tester".to_string(),
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(super::watch_admin_event_matches(
+        &RealtimeEvent::RoomDeleted {
+            event_id: "evt-4".to_string(),
+            room_id: rid,
+            deleted_by: uid,
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(super::watch_admin_event_matches(
+        &RealtimeEvent::RoomBanned {
+            event_id: "evt-5".to_string(),
+            room_id: rid,
+            banned_by: uid,
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(super::watch_admin_event_matches(
+        &RealtimeEvent::RoomOwnerInactive {
+            event_id: "evt-6".to_string(),
+            room_id: rid,
+            owner_id: uid,
+            triggered_by: uid,
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(!super::watch_admin_event_matches(
+        &RealtimeEvent::KickUser {
+            event_id: "evt-7".to_string(),
+            user_id: other_uid,
+            reason: "ban".to_string(),
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+    assert!(!super::watch_admin_event_matches(
+        &RealtimeEvent::RoomBanned {
+            event_id: "evt-8".to_string(),
+            room_id: other_rid,
+            banned_by: uid,
+            timestamp: now,
+        },
+        &uid,
+        &rid,
+    ));
+}
+
+#[tokio::test]
+async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases_on_cancel() {
+    let (container, pool) = synctv_core_testing::create_test_pool().await;
+    let room_service = test_room_service(pool.clone());
+    let user_service = room_service.user_service().clone();
+    let event_service = test_realtime_manager("watch_prepare_limit").await;
+    let connection_service = Arc::new(ConnectionManager::new(ConnectionLimits {
+        max_per_room: 1,
+        max_per_user: 10,
+        max_total: 10,
+        ..ConnectionLimits::default()
+    }));
+    let public_id_codec = Arc::new(crate::PublicIdCodec::default_for_tests());
+
+    let owner = user_service
+        .register(
+            "watch_limit_owner".to_string(),
+            Some("watch-limit-owner@test.invalid".to_string()),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("owner should register")
+        .0;
+    let (room, _) = room_service
+        .create_room(
+            "Watch Limit Room".to_string(),
+            "watch-limit".to_string(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("room should be created");
+    let member = user_service
+        .register(
+            "watch_limit_member".to_string(),
+            Some("watch-limit-member@test.invalid".to_string()),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("member should register")
+        .0;
+    room_service
+        .join_room(room.id, member.id, None)
+        .await
+        .expect("member should join room");
+
+    let observe =
+        watch_room_settings_observe(crate::proto::client::WatchRoomSettingsRequest::default());
+    let make_session = || {
+        ResourceWatchSession::new(ResourceWatchSessionConfig {
+            room_id: room.id,
+            principal: RealtimePrincipal::user(member.id, member.username.clone()),
+            room_service: Arc::clone(&room_service),
+            event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
+            connection_service: Arc::clone(&connection_service)
+                as Arc<dyn RealtimeConnectionService>,
+            public_id_codec: Arc::clone(&public_id_codec),
+            sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
+            playback_snapshot_service: None,
+            playlist_items_snapshot_service: None,
+            room_members_snapshot_service: None,
+            room_settings_snapshot_service: None,
+        })
+    };
+
+    let prepared = make_session()
+        .prepare(&observe)
+        .await
+        .expect("first watch should prepare");
+    assert_eq!(connection_service.room_connection_count(&room.id), 1);
+
+    let second = match make_session().prepare(&observe).await {
+        Ok(_) => panic!("second watch should hit per-room capacity"),
+        Err(error) => error,
+    };
+    assert!(matches!(second, RealtimeJoinError::RateLimited(_)));
+    assert_eq!(
+        connection_service.room_connection_count(&room.id),
+        1,
+        "failed prepare must unregister the rejected connection"
+    );
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let run_handle = tokio::spawn(prepared.run(cancel_token.clone()));
+    cancel_token.cancel();
+    run_handle
+        .await
+        .expect("watch task should join")
+        .expect("watch run should stop cleanly");
+    assert_eq!(
+        connection_service.room_connection_count(&room.id),
+        0,
+        "watch cancellation must release realtime room capacity"
+    );
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+    pool.close().await;
+    drop(container);
 }
 
 #[tokio::test]

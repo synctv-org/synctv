@@ -84,6 +84,11 @@ service RoomService {
 
     // Real-time Messaging (room-scoped)
     rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
+    rpc WatchPlaybackState(WatchPlaybackStateRequest) returns (stream WatchPlaybackStateEvent);
+    rpc WatchPlaybackSnapshot(WatchPlaybackSnapshotRequest) returns (stream WatchPlaybackSnapshotEvent);
+    rpc WatchRoomSettings(WatchRoomSettingsRequest) returns (stream WatchRoomSettingsEvent);
+    rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
+    rpc WatchRoomMembers(WatchRoomMembersRequest) returns (stream WatchRoomMembersEvent);
     rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
 
     // WebRTC ICE Servers Configuration
@@ -1904,6 +1909,74 @@ message ObservePlaylistItems {
 
 message ObserveRoomMembers {
     GetRoomMembersRequest request = 1;
+}
+
+message WatchOptions {
+    string version = 1;
+    ResourceDeliveryMode delivery_mode = 2;
+}
+
+message WatchPlaybackStateRequest {
+    WatchOptions options = 1;
+}
+
+message WatchPlaybackSnapshotRequest {
+    WatchOptions options = 1;
+    ObservePlaybackSnapshot playback_snapshot = 2;
+}
+
+message WatchRoomSettingsRequest {
+    WatchOptions options = 1;
+}
+
+message WatchPlaylistItemsRequest {
+    WatchOptions options = 1;
+    ListPlaylistItemsRequest request = 2;
+}
+
+message WatchRoomMembersRequest {
+    WatchOptions options = 1;
+    GetRoomMembersRequest request = 2;
+}
+
+message WatchPlaybackStateEvent {
+    oneof event {
+        ResourceObserved observed = 1;
+        ResourceChanged changed = 2;
+        ResourceObserveError error = 3;
+    }
+}
+
+message WatchPlaybackSnapshotEvent {
+    oneof event {
+        ResourceObserved observed = 1;
+        ResourceChanged changed = 2;
+        ResourceObserveError error = 3;
+    }
+}
+
+message WatchRoomSettingsEvent {
+    oneof event {
+        ResourceObserved observed = 1;
+        ResourceChanged changed = 2;
+        ResourceObserveError error = 3;
+    }
+}
+
+message WatchPlaylistItemsEvent {
+    oneof event {
+        ResourceObserved observed = 1;
+        ResourceChanged changed = 2;
+        ResourceObserveError error = 3;
+    }
+}
+
+message WatchRoomMembersEvent {
+    oneof event {
+        ResourceObserved observed = 1;
+        ResourceChanged changed = 2;
+        ResourceObserveError error = 3;
+    }
 }
 
 // Client -> Server: periodic playback progress heartbeat

@@ -3,16 +3,28 @@
 // Request and response types are proto-generated structs.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
+    response::sse::{Event, KeepAlive, Sse},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use std::convert::Infallible;
 use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, StreamExt};
 
 use super::validation::{ProtoJson, ProtoQuery};
+use super::websocket::RealtimeTransportFormat;
 use super::{middleware::RequestMetadata, AppResult, AppState};
+use crate::impls::messaging::{
+    MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
+};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomResponse,
@@ -28,7 +40,9 @@ use crate::proto::client::{
     ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
     StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
     TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdatePlayback,
-    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, WatchOptions,
+    WatchPlaybackSnapshotRequest, WatchPlaybackStateRequest, WatchPlaylistItemsRequest,
+    WatchRoomMembersRequest, WatchRoomSettingsRequest,
 };
 
 pub type SetRoomPasswordBody = SetRoomPasswordRequest;
@@ -88,6 +102,110 @@ pub struct GetPlaybackQuery {
     pub containers: Option<String>,
     pub audio_capability: Option<String>,
     pub subtitle_preference: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct WatchQuery {
+    pub version: Option<String>,
+    pub delivery_mode: Option<String>,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct WatchPlaybackSnapshotQuery {
+    pub version: Option<String>,
+    pub delivery_mode: Option<String>,
+    pub format: Option<String>,
+    pub media_id: Option<String>,
+    pub playlist_id: Option<String>,
+    #[serde(default, with = "synctv_proto::http_serde::json_bytes")]
+    pub target: Vec<u8>,
+    pub delivery_preference: Option<String>,
+    pub max_streaming_bitrate: Option<i64>,
+    pub max_audio_channels: Option<i32>,
+    pub video_codecs: Option<String>,
+    pub containers: Option<String>,
+    pub audio_capability: Option<String>,
+    pub subtitle_preference: Option<String>,
+}
+
+struct HttpWatchMessageSender {
+    sender: tokio::sync::mpsc::Sender<crate::proto::client::ServerMessage>,
+}
+
+impl MessageSender for HttpWatchMessageSender {
+    fn send(&self, message: crate::proto::client::ServerMessage) -> Result<(), String> {
+        self.sender.try_send(message).map_err(|error| match error {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                "SSE watch client is too slow to consume messages".to_string()
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                "SSE watch client disconnected".to_string()
+            }
+        })
+    }
+
+    fn is_alive(&self) -> bool {
+        !self.sender.is_closed()
+    }
+}
+
+fn map_resource_watch_prepare_error(error: RealtimeJoinError) -> super::AppError {
+    error.log_if_internal("http_resource_watch_prepare");
+    super::AppError::from(crate::impls::ApiError::from(error))
+}
+
+struct CancelOnDropStream<S> {
+    inner: S,
+    cancel_token: tokio_util::sync::CancellationToken,
+}
+
+impl<S> CancelOnDropStream<S> {
+    fn new(inner: S, cancel_token: tokio_util::sync::CancellationToken) -> Self {
+        Self {
+            inner,
+            cancel_token,
+        }
+    }
+}
+
+impl<S> Stream for CancelOnDropStream<S>
+where
+    S: Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl<S> Drop for CancelOnDropStream<S> {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+    }
+}
+
+fn parse_watch_delivery_mode(value: Option<&str>) -> AppResult<i32> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("push_snapshot") => {
+            Ok(crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32)
+        }
+        Some("notify_only") => Ok(crate::proto::client::ResourceDeliveryMode::NotifyOnly as i32),
+        Some(other) => Err(super::AppError::bad_request(format!(
+            "Invalid delivery_mode '{other}'. Expected push_snapshot or notify_only"
+        ))),
+    }
+}
+
+fn watch_options(
+    version: Option<String>,
+    delivery_mode: Option<String>,
+) -> AppResult<WatchOptions> {
+    Ok(WatchOptions {
+        version: version.unwrap_or_default(),
+        delivery_mode: parse_watch_delivery_mode(delivery_mode.as_deref())?,
+    })
 }
 
 fn parse_delivery_preference(
@@ -206,6 +324,154 @@ fn build_get_playback_request(query: &GetPlaybackQuery) -> AppResult<GetPlayback
         playback_client_profile,
     };
     Ok(request)
+}
+
+fn build_playback_client_profile_from_watch_query(
+    query: &WatchPlaybackSnapshotQuery,
+) -> AppResult<Option<crate::proto::client::PlaybackClientProfile>> {
+    build_get_playback_request(&GetPlaybackQuery {
+        delivery_preference: query.delivery_preference.clone(),
+        max_streaming_bitrate: query.max_streaming_bitrate,
+        max_audio_channels: query.max_audio_channels,
+        video_codecs: query.video_codecs.clone(),
+        containers: query.containers.clone(),
+        audio_capability: query.audio_capability.clone(),
+        subtitle_preference: query.subtitle_preference.clone(),
+    })
+    .map(|request| request.playback_client_profile)
+}
+
+fn encode_resource_watch_sse_data<M>(
+    format: RealtimeTransportFormat,
+    message: &M,
+) -> Result<String, serde_json::Error>
+where
+    M: prost::Message + serde::Serialize,
+{
+    match format {
+        RealtimeTransportFormat::Json => serde_json::to_string(message),
+        RealtimeTransportFormat::Protobuf => Ok(BASE64_STANDARD.encode(message.encode_to_vec())),
+    }
+}
+
+fn sse_event_from_server_message(
+    format: RealtimeTransportFormat,
+    message: crate::proto::client::ServerMessage,
+) -> Option<Result<Event, Infallible>> {
+    use crate::proto::client::server_message::Message;
+
+    let (event_name, data) = match message.message? {
+        Message::ResourceObserved(observed) => (
+            "observed",
+            encode_resource_watch_sse_data(format, &observed),
+        ),
+        Message::ResourceChanged(changed) => {
+            ("changed", encode_resource_watch_sse_data(format, &changed))
+        }
+        Message::ResourceObserveError(error) => {
+            ("error", encode_resource_watch_sse_data(format, &error))
+        }
+        _ => return None,
+    };
+    let data = match data {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to serialize resource watch SSE event");
+            return Some(Ok(Event::default()
+                .event("error")
+                .data(r#"{"message":"Failed to serialize resource watch event"}"#)));
+        }
+    };
+    Some(Ok(Event::default().event(event_name).data(data)))
+}
+
+async fn open_resource_watch_sse(
+    state: AppState,
+    request_meta: RequestMetadata,
+    public_room_id: String,
+    observe: crate::proto::client::ObserveResource,
+    format: RealtimeTransportFormat,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let event_service = state
+        .event_service
+        .clone()
+        .ok_or_else(|| super::AppError::service_unavailable())?;
+    let room_id = state
+        .shared_api_runtime
+        .public_id_codec
+        .decode_room_id(&public_room_id)
+        .map_err(|error| super::AppError::bad_request(format!("Invalid room_id: {error}")))?;
+    let request_meta = request_metadata(request_meta).with_timeout(None);
+    let principal = {
+        let client_api = state.shared_api_runtime.client_api.clone();
+        let user_service = state.user_service.clone();
+        crate::impls::ClientApiImpl::execute_room_actor_endpoint(
+            client_api,
+            &request_meta,
+            public_room_id,
+            EndpointRateLimitCategory::WebSocket,
+            move |_client_api, actor| async move {
+                Ok::<_, crate::impls::ApiError>(match actor {
+                    crate::impls::client::RoomActor::User { user_id, .. } => {
+                        let username = user_service
+                            .get_user(&user_id)
+                            .await
+                            .map_err(crate::impls::ApiError::from)?
+                            .username;
+                        crate::impls::messaging::RealtimePrincipal::user(user_id, username)
+                    }
+                    crate::impls::client::RoomActor::Guest(access) => {
+                        let identity = crate::impls::messaging::GuestRealtimeIdentity {
+                            guest_id: access.guest_id,
+                            display_name: access.display_name,
+                            session_id: access.session_id,
+                            token_jti: access.token_jti,
+                            room_guest_version: access.room_guest_version,
+                            permissions: access.permissions,
+                        };
+                        crate::impls::messaging::RealtimePrincipal::guest(room_id, identity)
+                    }
+                })
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?
+    };
+
+    let (outgoing_tx, outgoing_rx) =
+        tokio::sync::mpsc::channel::<crate::proto::client::ServerMessage>(64);
+    let sender = Arc::new(HttpWatchMessageSender {
+        sender: outgoing_tx,
+    });
+    let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
+        room_id,
+        principal,
+        room_service: state.room_service.clone(),
+        event_service,
+        connection_service: state.connection_manager.clone(),
+        public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
+        sender,
+        playback_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+        playlist_items_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+        room_members_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+        room_settings_snapshot_service: None,
+    });
+    let prepared_session = session
+        .prepare(&observe)
+        .await
+        .map_err(map_resource_watch_prepare_error)?;
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let session_cancel = cancel_token.clone();
+    tokio::spawn(async move {
+        if let Err(error) = prepared_session.run(session_cancel).await {
+            tracing::warn!(error = %error, "HTTP resource watch session ended with error");
+        }
+    });
+
+    let stream = ReceiverStream::new(outgoing_rx)
+        .filter_map(move |message| sse_event_from_server_message(format, message));
+    let stream = CancelOnDropStream::new(stream, cancel_token);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 fn extract_room_id(path: crate::proto::client::RoomPathRequest) -> String {
@@ -910,6 +1176,92 @@ pub async fn get_playback(
     .await?;
 
     Ok(Json(response))
+}
+
+pub async fn watch_playback_state(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = extract_room_id(path);
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let request = WatchPlaybackStateRequest {
+        options: Some(watch_options(query.version, query.delivery_mode)?),
+    };
+    let observe = crate::impls::messaging::watch_playback_state_observe(request);
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_playback_snapshot(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Query(query): Query<WatchPlaybackSnapshotQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = extract_room_id(path);
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
+    let request = WatchPlaybackSnapshotRequest {
+        options: Some(watch_options(query.version, query.delivery_mode)?),
+        playback_snapshot: Some(crate::proto::client::ObservePlaybackSnapshot {
+            media_id: query.media_id.unwrap_or_default(),
+            playlist_id: query.playlist_id.unwrap_or_default(),
+            target: query.target,
+            playback_client_profile,
+        }),
+    };
+    let observe = crate::impls::messaging::watch_playback_snapshot_observe(request);
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_room_settings(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = extract_room_id(path);
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let request = WatchRoomSettingsRequest {
+        options: Some(watch_options(query.version, query.delivery_mode)?),
+    };
+    let observe = crate::impls::messaging::watch_room_settings_observe(request);
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_playlist_items(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Query(query): Query<WatchQuery>,
+    ProtoQuery(request): ProtoQuery<ListPlaylistItemsRequest>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = extract_room_id(path);
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let request = WatchPlaylistItemsRequest {
+        options: Some(watch_options(query.version, query.delivery_mode)?),
+        request: Some(request),
+    };
+    let observe = crate::impls::messaging::watch_playlist_items_observe(request);
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_room_members(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Query(query): Query<WatchQuery>,
+    ProtoQuery(request): ProtoQuery<GetRoomMembersRequest>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = extract_room_id(path);
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let request = WatchRoomMembersRequest {
+        options: Some(watch_options(query.version, query.delivery_mode)?),
+        request: Some(request),
+    };
+    let observe = crate::impls::messaging::watch_room_members_observe(request);
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
 /// Get room members with pagination.
@@ -1850,7 +2202,8 @@ mod tests {
 
     use super::{
         build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
-        AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, UpdatePlayback,
+        AddMediaBatchBody, CancelOnDropStream, CreatePlaylistBody, DeleteEntriesBody,
+        GetPlaybackQuery, UpdatePlayback,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetHotRoomsRequest,
@@ -2334,5 +2687,18 @@ mod tests {
                 )
             )
         );
+    }
+
+    #[test]
+    fn test_cancel_on_drop_stream_cancels_token() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let stream = tokio_stream::iter([Ok::<_, std::convert::Infallible>(
+            axum::response::sse::Event::default(),
+        )]);
+        let wrapped = CancelOnDropStream::new(stream, token.clone());
+
+        assert!(!token.is_cancelled());
+        drop(wrapped);
+        assert!(token.is_cancelled());
     }
 }

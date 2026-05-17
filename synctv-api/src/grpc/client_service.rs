@@ -4,8 +4,8 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
 use crate::impls::messaging::{
-    GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal, StreamMessage,
-    StreamMessageHandler,
+    GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal,
+    ResourceWatchSession, ResourceWatchSessionConfig, StreamMessage, StreamMessageHandler,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use synctv_core::models::{Room, RoomId};
@@ -61,11 +61,16 @@ use crate::proto::client::{
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
     UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
     UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, VerifyMfaEmailCodeRequest,
+    WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest, WatchPlaybackStateEvent,
+    WatchPlaybackStateRequest, WatchPlaylistItemsEvent, WatchPlaylistItemsRequest,
+    WatchRoomMembersEvent, WatchRoomMembersRequest, WatchRoomSettingsEvent,
+    WatchRoomSettingsRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
 /// Provides backpressure for slow clients without excessive memory usage.
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
+const WATCH_STREAM_BUFFER_SIZE: usize = 64;
 
 use super::map_api_error;
 use crate::impls::{ApiError, EndpointRateLimitCategory};
@@ -389,6 +394,135 @@ impl ClientServiceImpl {
         )
         .await
         .map_err(map_api_error)
+    }
+
+    async fn watch_principal(
+        &self,
+        metadata: &crate::impls::RequestMetadata,
+        room_id: RoomId,
+    ) -> Result<RealtimePrincipal, Status> {
+        let executor = self.client_api.clone();
+        if let Some(guest_token) =
+            Self::extract_guest_token_from_authorization(metadata.authorization.as_deref())?
+        {
+            let public_room_id = self
+                .client_api
+                .public_id_codec
+                .encode_room_id(room_id)
+                .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))?;
+            let client_api = self.client_api.clone();
+            return executor
+                .execute_public_endpoint(
+                    metadata,
+                    EndpointRateLimitCategory::WebSocket,
+                    move || async move {
+                        let access = client_api
+                            .validate_guest_room_access(&guest_token, &public_room_id)
+                            .await?;
+                        let identity = GuestRealtimeIdentity {
+                            guest_id: access.guest_id,
+                            display_name: access.display_name,
+                            session_id: access.session_id,
+                            token_jti: access.token_jti,
+                            room_guest_version: access.room_guest_version,
+                            permissions: access.permissions,
+                        };
+                        Ok::<_, crate::impls::ApiError>(RealtimePrincipal::guest(room_id, identity))
+                    },
+                )
+                .await
+                .map_err(map_api_error);
+        }
+
+        let user_id = executor
+            .execute_user_endpoint(
+                metadata,
+                EndpointRateLimitCategory::WebSocket,
+                move |authenticated| async move {
+                    Ok::<_, crate::impls::ApiError>(authenticated.user_id)
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        let user = self
+            .user_service
+            .get_user(&user_id)
+            .await
+            .map_err(map_message_stream_user_lookup_error)?;
+        Ok(RealtimePrincipal::user(user_id, user.username))
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn open_watch_stream<E, F>(
+        &self,
+        metadata: crate::impls::RequestMetadata,
+        room_id: RoomId,
+        observe: crate::proto::client::ObserveResource,
+        map_event: F,
+    ) -> Result<
+        Response<
+            std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<E, Status>> + Send + 'static>>,
+        >,
+        Status,
+    >
+    where
+        E: Send + 'static,
+        F: Fn(ServerMessage) -> Option<E> + Send + Sync + 'static,
+    {
+        let event_service = self.event_service.clone().ok_or_else(|| {
+            unavailable_status("Resource watch requires realtime manager (Redis not configured)")
+        })?;
+        let principal = self.watch_principal(&metadata, room_id).await?;
+
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(map_message_stream_room_lookup_error)?;
+        validate_realtime_room_access(&room)?;
+
+        let (outgoing_tx, outgoing_rx) =
+            tokio::sync::mpsc::channel::<ServerMessage>(WATCH_STREAM_BUFFER_SIZE);
+        let sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
+        let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
+            room_id,
+            principal,
+            room_service: self.room_service.clone(),
+            event_service,
+            connection_service: self.connection_service.clone(),
+            public_id_codec: self.client_api.public_id_codec.clone(),
+            sender: Arc::clone(&sender) as Arc<dyn MessageSender>,
+            playback_snapshot_service: Some(self.client_api.clone()),
+            playlist_items_snapshot_service: Some(self.client_api.clone()),
+            room_members_snapshot_service: Some(self.client_api.clone()),
+            room_settings_snapshot_service: None,
+        });
+
+        let prepared_session = session
+            .prepare(&observe)
+            .await
+            .map_err(map_message_stream_join_error)?;
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let session_cancel = cancel_token.clone();
+        tokio::spawn(async move {
+            if let Err(error) = prepared_session.run(session_cancel).await {
+                tracing::warn!(error = %error, "Resource watch session ended with error");
+            }
+        });
+
+        let response_close_sender = sender.sender.clone();
+        let response_close_token = cancel_token.clone();
+        tokio::spawn(async move {
+            response_close_sender.closed().await;
+            response_close_token.cancel();
+        });
+
+        let output_stream = ReceiverStream::new(outgoing_rx).filter_map(move |message| {
+            let event = map_event(message);
+            event.map(Ok::<_, Status>)
+        });
+
+        Ok(Response::new(Box::pin(output_stream)))
     }
 }
 
@@ -1550,6 +1684,39 @@ impl RoomService for ClientServiceImpl {
     type MessageStreamStream = std::pin::Pin<
         Box<dyn tokio_stream::Stream<Item = Result<ServerMessage, Status>> + Send + 'static>,
     >;
+    type WatchPlaybackStateStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<WatchPlaybackStateEvent, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+    type WatchPlaybackSnapshotStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<WatchPlaybackSnapshotEvent, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+    type WatchRoomSettingsStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<WatchRoomSettingsEvent, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+    type WatchPlaylistItemsStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<WatchPlaylistItemsEvent, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+    type WatchRoomMembersStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<WatchRoomMembersEvent, Status>> + Send + 'static,
+        >,
+    >;
 
     async fn message_stream(
         &self,
@@ -1755,6 +1922,57 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(
             Box::pin(output_stream) as Self::MessageStreamStream
         ))
+    }
+
+    async fn watch_playback_state(
+        &self,
+        request: Request<WatchPlaybackStateRequest>,
+    ) -> Result<Response<Self::WatchPlaybackStateStream>, Status> {
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let observe = crate::impls::messaging::watch_playback_state_observe(request.into_inner());
+        self.open_watch_stream(metadata, room_id, observe, watch_playback_state_event)
+            .await
+    }
+
+    async fn watch_playback_snapshot(
+        &self,
+        request: Request<WatchPlaybackSnapshotRequest>,
+    ) -> Result<Response<Self::WatchPlaybackSnapshotStream>, Status> {
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let observe =
+            crate::impls::messaging::watch_playback_snapshot_observe(request.into_inner());
+        self.open_watch_stream(metadata, room_id, observe, watch_playback_snapshot_event)
+            .await
+    }
+
+    async fn watch_room_settings(
+        &self,
+        request: Request<WatchRoomSettingsRequest>,
+    ) -> Result<Response<Self::WatchRoomSettingsStream>, Status> {
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let observe = crate::impls::messaging::watch_room_settings_observe(request.into_inner());
+        self.open_watch_stream(metadata, room_id, observe, watch_room_settings_event)
+            .await
+    }
+
+    async fn watch_playlist_items(
+        &self,
+        request: Request<WatchPlaylistItemsRequest>,
+    ) -> Result<Response<Self::WatchPlaylistItemsStream>, Status> {
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let observe = crate::impls::messaging::watch_playlist_items_observe(request.into_inner());
+        self.open_watch_stream(metadata, room_id, observe, watch_playlist_items_event)
+            .await
+    }
+
+    async fn watch_room_members(
+        &self,
+        request: Request<WatchRoomMembersRequest>,
+    ) -> Result<Response<Self::WatchRoomMembersStream>, Status> {
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let observe = crate::impls::messaging::watch_room_members_observe(request.into_inner());
+        self.open_watch_stream(metadata, room_id, observe, watch_room_members_event)
+            .await
     }
 
     async fn get_chat_history(
@@ -2206,6 +2424,82 @@ impl MessageSender for GrpcMessageSender {
     fn is_alive(&self) -> bool {
         !self.sender.is_closed()
     }
+}
+
+enum GrpcWatchEvent {
+    Observed(crate::proto::client::ResourceObserved),
+    Changed(crate::proto::client::ResourceChanged),
+    Error(crate::proto::client::ResourceObserveError),
+}
+
+fn watch_event_from_server_message<E, O>(message: ServerMessage, wrap: O) -> Option<E>
+where
+    O: FnOnce(GrpcWatchEvent) -> E,
+{
+    use crate::proto::client::server_message::Message;
+
+    let event = match message.message? {
+        Message::ResourceObserved(observed) => GrpcWatchEvent::Observed(observed),
+        Message::ResourceChanged(changed) => GrpcWatchEvent::Changed(changed),
+        Message::ResourceObserveError(error) => GrpcWatchEvent::Error(error),
+        _ => return None,
+    };
+    Some(wrap(event))
+}
+
+fn watch_playback_state_event(message: ServerMessage) -> Option<WatchPlaybackStateEvent> {
+    use crate::proto::client::watch_playback_state_event::Event;
+    watch_event_from_server_message(message, |event| WatchPlaybackStateEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
+}
+
+fn watch_playback_snapshot_event(message: ServerMessage) -> Option<WatchPlaybackSnapshotEvent> {
+    use crate::proto::client::watch_playback_snapshot_event::Event;
+    watch_event_from_server_message(message, |event| WatchPlaybackSnapshotEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
+}
+
+fn watch_room_settings_event(message: ServerMessage) -> Option<WatchRoomSettingsEvent> {
+    use crate::proto::client::watch_room_settings_event::Event;
+    watch_event_from_server_message(message, |event| WatchRoomSettingsEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
+}
+
+fn watch_playlist_items_event(message: ServerMessage) -> Option<WatchPlaylistItemsEvent> {
+    use crate::proto::client::watch_playlist_items_event::Event;
+    watch_event_from_server_message(message, |event| WatchPlaylistItemsEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
+}
+
+fn watch_room_members_event(message: ServerMessage) -> Option<WatchRoomMembersEvent> {
+    use crate::proto::client::watch_room_members_event::Event;
+    watch_event_from_server_message(message, |event| WatchRoomMembersEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
 }
 
 /// gRPC stream implementation of `StreamMessage` trait

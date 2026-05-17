@@ -34,7 +34,13 @@ fn mock_client(mock_server: &MockServer) -> reqwest::Client {
 
 fn slice_cache_for_mock(config: SliceCacheConfig, mock_server: &MockServer) -> SliceCache {
     let client = mock_client(mock_server);
-    SliceCache::new_with_client(config, client)
+    SliceCache::new_with_client_and_ssrf_guard(
+        config,
+        client,
+        synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("cdn.example.com".to_string())
+            .build(),
+    )
 }
 
 struct HeaderAbsent(&'static str);
@@ -3519,9 +3525,15 @@ async fn test_file_backend_slice_cache_integration() {
         stale_while_revalidate: false,
         ..Default::default()
     };
-    let cache = SliceCache::try_new_with_client(config, mock_client(&mock_server))
-        .await
-        .unwrap();
+    let cache = SliceCache::try_new_with_client_and_ssrf_guard(
+        config,
+        mock_client(&mock_server),
+        synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("cdn.example.com".to_string())
+            .build(),
+    )
+    .await
+    .unwrap();
     let url = mock_public_url(&mock_server, "/file-test.bin");
     let headers = HashMap::new();
 

@@ -57,7 +57,7 @@ needless_for_each = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "1.52.1", features = [
+tokio = { version = "1.52.3", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -91,7 +91,7 @@ prost = "0.14.3"
 prost-types = "0.14.3"
 prost-reflect = "0.16.3"
 prost-reflect-build = "0.16.0"
-prost-protovalidate = "0.3.0"
+prost-protovalidate = "0.4.0"
 
 # HTTP Framework
 axum = { version = "0.8.9", features = ["macros", "ws"] }
@@ -145,7 +145,7 @@ redis = { version = "1.2.1", default-features = false, features = [
 # Security
 argon2 = "0.5.3"
 opaque-ke = { version = "4.0.1", features = ["argon2"] }
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }
 webauthn-rs = { version = "0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
 aes-gcm = "0.10.3"
@@ -207,9 +207,9 @@ tracing-appender = "0.2.5"
 dotenvy = "0.15.7"
 
 # Configuration
-config = "0.15.22"
+config = "0.15.23"
 clap = { version = "4.6.1", features = ["derive"] }
-clap_complete = "4.6.3"
+clap_complete = "4.6.5"
 
 # Utilities
 anyhow = "1.0.102"
@@ -251,7 +251,7 @@ hyper-util = { version = "0.1.20", features = ["client-legacy", "tokio", "http2"
 ipnet = "2.12.0"
 
 # Email
-lettre = { version = "0.11.21", default-features = false, features = [
+lettre = { version = "0.11.22", default-features = false, features = [
     "tokio1-rustls",
     "rustls-no-provider",
     "webpki-roots",
@@ -261,7 +261,7 @@ lettre = { version = "0.11.21", default-features = false, features = [
     "hostname",
     "tokio1",
 ] }
-handlebars = "6.4.0"
+handlebars = "6.4.1"
 
 # Compression
 flate2 = "1.1.9"

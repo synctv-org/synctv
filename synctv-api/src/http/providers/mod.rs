@@ -698,7 +698,13 @@ mod tests {
         mock_server: &MockServer,
     ) -> synctv_proxy::slice_cache::SliceCache {
         let client = mock_proxy_client(mock_server);
-        synctv_proxy::slice_cache::SliceCache::new_with_client(config, client)
+        synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+            config,
+            client,
+            synctv_common::ssrf::SsrfGuard::builder()
+                .extra_allowed_host("cdn.example.com".to_string())
+                .build(),
+        )
     }
 
     #[tokio::test]

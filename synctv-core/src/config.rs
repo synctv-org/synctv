@@ -4204,7 +4204,7 @@ impl Config {
 }
 
 fn is_cli_only_synctv_env_var(key: &str) -> bool {
-    matches!(key, "SYNCTV_MANAGEMENT_ENDPOINT")
+    matches!(key, "SYNCTV_MANAGEMENT_ENDPOINT") || key.starts_with("SYNCTV_TEST_")
 }
 
 /// Connection limits configuration
@@ -5086,6 +5086,7 @@ mod tests {
             ("SYNCTV_UNKNOWN_FLAG", "1"),
             ("SYNCTV_ANOTHER_UNKNOWN", "2"),
             ("SYNCTV_MANAGEMENT_ENDPOINT", "unix:///tmp/synctv.sock"),
+            ("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS", "600"),
             ("PATH", "/usr/bin"),
         ]);
         let seen = std::collections::HashSet::from(["SYNCTV_SERVER_PORT".to_string()]);

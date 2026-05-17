@@ -7,6 +7,7 @@ use super::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 use crate::impls::ApiError;
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Duration;
 use synctv_core::models::{
     MediaId, MemberStatus, PermissionBits, PlaylistId, RoomId, RoomRole, RoomStatus, UserId,
     UserRole, UserStatus,
@@ -22,9 +23,17 @@ fn test_public_id_codec() -> crate::PublicIdCodec {
     crate::PublicIdCodec::default_for_tests()
 }
 
-async fn test_client_api() -> (synctv_core_testing::TestContainer, super::ClientApiImpl) {
-    let (container, pool) = synctv_core_testing::create_test_pool().await;
-    let api = super::ClientApiImpl::new(
+fn test_pool_without_repository_access() -> sqlx::PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_millis(50))
+        .connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused?connect_timeout=1")
+        .expect("lazy test pool")
+}
+
+fn test_client_api_without_repository_access() -> super::ClientApiImpl {
+    let pool = test_pool_without_repository_access();
+    super::ClientApiImpl::new(
         Arc::new(synctv_core_testing::create_test_user_service(pool.clone())),
         Arc::new(synctv_core_testing::create_test_room_service(pool)),
         Arc::new(synctv_realtime::sync::ConnectionManager::new(
@@ -37,8 +46,7 @@ async fn test_client_api() -> (synctv_core_testing::TestContainer, super::Client
         None,
         None,
         Arc::new(test_public_id_codec()),
-    );
-    (container, api)
+    )
 }
 
 fn guest_access(permissions: PermissionBits) -> super::GuestRoomAccess {
@@ -55,7 +63,7 @@ fn guest_access(permissions: PermissionBits) -> super::GuestRoomAccess {
 
 #[tokio::test]
 async fn test_shared_room_actor_playlist_items_rejects_guest_without_playlist_permission() {
-    let (_container, api) = test_client_api().await;
+    let api = test_client_api_without_repository_access();
     let err = api
         .list_playlist_items_as_guest(
             &guest_access(PermissionBits::empty()),
@@ -73,7 +81,7 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_playlist_pe
 #[tokio::test]
 async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_playlist_permission_requested()
 {
-    let (_container, api) = test_client_api().await;
+    let api = test_client_api_without_repository_access();
     let requested = PermissionBits(PermissionBits::VIEW_PLAYLIST | PermissionBits::USE_WEBRTC);
     let capped = PermissionBits(requested.0 & PermissionBits::GUEST_ASSIGNABLE);
     assert!(!capped.has(PermissionBits::VIEW_PLAYLIST));

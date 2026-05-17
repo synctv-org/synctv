@@ -1330,95 +1330,6 @@ async fn create_start_handler_fixture(
     }
 }
 
-async fn create_guest_start_handler_fixture(
-    node_id: &str,
-    sender: Arc<dyn MessageSender>,
-    permissions: PermissionBits,
-) -> StartTestFixture {
-    let (container, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_realtime_manager(node_id).await;
-    let connection_service = test_connection_manager();
-    let room_service = test_room_service(pool.clone());
-    let user_service = room_service.user_service().clone();
-
-    let owner = user_service
-        .register(
-            bounded_fixture_username(&format!("{node_id}_owner")),
-            Some(format!("fixture-{node_id}-owner@test.invalid")),
-            "Password123!".to_string(),
-            None,
-        )
-        .await
-        .expect("fixture owner should register")
-        .0;
-
-    let (room, _) = room_service
-        .create_room(
-            format!("Guest Fixture Room {node_id}"),
-            "test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("fixture room should be created");
-
-    let mut settings = room_service
-        .get_room_settings(&room.id)
-        .await
-        .expect("room settings should load");
-    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
-    room_service
-        .set_settings(room.id, owner.id, settings)
-        .await
-        .expect("guest access should be enabled");
-    let room_guest_version = room_service
-        .get_room_guest_version(&room.id)
-        .await
-        .expect("guest version should load");
-
-    let session_id = format!("{node_id}-guest-session");
-    let principal = RealtimePrincipal::guest(
-        room.id,
-        GuestRealtimeIdentity {
-            guest_id: guest_public_id(&session_id),
-            display_name: guest_display_name(&session_id),
-            session_id,
-            token_jti: format!("{node_id}-guest-jti"),
-            room_guest_version,
-            permissions,
-        },
-    );
-
-    let handler = StreamMessageHandler::new_with_principal(
-        room.id,
-        principal,
-        &room_service,
-        test_chat_service(pool.clone()),
-        event_service.clone(),
-        connection_service.clone(),
-        Arc::new(RateLimiter::local_only(format!(
-            "test:guest-fixture:{node_id}:"
-        ))),
-        Arc::new(RateLimitConfig::default()),
-        Arc::new(ContentFilter::new()),
-        Arc::new(crate::PublicIdCodec::default_for_tests()),
-        sender,
-    )
-    .with_heartbeat_schedule(HeartbeatSchedule::for_tests(
-        Duration::from_millis(10),
-        Duration::from_mins(1),
-    ));
-
-    StartTestFixture {
-        _container: container,
-        pool,
-        event_service,
-        connection_service,
-        handler,
-    }
-}
-
 struct StartTestFixture {
     _container: synctv_core_testing::TestContainer,
     pool: sqlx::PgPool,
@@ -6513,15 +6424,16 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
 
 #[tokio::test]
 async fn test_guest_chat_is_rejected_even_if_permission_bits_include_send_chat() {
-    let fixture = create_guest_start_handler_fixture(
-        "guest_chat_rejected",
+    let event_service = test_realtime_manager("guest_chat_rejected").await;
+    let connection_service = test_connection_manager();
+    let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
+        Arc::clone(&event_service),
+        connection_service.clone(),
         PermissionBits(PermissionBits::SEND_CHAT),
-    )
-    .await;
+    );
 
-    let err = fixture
-        .handler
+    let err = handler
         .handle_client_message(&ClientMessage {
             message: Some(crate::proto::client::client_message::Message::Chat(
                 crate::proto::client::ChatMessageSend {
@@ -6535,20 +6447,21 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_send_chat()
         .expect_err("guest chat must be rejected at the realtime boundary");
 
     assert!(err.contains("Guests cannot send chat"));
-    fixture.shutdown().await;
+    shutdown_test_runtime_resources(event_service, connection_service).await;
 }
 
 #[tokio::test]
 async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_send_chat() {
-    let fixture = create_guest_start_handler_fixture(
-        "guest_danmaku_rejected",
+    let event_service = test_realtime_manager("guest_danmaku_rejected").await;
+    let connection_service = test_connection_manager();
+    let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
+        Arc::clone(&event_service),
+        connection_service.clone(),
         PermissionBits(PermissionBits::SEND_CHAT),
-    )
-    .await;
+    );
 
-    let err = fixture
-        .handler
+    let err = handler
         .handle_client_message(&ClientMessage {
             message: Some(crate::proto::client::client_message::Message::Chat(
                 crate::proto::client::ChatMessageSend {
@@ -6562,21 +6475,22 @@ async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_send_cha
         .expect_err("guest danmaku must be rejected at the realtime boundary");
 
     assert!(err.contains("Guests cannot send chat"));
-    fixture.shutdown().await;
+    shutdown_test_runtime_resources(event_service, connection_service).await;
 }
 
 #[tokio::test]
 async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_playlist()
 {
-    let fixture = create_guest_start_handler_fixture(
-        "guest_playlist_observe_rejected",
+    let event_service = test_realtime_manager("guest_playlist_observe_rejected").await;
+    let connection_service = test_connection_manager();
+    let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
+        Arc::clone(&event_service),
+        connection_service.clone(),
         PermissionBits(PermissionBits::VIEW_PLAYLIST),
-    )
-    .await;
+    );
 
-    let err = fixture
-        .handler
+    let err = handler
         .handle_client_message(&ClientMessage {
             message: Some(observe_playlist_items_message(
                 "guest-playlist-items",
@@ -6588,7 +6502,7 @@ async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_inc
         .expect_err("guest playlist observation must be rejected at the realtime boundary");
 
     assert!(err.contains("Guests cannot observe playlist items"));
-    fixture.shutdown().await;
+    shutdown_test_runtime_resources(event_service, connection_service).await;
 }
 
 #[test]

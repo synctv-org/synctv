@@ -1118,22 +1118,26 @@ impl StreamMessageHandler {
             return Ok(());
         }
 
-        self.ensure_guest_admission_for_action().await?;
-
         let Some(resource) = observe.resource.as_ref() else {
+            self.ensure_guest_admission_for_action().await?;
             return Ok(());
         };
 
         match resource {
             crate::proto::client::observe_resource::Resource::PlaybackState(_)
-            | crate::proto::client::observe_resource::Resource::RoomSettings(_) => Ok(()),
+            | crate::proto::client::observe_resource::Resource::RoomSettings(_) => {
+                self.ensure_guest_admission_for_action().await?;
+                Ok(())
+            }
             crate::proto::client::observe_resource::Resource::PlaylistItems(_) => {
                 Err("Guests cannot observe playlist items".to_string())
             }
-            crate::proto::client::observe_resource::Resource::RoomMembers(_) => self
-                .check_realtime_permission(PermissionBits::VIEW_MEMBER_LIST)
-                .await
-                .map_err(|e| e.to_string()),
+            crate::proto::client::observe_resource::Resource::RoomMembers(_) => {
+                self.ensure_guest_admission_for_action().await?;
+                self.check_realtime_permission(PermissionBits::VIEW_MEMBER_LIST)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
             crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => Err(
                 "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
                     .to_string(),
@@ -3194,7 +3198,6 @@ impl StreamMessageHandler {
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {
                 if self.principal.is_guest() {
-                    self.ensure_guest_admission_for_action().await?;
                     return Err("Guests cannot send chat or danmaku messages".to_string());
                 }
 

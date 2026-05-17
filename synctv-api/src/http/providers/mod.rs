@@ -567,7 +567,7 @@ fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
         Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
             AppError::bad_request(err.to_string())
         }
-        Some(synctv_proxy::ProxyErrorKind::Other) | None => AppError::from(err),
+        None => AppError::from(err),
     }
 }
 

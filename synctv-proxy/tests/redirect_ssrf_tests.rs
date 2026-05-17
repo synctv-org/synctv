@@ -16,12 +16,22 @@ fn proxy_client() -> reqwest::Client {
 /// Verify that a loopback target still fails when nothing is listening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_loopback_target_without_listener_returns_error() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("ephemeral loopback listener should bind");
+    let port = listener
+        .local_addr()
+        .expect("ephemeral listener should expose local addr")
+        .port();
+    drop(listener);
+
     let client = proxy_client();
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+    let url = format!("http://127.0.0.1:{port}/admin");
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
         client: &client,
-        url: "http://127.0.0.1:8080/admin",
+        url: &url,
         provider_headers: &HashMap::new(),
         range_header: None,
         request_control: None,

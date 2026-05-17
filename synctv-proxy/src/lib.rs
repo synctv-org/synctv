@@ -27,7 +27,9 @@ use reqwest::header::{HeaderName, HeaderValue, USER_AGENT};
 use synctv_common::ExecutionControl;
 
 pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
-pub(crate) use error::{classify_reqwest_body_error, ProxyError};
+pub(crate) use error::{
+    classify_reqwest_body_error, reqwest_error_message_indicates_connection_failure, ProxyError,
+};
 pub use error::{
     proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
     ProxyErrorKind,
@@ -1050,7 +1052,6 @@ mod tests {
             ProxyError::Upstream("x".into()).kind(),
             ProxyErrorKind::Upstream
         );
-        assert_eq!(ProxyError::Other("x".into()).kind(), ProxyErrorKind::Other);
     }
 
     #[test]
@@ -1208,6 +1209,77 @@ mod tests {
             proxy_err.to_string().contains("Connection failed"),
             "unexpected error: {proxy_err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_send_with_redirect_validation_closed_connection_is_typed_connection() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("test listener should expose local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("client should connect");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client should build");
+        let request = client.get(format!("http://{addr}/closed"));
+
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
+            panic!("closed upstream connection must fail");
+        };
+
+        server.await.expect("test server task should finish");
+        assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Connection));
+    }
+
+    #[tokio::test]
+    async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gateway_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("test listener should expose local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("client should connect");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            stream
+                .write_all(b"this is not an http response\r\n\r\n")
+                .await
+                .expect("malformed response should write");
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client should build");
+        let request = client.get(format!("http://{addr}/malformed"));
+
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
+            panic!("malformed upstream response must fail");
+        };
+
+        server.await.expect("test server task should finish");
+        assert!(matches!(
+            proxy_error_kind(&err),
+            Some(ProxyErrorKind::Connection | ProxyErrorKind::Upstream)
+        ));
     }
 
     #[tokio::test]

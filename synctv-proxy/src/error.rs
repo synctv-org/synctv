@@ -8,7 +8,6 @@ pub enum ProxyErrorKind {
     InvalidRequest,
     RangeNotSatisfiable,
     Upstream,
-    Other,
 }
 
 impl ProxyErrorKind {
@@ -22,7 +21,6 @@ impl ProxyErrorKind {
             Self::InvalidRequest => "invalid_request",
             Self::RangeNotSatisfiable => "range_not_satisfiable",
             Self::Upstream => "upstream",
-            Self::Other => "other",
         }
     }
 }
@@ -37,7 +35,6 @@ pub(crate) enum ProxyError {
     InvalidRequest(String),
     RangeNotSatisfiable { message: String, total_size: u64 },
     Upstream(String),
-    Other(String),
 }
 
 impl ProxyError {
@@ -51,7 +48,6 @@ impl ProxyError {
             Self::InvalidRequest(_) => ProxyErrorKind::InvalidRequest,
             Self::RangeNotSatisfiable { .. } => ProxyErrorKind::RangeNotSatisfiable,
             Self::Upstream(_) => ProxyErrorKind::Upstream,
-            Self::Other(_) => ProxyErrorKind::Other,
         }
     }
 
@@ -76,7 +72,6 @@ impl std::fmt::Display for ProxyError {
                 write!(f, "Range not satisfiable: {message}")
             }
             Self::Upstream(message) => write!(f, "Upstream rejected request: {message}"),
-            Self::Other(message) => write!(f, "Proxy request failed: {message}"),
         }
     }
 }
@@ -118,18 +113,19 @@ pub(crate) fn classify_reqwest_body_error(error: &reqwest::Error) -> ProxyError 
         ProxyError::Timeout(message)
     } else if error.is_connect() {
         ProxyError::Connection(message)
+    } else if reqwest_error_message_indicates_connection_failure(&message) {
+        ProxyError::Connection(message)
     } else {
-        let lower = message.to_ascii_lowercase();
-        if lower.contains("connection")
-            || lower.contains("closed")
-            || lower.contains("eof")
-            || lower.contains("reset")
-            || lower.contains("broken pipe")
-            || lower.contains("incomplete")
-        {
-            ProxyError::Connection(message)
-        } else {
-            ProxyError::Upstream(message)
-        }
+        ProxyError::Upstream(message)
     }
+}
+
+pub(crate) fn reqwest_error_message_indicates_connection_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("connection")
+        || lower.contains("closed")
+        || lower.contains("eof")
+        || lower.contains("reset")
+        || lower.contains("broken pipe")
+        || lower.contains("incomplete")
 }

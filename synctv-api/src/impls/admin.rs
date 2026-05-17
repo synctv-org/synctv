@@ -6461,7 +6461,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -6580,7 +6580,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -6691,7 +6691,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -6812,7 +6812,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -9309,7 +9309,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -10450,7 +10450,7 @@ mod tests {
             None,
             0.0,
         );
-        media_repo.create(&media).await.expect("create media");
+        let media = media_repo.create(&media).await.expect("create media");
 
         admin_api
             .room_service
@@ -12121,7 +12121,7 @@ mod tests {
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");
 
         let room = make_test_room_model(&admin_user.id);
-        room_repo.create(&room).await.expect("create room");
+        let room = room_repo.create(&room).await.expect("create room");
 
         admin_api
             .ban_room(

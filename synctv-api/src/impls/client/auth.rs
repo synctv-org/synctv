@@ -215,7 +215,7 @@ impl ClientApiImpl {
             crate::impls::validation::validate_email(&req.email)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?
         } else {
-            crate::impls::validation::validate_username(&req.username)
+            crate::impls::validation::validate_login_username(&req.username)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?
         };
 
@@ -706,6 +706,25 @@ mod tests {
 
     fn create_test_jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
+    }
+
+    #[test]
+    fn opaque_login_username_validation_allows_bootstrap_root_identifier() {
+        let username = crate::impls::validation::validate_login_username("root")
+            .expect("login must allow an existing bootstrap root username");
+
+        assert_eq!(username, "root");
+    }
+
+    #[test]
+    fn opaque_registration_username_validation_still_rejects_reserved_root() {
+        let error = crate::impls::validation::validate_username("root")
+            .expect_err("registration/update validation must keep reserved username protection");
+
+        assert!(
+            error.to_string().contains("reserved"),
+            "reserved-word validation should remain in place: {error}"
+        );
     }
 
     #[tokio::test]

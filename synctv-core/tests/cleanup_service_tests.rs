@@ -171,11 +171,11 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     let surviving_room = create_test_room(room_owner.id, None);
 
     let room_repo = RoomRepository::new(pool.clone());
-    room_repo
+    let deleted_owned_room = room_repo
         .create(&deleted_owned_room)
         .await
         .expect("Failed to create deleted user's owned room");
-    room_repo
+    let surviving_room = room_repo
         .create(&surviving_room)
         .await
         .expect("Failed to create surviving room");
@@ -325,7 +325,7 @@ async fn test_room_ttl_new_room_not_expired() {
     let room = create_test_room(user.id, None);
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
@@ -366,7 +366,7 @@ async fn test_room_ttl_old_room_is_expired() {
     let room = create_test_room(user.id, Some(two_hours_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
@@ -408,7 +408,7 @@ async fn test_room_ttl_skips_already_soft_deleted() {
     let room = create_test_room(user.id, Some(two_hours_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
@@ -448,7 +448,7 @@ async fn test_room_ttl_zero_disables_expiration() {
     let room = create_test_room(user.id, Some(two_days_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");

@@ -26,11 +26,11 @@ impl RoomPlaybackStateRepository {
 
         // Attempt insert; if the row already exists, do nothing
         sqlx::query!(
-            "INSERT INTO room_playback_state (room_id, \"current_time\", speed, is_playing, updated_at, version)
+            "INSERT INTO room_playback_state (room_id, \"position\", speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (room_id) DO NOTHING",
             room_id as &RoomId,
-            state.current_time,
+            state.position,
             state.speed,
             state.is_playing,
             state.updated_at,
@@ -46,7 +46,7 @@ impl RoomPlaybackStateRepository {
                       playing_media_id as "playing_media_id: MediaId",
                       playing_playlist_id as "playing_playlist_id: PlaylistId",
                       target,
-                      "current_time",
+                      "position",
                       speed,
                       is_playing,
                       updated_at,
@@ -76,11 +76,11 @@ impl RoomPlaybackStateRepository {
         let state = RoomPlaybackState::new(*room_id);
 
         sqlx::query!(
-            "INSERT INTO room_playback_state (room_id, \"current_time\", speed, is_playing, updated_at, version)
+            "INSERT INTO room_playback_state (room_id, \"position\", speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (room_id) DO NOTHING",
             room_id as &RoomId,
-            state.current_time,
+            state.position,
             state.speed,
             state.is_playing,
             state.updated_at,
@@ -95,7 +95,7 @@ impl RoomPlaybackStateRepository {
                       playing_media_id as "playing_media_id: MediaId",
                       playing_playlist_id as "playing_playlist_id: PlaylistId",
                       target,
-                      "current_time",
+                      "position",
                       speed,
                       is_playing,
                       updated_at,
@@ -118,7 +118,7 @@ impl RoomPlaybackStateRepository {
                       playing_media_id as "playing_media_id: MediaId",
                       playing_playlist_id as "playing_playlist_id: PlaylistId",
                       target,
-                      "current_time",
+                      "position",
                       speed,
                       is_playing,
                       updated_at,
@@ -139,14 +139,14 @@ impl RoomPlaybackStateRepository {
             RoomPlaybackState,
             r#"UPDATE room_playback_state
              SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
-                 "current_time" = $5, speed = $6, is_playing = $7,
+                 "position" = $5, speed = $6, is_playing = $7,
                  updated_at = NOW(), version = version + 1
              WHERE room_id = $1 AND version = $8
              RETURNING room_id as "room_id: RoomId",
                        playing_media_id as "playing_media_id: MediaId",
                        playing_playlist_id as "playing_playlist_id: PlaylistId",
                        target,
-                       "current_time",
+                       "position",
                        speed,
                        is_playing,
                        updated_at,
@@ -155,7 +155,7 @@ impl RoomPlaybackStateRepository {
             state.playing_media_id as Option<MediaId>,
             state.playing_playlist_id as Option<PlaylistId>,
             state.target.clone(),
-            state.current_time,
+            state.position,
             state.speed,
             state.is_playing,
             state.version,
@@ -189,7 +189,7 @@ impl RoomPlaybackStateRepository {
             SET playing_media_id = NULL,
                 playing_playlist_id = NULL,
                 target = ''::bytea,
-                "current_time" = 0,
+                "position" = 0,
                 speed = 1.0,
                 is_playing = false,
                 updated_at = NOW(),
@@ -200,7 +200,7 @@ impl RoomPlaybackStateRepository {
                       rps.playing_media_id as "playing_media_id: MediaId",
                       rps.playing_playlist_id as "playing_playlist_id: PlaylistId",
                       rps.target,
-                      rps."current_time",
+                      rps."position",
                       rps.speed,
                       rps.is_playing,
                       rps.updated_at,
@@ -324,13 +324,13 @@ mod tests {
         let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
 
         // Update state with valid media_id reference
-        state.current_time = 120.5;
+        state.position = 120.5;
         state.speed = 1.5;
         state.is_playing = true;
         state.playing_media_id = Some(media.id);
 
         let updated = playback_repo.update(&state).await.unwrap();
-        assert!((updated.current_time - 120.5).abs() < f64::EPSILON);
+        assert!((updated.position - 120.5).abs() < f64::EPSILON);
         assert!((updated.speed - 1.5).abs() < f64::EPSILON);
         assert!(updated.is_playing);
         assert!(updated.playing_media_id.is_some());
@@ -365,13 +365,13 @@ mod tests {
 
         // First update succeeds
         let mut state1 = state.clone();
-        state1.current_time = 50.0;
+        state1.position = 50.0;
         let updated1 = playback_repo.update(&state1).await.unwrap();
         assert_eq!(updated1.version, 1);
 
         // Second update with stale version fails (optimistic lock conflict)
         let mut state2 = state.clone(); // Still has version 0
-        state2.current_time = 100.0;
+        state2.position = 100.0;
         let result = playback_repo.update(&state2).await;
         assert!(matches!(result, Err(crate::Error::OptimisticLockConflict)));
     }
@@ -404,14 +404,14 @@ mod tests {
         assert_eq!(state.version, 0);
 
         // Multiple updates
-        for current_time in [10.0, 20.0, 30.0, 40.0, 50.0] {
-            state.current_time = current_time;
+        for position in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            state.position = position;
             state = playback_repo.update(&state).await.unwrap();
-            assert!((state.current_time - current_time).abs() < f64::EPSILON);
+            assert!((state.position - position).abs() < f64::EPSILON);
         }
     }
 
-    /// Integration test: Boundary conditions for `current_time` and speed
+    /// Integration test: Boundary conditions for `position` and speed
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_boundary_conditions() {
@@ -437,15 +437,15 @@ mod tests {
         // Create playback state
         let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
 
-        // Test zero current_time
-        state.current_time = 0.0;
+        // Test zero position
+        state.position = 0.0;
         state = playback_repo.update(&state).await.unwrap();
-        assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+        assert!((state.position - 0.0).abs() < f64::EPSILON);
 
-        // Test very large current_time (e.g., long video)
-        state.current_time = 7200.5; // 2 hours
+        // Test very large position (e.g., long video)
+        state.position = 7200.5; // 2 hours
         state = playback_repo.update(&state).await.unwrap();
-        assert!((state.current_time - 7200.5).abs() < f64::EPSILON);
+        assert!((state.position - 7200.5).abs() < f64::EPSILON);
 
         // Test very small speed (but not zero)
         state.speed = 0.25;
@@ -457,8 +457,8 @@ mod tests {
         state = playback_repo.update(&state).await.unwrap();
         assert!((state.speed - 4.0).abs() < f64::EPSILON);
 
-        // Test negative current_time (should be allowed for some edge cases)
-        state.current_time = -1.0;
+        // Test negative position (should be allowed for some edge cases)
+        state.position = -1.0;
         let _result = playback_repo.update(&state).await;
         // Note: Whether negative time is allowed depends on database constraints
         // This test documents the expected behavior

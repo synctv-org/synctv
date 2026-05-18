@@ -246,7 +246,7 @@ enum ResourceAvailabilityFilter {
 message PlaybackState {
     string room_id = 1;
     string playing_media_id = 2;
-    double current_time = 3; // playback position in seconds
+    double position = 3; // playback position in seconds
     double speed = 4;
     bool is_playing = 5;
     int64 updated_at = 6;
@@ -1844,7 +1844,7 @@ message ClientMessage {
     oneof message {
         ChatMessageSend chat = 1;
         HeartbeatMessage heartbeat = 2;
-        // Playback progress heartbeat: client periodically reports current position
+        // Playback progress heartbeat: client periodically reports playback position
         PlaybackProgressReport playback_progress = 3;
         // Playback state update command (real-time)
         UpdatePlayback playback_update = 4;
@@ -1984,7 +1984,7 @@ message WatchRoomMembersEvent {
 // The server uses these reports to track actual client playback positions,
 // detect drift between clients, and provide accurate positions to new joiners.
 message PlaybackProgressReport {
-    double current_time = 1;  // Current playback position in seconds
+    double position = 1;  // Playback position in seconds
     bool is_playing = 2;      // Whether the client is currently playing
 }
 

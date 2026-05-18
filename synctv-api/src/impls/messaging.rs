@@ -11,6 +11,8 @@
 //! - All logic encapsulated in `StreamMessageHandler` (rate limiting, filtering, permissions)
 //! - Complete IO abstraction via `StreamMessage` trait for both sending and receiving
 
+use async_trait::async_trait;
+use futures::StreamExt;
 use prost::Message;
 use rand::RngExt;
 use std::sync::Arc;
@@ -18,7 +20,10 @@ use std::time::Duration;
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{PermissionBits, RoomId, RoomMember, RoomSettings, RoomStatus, UserId, UserStatus},
+    models::{
+        PermissionBits, RoomId, RoomMember, RoomPlaybackState, RoomSettings, RoomStatus, UserId,
+        UserStatus,
+    },
     service::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
     },
@@ -85,8 +90,168 @@ use crate::runtime::{
 mod resource_observer;
 use resource_observer::{ResourceObserver, ResourceObserverParams};
 
+const OBSERVED_PLAYBACK_LIFECYCLE_TICK_INTERVAL: Duration = Duration::from_secs(10);
+const OBSERVED_PLAYBACK_LIFECYCLE_CONCURRENCY: usize = 16;
 const GUEST_INTERNAL_USER_ID_BASE: i64 = 8_000_000_000_000_000_000;
 const GUEST_INTERNAL_USER_ID_SPAN: u64 = 500_000_000_000_000_000;
+
+#[derive(Debug, Clone)]
+pub struct ObservedPlaybackLifecycleEvent {
+    pub room_id: RoomId,
+    pub state: RoomPlaybackState,
+}
+
+#[async_trait]
+pub trait ObservedPlaybackLifecycleSubscriber: Send + Sync {
+    async fn handle_observed_playback_lifecycle_event(
+        &self,
+        event: ObservedPlaybackLifecycleEvent,
+    ) -> Result<(), String>;
+}
+
+pub struct ProviderPlaybackProgressSubscriber {
+    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+}
+
+impl ProviderPlaybackProgressSubscriber {
+    #[must_use]
+    pub fn new(playback_snapshot_service: Arc<dyn PlaybackSnapshotService>) -> Self {
+        Self {
+            playback_snapshot_service,
+        }
+    }
+}
+
+#[async_trait]
+impl ObservedPlaybackLifecycleSubscriber for ProviderPlaybackProgressSubscriber {
+    async fn handle_observed_playback_lifecycle_event(
+        &self,
+        event: ObservedPlaybackLifecycleEvent,
+    ) -> Result<(), String> {
+        if !event.state.is_playing {
+            return Ok(());
+        }
+
+        if !ResourceObserver::room_has_playback_snapshot_observers(event.room_id).await {
+            return Ok(());
+        }
+
+        self.playback_snapshot_service
+            .report_provider_playback_progress(
+                &event.state,
+                event.state.computed_position(),
+                false,
+                false,
+            )
+            .await;
+        Ok(())
+    }
+}
+
+pub fn spawn_observed_playback_lifecycle_event_source(
+    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    subscribers: Vec<Arc<dyn ObservedPlaybackLifecycleSubscriber>>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_monitored("observed_playback_lifecycle_event_source", async move {
+        let mut ticker = tokio::time::interval(OBSERVED_PLAYBACK_LIFECYCLE_TICK_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    publish_observed_playback_lifecycle_events(
+                        Arc::clone(&playback_snapshot_service),
+                        subscribers.as_slice(),
+                    )
+                    .await;
+                }
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
+
+async fn publish_observed_playback_lifecycle_events(
+    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    subscribers: &[Arc<dyn ObservedPlaybackLifecycleSubscriber>],
+) {
+    if subscribers.is_empty() {
+        return;
+    }
+
+    let active_rooms = ResourceObserver::active_playback_snapshot_rooms().await;
+    if active_rooms.is_empty() {
+        return;
+    }
+
+    tokio_stream::iter(active_rooms)
+        .for_each_concurrent(OBSERVED_PLAYBACK_LIFECYCLE_CONCURRENCY, |room_id| {
+            let playback_snapshot_service = Arc::clone(&playback_snapshot_service);
+            let subscribers = subscribers.to_vec();
+            async move {
+                if let Err(error) = publish_observed_playback_lifecycle_event(
+                    playback_snapshot_service,
+                    subscribers,
+                    room_id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        "Failed to publish observed playback lifecycle event"
+                    );
+                }
+            }
+        })
+        .await;
+}
+
+async fn publish_observed_playback_lifecycle_event(
+    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    subscribers: Vec<Arc<dyn ObservedPlaybackLifecycleSubscriber>>,
+    room_id: RoomId,
+) -> Result<(), String> {
+    if !ResourceObserver::room_has_playback_snapshot_observers(room_id).await {
+        return Ok(());
+    }
+
+    let state = playback_snapshot_service
+        .room_playback_state(&room_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !state.is_playing {
+        return Ok(());
+    }
+
+    if !ResourceObserver::room_has_playback_snapshot_observers(room_id).await {
+        return Ok(());
+    }
+
+    let event = ObservedPlaybackLifecycleEvent { room_id, state };
+    tokio_stream::iter(subscribers)
+        .for_each_concurrent(OBSERVED_PLAYBACK_LIFECYCLE_CONCURRENCY, |subscriber| {
+            let event = event.clone();
+            async move {
+                if let Err(error) = subscriber
+                    .handle_observed_playback_lifecycle_event(event)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        "Observed playback lifecycle subscriber failed"
+                    );
+                }
+            }
+        })
+        .await;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct GuestRealtimeIdentity {
@@ -4150,7 +4315,7 @@ impl StreamMessageHandler {
         &self,
         report: &crate::proto::client::PlaybackProgressReport,
     ) -> Result<(), String> {
-        if report.current_time < 0.0 {
+        if report.position < 0.0 {
             return Err("Playback position must be non-negative".to_string());
         }
 
@@ -4184,14 +4349,14 @@ impl StreamMessageHandler {
             } else {
                 Duration::from_millis(u64::try_from(elapsed_ms).unwrap_or(u64::MAX)).as_secs_f64()
             };
-            let expected_position = state.current_time + (elapsed_secs * state.speed);
-            let drift = (report.current_time - expected_position).abs();
+            let expected_position = state.position + (elapsed_secs * state.speed);
+            let drift = (report.position - expected_position).abs();
 
             if drift > PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS {
                 tracing::warn!(
                     user_id = %self.user_id,
                     room_id = %self.room_id,
-                    reported = report.current_time,
+                    reported = report.position,
                     expected = expected_position,
                     drift = drift,
                     "Playback progress report rejected: drift exceeds {} seconds",
@@ -4209,7 +4374,7 @@ impl StreamMessageHandler {
                 let guard = self.last_progress_write.lock().await;
                 match *guard {
                     Some((last_pos, last_time)) => {
-                        let pos_delta = (report.current_time - last_pos).abs();
+                        let pos_delta = (report.position - last_pos).abs();
                         let elapsed = last_time.elapsed().as_secs_f64();
                         pos_delta > PROGRESS_MIN_POSITION_DELTA
                             || elapsed > PROGRESS_MIN_ELAPSED_SECS
@@ -4224,7 +4389,7 @@ impl StreamMessageHandler {
                 // event_id filtering (each connection ignores events it originated).
                 match playback_service
                     .update_state(self.room_id, |s| {
-                        s.current_time = report.current_time;
+                        s.position = report.position;
                         s.updated_at = chrono::Utc::now();
                     })
                     .await
@@ -4233,7 +4398,7 @@ impl StreamMessageHandler {
                         // Record the write for throttling
                         {
                             let mut guard = self.last_progress_write.lock().await;
-                            *guard = Some((report.current_time, tokio::time::Instant::now()));
+                            *guard = Some((report.position, tokio::time::Instant::now()));
                         }
 
                         // Local-only broadcast (no Redis) -- progress reports are
@@ -4251,7 +4416,7 @@ impl StreamMessageHandler {
                             service
                                 .report_provider_playback_progress(
                                     &updated_state,
-                                    report.current_time,
+                                    report.position,
                                     !report.is_playing,
                                     false,
                                 )
@@ -4415,7 +4580,7 @@ fn realtime_event_to_server_messages(
                         .as_ref()
                         .map(|id| encode_media(*id))
                         .unwrap_or_default(),
-                    current_time: state.current_time,
+                    position: state.position,
                     speed: state.speed,
                     is_playing: state.is_playing,
                     updated_at: state.updated_at.timestamp(),

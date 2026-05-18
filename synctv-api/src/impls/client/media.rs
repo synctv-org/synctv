@@ -698,9 +698,18 @@ impl ClientApiImpl {
         self.room_cache_fanout.publish_invalidation(&rid);
 
         for media_id in &result.deleted_media_ids {
-            self.realtime_lifecycle
+            if let Err(error) = self
+                .realtime_lifecycle
                 .kick_local_stream(&rid, media_id)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    room_id = %rid,
+                    media_id = %media_id,
+                    error = %error,
+                    "Failed to kick local stream after playlist entry deletion"
+                );
+            }
         }
 
         Ok(crate::proto::client::DeleteEntriesResponse {
@@ -795,9 +804,18 @@ impl ClientApiImpl {
         self.room_cache_fanout.publish_invalidation(&rid);
 
         for media_id in &result.deleted_media_ids {
-            self.realtime_lifecycle
+            if let Err(error) = self
+                .realtime_lifecycle
                 .kick_local_stream(&rid, media_id)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    room_id = %rid,
+                    media_id = %media_id,
+                    error = %error,
+                    "Failed to kick local stream after playlist clear"
+                );
+            }
         }
 
         Ok(crate::proto::client::ClearPlaylistResponse {

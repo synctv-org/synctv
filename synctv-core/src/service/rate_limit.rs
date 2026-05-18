@@ -195,7 +195,7 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
     "unknown"
 }
 
-fn current_timestamp_millis() -> u64 {
+fn timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
@@ -558,7 +558,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), RateLimitError> {
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = current_timestamp_millis();
+        let now = timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = window_expire_seconds(window_seconds);
 
@@ -633,7 +633,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), RateLimitError> {
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = current_timestamp_millis();
+        let now = timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = window_expire_seconds(window_seconds);
 
@@ -689,7 +689,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         use redis::AsyncCommands;
 
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = current_timestamp_millis();
+        let now = timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
 
         let results: Vec<u32> = self

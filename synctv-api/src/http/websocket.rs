@@ -1050,18 +1050,7 @@ pub async fn websocket_handler(
     Ok(ws
         .max_message_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
-        .on_upgrade(move |socket| {
-            handle_socket(
-                socket,
-                state,
-                prepared.room_id,
-                prepared.auth,
-                prepared.username,
-                prepared.connection_id,
-                prepared.reservation,
-                transport_format,
-            )
-        }))
+        .on_upgrade(move |socket| handle_socket(socket, state, prepared, transport_format)))
 }
 
 async fn commit_prevalidated_ticket(
@@ -1281,13 +1270,16 @@ fn map_websocket_pre_join_error(error: RealtimeJoinError) -> AppError {
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: AppState,
-    room_id: RoomId,
-    auth: HandshakeAuthContext,
-    _username: String,
-    connection_id: String,
-    reservation: HandshakeReservation,
+    prepared: PreparedWebSocketUpgrade,
     transport_format: RealtimeTransportFormat,
 ) {
+    let PreparedWebSocketUpgrade {
+        room_id,
+        auth,
+        username: _username,
+        connection_id,
+        reservation,
+    } = prepared;
     let user_id = auth.user_id;
     let principal = auth.principal.clone();
     let mut reservation_cleanup =

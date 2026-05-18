@@ -44,7 +44,7 @@ async fn test_speed_change_preserves_position() {
         .await
         .unwrap();
 
-    assert!(state.current_time >= 99.0);
+    assert!(state.position >= 99.0);
     assert!((state.speed - 2.0).abs() < f64::EPSILON);
 }
 
@@ -118,7 +118,7 @@ async fn test_reset_returns_to_initial_state() {
     let state = playback_service.reset(room.id, owner.id).await.unwrap();
 
     assert!(!state.is_playing);
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!((state.speed - 1.0).abs() < f64::EPSILON);
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());

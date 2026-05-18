@@ -519,7 +519,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     sqlx::query(
         "INSERT INTO room_playback_state
-             (room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version)
+             (room_id, playing_media_id, playing_playlist_id, target, \"position\", speed, is_playing, updated_at, version)
          VALUES ($1, $2, NULL, ''::bytea, 12.5, 1.0, TRUE, NOW(), 0)",
     )
     .bind(foreign_room.id)

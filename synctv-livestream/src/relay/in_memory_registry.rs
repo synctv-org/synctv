@@ -284,6 +284,26 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             .unwrap_or_default())
     }
 
+    async fn get_user_publishers_for_room(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        validate_stream_id_component(room_id, "room_id")?;
+        let state = self.state.lock().await;
+        Ok(state
+            .user_publishers
+            .get(user_id)
+            .map(|publishers| {
+                publishers
+                    .iter()
+                    .filter(|(publisher_room_id, _)| publisher_room_id == room_id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
         let mut state = self.state.lock().await;
         let keys: Vec<_> = state

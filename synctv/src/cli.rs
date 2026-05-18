@@ -7041,7 +7041,7 @@ struct HumanMedia {
 struct HumanPlaybackState {
     room_id: String,
     playing_media_id: String,
-    current_time: f64,
+    position: f64,
     speed: f64,
     is_playing: bool,
     updated_at: String,
@@ -7894,7 +7894,7 @@ impl ToHuman for synctv_proto::client::PlaybackState {
         HumanPlaybackState {
             room_id: self.room_id.clone(),
             playing_media_id: self.playing_media_id.clone(),
-            current_time: self.current_time,
+            position: self.position,
             speed: self.speed,
             is_playing: self.is_playing,
             updated_at: humanize_timestamp(self.updated_at),

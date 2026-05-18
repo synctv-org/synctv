@@ -105,7 +105,7 @@ impl moka::Expiry<String, PasskeySessionEntry> for PasskeySessionExpiry {
         &self,
         _key: &String,
         value: &PasskeySessionEntry,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }

@@ -485,9 +485,9 @@ mod utils_tests {
     use super::*;
 
     #[test]
-    fn test_current_time_returns_value() {
-        let time = utils::current_time();
-        // current_time returns a u32 timestamp
+    fn test_timestamp_ms_returns_value() {
+        let time = utils::timestamp_ms();
+        // timestamp_ms returns a u32 timestamp
         // Just verify it returns something (not testing exact value)
         let _ = time;
     }

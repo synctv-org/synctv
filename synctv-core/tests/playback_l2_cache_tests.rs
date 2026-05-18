@@ -226,7 +226,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
     // Verify in PostgreSQL directly
     let db_state: synctv_core::models::RoomPlaybackState = sqlx::query_as(
         "SELECT room_id, playing_media_id, playing_playlist_id, target, \
-         \"current_time\", speed, is_playing, updated_at, version \
+         \"position\", speed, is_playing, updated_at, version \
          FROM room_playback_state WHERE room_id = $1",
     )
     .bind(room.id)
@@ -335,7 +335,7 @@ async fn test_playback_state_cross_replica_consistency() {
     // Verify state is updated in DB
     let db_state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        (db_state.current_time - 123.45).abs() < f64::EPSILON,
+        (db_state.position - 123.45).abs() < f64::EPSILON,
         "State should be updated in DB"
     );
 
@@ -354,7 +354,7 @@ async fn test_playback_state_cross_replica_consistency() {
     let deserialized: synctv_core::models::RoomPlaybackState =
         serde_json::from_str(&from_l2.unwrap()).unwrap();
     assert!(
-        (deserialized.current_time - 123.45).abs() < f64::EPSILON,
+        (deserialized.position - 123.45).abs() < f64::EPSILON,
         "L2 should have updated position"
     );
 }
@@ -411,7 +411,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
         "Version should be incremented after update"
     );
     assert!(
-        (updated_state.current_time - 50.0).abs() < f64::EPSILON,
+        (updated_state.position - 50.0).abs() < f64::EPSILON,
         "Position should be updated"
     );
 }
@@ -460,7 +460,7 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     let mut newer_state =
         synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(1_001_001));
     newer_state.version = 10;
-    newer_state.current_time = 100.0;
+    newer_state.position = 100.0;
     newer_state.updated_at = Utc::now();
 
     let newer_json = serde_json::to_string(&newer_state).unwrap();
@@ -476,7 +476,7 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     let mut older_state =
         synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(1_001_001));
     older_state.version = 5;
-    older_state.current_time = 50.0;
+    older_state.position = 50.0;
     older_state.updated_at = Utc::now() - chrono::Duration::seconds(10);
 
     let older_json = serde_json::to_string(&older_state).unwrap();
@@ -613,7 +613,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
     // For now, verify the DB has the correct state
     let fresh_state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        (fresh_state.current_time - 200.0).abs() < f64::EPSILON,
+        (fresh_state.position - 200.0).abs() < f64::EPSILON,
         "State should be read correctly from DB after L1 invalidation"
     );
 }
@@ -775,7 +775,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
 
     let mut state1 = synctv_core::models::RoomPlaybackState::new(room_id);
     state1.version = 5;
-    state1.current_time = 50.0;
+    state1.position = 50.0;
     state1.updated_at = Utc::now();
 
     // Set initial state
@@ -783,7 +783,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
 
     let mut state2 = synctv_core::models::RoomPlaybackState::new(room_id);
     state2.version = 10;
-    state2.current_time = 100.0;
+    state2.position = 100.0;
     state2.updated_at = Utc::now() + chrono::Duration::seconds(10);
 
     // Set newer state - should succeed
@@ -797,13 +797,13 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     let from_cache = cache.get(&room_id).await.unwrap().unwrap();
     assert_eq!(from_cache.version, 10, "Should have version 10");
     assert!(
-        (from_cache.current_time - 100.0).abs() < f64::EPSILON,
+        (from_cache.position - 100.0).abs() < f64::EPSILON,
         "Should have position 100"
     );
 
     let mut state3 = synctv_core::models::RoomPlaybackState::new(room_id);
     state3.version = 3;
-    state3.current_time = 25.0;
+    state3.position = 25.0;
     state3.updated_at = Utc::now() - chrono::Duration::seconds(30);
 
     // Try to set older state - should be rejected

@@ -11,7 +11,7 @@
       {
         "ordinal": 1,
         "name": "name",
-        "type_info": "Varchar"
+        "type_info": "Text"
       },
       {
         "ordinal": 2,
@@ -62,7 +62,7 @@
     "parameters": {
       "Left": [
         "Int8",
-        "Varchar",
+        "Text",
         "Text",
         "Timestamptz",
         "Int4"

@@ -274,9 +274,9 @@ async fn test_switch_media_resets_position() {
         .unwrap();
 
     assert!(
-        (state.current_time - 0.0).abs() < f64::EPSILON,
+        (state.position - 0.0).abs() < f64::EPSILON,
         "Current time should be reset to 0 after media switch, got: {}",
-        state.current_time
+        state.position
     );
     assert_eq!(state.playing_media_id, Some(media.id));
     assert!(
@@ -468,7 +468,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(state.target.is_empty());
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!((state.speed - 1.0).abs() < f64::EPSILON);
     assert!(!state.is_playing);
 }
@@ -524,7 +524,7 @@ async fn test_playback_optimistic_lock_concurrent() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        state.current_time >= 0.0,
+        state.position >= 0.0,
         "Final position should be non-negative"
     );
 }
@@ -586,7 +586,7 @@ async fn test_rapid_sequential_seek_operations() {
         match result {
             Ok(Ok(response)) => {
                 success_count += 1;
-                positions.push(response.state.current_time);
+                positions.push(response.state.position);
             }
             Ok(Err(_)) => {} // Some may fail due to conflicts
             Err(e) => panic!("Task panicked: {e:?}"),
@@ -599,11 +599,11 @@ async fn test_rapid_sequential_seek_operations() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        state.current_time >= 0.0,
+        state.position >= 0.0,
         "Final position should be non-negative"
     );
     assert!(
-        state.current_time <= 300.0,
+        state.position <= 300.0,
         "Final position should be <= 300 (max seek)"
     );
 }
@@ -1016,7 +1016,7 @@ async fn test_state_consistency_after_mixed_operations() {
         .unwrap();
     assert!(seek_response.seek_applied, "Seek should be applied");
     assert!(
-        (seek_response.state.current_time - 50.0).abs() < f64::EPSILON,
+        (seek_response.state.position - 50.0).abs() < f64::EPSILON,
         "Seek should set the exact requested position"
     );
 
@@ -1027,7 +1027,7 @@ async fn test_state_consistency_after_mixed_operations() {
         .await
         .unwrap();
     assert!(
-        speed_state.current_time >= 50.0,
+        speed_state.position >= 50.0,
         "Position must not move backward after changing speed"
     );
 
@@ -1037,7 +1037,7 @@ async fn test_state_consistency_after_mixed_operations() {
         .await
         .unwrap();
     assert!(
-        paused_state.current_time >= speed_state.current_time,
+        paused_state.position >= speed_state.position,
         "Pause should preserve or advance the effective position"
     );
     assert!(!paused_state.is_playing, "Pause should stop playback");
@@ -1048,7 +1048,7 @@ async fn test_state_consistency_after_mixed_operations() {
         .await
         .unwrap();
     assert!(
-        (resumed_state.current_time - paused_state.current_time).abs() < 0.1,
+        (resumed_state.position - paused_state.position).abs() < 0.1,
         "Resume should preserve the paused position"
     );
 
@@ -1057,7 +1057,7 @@ async fn test_state_consistency_after_mixed_operations() {
 
     assert_eq!(state.playing_media_id, Some(media.id));
     assert!(
-        state.current_time >= paused_state.current_time,
+        state.position >= paused_state.position,
         "Final position should not move backward"
     );
     assert!(
@@ -1109,9 +1109,9 @@ async fn test_seek_success_returns_applied_true() {
         "Successful seek should have seek_applied=true"
     );
     assert!(
-        (response.state.current_time - 42.5).abs() < f64::EPSILON,
+        (response.state.position - 42.5).abs() < f64::EPSILON,
         "Position should be 42.5, got: {}",
-        response.state.current_time
+        response.state.position
     );
 }
 
@@ -1176,7 +1176,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
                 } else {
                     // Degraded response should still have valid state
                     assert!(
-                        response.state.current_time >= 0.0,
+                        response.state.position >= 0.0,
                         "Degraded response should have valid position"
                     );
                 }
@@ -1192,7 +1192,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
     // Final state should be valid
     let final_state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        final_state.current_time >= 0.0,
+        final_state.position >= 0.0,
         "Final position should be non-negative"
     );
 }
@@ -1238,9 +1238,9 @@ async fn test_seek_response_always_contains_valid_state() {
         .await
         .unwrap();
 
-    // Response should have valid state (either at 200 if applied, or current position)
+    // Response should have valid state (either at 200 if applied, or playback position)
     assert!(
-        response.state.current_time >= 0.0,
+        response.state.position >= 0.0,
         "State should have valid position"
     );
     assert!(response.state.speed > 0.0, "State should have valid speed");

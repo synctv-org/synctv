@@ -5,6 +5,7 @@ use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::service::user::UserDeletionSummary;
 use synctv_core::service::RoomService;
 use synctv_livestream::api::LiveStreamingInfrastructure;
+use synctv_livestream::error::StreamError;
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 use crate::realtime_fanout::RealtimeFanoutService;
@@ -17,9 +18,18 @@ pub struct DeletedRoomAfterCommitFanout {
 
 #[async_trait]
 pub trait RealtimeLifecycleService: Send + Sync {
-    async fn kick_stream(&self, room_id: &RoomId, media_id: &MediaId, reason: &str);
+    async fn kick_stream(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        reason: &str,
+    ) -> Result<(), StreamError>;
 
-    async fn kick_local_stream(&self, room_id: &RoomId, media_id: &MediaId);
+    async fn kick_local_stream(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<(), StreamError>;
 
     async fn active_room_stream_media_ids(&self, room_id: &RoomId) -> Vec<MediaId>;
 
@@ -77,8 +87,41 @@ impl std::fmt::Debug for DefaultRealtimeLifecycleService {
 
 #[async_trait]
 impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
-    async fn kick_stream(&self, room_id: &RoomId, media_id: &MediaId, reason: &str) {
-        self.kick_local_stream(room_id, media_id).await;
+    async fn kick_stream(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        reason: &str,
+    ) -> Result<(), StreamError> {
+        let mut remote_owner = false;
+        if let Some(infra) = &self.live_streaming_infrastructure {
+            let room_id_key = room_id.to_string();
+            let media_id_key = media_id.to_string();
+            match infra
+                .stream_owned_by_local_node(&room_id_key, &media_id_key)
+                .await
+            {
+                Ok(true) => self.kick_local_stream(room_id, media_id).await?,
+                Ok(false) => {
+                    remote_owner = true;
+                    tracing::debug!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        "Stream is not owned by this node; publishing replica-wide kick without local unpublish"
+                    );
+                }
+                Err(error) => {
+                    let stream_error = StreamError::StreamHubError(error.to_string());
+                    tracing::warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        error = %stream_error,
+                        "Failed to determine stream owner before publishing kick"
+                    );
+                    return Err(stream_error);
+                }
+            }
+        }
 
         if !self
             .realtime_fanout
@@ -97,22 +140,36 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 media_id = %media_id,
                 "Failed to send replica-wide kick event after bounded retry"
             );
+            if remote_owner {
+                return Err(StreamError::StreamHubError(
+                    "Failed to publish remote stream kick event".to_string(),
+                ));
+            }
         }
+
+        Ok(())
     }
 
-    async fn kick_local_stream(&self, room_id: &RoomId, media_id: &MediaId) {
+    async fn kick_local_stream(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<(), StreamError> {
         let room_id_key = room_id.to_string();
         let media_id_key = media_id.to_string();
         if let Some(infra) = &self.live_streaming_infrastructure {
             if let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key) {
+                let stream_error = StreamError::StreamHubError(error.to_string());
                 tracing::warn!(
                     room_id = %room_id,
                     media_id = %media_id,
-                    error = %error,
+                    error = %stream_error,
                     "Failed to kick local publisher"
                 );
+                return Err(stream_error);
             }
         }
+        Ok(())
     }
 
     async fn active_room_stream_media_ids(&self, room_id: &RoomId) -> Vec<MediaId> {
@@ -203,7 +260,14 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                     );
                     continue;
                 };
-                self.kick_stream(&room_id, &media_id, reason).await;
+                if let Err(error) = self.kick_stream(&room_id, &media_id, reason).await {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        error = %error,
+                        "Failed to kick publisher while disconnecting user"
+                    );
+                }
             }
 
             infra.kick_user_publishers(&user_id_key).await;
@@ -245,8 +309,17 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 .await;
 
             for media_id in &impact.deleted_media_ids {
-                self.kick_stream(&impact.room_id, media_id, "user_resource_deleted")
-                    .await;
+                if let Err(error) = self
+                    .kick_stream(&impact.room_id, media_id, "user_resource_deleted")
+                    .await
+                {
+                    tracing::warn!(
+                        room_id = %impact.room_id,
+                        media_id = %media_id,
+                        error = %error,
+                        "Failed to kick publisher while finalizing user deletion"
+                    );
+                }
             }
         }
 
@@ -308,7 +381,8 @@ mod tests {
                 &MediaId::expect_positive(2001),
                 "test-reason",
             )
-            .await;
+            .await
+            .expect("kick stream should succeed without livestream infrastructure");
 
         let published = publish_rx
             .recv()
@@ -492,8 +566,8 @@ mod tests {
                 .get_publisher(&room_one_key, "media-1")
                 .await
                 .expect("room-1 publisher lookup should succeed")
-                .is_none(),
-            "room-scoped disconnect must remove the matching room publisher"
+                .is_some(),
+            "room-scoped disconnect must not remove publisher ownership before StreamHub processes unpublish"
         );
         assert!(
             registry
@@ -502,6 +576,29 @@ mod tests {
                 .expect("room-2 publisher lookup should succeed")
                 .is_some(),
             "room-scoped disconnect must preserve publishers from other rooms"
+        );
+
+        registry
+            .unregister_publisher(&room_one_key, "media-1")
+            .await
+            .expect("test unpublish completion should unregister room-1 publisher");
+        let _ = tracker.remove_stream(&room_one_key, "media-1");
+
+        assert!(
+            registry
+                .get_publisher(&room_one_key, "media-1")
+                .await
+                .expect("room-1 publisher lookup should succeed")
+                .is_none(),
+            "actual unpublish completion must remove the matching room publisher"
+        );
+        assert!(
+            registry
+                .get_publisher(&room_two_key, "media-2")
+                .await
+                .expect("room-2 publisher lookup should succeed")
+                .is_some(),
+            "actual unpublish completion must preserve publishers from other rooms"
         );
     }
 }

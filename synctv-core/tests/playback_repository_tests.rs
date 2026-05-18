@@ -83,7 +83,7 @@ async fn test_create_or_get_idempotent() {
     // First call creates the state
     let state1 = playback_repo.create_or_get(&room.id).await.unwrap();
     assert_eq!(state1.room_id, room.id);
-    assert_f64_eq(state1.current_time, 0.0);
+    assert_f64_eq(state1.position, 0.0);
     assert_f64_eq(state1.speed, 1.0);
     assert!(!state1.is_playing);
 
@@ -111,15 +111,15 @@ async fn test_update_optimistic_lock_conflict() {
 
     // Task 1 updates with correct version
     let mut state_t1 = state.clone();
-    state_t1.current_time = 42.0;
+    state_t1.position = 42.0;
 
     // Task 2 also has the same version (stale read)
     let mut state_t2 = state.clone();
-    state_t2.current_time = 99.0;
+    state_t2.position = 99.0;
 
     // Task 1 succeeds
     let updated = playback_repo.update(&state_t1).await.unwrap();
-    assert_f64_eq(updated.current_time, 42.0);
+    assert_f64_eq(updated.position, 42.0);
     assert_eq!(updated.version, state.version + 1);
 
     // Task 2 uses stale version -> OptimisticLockConflict
@@ -155,7 +155,7 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
     let handle1 = tokio::spawn(async move {
         barrier1.wait().await;
         let mut s = state1;
-        s.current_time = 10.0;
+        s.position = 10.0;
         repo1.update(&s).await
     });
 
@@ -165,7 +165,7 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
     let handle2 = tokio::spawn(async move {
         barrier2.wait().await;
         let mut s = state2;
-        s.current_time = 20.0;
+        s.position = 20.0;
         repo2.update(&s).await
     });
 

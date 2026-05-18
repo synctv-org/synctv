@@ -2428,7 +2428,7 @@ impl MessageSender for GrpcMessageSender {
 
 enum GrpcWatchEvent {
     Observed(crate::proto::client::ResourceObserved),
-    Changed(crate::proto::client::ResourceChanged),
+    Changed(Box<crate::proto::client::ResourceChanged>),
     Error(crate::proto::client::ResourceObserveError),
 }
 
@@ -2440,7 +2440,7 @@ where
 
     let event = match message.message? {
         Message::ResourceObserved(observed) => GrpcWatchEvent::Observed(observed),
-        Message::ResourceChanged(changed) => GrpcWatchEvent::Changed(changed),
+        Message::ResourceChanged(changed) => GrpcWatchEvent::Changed(Box::new(changed)),
         Message::ResourceObserveError(error) => GrpcWatchEvent::Error(error),
         _ => return None,
     };
@@ -2452,7 +2452,7 @@ fn watch_playback_state_event(message: ServerMessage) -> Option<WatchPlaybackSta
     watch_event_from_server_message(message, |event| WatchPlaybackStateEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -2463,7 +2463,7 @@ fn watch_playback_snapshot_event(message: ServerMessage) -> Option<WatchPlayback
     watch_event_from_server_message(message, |event| WatchPlaybackSnapshotEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -2474,7 +2474,7 @@ fn watch_room_settings_event(message: ServerMessage) -> Option<WatchRoomSettings
     watch_event_from_server_message(message, |event| WatchRoomSettingsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -2485,7 +2485,7 @@ fn watch_playlist_items_event(message: ServerMessage) -> Option<WatchPlaylistIte
     watch_event_from_server_message(message, |event| WatchPlaylistItemsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -2496,7 +2496,7 @@ fn watch_room_members_event(message: ServerMessage) -> Option<WatchRoomMembersEv
     watch_event_from_server_message(message, |event| WatchRoomMembersEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })

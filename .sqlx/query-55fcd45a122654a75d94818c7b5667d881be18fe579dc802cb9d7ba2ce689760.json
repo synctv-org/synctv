@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE room_playback_state\n             SET playing_media_id = $2, playing_playlist_id = $3, target = $4,\n                 \"current_time\" = $5, speed = $6, is_playing = $7,\n                 updated_at = NOW(), version = version + 1\n             WHERE room_id = $1 AND version = $8\n             RETURNING room_id as \"room_id: RoomId\",\n                       playing_media_id as \"playing_media_id: MediaId\",\n                       playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n                       target,\n                       \"current_time\",\n                       speed,\n                       is_playing,\n                       updated_at,\n                       version",
+  "query": "SELECT room_id as \"room_id: RoomId\",\n                      playing_media_id as \"playing_media_id: MediaId\",\n                      playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n                      target,\n                      \"position\",\n                      speed,\n                      is_playing,\n                      updated_at,\n                      version\n             FROM room_playback_state\n             WHERE room_id = $1",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "current_time",
+        "name": "position",
         "type_info": "Float8"
       },
       {
@@ -51,13 +51,6 @@
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Int8",
-        "Int8",
-        "Bytea",
-        "Float8",
-        "Float8",
-        "Bool",
         "Int8"
       ]
     },
@@ -73,5 +66,5 @@
       false
     ]
   },
-  "hash": "3d3ba48dd3059da8acf19e25aecd3710dbd3466799476ba5191ba5755e6731e9"
+  "hash": "55fcd45a122654a75d94818c7b5667d881be18fe579dc802cb9d7ba2ce689760"
 }

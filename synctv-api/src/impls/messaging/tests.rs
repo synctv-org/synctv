@@ -676,6 +676,13 @@ impl SnapshotCallProbe {
 
 #[async_trait::async_trait]
 impl crate::impls::playback_snapshot::PlaybackSnapshotService for FakePlaybackSnapshotService {
+    async fn room_playback_state(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<RoomPlaybackState, crate::impls::ApiError> {
+        Ok(RoomPlaybackState::new(*room_id))
+    }
+
     async fn get_playback_snapshot(
         &self,
         _user_id: &UserId,
@@ -721,6 +728,13 @@ impl MutablePlaybackSnapshotService {
 
 #[async_trait::async_trait]
 impl crate::impls::playback_snapshot::PlaybackSnapshotService for MutablePlaybackSnapshotService {
+    async fn room_playback_state(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<RoomPlaybackState, crate::impls::ApiError> {
+        Ok(RoomPlaybackState::new(*room_id))
+    }
+
     async fn get_playback_snapshot(
         &self,
         _user_id: &UserId,
@@ -772,6 +786,13 @@ impl SequencedPlaybackSnapshotService {
 
 #[async_trait::async_trait]
 impl crate::impls::playback_snapshot::PlaybackSnapshotService for SequencedPlaybackSnapshotService {
+    async fn room_playback_state(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<RoomPlaybackState, crate::impls::ApiError> {
+        Ok(RoomPlaybackState::new(*room_id))
+    }
+
     async fn get_playback_snapshot(
         &self,
         _user_id: &UserId,
@@ -2276,7 +2297,7 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
-            current_time: 12.0,
+            position: 12.0,
             speed: 1.0,
             is_playing: true,
             updated_at: now(),
@@ -2578,7 +2599,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
                 state.playing_media_id = Some(media.id);
                 state.playing_playlist_id = None;
                 state.target = Vec::new();
-                state.current_time = 0.0;
+                state.position = 0.0;
                 state.speed = 1.0;
                 state.is_playing = true;
             },
@@ -2730,7 +2751,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
     playback_state.playing_media_id = None;
     playback_state.playing_playlist_id = Some(playlist.id);
     playback_state.target = br#"{"relative_path":"/playlist-item-1.mp4"}"#.to_vec();
-    playback_state.current_time = 0.0;
+    playback_state.position = 0.0;
     playback_state.speed = 1.0;
     playback_state.is_playing = true;
     playback_repo
@@ -2927,7 +2948,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
                 state.target = b"target-b".to_vec();
-                state.current_time = 12.0;
+                state.position = 12.0;
                 state.speed = 1.0;
                 state.is_playing = true;
             },
@@ -3044,7 +3065,7 @@ async fn test_playback_snapshot_refresh_failure_removes_observation_without_clos
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
-            current_time: 5.0,
+            position: 5.0,
             speed: 1.0,
             is_playing: true,
             updated_at: now(),
@@ -5259,7 +5280,7 @@ fn test_playback_state_changed_event_conversion() {
         playing_media_id: Some(media_id()),
         playing_playlist_id: None,
         target: Vec::new(),
-        current_time: 123.456,
+        position: 123.456,
         speed: 1.5,
         is_playing: true,
         updated_at: now(),
@@ -5280,7 +5301,7 @@ fn test_playback_state_changed_event_conversion() {
         Some(Message::PlaybackState(ps)) => {
             assert_eq!(ps.room_id, "room_test");
             let s = ps.state.as_ref().unwrap();
-            assert!((s.current_time - 123.456).abs() < f64::EPSILON);
+            assert!((s.position - 123.456).abs() < f64::EPSILON);
             assert!((s.speed - 1.5).abs() < f64::EPSILON);
             assert!(s.is_playing);
             assert_eq!(s.playing_media_id, public_media_id());
@@ -7725,9 +7746,8 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
         .expect("first watch should prepare");
     assert_eq!(connection_service.room_connection_count(&room.id), 1);
 
-    let second = match make_session().prepare(&observe).await {
-        Ok(_) => panic!("second watch should hit per-room capacity"),
-        Err(error) => error,
+    let Err(second) = make_session().prepare(&observe).await else {
+        panic!("second watch should hit per-room capacity");
     };
     assert!(matches!(second, RealtimeJoinError::RateLimited(_)));
     assert_eq!(

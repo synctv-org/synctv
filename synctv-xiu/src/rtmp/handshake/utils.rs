@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 #[must_use]
-pub fn current_time() -> u32 {
+pub fn timestamp_ms() -> u32 {
     let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
 
     match duration {

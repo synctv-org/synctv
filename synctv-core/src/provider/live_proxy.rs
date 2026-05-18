@@ -12,7 +12,7 @@ use super::{
     store::VersionedPlayback,
     MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
-use crate::models::{MediaId, RoomId};
+use crate::models::{MediaId, RoomId, TypedId};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -128,28 +128,20 @@ impl LiveProxyProvider {
         versioned: &VersionedPlayback,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
-        let room_id = versioned
-            .result
-            .metadata
-            .get("room_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
-        let media_id = versioned
-            .result
-            .metadata
-            .get("media_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
-        let room_id = super::proxy::parse_proxy_room_id(
-            &ctx.services.public_id_codec,
-            room_id,
-            "live playback metadata",
-        )?;
-        let media_id = super::proxy::parse_proxy_media_id(
-            &ctx.services.public_id_codec,
-            media_id,
-            "live playback metadata",
-        )?;
+        let room_id = Self::metadata_typed_id(versioned, "room_id", |room_id| {
+            super::proxy::parse_proxy_room_id(
+                &ctx.services.public_id_codec,
+                room_id,
+                "live playback metadata",
+            )
+        })?;
+        let media_id = Self::metadata_typed_id(versioned, "media_id", |media_id| {
+            super::proxy::parse_proxy_media_id(
+                &ctx.services.public_id_codec,
+                media_id,
+                "live playback metadata",
+            )
+        })?;
 
         match rest {
             stream if stream == "stream" || stream.starts_with("stream/") => {
@@ -186,6 +178,50 @@ impl LiveProxyProvider {
             }
             _ => Err(ProviderError::NotFound),
         }
+    }
+
+    fn metadata_typed_id<T>(
+        versioned: &VersionedPlayback,
+        field: &'static str,
+        parse_public_id: impl FnOnce(&str) -> Result<T, ProviderError>,
+    ) -> Result<T, ProviderError>
+    where
+        T: TypedId,
+    {
+        let value = versioned
+            .result
+            .metadata
+            .get(field)
+            .ok_or_else(|| ProviderError::ApiError(format!("Live playback missing {field}")))?;
+
+        if let Some(id) = value.as_i64() {
+            return T::try_from(id).map_err(|error| {
+                ProviderError::InvalidConfig(format!(
+                    "Invalid {field} in live playback metadata: {error}"
+                ))
+            });
+        }
+
+        if let Some(id) = value.as_u64() {
+            let id = i64::try_from(id).map_err(|_| {
+                ProviderError::InvalidConfig(format!(
+                    "Invalid {field} in live playback metadata: exceeds i64"
+                ))
+            })?;
+            return T::try_from(id).map_err(|error| {
+                ProviderError::InvalidConfig(format!(
+                    "Invalid {field} in live playback metadata: {error}"
+                ))
+            });
+        }
+
+        let value = value.as_str().ok_or_else(|| {
+            ProviderError::InvalidConfig(format!(
+                "Invalid {field} in live playback metadata: expected public ID string or numeric ID"
+            ))
+        })?;
+
+        parse_public_id(value)
     }
 }
 

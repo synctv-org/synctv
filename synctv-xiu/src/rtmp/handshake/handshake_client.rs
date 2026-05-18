@@ -89,7 +89,7 @@ impl THandshakeClient for SimpleHandshakeClient {
         Ok(())
     }
     fn write_c1(&mut self) -> Result<(), HandshakeError> {
-        self.writer.write_u32::<BigEndian>(utils::current_time())?;
+        self.writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
         self.writer.write_u32::<BigEndian>(0)?;
 
         self.writer.write_random_bytes(handshake_random_len_u32())?;

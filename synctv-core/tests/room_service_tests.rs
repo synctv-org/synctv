@@ -3917,7 +3917,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
     assert!(!refreshed_state.is_playing);
-    assert_f64_eq(refreshed_state.current_time, 0.0);
+    assert_f64_eq(refreshed_state.position, 0.0);
 
     let mut saw_playback_reset = false;
     for _ in 0..2 {
@@ -4477,7 +4477,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
-    assert_f64_eq(state.current_time, 0.0);
+    assert_f64_eq(state.position, 0.0);
 }
 
 #[tokio::test]
@@ -4592,7 +4592,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
-    assert_f64_eq(state.current_time, 0.0);
+    assert_f64_eq(state.position, 0.0);
 }
 
 #[tokio::test]

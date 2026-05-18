@@ -105,6 +105,20 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// Returns list of (`room_id`, `media_id`) pairs
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>>;
 
+    /// Get active publishers for a user in a specific room (via reverse index).
+    async fn get_user_publishers_for_room(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .get_user_publishers(user_id)
+            .await?
+            .into_iter()
+            .filter(|(publisher_room_id, _)| publisher_room_id == room_id)
+            .collect())
+    }
+
     /// Remove all publisher entries for a user
     async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()>;
 
@@ -205,6 +219,14 @@ impl StreamRegistryTrait for StreamRegistry {
 
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
         Self::get_user_publishers(self, user_id).await
+    }
+
+    async fn get_user_publishers_for_room(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        Self::get_user_publishers_for_room(self, room_id, user_id).await
     }
 
     async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {

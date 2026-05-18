@@ -2908,7 +2908,7 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             state.is_playing
                                 && state.playing_media_id == public_media_id
-                                && (state.current_time - 0.0).abs() < f64::EPSILON
+                                && (state.position - 0.0).abs() < f64::EPSILON
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 1
                         })
@@ -2927,7 +2927,7 @@ mod websocket_e2e {
 
         let mut paused_state = synctv_core::models::RoomPlaybackState::new(room);
         paused_state.playing_media_id = Some(media_id);
-        paused_state.current_time = 17.5;
+        paused_state.position = 17.5;
         paused_state.is_playing = false;
         paused_state.version = 2;
         server1.realtime_manager.broadcast(
@@ -2950,7 +2950,7 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             !state.is_playing
                                 && state.playing_media_id == public_media_id
-                                && (state.current_time - 17.5).abs() < 0.01
+                                && (state.position - 17.5).abs() < 0.01
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 2
                         })
@@ -2969,7 +2969,7 @@ mod websocket_e2e {
 
         let mut resumed_state = synctv_core::models::RoomPlaybackState::new(room);
         resumed_state.playing_media_id = Some(media_id);
-        resumed_state.current_time = 17.5;
+        resumed_state.position = 17.5;
         resumed_state.speed = 1.5;
         resumed_state.is_playing = true;
         resumed_state.version = 3;
@@ -2993,7 +2993,7 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             state.is_playing
                                 && state.playing_media_id == public_media_id
-                                && (state.current_time - 17.5).abs() < 0.01
+                                && (state.position - 17.5).abs() < 0.01
                                 && (state.speed - 1.5).abs() < f64::EPSILON
                                 && state.version == 3
                         })
@@ -3032,7 +3032,7 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             !state.is_playing
                                 && state.playing_media_id.is_empty()
-                                && (state.current_time - 0.0).abs() < f64::EPSILON
+                                && (state.position - 0.0).abs() < f64::EPSILON
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 4
                         })

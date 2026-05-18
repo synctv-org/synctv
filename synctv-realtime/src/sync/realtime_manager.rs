@@ -153,6 +153,9 @@ pub struct RealtimeManager {
     node_id: String,
     /// Broadcast channel for admin events (kick, etc.) received from cluster
     admin_event_tx: broadcast::Sender<RealtimeEvent>,
+    /// Internal channel for local lifecycle side effects that must not be
+    /// replayed to room/admin subscribers.
+    lifecycle_event_tx: broadcast::Sender<RealtimeEvent>,
     /// Distributed transport service (stored for graceful shutdown)
     distributed_transport: Option<Arc<dyn RealtimeMessageTransport>>,
     /// JoinHandle for the Redis publisher task.
@@ -241,6 +244,7 @@ impl RealtimeManager {
         let critical_retry_tasks = TaskTracker::new();
 
         let (admin_event_tx, _) = broadcast::channel(4096);
+        let (lifecycle_event_tx, _) = broadcast::channel(4096);
         let distributed_transport_ready =
             config.distributed_enabled && config.distributed_transport_factory.is_some();
         let message_hub = config.message_runtime.clone();
@@ -343,6 +347,7 @@ impl RealtimeManager {
             redis_critical_tx,
             node_id: config.node_id,
             admin_event_tx,
+            lifecycle_event_tx,
             distributed_transport,
             publisher_task: tokio::sync::Mutex::new(publisher_handle),
             critical_forwarder_task: tokio::sync::Mutex::new(critical_forwarder_handle),
@@ -427,6 +432,15 @@ impl RealtimeManager {
     #[must_use]
     pub fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
         self.admin_event_tx.subscribe()
+    }
+
+    /// Subscribe to internal lifecycle side-effect events.
+    ///
+    /// These events are consumed by server-owned lifecycle workers and are not
+    /// delivered to room or admin subscribers.
+    #[must_use]
+    pub fn subscribe_lifecycle_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        self.lifecycle_event_tx.subscribe()
     }
 
     /// Get the admin event sender (for local kick events)
@@ -571,6 +585,37 @@ impl RealtimeManager {
     /// to Redis. It is used when callers need to preserve local correctness first
     /// and handle cross-node retries separately.
     pub fn broadcast_local(&self, event: RealtimeEvent) -> usize {
+        self.broadcast_local_inner(event, true)
+    }
+
+    /// Deliver an outbox-claimed event to local lifecycle side-effect consumers
+    /// without recording it in the shared realtime deduplicator.
+    ///
+    /// This deliberately does not use room/admin subscriber delivery. API paths
+    /// already deliver the event locally after commit; the outbox dispatcher only
+    /// needs to keep retryable server-side lifecycle effects such as local stream
+    /// kicks.
+    pub fn broadcast_local_outbox_side_effect(&self, event: RealtimeEvent) -> usize {
+        match event {
+            event @ (RealtimeEvent::KickPublisher { .. }
+            | RealtimeEvent::KickUser { .. }
+            | RealtimeEvent::KickUserFromRoom { .. }
+            | RealtimeEvent::RoomDeleted { .. }
+            | RealtimeEvent::RoomBanned { .. }
+            | RealtimeEvent::RoomOwnerInactive { .. }) => {
+                self.lifecycle_event_tx.send(event).unwrap_or_default()
+            }
+            event => {
+                debug!(
+                    event_type = %event.event_type(),
+                    "Skipping outbox local side-effect delivery for event without local lifecycle effect"
+                );
+                0
+            }
+        }
+    }
+
+    fn broadcast_local_inner(&self, event: RealtimeEvent, use_dedup: bool) -> usize {
         let event_type = event.event_type();
 
         if self.is_quarantined() {
@@ -591,25 +636,27 @@ impl RealtimeManager {
             return 0;
         }
 
-        let dedup_key = match DedupKey::try_from_event(&event) {
-            Ok(key) => key,
-            Err(error) => {
-                warn!(
+        if use_dedup {
+            let dedup_key = match DedupKey::try_from_event(&event) {
+                Ok(key) => key,
+                Err(error) => {
+                    warn!(
+                        event_type = %event_type,
+                        error = %error,
+                        "Dropping local realtime event with invalid dedup identity"
+                    );
+                    return 0;
+                }
+            };
+            if !self.deduplicator.should_process(&dedup_key) {
+                debug!(
                     event_type = %event_type,
-                    error = %error,
-                    "Dropping local realtime event with invalid dedup identity"
+                    room_id = %event.room_id()
+                        .map_or_else(|| "n/a".to_string(), ToString::to_string),
+                    "Duplicate event detected, skipping local broadcast"
                 );
                 return 0;
             }
-        };
-        if !self.deduplicator.should_process(&dedup_key) {
-            debug!(
-                event_type = %event_type,
-                room_id = %event.room_id()
-                    .map_or_else(|| "n/a".to_string(), ToString::to_string),
-                "Duplicate event detected, skipping local broadcast"
-            );
-            return 0;
         }
 
         let mut local_sent = 0;
@@ -1619,6 +1666,119 @@ mod tests {
         let r2 = rx2.recv().await.unwrap();
         assert_eq!(r1.event_type(), "kick_publisher");
         assert_eq!(r2.event_type(), "kick_publisher");
+    }
+
+    #[tokio::test]
+    async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subscribers() {
+        let config = RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test_node".to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            event_handler: None,
+            parent_cancel_token: None,
+        };
+
+        let manager = RealtimeManager::new(config).await.unwrap();
+        let mut lifecycle_rx = manager.subscribe_lifecycle_events();
+        let mut admin_rx = manager.subscribe_admin_events();
+        let event = RealtimeEvent::KickPublisher {
+            event_id: "outbox-side-effect-retryable".to_string(),
+            room_id: RoomId::expect_positive(10_000_092),
+            media_id: synctv_core::models::MediaId::expect_positive(10_000_093),
+            reason: "outbox_retry".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let side_effect_sent = manager.broadcast_local_outbox_side_effect(event.clone());
+        assert_eq!(
+            side_effect_sent, 1,
+            "outbox side-effect broadcast should reach lifecycle listeners"
+        );
+        let first = lifecycle_rx
+            .recv()
+            .await
+            .expect("side-effect broadcast should reach lifecycle listeners");
+        assert_eq!(first.event_id(), "outbox-side-effect-retryable");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), admin_rx.recv())
+                .await
+                .is_err(),
+            "outbox side-effect broadcast must not replay to admin subscribers"
+        );
+
+        let mut second_rx = manager.subscribe_admin_events();
+        let sent = manager.broadcast_local(event.clone());
+        assert_eq!(
+            sent, 0,
+            "admin-only broadcast returns zero room subscribers"
+        );
+        let second = second_rx
+            .recv()
+            .await
+            .expect("regular local broadcast should not be deduped by prior outbox side effect");
+        assert_eq!(second.event_id(), "outbox-side-effect-retryable");
+
+        let mut third_rx = manager.subscribe_admin_events();
+        manager.broadcast_local(event);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), third_rx.recv())
+                .await
+                .is_err(),
+            "regular local broadcast should still populate dedup for later duplicates"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_outbox_side_effect_ignores_non_lifecycle_events() {
+        let config = RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test_node".to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            event_handler: None,
+            parent_cancel_token: None,
+        };
+
+        let manager = RealtimeManager::new(config).await.unwrap();
+        let mut lifecycle_rx = manager.subscribe_lifecycle_events();
+        let mut admin_rx = manager.subscribe_admin_events();
+        let event = RealtimeEvent::RoomSettingsChanged {
+            event_id: "outbox-non-lifecycle".to_string(),
+            room_id: RoomId::expect_positive(10_000_092),
+            user_id: UserId::expect_positive(10_000_093),
+            username: "tester".to_string(),
+            settings_json: serde_json::to_vec(&serde_json::json!({"allow_guest_join": true}))
+                .unwrap(),
+            version: 1,
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(manager.broadcast_local_outbox_side_effect(event), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), lifecycle_rx.recv())
+                .await
+                .is_err(),
+            "non-lifecycle outbox events should not reach lifecycle listeners"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), admin_rx.recv())
+                .await
+                .is_err(),
+            "non-lifecycle outbox events should not replay to admin subscribers"
+        );
     }
 
     /// Test that RealtimeManager handles the non-distributed mode degradation gracefully

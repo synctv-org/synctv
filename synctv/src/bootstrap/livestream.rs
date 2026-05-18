@@ -178,7 +178,10 @@ pub async fn init_livestream(
         .map_err(|e| anyhow::anyhow!("Failed to start livestream: {e}"))?;
 
     let live_infra = handle.infrastructure.clone();
-    let state = Some(server::LivestreamState { handle });
+    let state = Some(server::LivestreamState {
+        handle,
+        infrastructure: live_infra.clone(),
+    });
 
     let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 

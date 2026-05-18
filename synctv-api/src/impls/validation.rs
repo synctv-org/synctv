@@ -53,6 +53,45 @@ pub fn validate_username(username: &str) -> InputValidationResult<String> {
     Ok(sanitized.into_owned())
 }
 
+pub fn validate_login_username(username: &str) -> InputValidationResult<String> {
+    let sanitized = sanitize_string(username);
+    let char_count = sanitized.chars().count();
+    if char_count < synctv_core::validation::USERNAME_MIN {
+        return Err(InputValidationError::Core {
+            field: "username",
+            message: format!(
+                "must be at least {} characters",
+                synctv_core::validation::USERNAME_MIN
+            ),
+        });
+    }
+    if char_count > synctv_core::validation::USERNAME_MAX {
+        return Err(InputValidationError::Core {
+            field: "username",
+            message: format!(
+                "must be at most {} characters",
+                synctv_core::validation::USERNAME_MAX
+            ),
+        });
+    }
+    if !sanitized
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(InputValidationError::Core {
+            field: "username",
+            message: "can only contain letters, numbers, underscores, and hyphens".to_string(),
+        });
+    }
+    if matches!(sanitized.chars().next(), Some('_' | '-')) {
+        return Err(InputValidationError::Core {
+            field: "username",
+            message: "cannot start with underscore or hyphen".to_string(),
+        });
+    }
+    Ok(sanitized.into_owned())
+}
+
 pub fn validate_room_name(name: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(name);
     synctv_core::validation::RoomNameValidator::new()

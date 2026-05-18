@@ -1860,12 +1860,14 @@ async fn ws_connect_with_ticket(
     ),
     tokio_tungstenite::tungstenite::Error,
 > {
-    tokio_tungstenite::connect_async(format!("ws://{addr}/ws/rooms/{room_id}?ticket={ticket}"))
-        .await
+    tokio_tungstenite::connect_async(format!(
+        "ws://{addr}/ws/rooms/{room_id}?ticket={ticket}&format=protobuf"
+    ))
+    .await
 }
 
 async fn ws_connect(addr: &str, room_id: &str, token: &str) -> TestWebSocketStream {
-    let url = format!("ws://{addr}/ws/rooms/{room_id}");
+    let url = format!("ws://{addr}/ws/rooms/{room_id}?format=protobuf");
     let request = tungstenite::http::Request::builder()
         .uri(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -7998,7 +8000,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     if playback.state.as_ref().is_some_and(|state| {
                         !state.is_playing
                             && state.playing_media_id == media_one_id
-                            && (state.current_time - 17.5).abs() < 0.01
+                            && (state.position - 17.5).abs() < 0.01
                     })
             )
         },

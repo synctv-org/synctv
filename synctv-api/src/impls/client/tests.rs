@@ -599,6 +599,36 @@ fn test_proto_role_to_room_role_invalid() {
 }
 
 #[test]
+fn test_proto_role_to_assignable_room_role_rejects_creator() {
+    let err =
+        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Creator as i32)
+            .unwrap_err();
+    assert!(
+        err.to_string().contains("Creator role is bound"),
+        "creator assignment must be rejected: {err}"
+    );
+}
+
+#[test]
+fn test_proto_role_to_assignable_room_role_allows_admin_member_guest() {
+    assert_eq!(
+        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Admin as i32)
+            .unwrap(),
+        RoomRole::Admin
+    );
+    assert_eq!(
+        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Member as i32)
+            .unwrap(),
+        RoomRole::Member
+    );
+    assert_eq!(
+        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Guest as i32)
+            .unwrap(),
+        RoomRole::Guest
+    );
+}
+
+#[test]
 fn test_proto_role_to_user_role_all_variants() {
     assert_eq!(
         proto_role_to_user_role(synctv_proto::common::UserRole::Root as i32).unwrap(),
@@ -875,7 +905,7 @@ fn test_playback_state_to_proto() {
         playing_media_id: Some(MediaId::expect_positive(302)),
         playing_playlist_id: None,
         target: Vec::new(),
-        current_time: 120.5,
+        position: 120.5,
         speed: 1.5,
         is_playing: false,
         updated_at: chrono::Utc::now(),
@@ -896,7 +926,7 @@ fn test_playback_state_to_proto() {
     );
     assert_eq!(proto.playing_playlist_id, "");
     assert!(proto.target.is_empty());
-    assert!((proto.current_time - 120.5).abs() < f64::EPSILON);
+    assert!((proto.position - 120.5).abs() < f64::EPSILON);
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
     assert!(!proto.is_playing);
     assert_eq!(proto.version, 42);
@@ -910,7 +940,7 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
         playing_media_id: Some(MediaId::expect_positive(302)),
         playing_playlist_id: None,
         target: Vec::new(),
-        current_time: 120.5,
+        position: 120.5,
         speed: 1.5,
         is_playing: true,
         updated_at: chrono::Utc::now() - chrono::TimeDelta::seconds(2),
@@ -919,8 +949,8 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
 
     let proto = playback_state_to_proto(&state, &public_id_codec);
 
-    assert!(proto.current_time >= 123.5);
-    assert!(proto.current_time < 124.5);
+    assert!(proto.position >= 123.5);
+    assert!(proto.position < 124.5);
 }
 
 #[test]
@@ -931,7 +961,7 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
         playing_media_id: None,
         playing_playlist_id: Some(PlaylistId::expect_positive(303)),
         target: br#"{"item_id":"provider-item-9"}"#.to_vec(),
-        current_time: 120.5,
+        position: 120.5,
         speed: 1.5,
         is_playing: true,
         updated_at: chrono::Utc::now(),
@@ -1319,7 +1349,7 @@ fn test_playback_state_version_no_truncation() {
         playing_media_id: None,
         playing_playlist_id: None,
         target: Vec::new(),
-        current_time: 0.0,
+        position: 0.0,
         speed: 1.0,
         is_playing: false,
         updated_at: chrono::Utc::now(),
@@ -1342,7 +1372,7 @@ fn test_playback_state_version_i32_range_still_works() {
         playing_media_id: None,
         playing_playlist_id: None,
         target: Vec::new(),
-        current_time: 0.0,
+        position: 0.0,
         speed: 1.0,
         is_playing: false,
         updated_at: chrono::Utc::now(),

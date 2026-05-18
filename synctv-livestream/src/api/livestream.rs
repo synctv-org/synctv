@@ -25,6 +25,7 @@ use crate::{
 };
 use anyhow::Result;
 use bytes::Bytes;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use synctv_core::config::HlsStorageBackend;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
@@ -147,12 +148,136 @@ impl LiveStreamingInfrastructure {
         Ok(())
     }
 
+    fn is_local_publisher_node(&self, node_id: &str) -> bool {
+        self.local_node_id.is_empty() || node_id == self.local_node_id
+    }
+
+    async fn registry_stream_owned_by_local_node(&self, room_id: &str, media_id: &str) -> bool {
+        match self.registry.get_publisher(room_id, media_id).await {
+            Ok(Some(publisher)) => self.is_local_publisher_node(&publisher.node_id),
+            Ok(None) => false,
+            Err(error) => {
+                warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    error = %error,
+                    "Failed to load publisher owner from shared registry"
+                );
+                false
+            }
+        }
+    }
+
+    /// Return whether the shared publisher registry says this stream is owned by this node.
+    ///
+    /// `Ok(false)` includes both "not found" and "owned by another node"; callers that need
+    /// to distinguish those states should query the registry directly.
+    pub async fn stream_owned_by_local_node(&self, room_id: &str, media_id: &str) -> Result<bool> {
+        self.registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map(|publisher| {
+                publisher.is_some_and(|publisher| self.is_local_publisher_node(&publisher.node_id))
+            })
+            .map_err(|error| anyhow::anyhow!("Failed to load publisher owner: {error}"))
+    }
+
+    async fn local_registry_user_publishers(&self, user_id: &str) -> Vec<(String, String)> {
+        match self.registry.get_user_publishers(user_id).await {
+            Ok(registry_streams) => {
+                let mut local_streams = Vec::new();
+                for (room_id, media_id) in registry_streams {
+                    if self
+                        .registry_stream_owned_by_local_node(&room_id, &media_id)
+                        .await
+                    {
+                        local_streams.push((room_id, media_id));
+                    }
+                }
+                local_streams
+            }
+            Err(error) => {
+                warn!(
+                    user_id = %user_id,
+                    error = %error,
+                    "Failed to load user publishers from shared registry"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    async fn local_registry_user_room_publishers(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Vec<(String, String)> {
+        match self
+            .registry
+            .get_user_publishers_for_room(room_id, user_id)
+            .await
+        {
+            Ok(registry_streams) => {
+                let mut local_streams = Vec::new();
+                for (stream_room_id, media_id) in registry_streams {
+                    if self
+                        .registry_stream_owned_by_local_node(&stream_room_id, &media_id)
+                        .await
+                    {
+                        local_streams.push((stream_room_id, media_id));
+                    }
+                }
+                local_streams
+            }
+            Err(error) => {
+                warn!(
+                    user_id = %user_id,
+                    room_id = %room_id,
+                    error = %error,
+                    "Failed to load room-scoped user publishers from shared registry"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    async fn local_registry_room_publishers(&self, room_id: &str) -> Vec<String> {
+        match self.registry.list_streams_for_room(room_id).await {
+            Ok(registry_media_ids) => {
+                let mut local_media_ids = Vec::new();
+                for media_id in registry_media_ids {
+                    if self
+                        .registry_stream_owned_by_local_node(room_id, &media_id)
+                        .await
+                    {
+                        local_media_ids.push(media_id);
+                    }
+                }
+                local_media_ids
+            }
+            Err(error) => {
+                warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Failed to load room publishers from shared registry"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Kick all active RTMP publishers for a given user.
     ///
     /// Looks up all of the user's active streams from the tracker and sends `UnPublish` events.
     /// Used when banning or deleting a user to terminate all their RTMP publish sessions.
     pub async fn kick_user_publishers(&self, user_id: &str) {
-        let streams = self.user_stream_tracker.get_user_streams(user_id);
+        let mut streams: BTreeSet<_> = self
+            .user_stream_tracker
+            .get_user_streams(user_id)
+            .into_iter()
+            .collect();
+        streams.extend(self.local_registry_user_publishers(user_id).await);
+
         for (room_id, media_id) in streams {
             info!(
                 user_id = %user_id,
@@ -171,12 +296,18 @@ impl LiveStreamingInfrastructure {
     /// This preserves room-scoped moderation semantics: a room ban/kick must not
     /// terminate the same user's publishers in other rooms.
     pub async fn kick_user_room_publishers(&self, room_id: &str, user_id: &str) {
-        let streams = self.user_stream_tracker.get_user_streams(user_id);
-        for (stream_room_id, media_id) in streams {
-            if stream_room_id != room_id {
-                continue;
-            }
+        let mut streams: BTreeSet<_> = self
+            .user_stream_tracker
+            .get_user_streams(user_id)
+            .into_iter()
+            .filter(|(stream_room_id, _)| stream_room_id == room_id)
+            .collect();
+        streams.extend(
+            self.local_registry_user_room_publishers(room_id, user_id)
+                .await,
+        );
 
+        for (_, media_id) in streams {
             info!(
                 user_id = %user_id,
                 room_id = %room_id,
@@ -200,7 +331,12 @@ impl LiveStreamingInfrastructure {
     /// Uses the room->media index for O(1) lookup instead of scanning all entries.
     /// Used when banning or deleting a room.
     pub async fn kick_room_publishers(&self, room_id: &str) {
-        let media_ids = self.user_stream_tracker.get_room_streams(room_id);
+        let mut media_ids: BTreeSet<_> = self
+            .user_stream_tracker
+            .get_room_streams(room_id)
+            .into_iter()
+            .collect();
+        media_ids.extend(self.local_registry_room_publishers(room_id).await);
 
         for media_id in media_ids {
             let user_id = self.user_stream_tracker.get_stream_user(room_id, &media_id);
@@ -220,15 +356,29 @@ impl LiveStreamingInfrastructure {
 
     /// Kick a specific stream by `room_id` and `media_id`.
     ///
-    /// Removes the publisher from Redis and sends an `UnPublish` event.
+    /// Sends an `UnPublish` event to the local `StreamHub`.
+    ///
+    /// Publisher ownership is removed later by the RTMP auth/PublisherManager
+    /// unpublish path, which fences cleanup against the publisher epoch. Do not
+    /// unregister here: this method only enqueues the control event, and deleting
+    /// ownership before StreamHub processes it can let a replacement publisher
+    /// register and then be torn down by the delayed unpublish.
     pub async fn kick_stream(&self, room_id: &str, media_id: &str) -> Result<()> {
+        if let Some(publisher) = self.registry.get_publisher(room_id, media_id).await? {
+            if !self.is_local_publisher_node(&publisher.node_id) {
+                warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    publisher_node_id = %publisher.node_id,
+                    local_node_id = %self.local_node_id,
+                    "Skipping non-local publisher kick on this replica"
+                );
+                return Ok(());
+            }
+        }
+
         // Send UnPublish to StreamHub
         self.kick_publisher(room_id, media_id)?;
-
-        let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
-        self.registry
-            .unregister_publisher(room_id, media_id)
-            .await?;
 
         Ok(())
     }
@@ -871,7 +1021,8 @@ mod tests {
             pull_manager,
             external_publish_manager,
             tracker.clone(),
-        );
+        )
+        .with_local_node_id("node-local".to_string());
 
         let err = infrastructure
             .kick_stream("room1", "media1")
@@ -898,7 +1049,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_kick_stream_cleans_up_registry_and_tracker_after_accepting_unpublish() {
+    async fn test_kick_stream_keeps_registry_and_tracker_until_unpublish_processing() {
         let registry = Arc::new(MockStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
@@ -943,7 +1094,8 @@ mod tests {
             pull_manager,
             external_publish_manager,
             tracker.clone(),
-        );
+        )
+        .with_local_node_id("node-local".to_string());
 
         infrastructure
             .kick_stream("room1", "media1")
@@ -960,22 +1112,22 @@ mod tests {
         }
 
         assert_eq!(
-            tracker.get_stream_user("room1", "media1"),
-            None,
-            "kick_stream must remove tracker entry once UnPublish is accepted"
+            tracker.get_stream_user("room1", "media1").as_deref(),
+            Some("user1"),
+            "kick_stream must keep tracker entry until StreamHub processes UnPublish"
         );
         assert!(
             registry
                 .get_publisher("room1", "media1")
                 .await
                 .expect("registry lookup should succeed")
-                .is_none(),
-            "kick_stream must remove registry entry once UnPublish is accepted"
+                .is_some(),
+            "kick_stream must keep registry entry until epoch-fenced unpublish cleanup"
         );
     }
 
     #[tokio::test]
-    async fn test_kick_user_publishers_clean_up_registry_and_tracker_after_accepting_unpublish() {
+    async fn test_kick_user_publishers_keep_registry_and_tracker_until_unpublish_processing() {
         let registry = Arc::new(MockStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
@@ -1040,7 +1192,8 @@ mod tests {
             pull_manager,
             external_publish_manager,
             tracker.clone(),
-        );
+        )
+        .with_local_node_id("node-local".to_string());
 
         infrastructure.kick_user_publishers("user1").await;
 
@@ -1056,26 +1209,22 @@ mod tests {
         }
 
         let remaining_streams = tracker.get_user_streams("user1");
-        assert_eq!(
-            remaining_streams.len(),
-            0,
-            "kick_user_publishers must remove tracker entries once UnPublish is accepted"
-        );
+        assert_eq!(remaining_streams.len(), 2);
         assert!(
             registry
                 .get_publisher("room1", "media1")
                 .await
                 .expect("registry lookup should succeed")
-                .is_none(),
-            "kick_user_publishers must remove the first registry entry once UnPublish is accepted"
+                .is_some(),
+            "kick_user_publishers must keep the first registry entry until unpublish cleanup"
         );
         assert!(
             registry
                 .get_publisher("room2", "media2")
                 .await
                 .expect("registry lookup should succeed")
-                .is_none(),
-            "kick_user_publishers must remove the second registry entry once UnPublish is accepted"
+                .is_some(),
+            "kick_user_publishers must keep the second registry entry until unpublish cleanup"
         );
     }
 
@@ -1165,8 +1314,8 @@ mod tests {
         );
 
         assert!(
-            tracker.get_stream_user("room1", "media1").is_none(),
-            "target room publisher must be removed from tracker"
+            tracker.get_stream_user("room1", "media1").is_some(),
+            "target room publisher must remain tracked until unpublish cleanup"
         );
         assert_eq!(
             tracker.get_stream_user("room2", "media2").as_deref(),
@@ -1178,8 +1327,8 @@ mod tests {
                 .get_publisher("room1", "media1")
                 .await
                 .expect("registry lookup should succeed")
-                .is_none(),
-            "target room publisher must be removed from registry"
+                .is_some(),
+            "target room publisher must remain registered until unpublish cleanup"
         );
         assert!(
             registry
@@ -1188,6 +1337,150 @@ mod tests {
                 .expect("registry lookup should succeed")
                 .is_some(),
             "publishers in other rooms must remain registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kick_user_publishers_skips_remote_registry_publishers() {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([
+                (
+                    ("room1".to_string(), "media1".to_string()),
+                    PublisherInfo {
+                        node_id: "node-local".to_string(),
+                        api_address: "127.0.0.1:50051".to_string(),
+                        app_name: "live".to_string(),
+                        user_id: "user1".to_string(),
+                        started_at: Utc::now(),
+                        epoch: 1,
+                    },
+                ),
+                (
+                    ("room2".to_string(), "media2".to_string()),
+                    PublisherInfo {
+                        node_id: "node-remote".to_string(),
+                        api_address: "127.0.0.1:50052".to_string(),
+                        app_name: "live".to_string(),
+                        user_id: "user1".to_string(),
+                        started_at: Utc::now(),
+                        epoch: 1,
+                    },
+                ),
+            ]),
+        ));
+        let (event_sender, mut event_receiver) = mpsc::channel(2);
+        let tracker = Arc::new(StreamTracker::new());
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
+            )
+            .expect("external publish manager should build"),
+        );
+
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            tracker,
+        )
+        .with_local_node_id("node-local".to_string());
+
+        infrastructure.kick_user_publishers("user1").await;
+
+        let event = event_receiver
+            .recv()
+            .await
+            .expect("local publisher should enqueue one UnPublish event");
+        match event {
+            synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { .. } => {}
+            other => panic!("expected UnPublish event, got {other:?}"),
+        }
+        assert!(
+            event_receiver.try_recv().is_err(),
+            "remote publisher must not be kicked by a non-owner replica"
+        );
+        assert!(
+            registry
+                .get_publisher("room1", "media1")
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "local publisher must remain registered until its owner processes UnPublish"
+        );
+        assert!(
+            registry
+                .get_publisher("room2", "media2")
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "remote publisher must remain registered for its owner node to terminate"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kick_stream_skips_remote_publisher_registry_entry() {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-remote".to_string(),
+                    api_address: "127.0.0.1:50052".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: "user1".to_string(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
+        let (event_sender, mut event_receiver) = mpsc::channel(1);
+        let tracker = Arc::new(StreamTracker::new());
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
+            )
+            .expect("external publish manager should build"),
+        );
+
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            tracker,
+        )
+        .with_local_node_id("node-local".to_string());
+
+        infrastructure
+            .kick_stream("room1", "media1")
+            .await
+            .expect("remote publisher kick should no-op on non-owner replica");
+
+        assert!(
+            event_receiver.try_recv().is_err(),
+            "non-owner replica must not send local UnPublish for remote publisher"
+        );
+        assert!(
+            registry
+                .get_publisher("room1", "media1")
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "non-owner replica must not remove remote publisher registry entry"
         );
     }
 }

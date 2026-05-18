@@ -5955,7 +5955,7 @@ impl RoomService {
                     sqlx::query!(
                         "UPDATE room_playback_state
                          SET playing_media_id = NULL, playing_playlist_id = NULL,
-                             \"current_time\" = 0, is_playing = false,
+                             \"position\" = 0, is_playing = false,
                              version = version + 1, updated_at = NOW()
                          WHERE room_id = $1",
                         room_id.as_i64(),
@@ -6011,7 +6011,7 @@ impl RoomService {
                     if let Err(error) = self.notification_service.notify_playback_state_changed(
                         &room_id,
                         state.is_playing,
-                        state.current_time,
+                        state.position,
                         state.speed,
                         state.playing_media_id,
                     ) {
@@ -6486,7 +6486,7 @@ impl RoomService {
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
         playing: Option<bool>,
-        current_time: Option<f64>,
+        position: Option<f64>,
         speed: Option<f64>,
         expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
@@ -6495,7 +6495,7 @@ impl RoomService {
                 room_id,
                 *actor.user_id(),
                 playing,
-                current_time,
+                position,
                 speed,
                 expected_version,
             )
@@ -7363,7 +7363,7 @@ async fn apply_delete_entries_impact_in_tx(
              SET playing_media_id = NULL,
                  playing_playlist_id = NULL,
                  target = ''::bytea,
-                 "current_time" = 0,
+                 "position" = 0,
                  speed = 1.0,
                  is_playing = false,
                  version = version + 1,

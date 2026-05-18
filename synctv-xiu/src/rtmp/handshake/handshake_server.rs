@@ -175,7 +175,7 @@ impl THandshakeServer for SimpleHandshakeServer {
     }
 
     fn write_s1(&mut self) -> Result<(), HandshakeError> {
-        self.writer.write_u32::<BigEndian>(utils::current_time())?;
+        self.writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
 
         let timestamp = self.c1_timestamp;
         self.writer.write_u32::<BigEndian>(timestamp)?;
@@ -229,7 +229,7 @@ impl THandshakeServer for ComplexHandshakeServer {
         /*write the s1 data*/
         let mut writer = BytesWriter::new();
 
-        writer.write_u32::<BigEndian>(utils::current_time())?;
+        writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
         writer.write(&define::RTMP_SERVER_VERSION)?;
         writer.write_random_bytes(handshake_random_len_u32())?;
 
@@ -249,7 +249,7 @@ impl THandshakeServer for ComplexHandshakeServer {
         /*write the s2 data*/
         let mut writer = BytesWriter::new();
 
-        writer.write_u32::<BigEndian>(utils::current_time())?;
+        writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
         writer.write_u32::<BigEndian>(self.c1_timestamp)?;
         writer.write_random_bytes(handshake_random_len_u32())?;
 
@@ -663,8 +663,8 @@ mod tests {
     }
 
     #[test]
-    fn test_current_time_returns_nonzero() {
-        let t = utils::current_time();
+    fn test_timestamp_ms_returns_nonzero() {
+        let t = utils::timestamp_ms();
         // Should be non-zero (unless UNIX epoch is now, which won't happen)
         assert_ne!(t, 0);
     }

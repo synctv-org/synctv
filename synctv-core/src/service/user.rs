@@ -381,7 +381,7 @@ impl moka::Expiry<String, OpaqueLoginSessionEntry> for OpaqueLoginSessionExpiry 
         &self,
         _key: &String,
         value: &OpaqueLoginSessionEntry,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }
@@ -394,7 +394,7 @@ impl moka::Expiry<String, OpaqueRegistrationSessionEntry> for OpaqueRegistration
         &self,
         _key: &String,
         value: &OpaqueRegistrationSessionEntry,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }
@@ -407,7 +407,7 @@ impl moka::Expiry<String, MfaSessionEntry> for MfaSessionExpiry {
         &self,
         _key: &String,
         value: &MfaSessionEntry,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }
@@ -1413,7 +1413,7 @@ impl UserService {
                      SET playing_media_id = NULL,
                          playing_playlist_id = NULL,
                          target = ''::bytea,
-                         "current_time" = 0,
+                         "position" = 0,
                          speed = 1.0,
                          is_playing = false,
                          version = version + 1,

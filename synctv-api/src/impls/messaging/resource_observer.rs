@@ -549,6 +549,43 @@ impl ResourceObserver {
             .await;
     }
 
+    pub(super) async fn room_has_playback_snapshot_observers(room_id: RoomId) -> bool {
+        let hubs = {
+            let mut registry = ROOM_RESOURCE_HUBS.lock();
+            registry.retain(|_, hub| hub.strong_count() > 0);
+            registry
+                .iter()
+                .filter_map(|(key, hub)| (key.room_id == room_id).then(|| hub.upgrade()).flatten())
+                .collect::<Vec<_>>()
+        };
+
+        for hub in hubs {
+            if hub.has_playback_snapshot_observations().await {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(super) async fn active_playback_snapshot_rooms() -> Vec<RoomId> {
+        let hubs = {
+            let mut registry = ROOM_RESOURCE_HUBS.lock();
+            registry.retain(|_, hub| hub.strong_count() > 0);
+            registry
+                .iter()
+                .filter_map(|(key, hub)| hub.upgrade().map(|hub| (key.room_id, hub)))
+                .collect::<Vec<_>>()
+        };
+
+        let mut rooms = HashSet::new();
+        for (room_id, hub) in hubs {
+            if hub.has_playback_snapshot_observations().await {
+                rooms.insert(room_id);
+            }
+        }
+        rooms.into_iter().collect()
+    }
+
     async fn try_reserve_observation_slot(&self, observe_id: &str) -> bool {
         let mut state = self.state.lock().await;
         if state.observations.contains_key(observe_id)
@@ -593,6 +630,16 @@ impl ResourceObserver {
 }
 
 impl RoomResourceHub {
+    async fn has_playback_snapshot_observations(&self) -> bool {
+        let state = self.state.lock().await;
+        state.subscriptions.values().any(|subscription| {
+            matches!(
+                subscription.observation.resource,
+                ObservedResource::PlaybackSnapshot { .. }
+            )
+        })
+    }
+
     async fn register_observation(
         &self,
         observer: &Arc<ResourceObserver>,

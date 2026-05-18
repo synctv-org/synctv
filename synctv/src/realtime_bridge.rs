@@ -392,7 +392,7 @@ mod tests {
             playing_playlist_id: Some(PlaylistId::expect_positive(120_003)),
             target: Vec::new(),
             is_playing: true,
-            current_time: 42.0,
+            position: 42.0,
             speed: 1.0,
             version: 1,
             updated_at: chrono::Utc::now(),

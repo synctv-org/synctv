@@ -511,6 +511,43 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         direct.urls[0].url,
         "https://alist_default.example.com/episode-1.mp4"
     );
+
+    let update_response = client_api
+        .update_playback(
+            &owner.id,
+            &room_public_id,
+            synctv_api::proto::client::UpdatePlayback {
+                r#type: synctv_api::proto::client::PlaybackUpdateType::Seek as i32,
+                playing: None,
+                position: Some(12.5),
+                speed: None,
+                version: Some(state.version),
+            },
+        )
+        .await
+        .unwrap();
+    let update_state = update_response
+        .playback_state
+        .expect("update response should include playback state");
+    assert_eq!(update_state.playing_playlist_id, playlist_public_id);
+    assert!(
+        update_state.position >= 12.5,
+        "playing update response should not rewind below the requested seek position"
+    );
+    assert!(
+        update_state.position < 17.5,
+        "playing update response should not jump far beyond the requested seek position"
+    );
+    let update_snapshot = update_response
+        .playback_snapshot
+        .expect("update response should preserve read-after-write playback snapshot");
+    assert_eq!(update_snapshot.playlist_id, playlist_public_id);
+    assert_eq!(update_snapshot.name, "episode-1.mp4");
+    let update_direct = update_snapshot.playback_infos.get("direct").unwrap();
+    assert_eq!(
+        update_direct.urls[0].url,
+        "https://alist_default.example.com/episode-1.mp4"
+    );
 }
 
 #[tokio::test]

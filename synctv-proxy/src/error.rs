@@ -111,9 +111,7 @@ pub(crate) fn classify_reqwest_body_error(error: &reqwest::Error) -> ProxyError 
     let message = error.to_string();
     if error.is_timeout() {
         ProxyError::Timeout(message)
-    } else if error.is_connect() {
-        ProxyError::Connection(message)
-    } else if reqwest_error_message_indicates_connection_failure(&message) {
+    } else if error.is_connect() || reqwest_error_message_indicates_connection_failure(&message) {
         ProxyError::Connection(message)
     } else {
         ProxyError::Upstream(message)

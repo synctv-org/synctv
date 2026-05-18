@@ -926,12 +926,12 @@ async fn test_playback_state_concurrent_updates() {
 
     let mut handles = vec![];
 
-    // Concurrent position updates
+    // Conplayback position updates
     for i in 0..50 {
         let state = state.clone();
         let handle = tokio::spawn(async move {
             let mut s = state.lock();
-            s.current_time = f64::from(i * 1000);
+            s.position = f64::from(i * 1000);
         });
         handles.push(handle);
     }
@@ -953,7 +953,7 @@ async fn test_playback_state_concurrent_updates() {
     // State should be valid (not corrupted)
     let final_state = state.lock();
     // Position should be some value < 50000
-    assert!(final_state.current_time < 50000.0);
+    assert!(final_state.position < 50000.0);
 }
 
 // Permission Bits Concurrency Test

@@ -8,6 +8,8 @@ use crate::impls::ApiError;
 
 #[async_trait]
 pub trait PlaybackSnapshotService: Send + Sync {
+    async fn room_playback_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState, ApiError>;
+
     async fn get_playback_snapshot(
         &self,
         user_id: &UserId,

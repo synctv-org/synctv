@@ -198,13 +198,10 @@ fn parse_watch_delivery_mode(value: Option<&str>) -> AppResult<i32> {
     }
 }
 
-fn watch_options(
-    version: Option<String>,
-    delivery_mode: Option<String>,
-) -> AppResult<WatchOptions> {
+fn watch_options(version: Option<&str>, delivery_mode: Option<&str>) -> AppResult<WatchOptions> {
     Ok(WatchOptions {
-        version: version.unwrap_or_default(),
-        delivery_mode: parse_watch_delivery_mode(delivery_mode.as_deref())?,
+        version: version.unwrap_or_default().to_string(),
+        delivery_mode: parse_watch_delivery_mode(delivery_mode)?,
     })
 }
 
@@ -395,7 +392,7 @@ async fn open_resource_watch_sse(
     let event_service = state
         .event_service
         .clone()
-        .ok_or_else(|| super::AppError::service_unavailable())?;
+        .ok_or_else(super::AppError::service_unavailable)?;
     let room_id = state
         .shared_api_runtime
         .public_id_codec
@@ -1187,7 +1184,10 @@ pub async fn watch_playback_state(
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let request = WatchPlaybackStateRequest {
-        options: Some(watch_options(query.version, query.delivery_mode)?),
+        options: Some(watch_options(
+            query.version.as_deref(),
+            query.delivery_mode.as_deref(),
+        )?),
     };
     let observe = crate::impls::messaging::watch_playback_state_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
@@ -1203,7 +1203,10 @@ pub async fn watch_playback_snapshot(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackSnapshotRequest {
-        options: Some(watch_options(query.version, query.delivery_mode)?),
+        options: Some(watch_options(
+            query.version.as_deref(),
+            query.delivery_mode.as_deref(),
+        )?),
         playback_snapshot: Some(crate::proto::client::ObservePlaybackSnapshot {
             media_id: query.media_id.unwrap_or_default(),
             playlist_id: query.playlist_id.unwrap_or_default(),
@@ -1224,7 +1227,10 @@ pub async fn watch_room_settings(
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let request = WatchRoomSettingsRequest {
-        options: Some(watch_options(query.version, query.delivery_mode)?),
+        options: Some(watch_options(
+            query.version.as_deref(),
+            query.delivery_mode.as_deref(),
+        )?),
     };
     let observe = crate::impls::messaging::watch_room_settings_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
@@ -1240,7 +1246,10 @@ pub async fn watch_playlist_items(
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let request = WatchPlaylistItemsRequest {
-        options: Some(watch_options(query.version, query.delivery_mode)?),
+        options: Some(watch_options(
+            query.version.as_deref(),
+            query.delivery_mode.as_deref(),
+        )?),
         request: Some(request),
     };
     let observe = crate::impls::messaging::watch_playlist_items_observe(request);
@@ -1257,7 +1266,10 @@ pub async fn watch_room_members(
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let request = WatchRoomMembersRequest {
-        options: Some(watch_options(query.version, query.delivery_mode)?),
+        options: Some(watch_options(
+            query.version.as_deref(),
+            query.delivery_mode.as_deref(),
+        )?),
         request: Some(request),
     };
     let observe = crate::impls::messaging::watch_room_members_observe(request);

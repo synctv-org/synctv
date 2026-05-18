@@ -10,6 +10,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use reqwest::Client;
 use sqlx::PgPool;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io::BufReader;
 use std::sync::Arc;
@@ -37,20 +38,91 @@ use synctv_realtime::sync::RealtimeEvent;
 use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::shutdown::ShutdownCoordinator;
 
+#[cfg(test)]
+async fn complete_test_unpublish(
+    registry: &Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
+    tracker: &Arc<synctv_livestream::api::StreamTracker>,
+    room_id: &str,
+    media_id: &str,
+) {
+    registry
+        .unregister_publisher(room_id, media_id)
+        .await
+        .expect("test unpublish completion should unregister publisher");
+    let _ = tracker.remove_stream(room_id, media_id);
+}
+
 /// Livestream server state (held for graceful shutdown).
 ///
 /// Dropping the handle stops the `StreamHub` event loop and all dependent tasks.
 pub struct LivestreamState {
     pub handle: synctv_livestream::livestream::LivestreamHandle,
+    pub infrastructure: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
 }
 
 #[async_trait]
 trait LivestreamShutdown {
+    async fn cleanup_local_publishers_for_server(&mut self, timeout: Duration);
+    fn force_shutdown_for_server(&mut self);
     async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool;
 }
 
 #[async_trait]
 impl LivestreamShutdown for LivestreamState {
+    async fn cleanup_local_publishers_for_server(&mut self, timeout: Duration) {
+        let node_id = self.infrastructure.local_node_id.clone();
+        if node_id.is_empty() {
+            self.infrastructure.user_stream_tracker.clear();
+            return;
+        }
+
+        if timeout.is_zero() {
+            warn!(
+                node_id = %node_id,
+                "Skipping local publisher cleanup before livestream shutdown because no shutdown budget remains"
+            );
+            self.infrastructure.user_stream_tracker.clear();
+            return;
+        }
+
+        let cleanup_timeout = timeout.min(Duration::from_secs(2));
+
+        match tokio::time::timeout(
+            cleanup_timeout,
+            self.infrastructure
+                .registry
+                .cleanup_all_publishers_for_node(&node_id),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                info!(
+                    node_id = %node_id,
+                    "Cleaned up local publisher registrations before livestream shutdown"
+                );
+            }
+            Ok(Err(error)) => {
+                warn!(
+                    node_id = %node_id,
+                    error = %error,
+                    "Failed to cleanup local publisher registrations before livestream shutdown"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    node_id = %node_id,
+                    "Timed out cleaning local publisher registrations before livestream shutdown"
+                );
+            }
+        }
+
+        self.infrastructure.user_stream_tracker.clear();
+    }
+
+    fn force_shutdown_for_server(&mut self) {
+        self.handle.shutdown();
+    }
+
     async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool {
         self.handle.shutdown_graceful(timeout_secs).await
     }
@@ -110,6 +182,7 @@ pub struct SyncTvServer {
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
     metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    playback_lifecycle_event_source_handle: Option<JoinHandle<()>>,
 }
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -438,7 +511,7 @@ fn livestream_shutdown_timeout_secs(timeout: Duration) -> u64 {
     if timeout.is_zero() {
         0
     } else {
-        timeout.as_secs().max(1)
+        timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0)
     }
 }
 
@@ -446,17 +519,32 @@ async fn shutdown_livestream_state<T>(livestream_state: &mut Option<T>, budget: 
 where
     T: LivestreamShutdown + Send,
 {
-    if let Some(state) = livestream_state.as_mut() {
+    if let Some(mut state) = livestream_state.take() {
         info!("Stopping livestream infrastructure...");
-        let timeout_secs = livestream_shutdown_timeout_secs(budget);
-        let graceful = if let Ok(graceful) =
-            tokio::time::timeout(budget, state.shutdown_for_server(timeout_secs)).await
+        let started = tokio::time::Instant::now();
+        let cleanup_result =
+            tokio::time::timeout(budget, state.cleanup_local_publishers_for_server(budget)).await;
+        if cleanup_result.is_err() {
+            warn!("Local publisher cleanup consumed the remaining livestream shutdown budget");
+        }
+
+        let remaining_budget = budget.saturating_sub(started.elapsed());
+        let timeout_secs = livestream_shutdown_timeout_secs(remaining_budget);
+        let graceful = if remaining_budget.is_zero() {
+            warn!(
+                "No livestream shutdown budget remains after publisher cleanup; force-aborting livestream infrastructure"
+            );
+            state.force_shutdown_for_server();
+            false
+        } else if let Ok(graceful) =
+            tokio::time::timeout(remaining_budget, state.shutdown_for_server(timeout_secs)).await
         {
             graceful
         } else {
             warn!(
                 "Livestream infrastructure exceeded the remaining shutdown budget before graceful shutdown could complete"
             );
+            state.force_shutdown_for_server();
             false
         };
         if !graceful {
@@ -471,6 +559,7 @@ async fn shutdown_runtime_phase(
     metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     cleanup_handle: JoinHandle<()>,
+    playback_lifecycle_event_source_handle: Option<JoinHandle<()>>,
     total_budget: Duration,
     defer_management_wait: bool,
 ) -> Option<JoinHandle<anyhow::Result<()>>> {
@@ -517,6 +606,15 @@ async fn shutdown_runtime_phase(
         remaining_budget(deadline),
     )
     .await;
+
+    if let Some(playback_lifecycle_event_source_handle) = playback_lifecycle_event_source_handle {
+        await_task_shutdown(
+            "observed playback lifecycle event source",
+            playback_lifecycle_event_source_handle,
+            remaining_budget(deadline),
+        )
+        .await;
+    }
 
     if defer_management_wait {
         management_handle
@@ -688,6 +786,9 @@ fn spawn_admin_event_listener(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut admin_rx = event_service.subscribe_admin_events();
+        let mut lifecycle_rx = event_service.subscribe_lifecycle_events();
+        let mut recent_event_ids = HashSet::new();
+        let mut recent_event_order = VecDeque::new();
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
@@ -696,91 +797,15 @@ fn spawn_admin_event_listener(
                 }
                 recv = admin_rx.recv() => {
                     match recv {
-                        Ok(event) => match &event {
-                            RealtimeEvent::KickPublisher {
-                                room_id,
-                                media_id,
-                                reason,
-                                ..
-                            } => {
-                                info!(
-                                    room_id = %room_id,
-                                    media_id = %media_id,
-                                    reason = %reason,
-                                    "Received replica-wide stream kick"
-                                );
-                                let room_id_string = room_id.to_string();
-                                let media_id_string = media_id.to_string();
-                                if let Err(e) = infra
-                                    .kick_stream(&room_id_string, &media_id_string)
-                                    .await
-                                {
-                                    warn!(
-                                        room_id = %room_id,
-                                        media_id = %media_id,
-                                        error = %e,
-                                        "Failed to kick publisher from cluster admin event"
-                                    );
-                                }
-                            }
-                            RealtimeEvent::KickUser {
-                                user_id, reason, ..
-                            } => {
-                                info!(
-                                    user_id = %user_id,
-                                    reason = %reason,
-                                    "Received replica-wide user kick"
-                                );
-                                let user_id_string = user_id.to_string();
-                                infra.kick_user_publishers(&user_id_string).await;
-                            }
-                            RealtimeEvent::KickUserFromRoom {
-                                room_id,
-                                user_id,
-                                reason,
-                                ..
-                            } => {
-                                info!(
-                                    room_id = %room_id,
-                                    user_id = %user_id,
-                                    reason = %reason,
-                                    "Received room-scoped user kick"
-                                );
-                                let room_id_string = room_id.to_string();
-                                let user_id_string = user_id.to_string();
-                                infra
-                                    .kick_user_room_publishers(&room_id_string, &user_id_string)
-                                    .await;
-                            }
-                            RealtimeEvent::RoomDeleted { room_id, .. } => {
-                                info!(
-                                    room_id = %room_id,
-                                    "Received replica-wide room deletion"
-                                );
-                                infra
-                                    .kick_room_publishers(&room_id.to_string())
-                                    .await;
-                            }
-                            RealtimeEvent::RoomBanned { room_id, .. } => {
-                                info!(
-                                    room_id = %room_id,
-                                    "Received replica-wide room ban"
-                                );
-                                infra
-                                    .kick_room_publishers(&room_id.to_string())
-                                    .await;
-                            }
-                            RealtimeEvent::RoomOwnerInactive { room_id, .. } => {
-                                info!(
-                                    room_id = %room_id,
-                                    "Received replica-wide inactive-owner room lifecycle event"
-                                );
-                                infra
-                                    .kick_room_publishers(&room_id.to_string())
-                                    .await;
-                            }
-                            _ => {}
-                        },
+                        Ok(event) => {
+                            handle_admin_lifecycle_event(
+                                &infra,
+                                event,
+                                &mut recent_event_ids,
+                                &mut recent_event_order,
+                            )
+                            .await;
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             warn!("Admin event listener lagged by {} events", n);
                         }
@@ -790,9 +815,126 @@ fn spawn_admin_event_listener(
                         }
                     }
                 }
+                recv = lifecycle_rx.recv() => {
+                    match recv {
+                        Ok(event) => {
+                            handle_admin_lifecycle_event(
+                                &infra,
+                                event,
+                                &mut recent_event_ids,
+                                &mut recent_event_order,
+                            )
+                            .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("Lifecycle event listener lagged by {} events", n);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("Lifecycle event channel closed, stopping listener");
+                            break;
+                        }
+                    }
+                }
             }
         }
     })
+}
+
+async fn handle_admin_lifecycle_event(
+    infra: &Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    event: RealtimeEvent,
+    recent_event_ids: &mut HashSet<String>,
+    recent_event_order: &mut VecDeque<String>,
+) {
+    const RECENT_ADMIN_LIFECYCLE_EVENTS: usize = 1024;
+
+    let event_id = event.event_id().to_string();
+    if !recent_event_ids.insert(event_id.clone()) {
+        return;
+    }
+    recent_event_order.push_back(event_id);
+    while recent_event_order.len() > RECENT_ADMIN_LIFECYCLE_EVENTS {
+        if let Some(expired) = recent_event_order.pop_front() {
+            recent_event_ids.remove(&expired);
+        }
+    }
+
+    match &event {
+        RealtimeEvent::KickPublisher {
+            room_id,
+            media_id,
+            reason,
+            ..
+        } => {
+            info!(
+                room_id = %room_id,
+                media_id = %media_id,
+                reason = %reason,
+                "Received replica-wide stream kick"
+            );
+            let room_id_string = room_id.to_string();
+            let media_id_string = media_id.to_string();
+            if let Err(e) = infra.kick_stream(&room_id_string, &media_id_string).await {
+                warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    error = %e,
+                    "Failed to kick publisher from cluster admin event"
+                );
+            }
+        }
+        RealtimeEvent::KickUser {
+            user_id, reason, ..
+        } => {
+            info!(
+                user_id = %user_id,
+                reason = %reason,
+                "Received replica-wide user kick"
+            );
+            let user_id_string = user_id.to_string();
+            infra.kick_user_publishers(&user_id_string).await;
+        }
+        RealtimeEvent::KickUserFromRoom {
+            room_id,
+            user_id,
+            reason,
+            ..
+        } => {
+            info!(
+                room_id = %room_id,
+                user_id = %user_id,
+                reason = %reason,
+                "Received room-scoped user kick"
+            );
+            let room_id_string = room_id.to_string();
+            let user_id_string = user_id.to_string();
+            infra
+                .kick_user_room_publishers(&room_id_string, &user_id_string)
+                .await;
+        }
+        RealtimeEvent::RoomDeleted { room_id, .. } => {
+            info!(
+                room_id = %room_id,
+                "Received replica-wide room deletion"
+            );
+            infra.kick_room_publishers(&room_id.to_string()).await;
+        }
+        RealtimeEvent::RoomBanned { room_id, .. } => {
+            info!(
+                room_id = %room_id,
+                "Received replica-wide room ban"
+            );
+            infra.kick_room_publishers(&room_id.to_string()).await;
+        }
+        RealtimeEvent::RoomOwnerInactive { room_id, .. } => {
+            info!(
+                room_id = %room_id,
+                "Received replica-wide inactive-owner room lifecycle event"
+            );
+            infra.kick_room_publishers(&room_id.to_string()).await;
+        }
+        _ => {}
+    }
 }
 
 impl SyncTvServer {
@@ -829,6 +971,7 @@ impl SyncTvServer {
             api_handle: None,
             metrics_handle: None,
             management_handle: None,
+            playback_lifecycle_event_source_handle: None,
         }
     }
 
@@ -981,7 +1124,7 @@ impl SyncTvServer {
 
         if self.config.management.enabled {
             let management_handle = match self
-                .start_management_server(shutdown_rx.clone(), shared_http_app_state)
+                .start_management_server(shutdown_rx.clone(), shared_http_app_state.clone())
                 .await
             {
                 Ok(handle) => handle,
@@ -1015,6 +1158,19 @@ impl SyncTvServer {
             };
             self.management_handle = Some(management_handle);
         }
+
+        let playback_snapshot_service = shared_http_app_state.shared_api_runtime.client_api.clone();
+        self.playback_lifecycle_event_source_handle = Some(
+            synctv_api::impls::messaging::spawn_observed_playback_lifecycle_event_source(
+                playback_snapshot_service.clone(),
+                vec![Arc::new(
+                    synctv_api::impls::messaging::ProviderPlaybackProgressSubscriber::new(
+                        playback_snapshot_service,
+                    ),
+                )],
+                shutdown_rx.clone(),
+            ),
+        );
 
         if let Some(cluster_activation) = &self.services.cluster_activation {
             if let Err(err) = cluster_activation.activate().await {
@@ -1184,6 +1340,7 @@ impl SyncTvServer {
             metrics_handle,
             management_handle,
             cleanup_handle,
+            self.playback_lifecycle_event_source_handle.take(),
             http_drain_budget,
             defer_management_shutdown_wait,
         )
@@ -1245,6 +1402,21 @@ impl SyncTvServer {
             }
         }
 
+        // Stop livestream publishers before shutting down the realtime manager.
+        // Realtime shutdown can wait on Redis pub/sub tasks; shared livestream
+        // registry cleanup must run while Redis is still available and before
+        // that wait consumes the remaining process drain budget.
+        self.lifecycle_controller.publish_components_shutting_down();
+        shutdown_livestream_state(
+            &mut self.livestream_state,
+            if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
+                Duration::ZERO
+            } else {
+                total_drain_budget.saturating_sub(shutdown_start.elapsed())
+            },
+        )
+        .await;
+
         // Shut down the realtime manager so the admin event broadcast channel
         // closes, allowing the admin_event_handle listener to exit.
         if let Some(ref event_service) = self.services.realtime_event_service {
@@ -1267,8 +1439,9 @@ impl SyncTvServer {
             .await;
         }
 
-        // Shut down remaining infrastructure components
-        self.lifecycle_controller.publish_components_shutting_down();
+        // Shut down remaining infrastructure components. Livestream was already
+        // stopped above; this remains a no-op for livestream because the state
+        // is consumed by `shutdown_livestream_state`.
         self.shutdown_components(
             if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
                 Duration::ZERO
@@ -1750,7 +1923,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, cleanup_partial_startup,
-        livestream_shutdown_timeout_secs, management_apis_from_http_state,
+        complete_test_unpublish, livestream_shutdown_timeout_secs, management_apis_from_http_state,
         map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
         shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
         spawn_admin_event_listener, LivestreamShutdown, SharedProviderPlaybackRuntime,
@@ -2325,6 +2498,7 @@ mod tests {
             None,
             None,
             cleanup_handle,
+            None,
             Duration::from_millis(60),
             false,
         )
@@ -2358,6 +2532,7 @@ mod tests {
             None,
             Some(management_handle),
             cleanup_handle,
+            None,
             Duration::from_millis(60),
             true,
         )
@@ -2385,6 +2560,10 @@ mod tests {
 
         #[async_trait]
         impl LivestreamShutdown for FakeLivestreamState {
+            async fn cleanup_local_publishers_for_server(&mut self, _timeout: Duration) {}
+
+            fn force_shutdown_for_server(&mut self) {}
+
             async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool {
                 self.called.store(true, Ordering::SeqCst);
                 self.timeout_seen.store(timeout_secs, Ordering::SeqCst);
@@ -2432,6 +2611,10 @@ mod tests {
 
         #[async_trait]
         impl LivestreamShutdown for SlowLivestreamState {
+            async fn cleanup_local_publishers_for_server(&mut self, _timeout: Duration) {}
+
+            fn force_shutdown_for_server(&mut self) {}
+
             async fn shutdown_for_server(&mut self, _timeout_secs: u64) -> bool {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 true
@@ -2449,6 +2632,70 @@ mod tests {
         assert!(
             result.is_ok(),
             "livestream shutdown must respect the caller's remaining shutdown budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_livestream_state_bounds_cleanup_by_budget() {
+        struct SlowCleanupLivestreamState {
+            shutdown_called: Arc<AtomicBool>,
+            force_shutdown_called: Arc<AtomicBool>,
+            cleanup_timeout_seen: Arc<std::sync::Mutex<Option<Duration>>>,
+        }
+
+        #[async_trait]
+        impl LivestreamShutdown for SlowCleanupLivestreamState {
+            async fn cleanup_local_publishers_for_server(&mut self, timeout: Duration) {
+                *self
+                    .cleanup_timeout_seen
+                    .lock()
+                    .expect("cleanup timeout mutex poisoned") = Some(timeout);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            fn force_shutdown_for_server(&mut self) {
+                self.force_shutdown_called.store(true, Ordering::SeqCst);
+            }
+
+            async fn shutdown_for_server(&mut self, _timeout_secs: u64) -> bool {
+                self.shutdown_called.store(true, Ordering::SeqCst);
+                true
+            }
+        }
+
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let force_shutdown_called = Arc::new(AtomicBool::new(false));
+        let cleanup_timeout_seen = Arc::new(std::sync::Mutex::new(None));
+        let mut livestream_state = Some(SlowCleanupLivestreamState {
+            shutdown_called: Arc::clone(&shutdown_called),
+            force_shutdown_called: Arc::clone(&force_shutdown_called),
+            cleanup_timeout_seen: Arc::clone(&cleanup_timeout_seen),
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(30),
+            shutdown_livestream_state(&mut livestream_state, Duration::from_millis(20)),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "publisher cleanup must be bounded by the livestream shutdown budget"
+        );
+        assert_eq!(
+            *cleanup_timeout_seen
+                .lock()
+                .expect("cleanup timeout mutex poisoned"),
+            Some(Duration::from_millis(20)),
+            "cleanup should receive the caller's remaining budget"
+        );
+        assert!(
+            !shutdown_called.load(Ordering::SeqCst),
+            "graceful livestream shutdown must not be polled with a zero remaining budget"
+        );
+        assert!(
+            force_shutdown_called.load(Ordering::SeqCst),
+            "livestream handle must still be force-aborted after cleanup consumes the budget"
         );
     }
 
@@ -2603,21 +2850,31 @@ mod tests {
         .expect("listener should enqueue an unpublish event")
         .expect("streamhub event channel should receive unpublish");
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if registry
-                    .get_publisher(&room_id_string, &media_id_string)
-                    .await
-                    .expect("registry lookup should succeed")
-                    .is_none()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("kick listener should remove registry entry after processing");
+        assert!(
+            registry
+                .get_publisher(&room_id_string, &media_id_string)
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "kick listener must not remove registry ownership before StreamHub processes unpublish"
+        );
+
+        complete_test_unpublish(
+            &registry,
+            &Arc::new(StreamTracker::new()),
+            &room_id_string,
+            &media_id_string,
+        )
+        .await;
+
+        assert!(
+            registry
+                .get_publisher(&room_id_string, &media_id_string)
+                .await
+                .expect("registry lookup should succeed")
+                .is_none(),
+            "actual unpublish completion should remove registry entry"
+        );
 
         cancel.cancel();
         await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;
@@ -2754,26 +3011,41 @@ mod tests {
         .await
         .expect("listener should enqueue one room-scoped unpublish event");
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let room1_missing = registry
-                    .get_publisher(&room_id_string, &media_id_string)
-                    .await
-                    .expect("registry lookup should succeed")
-                    .is_none();
-                let room2_present = registry
-                    .get_publisher(&other_room_id_string, &other_media_id_string)
-                    .await
-                    .expect("registry lookup should succeed")
-                    .is_some();
-                if room1_missing && room2_present {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("room-scoped kick listener should only remove the targeted publisher");
+        assert!(
+            registry
+                .get_publisher(&room_id_string, &media_id_string)
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "room-scoped kick must not remove registry ownership before StreamHub processes unpublish"
+        );
+        assert!(
+            registry
+                .get_publisher(&other_room_id_string, &other_media_id_string)
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "publisher in another room must remain registered"
+        );
+
+        complete_test_unpublish(&registry, &tracker, &room_id_string, &media_id_string).await;
+
+        assert!(
+            registry
+                .get_publisher(&room_id_string, &media_id_string)
+                .await
+                .expect("registry lookup should succeed")
+                .is_none(),
+            "actual unpublish completion should remove targeted publisher"
+        );
+        assert!(
+            registry
+                .get_publisher(&other_room_id_string, &other_media_id_string)
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "publisher in another room must remain registered after targeted unpublish"
+        );
 
         assert!(
             tracker

@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome};
-use crate::util::validate_stream_ids;
+use crate::util::{validate_stream_id_component, validate_stream_ids};
 
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
@@ -931,6 +931,20 @@ impl StreamRegistry {
             .collect())
     }
 
+    /// Get active publishers for a user in one room.
+    pub async fn get_user_publishers_for_room(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        validate_stream_id_component(room_id, "room_id")?;
+        let publishers = self.get_user_publishers(user_id).await?;
+        Ok(publishers
+            .into_iter()
+            .filter(|(publisher_room_id, _)| publisher_room_id == room_id)
+            .collect())
+    }
+
     /// Remove all publisher entries for a user (via reverse index)
     pub async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
         let publishers = self.get_user_publishers(user_id).await?;
@@ -1095,18 +1109,26 @@ impl StreamRegistry {
             return Ok(());
         }
 
-        let node_key = self.node_publishers_key(node_id);
-        let members: Vec<String> = with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
-            let members: Vec<String> = redis::cmd("SMEMBERS")
-                .arg(&node_key)
-                .query_async(&mut conn)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
-            Ok(members)
-        })
-        .await?;
+        let mut members = self
+            .load_index_members(&self.node_publishers_key(node_id))
+            .await?;
+        let mut active_members = self
+            .load_index_members(&self.active_publishers_key())
+            .await?;
+        members.append(&mut active_members);
+        members.sort();
+        members.dedup();
 
+        self.cleanup_publisher_members_for_node(node_id, members)
+            .await
+    }
+
+    async fn cleanup_publisher_members_for_node(
+        &self,
+        node_id: &str,
+        members: Vec<String>,
+    ) -> Result<()> {
+        let node_key = self.node_publishers_key(node_id);
         for chunk in members.chunks(ACTIVE_PUBLISHER_FETCH_BATCH_SIZE) {
             let mut entries = Vec::with_capacity(chunk.len());
             for member in chunk {

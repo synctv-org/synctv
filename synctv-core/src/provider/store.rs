@@ -144,7 +144,7 @@ impl Expiry<String, TtlValue> for PerEntryExpiry {
         &self,
         _key: &String,
         value: &TtlValue,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }
@@ -164,7 +164,7 @@ impl Expiry<String, LockValue> for LockEntryExpiry {
         &self,
         _key: &String,
         value: &LockValue,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<Duration> {
         Some(value.ttl)
     }

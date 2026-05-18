@@ -149,6 +149,18 @@ async fn dispatch_event(
         }
     };
 
+    // The realtime outbox table is shared across cluster nodes, so any replica can
+    // claim an event written by another replica. Redis envelopes use the claiming
+    // replica's node_id, and that replica ignores its own Redis echo. Delivering
+    // locally before the Redis publish lets the claiming replica apply admin
+    // lifecycle side effects such as kicking local publishers.
+    //
+    // This pre-confirmation delivery deliberately bypasses the shared realtime
+    // deduplicator. If Redis publish fails, the outbox row is retried with the
+    // same event id; poisoning dedup here would make the retry skip local
+    // lifecycle side effects on this replica.
+    let _ = realtime_manager.broadcast_local_outbox_side_effect(realtime_event.clone());
+
     match realtime_manager
         .publish_only_confirmed(realtime_event.clone(), PUBLISH_CONFIRMATION_TIMEOUT)
         .await

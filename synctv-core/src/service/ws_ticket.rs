@@ -351,7 +351,7 @@ impl moka::Expiry<String, TtlTicketData> for TicketEntryExpiry {
         &self,
         _key: &String,
         value: &TtlTicketData,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<std::time::Duration> {
         Some(value.ttl)
     }

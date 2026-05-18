@@ -266,7 +266,7 @@ async fn test_seek_triggers_broadcast() {
     );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
     assert!(
-        (broadcast.current_time - 120.5).abs() < f64::EPSILON,
+        (broadcast.position - 120.5).abs() < f64::EPSILON,
         "Broadcast should show correct position"
     );
 }
@@ -440,7 +440,7 @@ async fn test_reset_triggers_broadcast() {
         "Broadcast should show is_playing = false"
     );
     assert!(
-        (broadcast.current_time - 0.0).abs() < f64::EPSILON,
+        (broadcast.position - 0.0).abs() < f64::EPSILON,
         "Position should be 0"
     );
     assert!(broadcast.playing_media_id.is_none(), "Media should be None");
@@ -513,7 +513,7 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
     let broadcasts = mock_broadcaster.get_broadcasts();
     assert!(broadcasts[0].is_playing, "1st: playing");
     assert!(
-        (broadcasts[1].current_time - 50.0).abs() < f64::EPSILON,
+        (broadcasts[1].position - 50.0).abs() < f64::EPSILON,
         "2nd: seek to 50"
     );
     assert!(
@@ -863,7 +863,7 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
 
     for (i, broadcast) in broadcasts.iter().enumerate() {
         assert!(
-            broadcast.current_time >= 0.0,
+            broadcast.position >= 0.0,
             "Broadcast {i} should have valid position"
         );
         assert!(
@@ -937,6 +937,6 @@ async fn test_cluster_mode_multiple_rooms() {
     assert_eq!(broadcasts[1].room_id, room2.id);
 
     // Positions should be different
-    assert!((broadcasts[0].current_time - 100.0).abs() < f64::EPSILON);
-    assert!((broadcasts[1].current_time - 200.0).abs() < f64::EPSILON);
+    assert!((broadcasts[0].position - 100.0).abs() < f64::EPSILON);
+    assert!((broadcasts[1].position - 200.0).abs() < f64::EPSILON);
 }

@@ -48,7 +48,7 @@ async fn test_position_preserved_on_pause() {
         .await
         .unwrap();
 
-    assert!(state.current_time >= 119.0);
+    assert!(state.position >= 119.0);
 
     room_service.playback_service().shutdown().await;
     pool.close().await;
@@ -102,7 +102,7 @@ async fn test_position_reset_on_media_switch() {
         .await
         .unwrap();
 
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
 
     room_service.playback_service().shutdown().await;

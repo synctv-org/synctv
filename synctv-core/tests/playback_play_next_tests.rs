@@ -610,7 +610,7 @@ async fn test_repeat_one_replays_current() {
         "Should replay the same media"
     );
     assert!(
-        (state.current_time - 0.0).abs() < f64::EPSILON,
+        (state.position - 0.0).abs() < f64::EPSILON,
         "Should reset to start"
     );
 }
@@ -1113,7 +1113,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         target,
         serde_json::json!({"relative_path":"/episode-2.mp4"})
     );
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
 }
 

@@ -20,7 +20,7 @@ pub(crate) mod media;
 mod member;
 pub(crate) mod passkey;
 mod playback;
-mod playback_lifecycle;
+pub(crate) mod playback_lifecycle;
 pub(crate) mod playlist;
 mod room;
 pub(crate) mod stream;
@@ -46,8 +46,8 @@ use synctv_core::RedisConnectionRuntime;
 
 // Re-export public items from convert module
 pub use convert::{
-    media_to_proto, proto_role_filter_to_room_role, proto_role_to_room_role,
-    proto_role_to_user_role, room_role_to_proto,
+    media_to_proto, proto_role_filter_to_room_role, proto_role_to_assignable_room_role,
+    proto_role_to_room_role, proto_role_to_user_role, room_role_to_proto,
 };
 
 // Room password limits imported from the single source of truth in synctv-core

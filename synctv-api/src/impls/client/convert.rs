@@ -222,6 +222,19 @@ pub fn proto_role_to_room_role(
     synctv_core::models::RoomRole::try_from(role_i32).map_err(crate::impls::ApiError::InvalidInput)
 }
 
+pub fn proto_role_to_assignable_room_role(
+    role_i32: i32,
+) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
+    let role = proto_role_to_room_role(role_i32)?;
+    if role == synctv_core::models::RoomRole::Creator {
+        return Err(crate::impls::ApiError::InvalidInput(
+            "Creator role is bound to room ownership and cannot be assigned via add_member"
+                .to_string(),
+        ));
+    }
+    Ok(role)
+}
+
 #[must_use]
 pub fn proto_role_filter_to_room_role(role_i32: i32) -> Option<synctv_core::models::RoomRole> {
     synctv_core::models::RoomRole::try_from(role_i32).ok()
@@ -468,7 +481,7 @@ pub(crate) fn playback_state_to_proto(
                     .encode_media_id(*id)
                     .expect("positive media ID must encode")
             }),
-        current_time: state.computed_current_time(),
+        position: state.computed_position(),
         speed: state.speed,
         is_playing: state.is_playing,
         updated_at: state.updated_at.timestamp(),

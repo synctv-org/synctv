@@ -123,18 +123,18 @@ impl SeekResponse {
 const MAX_PLAYBACK_POSITION_SECONDS: f64 = 86_400.0;
 const MIN_PLAYBACK_SPEED: f64 = 0.25;
 const MAX_PLAYBACK_SPEED: f64 = 4.0;
-fn validate_seek_position(current_time: f64) -> Result<()> {
-    if !current_time.is_finite() {
+fn validate_seek_position(position: f64) -> Result<()> {
+    if !position.is_finite() {
         return Err(Error::InvalidInput(
             "Seek position must be a finite number".to_string(),
         ));
     }
-    if current_time < 0.0 {
+    if position < 0.0 {
         return Err(Error::InvalidInput(
             "Seek position must be non-negative".to_string(),
         ));
     }
-    if current_time > MAX_PLAYBACK_POSITION_SECONDS {
+    if position > MAX_PLAYBACK_POSITION_SECONDS {
         return Err(Error::InvalidInput(
             "Seek position exceeds maximum (24 hours)".to_string(),
         ));
@@ -791,9 +791,9 @@ impl PlaybackService {
             .update_state(room_id, |state| {
                 if !playing {
                     // Snapshot the computed playback position before pausing so that
-                    // the stored current_time reflects where the user actually was.
+                    // the stored position reflects where the user actually was.
                     // Without this, resuming would jump back to the last persisted time.
-                    state.current_time = state.computed_current_time();
+                    state.position = state.computed_position();
                 }
                 state.is_playing = playing;
                 state.updated_at = chrono::Utc::now();
@@ -810,7 +810,7 @@ impl PlaybackService {
     ///
     /// If the optimistic lock retries are exhausted (e.g., during rapid seek
     /// bursts), falls back to returning the latest playback state as a
-    /// degraded response so the client knows the current position, rather
+    /// degraded response so the client knows the playback position, rather
     /// than receiving a bare error.
     ///
     /// Returns a `SeekResponse` containing:
@@ -821,9 +821,9 @@ impl PlaybackService {
         &self,
         room_id: RoomId,
         user_id: UserId,
-        current_time: f64,
+        position: f64,
     ) -> Result<SeekResponse> {
-        validate_seek_position(current_time)?;
+        validate_seek_position(position)?;
 
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
@@ -831,7 +831,7 @@ impl PlaybackService {
 
         let result = self
             .update_state(room_id, |state| {
-                state.current_time = current_time;
+                state.position = position;
                 state.updated_at = chrono::Utc::now();
                 // version is incremented by the SQL UPDATE, not here
             })
@@ -850,10 +850,10 @@ impl PlaybackService {
                 ) =>
             {
                 // Degraded response: seek failed due to contention, but return
-                // the latest state so the client can display the current position.
+                // the latest state so the client can display the playback position.
                 tracing::warn!(
                     room_id = %room_id,
-                    requested_time = current_time,
+                    requested_time = position,
                     "Seek failed after max retries, returning latest state as degraded response"
                 );
                 let state = self.get_state(&room_id).await?;
@@ -882,10 +882,10 @@ impl PlaybackService {
         let state = self
             .update_state(room_id, |state| {
                 // Snapshot the computed playback position before changing speed so that
-                // the stored current_time reflects where the user actually was at the
+                // the stored position reflects where the user actually was at the
                 // old speed. Without this, the position would be wrong because
-                // computed_current_time() uses speed to extrapolate from updated_at.
-                state.current_time = state.computed_current_time();
+                // computed_position() uses speed to extrapolate from updated_at.
+                state.position = state.computed_position();
                 state.speed = speed;
                 state.updated_at = chrono::Utc::now();
                 // version is incremented by the SQL UPDATE, not here
@@ -1153,7 +1153,7 @@ impl PlaybackService {
                         updated_state.target = target.clone();
                     }
                 }
-                updated_state.current_time = 0.0;
+                updated_state.position = 0.0;
                 updated_state.is_playing = true;
                 updated_state.updated_at = chrono::Utc::now();
 
@@ -1183,13 +1183,13 @@ impl PlaybackService {
 
     /// Check if media has ended and auto-play next if needed
     ///
-    /// This should be called when playback `current_time` is updated.
+    /// This should be called when playback `position` is updated.
     /// It checks if the current time has reached or exceeded the media duration.
     pub async fn check_and_auto_play(
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
-        current_time: f64,
+        position: f64,
     ) -> Result<Option<RoomPlaybackState>> {
         let enabled = settings.auto_play.value.enabled;
 
@@ -1210,8 +1210,8 @@ impl PlaybackService {
             None => return Ok(None),
         };
 
-        // A negative current_time (-1.0) is an explicit "media ended" signal from the client
-        if current_time < 0.0 {
+        // A negative position (-1.0) is an explicit "media ended" signal from the client
+        if position < 0.0 {
             return self.play_next(room_id, settings).await;
         }
 
@@ -1223,9 +1223,9 @@ impl PlaybackService {
             .and_then(serde_json::Value::as_f64);
 
         // Use computed time to account for elapsed wall-clock time when playing
-        let effective_time = state.computed_current_time();
+        let effective_time = state.computed_position();
 
-        // Check if current_time is near end (within 1 second or past end)
+        // Check if position is near end (within 1 second or past end)
         if let Some(dur) = duration {
             if effective_time >= dur - 1.0 {
                 // Auto-play next media
@@ -1412,9 +1412,9 @@ impl PlaybackService {
     }
 
     /// Get current playback position
-    pub async fn get_current_time(&self, room_id: &RoomId) -> Result<f64> {
+    pub async fn get_position(&self, room_id: &RoomId) -> Result<f64> {
         let state = self.get_state(room_id).await?;
-        Ok(state.current_time)
+        Ok(state.position)
     }
 
     async fn switch_internal(
@@ -1444,7 +1444,7 @@ impl PlaybackService {
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
                     state.target = Vec::new();
-                    state.current_time = 0.0;
+                    state.position = 0.0;
                     state.speed = 1.0;
                     state.is_playing = false;
                     state.updated_at = chrono::Utc::now();
@@ -1498,7 +1498,7 @@ impl PlaybackService {
                 state.playing_media_id.clone_from(&target.media_id);
                 state.playing_playlist_id.clone_from(&target.playlist_id);
                 state.target.clone_from(&target.target);
-                state.current_time = 0.0;
+                state.position = 0.0;
                 state.is_playing = true;
                 state.updated_at = chrono::Utc::now();
                 // version is incremented by the SQL UPDATE, not here
@@ -1525,7 +1525,7 @@ impl PlaybackService {
         let state = self
             .update_state(room_id, |state| {
                 state.is_playing = false;
-                state.current_time = 0.0;
+                state.position = 0.0;
                 state.speed = 1.0;
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
@@ -1555,7 +1555,7 @@ impl PlaybackService {
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
                 state.target = Vec::new();
-                state.current_time = 0.0;
+                state.position = 0.0;
                 state.speed = 1.0;
                 state.is_playing = false;
                 state.updated_at = chrono::Utc::now();
@@ -1579,10 +1579,10 @@ impl PlaybackService {
         room_id: RoomId,
         user_id: UserId,
         playing: Option<bool>,
-        current_time: Option<f64>,
+        position: Option<f64>,
         speed: Option<f64>,
     ) -> Result<RoomPlaybackState> {
-        self.update_multiple_with_version(room_id, user_id, playing, current_time, speed, None)
+        self.update_multiple_with_version(room_id, user_id, playing, position, speed, None)
             .await
     }
 
@@ -1603,7 +1603,7 @@ impl PlaybackService {
         room_id: RoomId,
         user_id: UserId,
         playing: Option<bool>,
-        current_time: Option<f64>,
+        position: Option<f64>,
         speed: Option<f64>,
         expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
@@ -1611,7 +1611,7 @@ impl PlaybackService {
             room_id,
             user_id,
             playing,
-            current_time,
+            position,
             speed,
             expected_version,
             false,
@@ -1627,7 +1627,7 @@ impl PlaybackService {
         room_id: RoomId,
         actor_user_id: UserId,
         playing: Option<bool>,
-        current_time: Option<f64>,
+        position: Option<f64>,
         speed: Option<f64>,
         expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
@@ -1635,7 +1635,7 @@ impl PlaybackService {
             room_id,
             actor_user_id,
             playing,
-            current_time,
+            position,
             speed,
             expected_version,
             true,
@@ -1649,7 +1649,7 @@ impl PlaybackService {
         room_id: RoomId,
         user_id: UserId,
         playing: Option<bool>,
-        current_time: Option<f64>,
+        position: Option<f64>,
         speed: Option<f64>,
         expected_version: Option<i64>,
         bypass_permission: bool,
@@ -1659,7 +1659,7 @@ impl PlaybackService {
         if playing.is_some() {
             required_perms |= PermissionBits::PLAY_CONTROL;
         }
-        if current_time.is_some() {
+        if position.is_some() {
             required_perms |= PermissionBits::PLAY_CONTROL;
         }
         if speed.is_some() {
@@ -1671,7 +1671,7 @@ impl PlaybackService {
                 .await?;
         }
 
-        if let Some(ct) = current_time {
+        if let Some(ct) = position {
             validate_seek_position(ct)?;
         }
 
@@ -1685,16 +1685,16 @@ impl PlaybackService {
             // Without this, pausing or changing speed via update_multiple would
             // store the wrong position.
             let needs_snapshot = matches!(playing, Some(false)) || speed.is_some();
-            if needs_snapshot && current_time.is_none() {
+            if needs_snapshot && position.is_none() {
                 // Only snapshot if the caller didn't provide an explicit position
-                state.current_time = state.computed_current_time();
+                state.position = state.computed_position();
             }
 
             if let Some(p) = playing {
                 state.is_playing = p;
             }
-            if let Some(ct) = current_time {
-                state.current_time = ct;
+            if let Some(ct) = position {
+                state.position = ct;
             }
             if let Some(s) = speed {
                 state.speed = s;
@@ -1924,7 +1924,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
-            current_time: 42.0,
+            position: 42.0,
             speed: 1.0,
             is_playing: true,
             updated_at: chrono::Utc::now(),
@@ -1965,7 +1965,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
-            current_time: 64.0,
+            position: 64.0,
             speed: 1.0,
             is_playing: true,
             updated_at: chrono::Utc::now(),
@@ -2022,7 +2022,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
-            current_time: 88.0,
+            position: 88.0,
             speed: 1.0,
             is_playing: true,
             updated_at: chrono::Utc::now(),
@@ -2190,13 +2190,13 @@ mod tests {
         use super::*;
 
         /// Helper to create a playback state with a specific version
-        fn make_state(room_id: i64, version: i64, current_time: f64) -> RoomPlaybackState {
+        fn make_state(room_id: i64, version: i64, position: f64) -> RoomPlaybackState {
             RoomPlaybackState {
                 room_id: RoomId::expect_positive(room_id),
                 playing_media_id: None,
                 playing_playlist_id: None,
                 target: Vec::new(),
-                current_time,
+                position,
                 speed: 1.0,
                 is_playing: false,
                 updated_at: chrono::Utc::now(),
@@ -2204,7 +2204,7 @@ mod tests {
             }
         }
 
-        fn version_to_current_time(version: i64) -> f64 {
+        fn version_to_position(version: i64) -> f64 {
             f64::from(i32::try_from(version).unwrap_or(i32::MAX)) * 10.0
         }
 
@@ -2239,7 +2239,7 @@ mod tests {
 
             let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 5);
-            assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
+            assert!((cached.position - 100.0).abs() < f64::EPSILON);
         }
 
         /// Test: When incoming version is higher, cache should be updated
@@ -2282,7 +2282,7 @@ mod tests {
             // Cache should now have version 7
             let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 7);
-            assert!((cached.current_time - 150.0).abs() < f64::EPSILON);
+            assert!((cached.position - 150.0).abs() < f64::EPSILON);
         }
 
         /// Test: When incoming version is lower, cache should NOT be updated
@@ -2321,7 +2321,7 @@ mod tests {
             // Cache should still have version 10 (not downgraded to 5)
             let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 10);
-            assert!((cached.current_time - 200.0).abs() < f64::EPSILON);
+            assert!((cached.position - 200.0).abs() < f64::EPSILON);
         }
 
         /// Test: When versions are equal, cache should NOT be updated (idempotent)
@@ -2360,7 +2360,7 @@ mod tests {
             // Cache should still have original content (not overwritten)
             let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 5);
-            assert!((cached.current_time - 200.0).abs() < f64::EPSILON);
+            assert!((cached.position - 200.0).abs() < f64::EPSILON);
         }
 
         /// Test: Sequential updates should only keep the highest version
@@ -2375,7 +2375,7 @@ mod tests {
             // Apply updates in non-monotonic order: v1, v5, v3, v7, v2
             let versions = [1i64, 5, 3, 7, 2];
             for v in versions {
-                let state = make_state(room_id, v, version_to_current_time(v));
+                let state = make_state(room_id, v, version_to_position(v));
                 cache
                     .entry(cache_key.clone())
                     .and_upsert_with(|maybe_entry| {
@@ -2398,7 +2398,7 @@ mod tests {
             // Cache should have version 7 (the highest)
             let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 7);
-            assert!((cached.current_time - 70.0).abs() < f64::EPSILON);
+            assert!((cached.position - 70.0).abs() < f64::EPSILON);
         }
 
         /// Test: Concurrent updates should be serialized and result in highest version
@@ -2417,7 +2417,7 @@ mod tests {
                     let cache_key = cache_key.clone();
                     let cache = cache_clone.clone();
                     tokio::spawn(async move {
-                        let state = make_state(room_id, v, version_to_current_time(v));
+                        let state = make_state(room_id, v, version_to_position(v));
                         cache
                             .entry(cache_key.to_string())
                             .and_upsert_with(|maybe_entry| {
@@ -2447,7 +2447,7 @@ mod tests {
             // Cache should have version 10 (the highest)
             let cached = cache.get(&*cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 10);
-            assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
+            assert!((cached.position - 100.0).abs() < f64::EPSILON);
         }
     }
 

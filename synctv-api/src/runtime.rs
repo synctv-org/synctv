@@ -141,6 +141,10 @@ pub trait RealtimeEventService: Send + Sync {
 
     fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent>;
 
+    fn subscribe_lifecycle_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        self.subscribe_admin_events()
+    }
+
     fn metrics(&self) -> RealtimeMetrics;
 
     fn broadcast_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
@@ -200,6 +204,10 @@ impl RealtimeEventService for RealtimeManager {
 
     fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
         RealtimeManager::subscribe_admin_events(self)
+    }
+
+    fn subscribe_lifecycle_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        RealtimeManager::subscribe_lifecycle_events(self)
     }
 
     fn metrics(&self) -> RealtimeMetrics {

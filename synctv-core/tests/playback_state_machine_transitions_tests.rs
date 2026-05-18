@@ -35,7 +35,7 @@ async fn test_initial_state_is_stopped() {
     let state = playback_service.get_state(&room.id).await.unwrap();
 
     assert!(!state.is_playing);
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!((state.speed - 1.0).abs() < f64::EPSILON);
     assert!(state.playing_media_id.is_none());
 }

@@ -43,6 +43,8 @@ use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutServ
 use crate::impls::client::media::{
     build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
 };
+use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
+use crate::impls::client::proto_role_to_assignable_room_role;
 use crate::impls::client::{proto_role_filter_to_room_role, proto_role_to_room_role};
 use crate::impls::playback_snapshot::{
     compose_playback_snapshot_version, dynamic_playback_snapshot_version,
@@ -1853,7 +1855,7 @@ impl AdminApiImpl {
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
         } else {
-            proto_role_to_room_role(role)?
+            proto_role_to_assignable_room_role(role)?
         };
         let prepared_membership_fanout = self
             .membership_event_fanout
@@ -3589,8 +3591,17 @@ impl AdminApiImpl {
         )
         .await;
 
+        let settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+
         Ok(crate::proto::admin::BanRoomResponse {
-            room: Some(self.load_admin_room_proto(&updated, None).await?),
+            room: Some(
+                self.load_admin_room_proto(&updated, Some(&settings))
+                    .await?,
+            ),
         })
     }
 
@@ -3632,8 +3643,17 @@ impl AdminApiImpl {
         )
         .await;
 
+        let settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+
         Ok(crate::proto::admin::UnbanRoomResponse {
-            room: Some(self.load_admin_room_proto(&updated, None).await?),
+            room: Some(
+                self.load_admin_room_proto(&updated, Some(&settings))
+                    .await?,
+            ),
         })
     }
 
@@ -4057,6 +4077,24 @@ impl AdminApiImpl {
                 }
             }
 
+            let user_id = if active_publisher.publisher.user_id.is_empty() {
+                String::new()
+            } else {
+                self.public_id_codec
+                    .encode_user_id(
+                        active_publisher
+                            .publisher
+                            .user_id
+                            .parse::<UserId>()
+                            .map_err(|error| {
+                                ApiError::Internal(format!(
+                                    "Invalid active publisher user id: {error}"
+                                ))
+                            })?,
+                    )
+                    .map_err(ApiError::Internal)?
+            };
+
             let stream = crate::proto::admin::ActiveStreamInfo {
                 room_id: self
                     .public_id_codec
@@ -4076,20 +4114,7 @@ impl AdminApiImpl {
                         },
                     )?)
                     .map_err(ApiError::Internal)?,
-                user_id: self
-                    .public_id_codec
-                    .encode_user_id(
-                        active_publisher
-                            .publisher
-                            .user_id
-                            .parse::<UserId>()
-                            .map_err(|error| {
-                                ApiError::Internal(format!(
-                                    "Invalid active publisher user id: {error}"
-                                ))
-                            })?,
-                    )
-                    .map_err(ApiError::Internal)?,
+                user_id,
                 node_id: active_publisher.publisher.node_id,
                 started_at: active_publisher.publisher.started_at.timestamp(),
             };
@@ -4167,10 +4192,10 @@ impl AdminApiImpl {
             return Err(ApiError::NotFound("Active stream not found".to_string()));
         }
 
-        infrastructure
-            .kick_stream(&room_id_key, &media_id_key)
+        self.realtime_lifecycle
+            .kick_stream(&room_id, &media_id, &reason)
             .await
-            .map_err(|error| ApiError::Internal(format!("Failed to kick stream: {error}")))?;
+            .map_err(|error| crate::impls::map_livestream_stream_error(&error))?;
 
         // Audit log: kick_stream is a critical operation
         {
@@ -4403,8 +4428,9 @@ impl AdminApiImpl {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let command = crate::impls::client::build_update_playback(req)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
-        match command {
+        let state = match command {
             crate::impls::client::PlaybackUpdateCommand::Patch {
                 playing,
                 position,
@@ -4417,6 +4443,8 @@ impl AdminApiImpl {
             }
         }
         .map_err(ApiError::from)?;
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         self.room_service.touch_room_activity(rid).await;
 
@@ -4428,7 +4456,10 @@ impl AdminApiImpl {
             "Admin updated playback"
         );
 
-        self.get_playback(room_id, admin_user_id, None).await
+        Ok(crate::proto::client::GetPlaybackResponse {
+            playback_state: Some(playback_state_to_proto(&state, &self.public_id_codec)),
+            playback_snapshot: None,
+        })
     }
 
     pub async fn get_playlist(
@@ -4719,9 +4750,18 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(&rid);
 
         for media_id in &result.deleted_media_ids {
-            self.realtime_lifecycle
+            if let Err(error) = self
+                .realtime_lifecycle
                 .kick_local_stream(&rid, media_id)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    room_id = %rid,
+                    media_id = %media_id,
+                    error = %error,
+                    "Failed to kick local stream after playlist deletion"
+                );
+            }
         }
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
@@ -5187,9 +5227,18 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(&rid);
 
         for media_id in &result.deleted_media_ids {
-            self.realtime_lifecycle
+            if let Err(error) = self
+                .realtime_lifecycle
                 .kick_local_stream(&rid, media_id)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    room_id = %rid,
+                    media_id = %media_id,
+                    error = %error,
+                    "Failed to kick local stream after media deletion"
+                );
+            }
         }
 
         Ok(crate::proto::client::DeleteMediaResponse { success: true })
@@ -5900,15 +5949,94 @@ mod tests {
             RemoteProviderManager, SettingsRegistry, SettingsService, UserService,
         },
     };
+    use synctv_core::{
+        provider::{MediaProvider, ProviderStoreExt},
+        service::ProvidersManager,
+    };
     use synctv_core_testing::create_test_pool;
     use synctv_livestream::{
         api::{LiveStreamingInfrastructure, StreamTracker},
+        error::StreamError,
         livestream::{external_publish_manager::ExternalPublishManager, PullStreamManager},
     };
     use synctv_realtime::sync::{
         ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent,
     };
     use tokio::sync::mpsc;
+
+    #[derive(Debug, Default)]
+    struct AdminLifecycleTestProvider {
+        progress_calls: Arc<Mutex<Vec<(String, f64, bool)>>>,
+    }
+
+    #[async_trait]
+    impl MediaProvider for AdminLifecycleTestProvider {
+        fn name(&self) -> &'static str {
+            "direct_url"
+        }
+
+        async fn generate_playback(
+            &self,
+            _ctx: &synctv_core::provider::ProviderContext<'_>,
+            _source_config: &serde_json::Value,
+        ) -> Result<synctv_core::provider::PlaybackResult, synctv_core::provider::ProviderError>
+        {
+            Ok(admin_lifecycle_playback_result("admin-session"))
+        }
+
+        async fn on_playback_progress(
+            &self,
+            _ctx: &synctv_core::provider::ProviderContext<'_>,
+            session_id: &str,
+            _source_config: &serde_json::Value,
+            position: f64,
+            is_paused: bool,
+        ) -> Result<(), synctv_core::provider::ProviderError> {
+            self.progress_calls
+                .lock()
+                .expect("progress calls lock")
+                .push((session_id.to_string(), position, is_paused));
+            Ok(())
+        }
+
+        fn playback_lifecycle_session_id(
+            &self,
+            result: &synctv_core::provider::PlaybackResult,
+        ) -> Option<String> {
+            result
+                .metadata
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        }
+    }
+
+    fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::PlaybackResult {
+        let mut playback_infos = std::collections::HashMap::new();
+        playback_infos.insert(
+            "direct".to_string(),
+            synctv_core::provider::PlaybackInfo {
+                urls: vec!["https://example.com/video.mp4".to_string()],
+                format: "mp4".to_string(),
+                headers: std::collections::HashMap::new(),
+                subtitles: Vec::new(),
+                expires_at: None,
+                cors_proxy_required: false,
+            },
+        );
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "session_id".to_string(),
+            serde_json::Value::String(session_id.to_string()),
+        );
+
+        synctv_core::provider::PlaybackResult {
+            playback_infos,
+            default_mode: "direct".to_string(),
+            metadata,
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum MembershipEventFanoutCall {
@@ -6334,13 +6462,16 @@ mod tests {
             )
             .expect("external publish manager should build"),
         );
-        let live_streaming_infrastructure = Arc::new(LiveStreamingInfrastructure::new(
-            registry,
-            event_sender,
-            pull_manager,
-            external_publish_manager,
-            tracker,
-        ));
+        let live_streaming_infrastructure = Arc::new(
+            LiveStreamingInfrastructure::new(
+                registry,
+                event_sender,
+                pull_manager,
+                external_publish_manager,
+                tracker,
+            )
+            .with_local_node_id("node-local".to_string()),
+        );
 
         (
             AdminApiImpl::new(
@@ -6963,6 +7094,29 @@ mod tests {
             proto.creator_status,
             synctv_proto::common::UserStatus::Banned as i32
         );
+    }
+
+    #[test]
+    fn test_admin_room_to_proto_uses_supplied_settings() {
+        let room = make_test_room(RoomStatus::Active);
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let settings = synctv_core::models::RoomSettings {
+            allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(false),
+            ..Default::default()
+        };
+
+        let proto = admin_room_to_proto(
+            &room,
+            Some(&settings),
+            None,
+            None,
+            UserStatus::Active,
+            &public_id_codec,
+        );
+        let rendered: serde_json::Value =
+            serde_json::from_slice(&proto.settings).expect("settings should be valid json");
+
+        assert_eq!(rendered["allow_auto_join"], false);
     }
 
     #[test]
@@ -9828,7 +9982,7 @@ mod tests {
             .try_register_publisher(
                 &registry_room_id,
                 &registry_media_id,
-                "node-a",
+                "node-local",
                 &registry_owner_id,
                 "127.0.0.1:50051",
             )
@@ -9845,6 +9999,354 @@ mod tests {
         assert!(response.active);
         let publisher = response.publisher.expect("publisher info");
         assert_eq!(publisher.user_id, public_user_id(&admin_api, owner.id));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_kick_stream_reports_local_unpublish_enqueue_failure() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, infra, mut redis_publish_rx) =
+            make_admin_api_with_livestream_for_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_stream_kick_failure".to_string(),
+            email: Some("global_admin_stream_kick_failure@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_stream_kick_failure".to_string(),
+            email: Some("room_owner_stream_kick_failure@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let global_admin = user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room stream kick failure test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+        let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
+        let registry_room_id = room.id.to_string();
+        let registry_media_id = media.id.to_string();
+        let registry_owner_id = owner.id.to_string();
+
+        infra
+            .registry()
+            .try_register_publisher(
+                &registry_room_id,
+                &registry_media_id,
+                "node-local",
+                &registry_owner_id,
+                "127.0.0.1:50051",
+            )
+            .await
+            .expect("publisher should register");
+
+        let err = admin_api
+            .kick_stream(
+                crate::proto::admin::KickStreamRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    media_id: public_media_id(&admin_api, media.id),
+                    reason: "test failure".to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect_err("closed StreamHub event receiver must surface kick failure");
+
+        assert!(
+            matches!(err, ApiError::Internal(_) | ApiError::ServiceUnavailable(_)),
+            "unexpected kick_stream error: {err:?}"
+        );
+        assert!(
+            infra
+                .registry()
+                .get_publisher(&registry_room_id, &registry_media_id)
+                .await
+                .expect("publisher lookup should succeed")
+                .is_some(),
+            "failed kick must not unregister the publisher"
+        );
+        assert!(
+            redis_publish_rx.try_recv().is_err(),
+            "failed local kick must not publish replica-wide success event"
+        );
+        let stream_error = StreamError::StreamHubError("send failed".to_string());
+        assert!(matches!(
+            crate::impls::map_livestream_stream_error(&stream_error),
+            ApiError::ServiceUnavailable(_)
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, infra, mut redis_publish_rx) =
+            make_admin_api_with_livestream_for_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_remote_stream_kick".to_string(),
+            email: Some("global_admin_remote_stream_kick@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_remote_stream_kick".to_string(),
+            email: Some("room_owner_remote_stream_kick@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let global_admin = user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "remote stream kick test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+        let media = create_room_media(&pool, room.id, owner.id, "remote-stream-media").await;
+        let registry_room_id = room.id.to_string();
+        let registry_media_id = media.id.to_string();
+        let registry_owner_id = owner.id.to_string();
+
+        infra
+            .registry()
+            .try_register_publisher(
+                &registry_room_id,
+                &registry_media_id,
+                "node-remote",
+                &registry_owner_id,
+                "127.0.0.1:50052",
+            )
+            .await
+            .expect("remote publisher should register");
+
+        admin_api
+            .kick_stream(
+                crate::proto::admin::KickStreamRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    media_id: public_media_id(&admin_api, media.id),
+                    reason: "remote owner".to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("remote stream kick should publish cluster event");
+
+        let request = redis_publish_rx
+            .recv()
+            .await
+            .expect("remote kick should publish a replica-wide event");
+        assert!(matches!(
+            request.event,
+            RealtimeEvent::KickPublisher { room_id, media_id, ref reason, .. }
+                if room_id == room.id && media_id == media.id && reason == "remote owner"
+        ));
+        assert!(
+            infra
+                .registry()
+                .get_publisher(&registry_room_id, &registry_media_id)
+                .await
+                .expect("publisher lookup should succeed")
+                .is_some(),
+            "non-owner replica must not unregister remote publisher"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_kick_stream_reports_remote_fanout_failure() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, infra, redis_publish_rx) =
+            make_admin_api_with_livestream_for_test(pool.clone()).await;
+        drop(redis_publish_rx);
+        let user_repo = UserRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_remote_stream_fanout_failure".to_string(),
+            email: Some("global_admin_remote_stream_fanout_failure@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_remote_stream_fanout_failure".to_string(),
+            email: Some("room_owner_remote_stream_fanout_failure@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let global_admin = user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "remote stream fanout failure test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+        let media = create_room_media(&pool, room.id, owner.id, "remote-stream-media").await;
+        let registry_room_id = room.id.to_string();
+        let registry_media_id = media.id.to_string();
+        let registry_owner_id = owner.id.to_string();
+
+        infra
+            .registry()
+            .try_register_publisher(
+                &registry_room_id,
+                &registry_media_id,
+                "node-remote",
+                &registry_owner_id,
+                "127.0.0.1:50052",
+            )
+            .await
+            .expect("remote publisher should register");
+
+        let err = admin_api
+            .kick_stream(
+                crate::proto::admin::KickStreamRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    media_id: public_media_id(&admin_api, media.id),
+                    reason: "remote fanout failure".to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect_err("remote stream kick must fail if fanout fails");
+
+        assert!(
+            matches!(err, ApiError::Internal(_) | ApiError::ServiceUnavailable(_)),
+            "unexpected kick_stream error: {err:?}"
+        );
+        assert!(
+            infra
+                .registry()
+                .get_publisher(&registry_room_id, &registry_media_id)
+                .await
+                .expect("publisher lookup should succeed")
+                .is_some(),
+            "failed remote kick must not unregister remote publisher"
+        );
     }
 
     #[tokio::test]
@@ -10272,7 +10774,198 @@ mod tests {
             .expect("playback state query should succeed");
         assert!(state.playing_media_id.is_none());
         assert!(!state.is_playing);
-        assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+        assert!((state.position - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_update_playback_runs_provider_lifecycle_transition() {
+        let (_postgres, pool) = create_test_pool().await;
+        let user_service = Arc::new(make_user_service(&pool));
+        let user_repo = UserRepository::new(pool.clone());
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            ProviderInstanceRepository::new(pool.clone()),
+        )));
+        let progress_calls = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn MediaProvider> = Arc::new(AdminLifecycleTestProvider {
+            progress_calls: progress_calls.clone(),
+        });
+        let provider_for_factory = provider.clone();
+        let mut providers_manager = ProvidersManager::new(provider_instance_manager.clone());
+        providers_manager.register_factory(
+            "direct_url",
+            Box::new(move |_instance_id, _config, _instance_manager| {
+                Ok(provider_for_factory.clone())
+            }),
+        );
+        providers_manager
+            .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
+            .await
+            .expect("create lifecycle test provider");
+        let room_service = Arc::new(synctv_core::service::RoomService::new_with_providers(
+            pool.clone(),
+            (*user_service).clone(),
+            Arc::new(providers_manager),
+        ));
+        let settings_service = Arc::new(SettingsService::new(
+            SettingsRepository::new(pool.clone()),
+            pool.clone(),
+        ));
+        settings_service
+            .initialize()
+            .await
+            .expect("settings initialized");
+        let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+        let email_service = Arc::new(EmailService::new(None).expect("email service"));
+        let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+        connection_manager.start();
+        let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
+        let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> =
+            Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "admin-lifecycle-test:provider:".to_string(),
+            ));
+        let admin_api = AdminApiImpl::new(
+            room_service,
+            user_service,
+            settings_service,
+            Some(settings_registry),
+            email_service,
+            connection_manager,
+            provider_instance_manager,
+            None,
+            None,
+            Arc::new(Config::default()),
+            audit_service,
+            Arc::new(crate::PublicIdCodec::default_for_tests()),
+        )
+        .with_provider_stores(provider_stores.clone());
+
+        let global_admin = user_repo
+            .create(&synctv_core::models::User {
+                id: UserId::new(),
+                username: "global_admin_playback_lifecycle".to_string(),
+                email: Some("global_admin_playback_lifecycle@example.com".to_string()),
+                password_hash: "hash".to_string(),
+                role: UserRole::Root,
+                status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                email_verified: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+                password_changed_at: chrono::Utc::now(),
+                password_version: 0,
+                version: 0,
+            })
+            .await
+            .expect("create global admin");
+        let owner = user_repo
+            .create(&synctv_core::models::User {
+                id: UserId::new(),
+                username: "room_owner_playback_lifecycle".to_string(),
+                email: Some("room_owner_playback_lifecycle@example.com".to_string()),
+                password_hash: "hash".to_string(),
+                role: UserRole::User,
+                status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                email_verified: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+                password_changed_at: chrono::Utc::now(),
+                password_version: 0,
+                version: 0,
+            })
+            .await
+            .expect("create owner");
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback lifecycle test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+        let media_repo = MediaRepository::new(pool.clone());
+        let media = media_repo
+            .create(&synctv_core::models::Media::from_provider(
+                None,
+                room.id,
+                Some(owner.id),
+                "provider lifecycle media".to_string(),
+                serde_json::json!({"item_id": "admin-lifecycle"}),
+                "direct_url",
+                None,
+                0.0,
+            ))
+            .await
+            .expect("create provider media");
+        let state = admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await
+            .expect("seed provider playback state");
+        let lifecycle_store = provider_stores.load("playback_lifecycle");
+        lifecycle_store
+            .set(
+                &format!("room:{}:sessions", room.id),
+                &serde_json::json!({
+                    "sessions": [{
+                        "provider": "direct_url",
+                        "provider_instance_name": null,
+                        "credential_owner_id": owner.id.to_string(),
+                        "source_config": {"item_id": "admin-lifecycle"},
+                        "room_target_key": format!("media:{}", media.id),
+                        "provider_session_id": "admin-session",
+                        "started": true,
+                        "started_at_millis": chrono::Utc::now().timestamp_millis(),
+                        "last_progress_position": 0.0,
+                        "last_progress_at_millis": chrono::Utc::now().timestamp_millis(),
+                        "last_paused": false
+                    }]
+                }),
+                std::time::Duration::from_mins(1),
+            )
+            .await
+            .expect("seed lifecycle session");
+
+        admin_api
+            .update_playback(
+                &public_room_id(&admin_api, room.id),
+                crate::proto::client::UpdatePlayback {
+                    r#type: crate::proto::client::PlaybackUpdateType::Pause as i32,
+                    playing: None,
+                    position: Some(12.5),
+                    speed: None,
+                    version: Some(state.version),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("admin update playback should succeed");
+
+        assert_eq!(
+            progress_calls
+                .lock()
+                .expect("progress calls lock")
+                .as_slice(),
+            [("admin-session".to_string(), 12.5, true)],
+            "admin playback updates must trigger provider progress lifecycle hooks"
+        );
     }
 
     #[tokio::test]

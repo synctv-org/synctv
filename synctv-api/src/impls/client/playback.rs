@@ -11,6 +11,7 @@ use super::convert::{
     playback_snapshot_to_proto, playback_state_to_proto, provider_playback_info_to_model,
     sign_local_bilibili_danmaku_urls,
 };
+use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::playback_snapshot::{
     compose_playback_snapshot_version, dynamic_playback_snapshot_version,
@@ -844,6 +845,16 @@ impl ClientApiImpl {
 
 #[async_trait::async_trait]
 impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl {
+    async fn room_playback_state(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+    ) -> Result<synctv_core::models::RoomPlaybackState, ApiError> {
+        self.room_service
+            .get_playback_state(room_id)
+            .await
+            .map_err(ApiError::from)
+    }
+
     async fn get_playback_snapshot(
         &self,
         user_id: &UserId,
@@ -892,7 +903,8 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
         previous: Option<&synctv_core::models::RoomPlaybackState>,
         current: &synctv_core::models::RoomPlaybackState,
     ) {
-        ClientApiImpl::handle_provider_lifecycle_transition(self, previous, current).await;
+        ProviderPlaybackLifecycleApi::handle_provider_lifecycle_transition(self, previous, current)
+            .await;
     }
 
     async fn report_provider_playback_progress(

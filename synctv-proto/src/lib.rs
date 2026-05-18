@@ -204,7 +204,7 @@ mod tests {
         let state = crate::client::PlaybackState {
             room_id: "room-abc".into(),
             playing_media_id: "media-1".into(),
-            current_time: 123.456,
+            position: 123.456,
             speed: 1.5,
             is_playing: true,
             updated_at: 1_700_000_000,
@@ -259,7 +259,7 @@ mod tests {
                     state: Some(crate::client::PlaybackState {
                         room_id: "room-abc".into(),
                         playing_media_id: "media-1".into(),
-                        current_time: 0.0,
+                        position: 0.0,
                         speed: 1.0,
                         is_playing: false,
                         updated_at: 0,
@@ -413,7 +413,7 @@ mod tests {
         let state = crate::client::PlaybackState {
             room_id: "room-abc".into(),
             playing_media_id: "media-1".into(),
-            current_time: 123.456,
+            position: 123.456,
             speed: 1.5,
             is_playing: true,
             updated_at: 1_700_000_000,

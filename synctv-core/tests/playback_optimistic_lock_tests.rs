@@ -108,12 +108,12 @@ async fn test_repo_update_with_matching_version_succeeds() {
 
     // Update with matching version
     let mut updated = state.clone();
-    updated.current_time = 50.0;
+    updated.position = 50.0;
     let result = playback_repo.update(&updated).await.unwrap();
 
     assert_eq!(result.version, 1, "Version should be incremented to 1");
     assert!(
-        (result.current_time - 50.0).abs() < f64::EPSILON,
+        (result.position - 50.0).abs() < f64::EPSILON,
         "Current time should be updated"
     );
 }
@@ -148,13 +148,13 @@ async fn test_repo_update_with_stale_version_fails() {
 
     // First update succeeds, version becomes 1
     let mut first_update = state.clone();
-    first_update.current_time = 100.0;
+    first_update.position = 100.0;
     let first_result = playback_repo.update(&first_update).await.unwrap();
     assert_eq!(first_result.version, 1);
 
     // Second update with stale version 0 should fail
     let mut stale_update = state.clone(); // Still has version 0
-    stale_update.current_time = 200.0;
+    stale_update.position = 200.0;
     let result = playback_repo.update(&stale_update).await;
 
     assert!(
@@ -166,7 +166,7 @@ async fn test_repo_update_with_stale_version_fails() {
     let current = playback_repo.get(&room.id).await.unwrap().unwrap();
     assert_eq!(current.version, 1, "Version should still be 1");
     assert!(
-        (current.current_time - 100.0).abs() < f64::EPSILON,
+        (current.position - 100.0).abs() < f64::EPSILON,
         "Current time should be from first update"
     );
 }
@@ -200,8 +200,8 @@ async fn test_repo_version_increments_sequentially() {
     assert_eq!(state.version, 0);
 
     // Multiple sequential updates
-    for (expected_version, current_time) in [10.0, 20.0, 30.0, 40.0, 50.0].into_iter().enumerate() {
-        state.current_time = current_time;
+    for (expected_version, position) in [10.0, 20.0, 30.0, 40.0, 50.0].into_iter().enumerate() {
+        state.position = position;
         state = playback_repo.update(&state).await.unwrap();
         assert_eq!(
             state.version,
@@ -281,7 +281,7 @@ async fn test_concurrent_seek_with_retry() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        state.current_time >= 0.0,
+        state.position >= 0.0,
         "Final position should be non-negative"
     );
 }
@@ -321,7 +321,7 @@ async fn test_retry_handles_version_conflicts() {
     // Simulate external update (version conflict)
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
     let mut state = playback_repo.get(&room.id).await.unwrap().unwrap();
-    state.current_time = 999.0;
+    state.position = 999.0;
     playback_repo.update(&state).await.unwrap();
 
     // Second operation should still succeed via retry
@@ -331,7 +331,7 @@ async fn test_retry_handles_version_conflicts() {
         .unwrap();
 
     assert!(
-        state2.seek_applied || state2.state.current_time >= 999.0 - 1.0,
+        state2.seek_applied || state2.state.position >= 999.0 - 1.0,
         "Either seek applied or position reflects external update"
     );
 }
@@ -392,7 +392,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
                 } else {
                     degraded_count += 1;
                     // Degraded response should have valid state
-                    assert!(response.state.current_time >= 0.0);
+                    assert!(response.state.position >= 0.0);
                     assert!(response.message.is_some());
                 }
             }
@@ -544,7 +544,7 @@ async fn test_concurrent_mixed_operations() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(state.speed > 0.0, "Speed should be positive");
-    assert!(state.current_time >= 0.0, "Position should be non-negative");
+    assert!(state.position >= 0.0, "Position should be non-negative");
     assert_eq!(
         state.version, successful_writes,
         "Each successful playback write should advance the version exactly once"
@@ -600,7 +600,7 @@ async fn test_high_contention_operations_remain_consistent() {
                     .playback_service()
                     .seek(rid, uid, f64::from(i) * 5.0)
                     .await
-                    .map(|r| format!("seek:{}", r.state.current_time)),
+                    .map(|r| format!("seek:{}", r.state.position)),
                 1 => rs
                     .playback_service()
                     .set_playing(rid, uid, i % 2 == 0)
@@ -682,13 +682,13 @@ async fn test_version_handles_large_values() {
     assert_eq!(state.version, 999_998);
 
     // Update should work and version should increment
-    state.current_time = 100.0;
+    state.position = 100.0;
     let result = playback_repo.update(&state).await.unwrap();
     assert_eq!(result.version, 999_999, "Version should be 999999");
 
     // One more update
     let mut state = result;
-    state.current_time = 200.0;
+    state.position = 200.0;
     let result = playback_repo.update(&state).await.unwrap();
     assert_eq!(result.version, 1_000_000, "Version should be 1000000");
 }

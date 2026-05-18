@@ -3,13 +3,13 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     playing_media_id BIGINT NULL,
     playing_playlist_id BIGINT NULL,
     target BYTEA NOT NULL DEFAULT ''::bytea,
-    "current_time" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    "position" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     speed DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     is_playing BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     version BIGINT NOT NULL DEFAULT 0,
-    CONSTRAINT room_playback_state_current_time_non_negative
-        CHECK ("current_time" >= 0),
+    CONSTRAINT room_playback_state_position_non_negative
+        CHECK ("position" >= 0),
     CONSTRAINT playback_media_same_room_fk
         FOREIGN KEY (playing_media_id, room_id)
         REFERENCES media(id, room_id)

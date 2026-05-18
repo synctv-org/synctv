@@ -296,6 +296,11 @@ impl LivestreamHandle {
                 error = %e,
                 "Failed to cleanup local publisher registrations during shutdown"
             );
+        } else {
+            info!(
+                node_id = %self.infrastructure.local_node_id,
+                "Cleaned up local publisher registrations during shutdown"
+            );
         }
 
         self.infrastructure.user_stream_tracker.clear();
@@ -380,6 +385,11 @@ impl LivestreamHandle {
         // Shutdown in reverse startup order
         info!("Starting shutdown of livestream components...");
 
+        // Remove this node from the shared publisher registry first. Later
+        // shutdown phases can be force-aborted when the process budget is low,
+        // but other cluster nodes must stop routing viewers to this node.
+        self.cleanup_local_publishers_on_shutdown().await;
+
         // 1. Stop all managed stream pools to prevent zombie streams.
         // This must happen before aborting cleanup tasks so in-flight stop operations
         // can complete properly.
@@ -461,11 +471,6 @@ impl LivestreamHandle {
         let _ = (&mut self.hub_handle).await;
         self.hub_cycle_tasks.lock().await.shutdown().await;
         info!("StreamHub stopped");
-
-        // 9. Final local publisher cleanup. Shutdown may interrupt the normal
-        // on_unpublish -> PublisherManager cleanup chain, so clear local tracker
-        // and remove this node's publisher registrations explicitly.
-        self.cleanup_local_publishers_on_shutdown().await;
 
         if all_graceful {
             info!("Shutdown completed successfully");

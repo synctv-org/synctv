@@ -103,7 +103,7 @@ async fn test_timeout_clears_rtc_state() {
 // Test 2: Multiple concurrent timeouts
 
 #[tokio::test]
-async fn test_multiple_concurrent_timeouts() {
+async fn test_multiple_parallel_timeouts() {
     use synctv_realtime::sync::ConnectionLimits;
 
     let timeout = SHORT_WEBRTC_TIMEOUT;

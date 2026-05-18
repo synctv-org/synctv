@@ -7,8 +7,8 @@ use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, UserId}
 use synctv_core::service::{RoomJoinReviewListQuery, RoomJoinReviewRecord};
 
 use super::convert::{
-    members_to_proto, proto_role_filter_to_room_role, proto_role_to_room_role,
-    room_member_to_proto_with_permissions,
+    members_to_proto, proto_role_filter_to_room_role, proto_role_to_assignable_room_role,
+    proto_role_to_room_role, room_member_to_proto_with_permissions,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
@@ -315,7 +315,7 @@ impl ClientApiImpl {
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
         } else {
-            proto_role_to_room_role(role)?
+            proto_role_to_assignable_room_role(role)?
         };
 
         let prepared_membership_fanout = self

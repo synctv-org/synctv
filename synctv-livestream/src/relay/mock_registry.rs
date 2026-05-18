@@ -417,6 +417,22 @@ impl StreamRegistryTrait for MockStreamRegistry {
             .collect())
     }
 
+    async fn get_user_publishers_for_room(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        validate_stream_id_component(room_id, "room_id")?;
+        let publishers = self.publishers.lock().await;
+        Ok(publishers
+            .iter()
+            .filter(|((publisher_room_id, _), info)| {
+                publisher_room_id == room_id && info.user_id == user_id
+            })
+            .map(|((room_id, media_id), _)| (room_id.clone(), media_id.clone()))
+            .collect())
+    }
+
     async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
         publishers.retain(|_, info| info.user_id != user_id);

@@ -259,7 +259,7 @@ impl moka::Expiry<String, OAuthStateEntry> for PerEntryTtl {
         &self,
         _key: &String,
         value: &OAuthStateEntry,
-        _current_time: std::time::Instant,
+        _now: std::time::Instant,
     ) -> Option<std::time::Duration> {
         Some(value.ttl)
     }

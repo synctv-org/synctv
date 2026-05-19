@@ -40,7 +40,7 @@ SyncTV 有两层角色，不能混为一谈。
 | --- | --- |
 | `creator` | 房间创建者，拥有全部房间权限，不能通过房间设置削弱 |
 | `admin` | 房间管理员，默认拥有成员管理、播放控制、媒体管理、房间设置等权限 |
-| `member` | 普通成员，默认可以聊天、使用 WebRTC、添加/编辑/删除自己的媒体、查看播放列表和成员信息 |
+| `member` | 普通成员，默认可以聊天、使用 WebRTC、创建/编辑自己的媒体资源、按所有权删除自己的媒体资源、查看媒体资源和成员信息 |
 | `guest` | 游客，不是房间成员，默认没有播放列表、媒体、聊天或管理权限；房间只能额外开放成员列表、聊天历史或 WebRTC 等 guest 安全能力 |
 
 房间角色提供基础权限，房间设置和成员权限覆盖会在基础权限上继续做加减。
@@ -55,7 +55,7 @@ SyncTV 有两层角色，不能混为一谈。
 | 成员列表 | 否 | `view_member_list` | 只读 |
 | 聊天历史 | 否 | `view_chat_history` | 只读 |
 | WebRTC 信令 | 否 | `use_webrtc` | 只允许信令参与，不授予房间管理能力 |
-| 播放列表和媒体 | 否 | 否 | 游客不能读取播放列表、浏览媒体或管理媒体 |
+| 媒体资源 | 否 | 否 | 游客不能读取、浏览或管理媒体资源 |
 | 聊天和弹幕发送 | 否 | 否 | `send_chat` 只适用于登录成员 |
 | 播放控制、成员管理、房间设置 | 否 | 否 | 必须是登录成员并具有对应权限 |
 
@@ -75,7 +75,7 @@ SyncTV 有两层角色，不能混为一谈。
 - `creator` 始终拥有全部房间权限。
 - add 先增加权限，remove 再移除权限；同一个权限同时 add 和 remove 时，remove 生效。
 - `member_added_permissions` 不能超过 admin 级别上限。
-- `guest_added_permissions` 使用独立 guest 上限，不能授予播放列表、媒体、聊天写入或管理权限。
+- `guest_added_permissions` 使用独立 guest 上限，不能授予媒体资源、聊天写入或管理权限。
 - `DELETE_ROOM` 不属于房间内可委派权限，房间删除应由创建者或平台管理面处理。
 
 ## 主要权限名称
@@ -85,11 +85,10 @@ SyncTV 有两层角色，不能混为一谈。
 | 权限名称 | 含义 |
 | --- | --- |
 | `send_chat` | 发送聊天和弹幕消息 |
-| `add_media` | 添加媒体 |
-| `delete_media_self` / `delete_media_any` | 删除自己添加的媒体 / 删除任意媒体 |
-| `edit_media_self` | 编辑自己添加的媒体 |
-| `reorder_playlist` | 调整播放列表顺序 |
-| `clear_playlist` | 清空播放列表 |
+| `create_media_resource` | 创建媒体资源，并修改自己创建的媒体资源 |
+| `delete_media_resource_any` | 删除其他用户创建或没有记录创建者的媒体资源 |
+| `reorder_media_resources` | 调整媒体资源顺序 |
+| `clear_media_resources` | 清空媒体资源队列 |
 | `start_live` | 开始直播推流 |
 | `play_control` | 播放、暂停、seek |
 | `change_current_media` | 切换当前播放媒体 |
@@ -102,12 +101,14 @@ SyncTV 有两层角色，不能混为一谈。
 | `set_room_settings` | 修改房间设置 |
 | `delete_chat` | 删除聊天消息 |
 | `delete_room` | 删除房间，不可作为普通房间内委派权限 |
-| `view_playlist` | 查看播放列表 |
+| `view_media_resources` | 查看媒体资源 |
 | `view_member_list` | 查看成员列表 |
 | `view_chat_history` | 查看聊天历史 |
 | `use_webrtc` | 使用 WebRTC 语音/视频能力 |
 
 ## 房间设置
+
+删除自己创建的媒体资源是所有权业务规则，不对应单独的权限位。成员即使没有 `create_media_resource`，仍然可以删除自己创建的媒体资源；但创建媒体资源、修改自己创建的媒体资源都需要 `create_media_resource`。
 
 房间设置控制加入策略、显示能力和默认权限。
 

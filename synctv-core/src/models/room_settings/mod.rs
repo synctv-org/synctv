@@ -213,6 +213,10 @@ macro_rules! room_setting {
                 &mut self.0
             }
 
+            fn validate(&self) -> $crate::Result<()> {
+                $name::validate_value(&self.0)
+            }
+
             fn parse_from_str(value: &str) -> $crate::Result<$ty> {
                 value.parse::<$ty>().map_err(|_| {
                     $crate::Error::InvalidInput(format!("Invalid value for {}: {}", $key, value))
@@ -423,6 +427,25 @@ pub struct RoomSettings {
 }
 
 impl RoomSettings {
+    /// Validate all room setting fields and cross-field permission ceilings.
+    pub fn validate(&self) -> Result<()> {
+        self.require_password.validate()?;
+        self.allow_guest_join.validate()?;
+        self.max_members.validate()?;
+        self.require_approval.validate()?;
+        self.allow_auto_join.validate()?;
+        self.chat_enabled.validate()?;
+        self.danmaku_enabled.validate()?;
+        self.auto_play.validate()?;
+        self.admin_added_permissions.validate()?;
+        self.admin_removed_permissions.validate()?;
+        self.member_added_permissions.validate()?;
+        self.member_removed_permissions.validate()?;
+        self.guest_added_permissions.validate()?;
+        self.guest_removed_permissions.validate()?;
+        self.validate_permissions()
+    }
+
     /// Get effective permissions for Admin role
     ///
     /// Formula: (`global_default` | added) & ~removed
@@ -472,7 +495,7 @@ impl RoomSettings {
             self.admin_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
         if admin_unassignable != 0 {
             return Err(Error::InvalidInput(
-                "Room admin permission defaults cannot grant lifecycle-only permissions"
+                "Room admin permission defaults cannot grant undefined or lifecycle-only permissions"
                     .to_string(),
             ));
         }
@@ -481,7 +504,7 @@ impl RoomSettings {
             self.member_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
         if member_unassignable != 0 {
             return Err(Error::InvalidInput(
-                "Room member permission defaults cannot grant lifecycle-only permissions"
+                "Room member permission defaults cannot grant undefined or lifecycle-only permissions"
                     .to_string(),
             ));
         }
@@ -490,7 +513,7 @@ impl RoomSettings {
             self.guest_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
         if guest_unassignable != 0 {
             return Err(Error::InvalidInput(
-                "Room guest permission defaults cannot grant lifecycle-only permissions"
+                "Room guest permission defaults cannot grant undefined or lifecycle-only permissions"
                     .to_string(),
             ));
         }
@@ -641,7 +664,7 @@ mod tests {
         // SEND_CHAT should be removed
         assert!(!result.has(PermissionBits::SEND_CHAT));
         // Other permissions remain
-        assert!(result.has(PermissionBits::ADD_MEDIA));
+        assert!(result.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -659,7 +682,7 @@ mod tests {
         let result = settings.guest_permissions(global);
         assert!(result.has(PermissionBits::USE_WEBRTC));
         assert!(!result.has(PermissionBits::VIEW_MEMBER_LIST));
-        assert!(!result.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!result.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
@@ -690,5 +713,17 @@ mod tests {
         assert!(result.is_err());
         // Value should not have been applied (default is 100)
         assert_eq!(settings.max_members.0, 100);
+    }
+
+    #[test]
+    fn test_room_settings_validate_rejects_over_limit_max_members() {
+        let settings = RoomSettings {
+            max_members: MaxMembers(MaxMembers::MAX + 1),
+            ..RoomSettings::default()
+        };
+
+        let result = settings.validate();
+
+        assert!(result.is_err());
     }
 }

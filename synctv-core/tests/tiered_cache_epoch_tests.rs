@@ -32,8 +32,8 @@ impl CacheKey for TestId {
         self.0.clone()
     }
 
-    fn from_id(id: &str) -> Self {
-        Self(id.to_string())
+    fn try_from_id(id: &str) -> Result<Self> {
+        Ok(Self(id.to_string()))
     }
 }
 

@@ -3228,7 +3228,7 @@ async fn test_remove_media_respects_admin_override_columns() {
     )
     .bind(room.id)
     .bind(admin.id)
-    .bind(u64_to_i64(PermissionBits::DELETE_MEDIA_ANY))
+    .bind(u64_to_i64(PermissionBits::DELETE_MEDIA_RESOURCE_ANY))
     .execute(&pool)
     .await
     .unwrap();
@@ -3253,7 +3253,7 @@ async fn test_remove_media_respects_admin_override_columns() {
     let result = room_service.remove_media(room.id, admin.id, media.id).await;
     assert!(
         matches!(result, Err(Error::Authorization(_))),
-        "admin DELETE_MEDIA_ANY revoke must be enforced by transactional SQL, got: {result:?}"
+        "admin DELETE_MEDIA_RESOURCE_ANY revoke must be enforced by transactional SQL, got: {result:?}"
     );
 }
 
@@ -3378,6 +3378,74 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_delete_entries_requires_active_membership_even_for_owned_resources() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("delete_owned_left_owner"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("delete_owned_left_member"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Delete Owned Left Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .add_member(room.id, member.id, RoomRole::Member)
+        .await
+        .unwrap();
+
+    let now = Utc::now();
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: room.id,
+            name: "owned-before-leave".to_string(),
+            position: 0.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(member.id),
+            added_at: now,
+            updated_at: now,
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    room_service.leave_room(room.id, member.id).await.unwrap();
+
+    let result = room_service
+        .remove_media(room.id, member.id, media.id)
+        .await;
+    assert!(
+        matches!(result, Err(Error::Authorization(_))),
+        "former members must not delete owned media resources after leaving, got: {result:?}"
+    );
+    assert!(
+        media_repo.get_by_id(&media.id).await.unwrap().is_some(),
+        "owned media resource must remain after rejected delete"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_playlist_only_returns_room_root_media() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3455,18 +3523,18 @@ async fn test_get_playlist_only_returns_room_root_media() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permission() {
+async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("delete_entries_grant_owner"))
+        .create(&make_user("delete_entries_any_owner"))
         .await
         .unwrap();
     let member = user_repo
-        .create(&make_user("delete_entries_grant_member"))
+        .create(&make_user("delete_entries_any_member"))
         .await
         .unwrap();
 
@@ -3492,7 +3560,7 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
             room.id,
             owner.id,
             member.id,
-            PermissionBits::REORDER_PLAYLIST,
+            PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
         )
         .await
         .unwrap();
@@ -3538,18 +3606,18 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revoked() {
+async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revoked() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("delete_entries_revoke_owner"))
+        .create(&make_user("delete_entries_revoke_any_owner"))
         .await
         .unwrap();
     let admin = user_repo
-        .create(&make_user("delete_entries_revoke_admin"))
+        .create(&make_user("delete_entries_revoke_any_admin"))
         .await
         .unwrap();
 
@@ -3575,7 +3643,7 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
             room.id,
             owner.id,
             admin.id,
-            PermissionBits::REORDER_PLAYLIST,
+            PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
         )
         .await
         .unwrap();
@@ -3612,7 +3680,7 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
 
     assert!(
         matches!(result, Err(Error::Authorization(_))),
-        "revoked REORDER_PLAYLIST must prevent playlist deletion, got: {result:?}"
+        "revoked DELETE_MEDIA_RESOURCE_ANY must prevent foreign playlist deletion, got: {result:?}"
     );
 }
 

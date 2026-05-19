@@ -67,10 +67,10 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 这些设置使用 JSON 数组保存稳定的权限名称，例如：
 
 ```json
-["send_chat", "add_media", "view_playlist", "view_member_list"]
+["send_chat", "create_media_resource", "view_media_resources", "view_member_list"]
 ```
 
-`permissions.guest_default` 使用独立 guest 上限，不能写入 `view_playlist`、`send_chat`、媒体、播放控制或管理权限。允许的示例：
+`permissions.guest_default` 使用独立 guest 上限，不能写入 `view_media_resources`、`send_chat`、媒体资源、播放控制或管理权限。允许的示例：
 
 ```json
 ["view_member_list", "view_chat_history", "use_webrtc"]

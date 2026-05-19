@@ -47,6 +47,6 @@ async fn test_creator_has_all_permissions() {
     assert!(perms.has(PermissionBits::BAN_MEMBER));
     assert!(perms.has(PermissionBits::KICK_MEMBER));
     assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MEDIA));
+    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     assert!(perms.has(PermissionBits::USE_WEBRTC));
 }

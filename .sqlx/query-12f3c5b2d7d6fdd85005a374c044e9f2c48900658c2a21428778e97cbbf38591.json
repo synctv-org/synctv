@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT EXISTS (\n            SELECT 1\n            FROM room_members rm\n            WHERE rm.room_id = $1\n              AND rm.user_id = $2\n              AND rm.left_at IS NULL\n            FOR UPDATE\n        ) AS \"exists!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "12f3c5b2d7d6fdd85005a374c044e9f2c48900658c2a21428778e97cbbf38591"
+}

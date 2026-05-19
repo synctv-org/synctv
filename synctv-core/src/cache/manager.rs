@@ -75,27 +75,57 @@ impl CacheManager {
                     Ok(msg) => {
                         match msg {
                             InvalidationMessage::User { ref user_id } => {
-                                user_cache.invalidate_by_id(user_id).await;
-                                debug!(
-                                    user_id = %user_id,
-                                    "User cache invalidated (cross-replica)"
-                                );
+                                match user_cache.invalidate_by_id(user_id).await {
+                                    Ok(()) => {
+                                        debug!(
+                                            user_id = %user_id,
+                                            "User cache invalidated (cross-replica)"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            user_id = %user_id,
+                                            error = %error,
+                                            "Ignoring malformed user cache invalidation"
+                                        );
+                                    }
+                                }
                             }
                             InvalidationMessage::Username { ref user_id } => {
                                 if let Some(ref uc) = username_cache {
-                                    uc.invalidate_by_id(user_id).await;
-                                    debug!(
-                                        user_id = %user_id,
-                                        "Username cache invalidated (cross-replica)"
-                                    );
+                                    match uc.invalidate_by_id(user_id).await {
+                                        Ok(()) => {
+                                            debug!(
+                                                user_id = %user_id,
+                                                "Username cache invalidated (cross-replica)"
+                                            );
+                                        }
+                                        Err(error) => {
+                                            warn!(
+                                                user_id = %user_id,
+                                                error = %error,
+                                                "Ignoring malformed username cache invalidation"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             InvalidationMessage::Room { ref room_id } => {
-                                room_cache.invalidate_by_id(room_id).await;
-                                debug!(
-                                    room_id = %room_id,
-                                    "Room cache invalidated (cross-replica)"
-                                );
+                                match room_cache.invalidate_by_id(room_id).await {
+                                    Ok(()) => {
+                                        debug!(
+                                            room_id = %room_id,
+                                            "Room cache invalidated (cross-replica)"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            room_id = %room_id,
+                                            error = %error,
+                                            "Ignoring malformed room cache invalidation"
+                                        );
+                                    }
+                                }
                             }
                             InvalidationMessage::All => {
                                 user_cache.clear_l1();

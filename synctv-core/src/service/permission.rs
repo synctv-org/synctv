@@ -1275,7 +1275,7 @@ mod tests {
         settings.member_removed_permissions = MemberRemovedPermissions(PermissionBits::SEND_CHAT);
         let perms = service.calculate_role_default_permissions(&RoomRole::Member, &settings);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MEDIA));
+        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -1315,7 +1315,7 @@ mod tests {
         let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let effective = member.effective_permissions(role_default);
         assert!(!effective.has(PermissionBits::SEND_CHAT));
-        assert!(effective.has(PermissionBits::ADD_MEDIA));
+        assert!(effective.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -1349,7 +1349,7 @@ mod tests {
         let effective = member.effective_permissions(role_default);
         assert!(effective.has(PermissionBits::USE_WEBRTC));
         assert!(!effective.has(PermissionBits::SEND_CHAT));
-        assert!(!effective.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!effective.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
@@ -1364,16 +1364,16 @@ mod tests {
         assert!(role_default.has(PermissionBits::PLAY_CONTROL));
         assert!(!role_default.has(PermissionBits::SEND_CHAT));
 
-        // Layer 3: Member re-adds SEND_CHAT, removes ADD_MEDIA
+        // Layer 3: Member re-adds SEND_CHAT, removes CREATE_MEDIA_RESOURCE
         let mut member = make_member(RoomRole::Member);
         member.added_permissions = PermissionBits::SEND_CHAT;
-        member.removed_permissions = PermissionBits::ADD_MEDIA;
+        member.removed_permissions = PermissionBits::CREATE_MEDIA_RESOURCE;
 
         let effective = member.effective_permissions(role_default);
         assert!(effective.has(PermissionBits::SEND_CHAT));
-        assert!(!effective.has(PermissionBits::ADD_MEDIA));
+        assert!(!effective.has(PermissionBits::CREATE_MEDIA_RESOURCE));
         assert!(effective.has(PermissionBits::PLAY_CONTROL));
-        assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(effective.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
@@ -1419,8 +1419,9 @@ mod tests {
 
     #[test]
     fn test_has_all_requires_all_bits() {
-        let perms = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
-        assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
+        let perms =
+            PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE);
+        assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
         assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::BAN_MEMBER));
     }
 
@@ -1438,7 +1439,7 @@ mod tests {
         settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::SEND_CHAT);
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!perms.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
@@ -1448,16 +1449,17 @@ mod tests {
         settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         assert!(perms.has(PermissionBits::USE_WEBRTC));
-        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!perms.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
-    fn test_room_removes_view_playlist_for_guest() {
+    fn test_room_removes_view_media_resources_for_guest() {
         let service = make_service();
         let mut settings = RoomSettings::default();
-        settings.guest_removed_permissions = GuestRemovedPermissions(PermissionBits::VIEW_PLAYLIST);
+        settings.guest_removed_permissions =
+            GuestRemovedPermissions(PermissionBits::VIEW_MEDIA_RESOURCES);
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
-        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!perms.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
@@ -1472,19 +1474,19 @@ mod tests {
     fn test_three_layer_guest_chain() {
         let service = make_service();
 
-        // Layer 1: Global defaults for Guest (no room resource permissions)
+        // Layer 1: Global defaults for Guest (no media resource permissions)
         // Layer 2: Room adds WebRTC for guests
         let mut settings = RoomSettings::default();
         settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
         let role_default = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
-        assert!(!role_default.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!role_default.has(PermissionBits::VIEW_MEDIA_RESOURCES));
         assert!(role_default.has(PermissionBits::USE_WEBRTC));
 
         // Layer 3: Per-actor removal can still remove guest-level permissions.
         let mut member = make_member(RoomRole::Guest);
         member.removed_permissions = PermissionBits::USE_WEBRTC;
         let effective = member.effective_permissions(role_default);
-        assert!(!effective.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!effective.has(PermissionBits::VIEW_MEDIA_RESOURCES));
         assert!(!effective.has(PermissionBits::USE_WEBRTC));
     }
 
@@ -1582,7 +1584,7 @@ mod tests {
         let mut member = make_member(RoomRole::Guest);
         member.ban(crate::models::UserId::expect_positive(30_003), None);
         let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
-        assert!(!member.has_permission(PermissionBits::VIEW_PLAYLIST, role_default));
+        assert!(!member.has_permission(PermissionBits::VIEW_MEDIA_RESOURCES, role_default));
     }
 
     #[test]
@@ -1626,24 +1628,24 @@ mod tests {
         perms.grant(PermissionBits::SEND_CHAT);
         assert!(perms.has(PermissionBits::SEND_CHAT));
 
-        perms.grant(PermissionBits::ADD_MEDIA);
+        perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
         assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MEDIA));
+        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 
         perms.revoke(PermissionBits::SEND_CHAT);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MEDIA));
+        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_permission_bits_all_contains_every_named_permission() {
         let all = PermissionBits(PermissionBits::ALL);
         assert!(all.has(PermissionBits::SEND_CHAT));
-        assert!(all.has(PermissionBits::ADD_MEDIA));
+        assert!(all.has(PermissionBits::CREATE_MEDIA_RESOURCE));
         assert!(all.has(PermissionBits::BAN_MEMBER));
         assert!(all.has(PermissionBits::DELETE_ROOM));
         assert!(all.has(PermissionBits::USE_WEBRTC));
-        assert!(all.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(all.has(PermissionBits::VIEW_MEDIA_RESOURCES));
         assert!(all.has(PermissionBits::PLAY_CONTROL));
     }
 

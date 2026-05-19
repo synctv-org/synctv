@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_provider_headers, run_with_proxy_cancellation,
-    send_head_with_redirect_validation_with_control_and_timeout, send_with_redirect_validation,
+    send_head_with_redirect_validation_with_control_and_timeout,
     send_with_redirect_validation_with_control_and_timeout,
 };
 
@@ -255,6 +255,7 @@ impl SliceCache {
         provider_headers: &HashMap<String, String>,
         slice_index: u64,
         total_size: u64,
+        upstream_header_timeout: Option<Duration>,
     ) {
         let cache = self.clone();
         let url = url.to_string();
@@ -262,7 +263,13 @@ impl SliceCache {
 
         tokio::spawn(async move {
             if let Err(error) = cache
-                .refresh_stale_slice(&url, &provider_headers, slice_index, total_size)
+                .refresh_stale_slice(
+                    &url,
+                    &provider_headers,
+                    slice_index,
+                    total_size,
+                    upstream_header_timeout,
+                )
                 .await
             {
                 tracing::debug!(
@@ -281,6 +288,7 @@ impl SliceCache {
         provider_headers: &HashMap<String, String>,
         slice_index: u64,
         total_size: u64,
+        upstream_header_timeout: Option<Duration>,
     ) -> Result<(), anyhow::Error> {
         let key = Self::compute_cache_key(url, provider_headers, slice_index);
         let _updating_guard = UpdatingKeyGuard::new(self.updating_keys.clone(), key.clone());
@@ -321,11 +329,18 @@ impl SliceCache {
             }
         }
 
-        let resp =
-            match send_with_redirect_validation(&self.client, request, &self.ssrf_guard).await {
-                Ok(proxy_response) => proxy_response.response,
-                Err(e) => return Err(anyhow::anyhow!("Slice fetch failed: {e}")),
-            };
+        let resp = match send_with_redirect_validation_with_control_and_timeout(
+            &self.client,
+            request,
+            &self.ssrf_guard,
+            None,
+            upstream_header_timeout,
+        )
+        .await
+        {
+            Ok(proxy_response) => proxy_response.response,
+            Err(e) => return Err(anyhow::anyhow!("Slice fetch failed: {e}")),
+        };
 
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             let _ = resp.bytes().await;
@@ -339,13 +354,18 @@ impl SliceCache {
             let mut retry_request = self.client.get(url);
             retry_request = apply_provider_headers(retry_request, url, provider_headers)?;
             retry_request = retry_request.header("Range", &range_header);
-            let retry_resp =
-                match send_with_redirect_validation(&self.client, retry_request, &self.ssrf_guard)
-                    .await
-                {
-                    Ok(proxy_response) => proxy_response.response,
-                    Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
-                };
+            let retry_resp = match send_with_redirect_validation_with_control_and_timeout(
+                &self.client,
+                retry_request,
+                &self.ssrf_guard,
+                None,
+                upstream_header_timeout,
+            )
+            .await
+            {
+                Ok(proxy_response) => proxy_response.response,
+                Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
+            };
             self.process_slice_response(
                 retry_resp,
                 url,
@@ -748,9 +768,8 @@ impl SliceCache {
             {
                 headers.insert(reqwest::header::CONTENT_RANGE, value);
             }
-            if let Ok(value) =
-                reqwest::header::HeaderValue::from_str(&(end - start + 1).to_string())
-            {
+            let content_length = end.checked_sub(start)?.checked_add(1)?;
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&content_length.to_string()) {
                 headers.insert(reqwest::header::CONTENT_LENGTH, value);
             }
             Some((reqwest::StatusCode::PARTIAL_CONTENT, headers))
@@ -1008,7 +1027,13 @@ impl SliceCache {
                 // was newly inserted (i.e., we are the first stale request).
                 if self.updating_keys.insert(key.clone()) {
                     // Newly inserted -- we are the first stale request.
-                    self.spawn_slice_revalidation(url, provider_headers, slice_index, total_size);
+                    self.spawn_slice_revalidation(
+                        url,
+                        provider_headers,
+                        slice_index,
+                        total_size,
+                        upstream_header_timeout,
+                    );
                     return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
                         total_size,
                         cached_meta.as_ref(),
@@ -1252,10 +1277,7 @@ impl SliceCache {
             .and_then(|v| v.to_str().ok())
         {
             let cr = parse_content_range(cr_value)?;
-            if cr.start != range_start
-                || cr.end > requested_range_end_exclusive
-                || cr.end <= cr.start
-            {
+            if cr.start != range_start || cr.end > requested_range_end_exclusive {
                 return Err(anyhow::anyhow!(
                     "Content-Range mismatch: got {}-{}, expected {}-{} \
                      (nginx slice header filter validation)",
@@ -1318,14 +1340,17 @@ impl SliceCache {
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
 
-        // Early ETag consistency check BEFORE reading the body (nginx header
+        // Early validator consistency check BEFORE reading the body (nginx header
         // filter pattern).  This avoids reading a full 2 MiB slice body only
         // to discard it on mismatch.
         // IMPORTANT: we must not hold a DashMap `Ref` across the call to
         // `invalidate_resource`, which needs a write lock on the same shard.
-        // Clone the existing ETag out of the DashMap first to avoid deadlock.
+        // Clone existing validators out of the DashMap first to avoid deadlock.
         let mk = Self::meta_key(url, provider_headers);
-        let existing_etag_cloned = self.meta.get(&mk).and_then(|m| m.etag.clone());
+        let existing_validators = self
+            .meta
+            .get(&mk)
+            .map(|m| (m.etag.clone(), m.last_modified.clone()));
 
         let expected_len = usize::try_from(
             parsed_content_range
@@ -1344,11 +1369,10 @@ impl SliceCache {
             }
         }
 
-        if let Some(existing_etag) = &existing_etag_cloned {
-            if let Some(new_etag) = &resp_etag {
-                if existing_etag != new_etag {
-                    // ETag mismatch: resource was modified between slices.
-                    // Invalidate all cached slices for this resource.
+        if let Some((Some(existing_etag), _)) = &existing_validators {
+            match &resp_etag {
+                Some(new_etag) if new_etag == existing_etag => {}
+                Some(new_etag) => {
                     self.invalidate_resource(url, provider_headers, total_size)
                         .await;
                     return Err(anyhow::anyhow!(
@@ -1356,6 +1380,21 @@ impl SliceCache {
                          (expected {existing_etag}, got {new_etag})"
                     ));
                 }
+                None => {
+                    self.invalidate_resource(url, provider_headers, total_size)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "ETag disappeared while fetching slices for resource"
+                    ));
+                }
+            }
+        } else if let Some((None, Some(existing_last_modified))) = &existing_validators {
+            if resp_last_modified.as_ref() != Some(existing_last_modified) {
+                self.invalidate_resource(url, provider_headers, total_size)
+                    .await;
+                return Err(anyhow::anyhow!(
+                    "Last-Modified mismatch: resource modified between slice fetches"
+                ));
             }
         }
 

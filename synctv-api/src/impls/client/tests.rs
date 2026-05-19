@@ -62,7 +62,7 @@ fn guest_access(permissions: PermissionBits) -> super::GuestRoomAccess {
 }
 
 #[tokio::test]
-async fn test_shared_room_actor_playlist_items_rejects_guest_without_playlist_permission() {
+async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resource_permission() {
     let api = test_client_api_without_repository_access();
     let err = api
         .list_playlist_items_as_guest(
@@ -70,7 +70,7 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_playlist_pe
             crate::proto::client::ListPlaylistItemsRequest::default(),
         )
         .await
-        .expect_err("guest playlist reads must be rejected before any repository lookup");
+        .expect_err("guest media-resource reads must be rejected before any repository lookup");
 
     assert!(
         matches!(err, ApiError::Authorization(ref message) if message.contains("Guests do not have permission")),
@@ -79,12 +79,13 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_playlist_pe
 }
 
 #[tokio::test]
-async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_playlist_permission_requested()
-{
+async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
+) {
     let api = test_client_api_without_repository_access();
-    let requested = PermissionBits(PermissionBits::VIEW_PLAYLIST | PermissionBits::USE_WEBRTC);
+    let requested =
+        PermissionBits(PermissionBits::VIEW_MEDIA_RESOURCES | PermissionBits::USE_WEBRTC);
     let capped = PermissionBits(requested.0 & PermissionBits::GUEST_ASSIGNABLE);
-    assert!(!capped.has(PermissionBits::VIEW_PLAYLIST));
+    assert!(!capped.has(PermissionBits::VIEW_MEDIA_RESOURCES));
 
     let err = api
         .list_playlist_items_as_guest(
@@ -92,7 +93,7 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_playlist_pe
             crate::proto::client::ListPlaylistItemsRequest::default(),
         )
         .await
-        .expect_err("guest playlist reads must stay rejected after guest permission capping");
+        .expect_err("guest media-resource reads must stay rejected after guest permission capping");
 
     assert!(
         matches!(err, ApiError::Authorization(ref message) if message.contains("Guests do not have permission")),

@@ -366,7 +366,7 @@ impl PlaylistService {
 
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+                .check_permission(&room_id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
                 .await?;
         }
 
@@ -639,16 +639,6 @@ impl PlaylistService {
             optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
             "Playlist update failed after maximum retry attempts",
             || async {
-                if !bypass_room_permissions {
-                    self.permission_service
-                        .check_permission_no_cache(
-                            &room_id,
-                            &user_id,
-                            PermissionBits::VIEW_PLAYLIST,
-                        )
-                        .await?;
-                }
-
                 // Get existing playlist (re-fetch on each retry to get latest version)
                 let mut playlist = self
                     .playlist_repo
@@ -658,6 +648,13 @@ impl PlaylistService {
 
                 if !bypass_room_permissions {
                     ensure_playlist_creator_can_edit(&playlist, &user_id)?;
+                    self.permission_service
+                        .check_permission_no_cache(
+                            &room_id,
+                            &user_id,
+                            PermissionBits::CREATE_MEDIA_RESOURCE,
+                        )
+                        .await?;
                 }
 
                 // Store original version for optimistic locking
@@ -773,7 +770,7 @@ impl PlaylistService {
     ) -> Result<Playlist> {
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
+                .check_permission(&room_id, &user_id, PermissionBits::REORDER_MEDIA_RESOURCES)
                 .await?;
         }
 
@@ -815,46 +812,17 @@ impl PlaylistService {
         Ok(moved)
     }
 
-    /// Delete playlist
-    pub async fn delete_playlist(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: PlaylistId,
-    ) -> Result<()> {
-        self.delete_playlist_internal(room_id, user_id, playlist_id, false)
-            .await
-    }
-
     /// Management-only playlist deletion that bypasses room membership permission checks.
+    ///
+    /// Member-facing deletion must go through `RoomService::delete_entries` so
+    /// permission checks can account for the full playlist subtree and all media
+    /// resources deleted by cascade.
     pub async fn admin_delete_playlist(
         &self,
         room_id: RoomId,
         actor_user_id: UserId,
         playlist_id: PlaylistId,
     ) -> Result<()> {
-        self.delete_playlist_internal(room_id, actor_user_id, playlist_id, true)
-            .await
-    }
-
-    async fn delete_playlist_internal(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: PlaylistId,
-        bypass_room_permissions: bool,
-    ) -> Result<()> {
-        if !bypass_room_permissions
-            && !self
-                .permission_service
-                .is_admin_or_creator(&room_id, &user_id)
-                .await?
-        {
-            return Err(Error::Authorization(
-                "Only admins or creators can delete playlists".to_string(),
-            ));
-        }
-
         let playlist = self
             .playlist_repo
             .get_by_room_and_id(&room_id, &playlist_id)
@@ -872,14 +840,14 @@ impl PlaylistService {
             playlist_id = %playlist_id,
             "Playlist deleted"
         );
-        let actor_username = self.resolve_actor_username(&user_id).await;
+        let actor_username = self.resolve_actor_username(&actor_user_id).await;
 
         // Broadcast to realtime replicas.
         if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
             broadcaster.broadcast_playlist_deleted(
                 &room_id,
                 &playlist_id,
-                &user_id,
+                &actor_user_id,
                 &actor_username,
             );
         }

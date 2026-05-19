@@ -20,8 +20,9 @@ impl CacheKey for RoomId {
     fn cache_key(&self) -> String {
         self.to_string()
     }
-    fn from_id(id: &str) -> Self {
-        id.parse().expect("valid numeric cache key")
+    fn try_from_id(id: &str) -> Result<Self> {
+        id.parse()
+            .map_err(|_| crate::Error::InvalidInput(format!("Invalid room cache key: {id}")))
     }
 }
 
@@ -281,8 +282,8 @@ impl RoomCache {
     ///
     /// Used by the cross-replica invalidation listener to remove a single
     /// entry from the local in-memory cache and L2 Redis cache.
-    pub async fn invalidate_by_id(&self, room_id: &str) {
-        self.inner.invalidate_by_id(room_id).await;
+    pub async fn invalidate_by_id(&self, room_id: &str) -> Result<()> {
+        self.inner.invalidate_by_id(room_id).await
     }
 
     /// Get multiple rooms at once
@@ -375,6 +376,22 @@ mod tests {
         // Invalidate
         cache.invalidate(&room_id).await.unwrap();
         assert!(cache.get(&room_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_by_id_rejects_malformed_id() {
+        let cache = RoomCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
+
+        let result = cache.invalidate_by_id("not-a-room-id").await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -465,7 +465,7 @@ async fn test_concurrent_permission_grant() {
         let permission = match i {
             0 => PermissionBits::BAN_MEMBER,
             1 => PermissionBits::KICK_MEMBER,
-            2 => PermissionBits::CLEAR_PLAYLIST,
+            2 => PermissionBits::CLEAR_MEDIA_RESOURCES,
             3 => PermissionBits::SEND_CHAT,
             _ => PermissionBits::PLAY_CONTROL,
         };
@@ -545,15 +545,15 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     let mut handles = Vec::with_capacity(10);
     let permission_updates = [
         PermissionBits::SEND_CHAT,
-        PermissionBits::ADD_MEDIA,
-        PermissionBits::DELETE_MEDIA_SELF,
-        PermissionBits::DELETE_MEDIA_ANY,
-        PermissionBits::EDIT_MEDIA_SELF,
-        PermissionBits::REORDER_PLAYLIST,
-        PermissionBits::CLEAR_PLAYLIST,
+        PermissionBits::CREATE_MEDIA_RESOURCE,
+        PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+        PermissionBits::REORDER_MEDIA_RESOURCES,
+        PermissionBits::CLEAR_MEDIA_RESOURCES,
         PermissionBits::START_LIVE,
         PermissionBits::PLAY_CONTROL,
         PermissionBits::CHANGE_CURRENT_MEDIA,
+        PermissionBits::CHANGE_PLAYBACK_RATE,
+        PermissionBits::VIEW_MEDIA_RESOURCES,
     ];
     for permission in permission_updates {
         let barrier_clone = barrier.clone();

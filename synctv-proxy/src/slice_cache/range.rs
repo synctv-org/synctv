@@ -62,6 +62,9 @@ pub fn parse_range_header(range: &str, total_size: u64) -> Result<(u64, u64), an
         if start >= total_size {
             return Err(anyhow::anyhow!("Range start beyond total size"));
         }
+        if start > end {
+            return Err(anyhow::anyhow!("Range start beyond range end"));
+        }
         if end >= total_size {
             end = total_size - 1;
         }

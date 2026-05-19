@@ -24,7 +24,7 @@ use crate::resource_change::{
 };
 
 const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_millis(25);
-const ROOM_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
+const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
 pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
 
 #[derive(Debug, Clone, Default)]
@@ -184,59 +184,59 @@ impl ResourceRefreshOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct RoomResourceHubKey {
+struct MediaResourceHubKey {
     room_id: RoomId,
     service_id: usize,
 }
 
 #[derive(Default)]
-struct RoomResourceHubState {
+struct MediaResourceHubState {
     subscriptions: HashMap<ResourceSubscriberKey, ResourceHubSubscription>,
     next_revision: u64,
     subscription_generation: u64,
     resource_generation: u64,
-    in_flight_refreshes: HashMap<String, RoomResourceRefreshEntry>,
-    completed_refreshes: HashMap<String, CompletedRoomRefresh>,
+    in_flight_refreshes: HashMap<String, MediaResourceRefreshEntry>,
+    completed_refreshes: HashMap<String, CompletedMediaResourceRefresh>,
 }
 
-impl RoomResourceHubState {
+impl MediaResourceHubState {
     fn bump_subscription_generation(&mut self) {
         self.subscription_generation = self.subscription_generation.saturating_add(1);
     }
 }
 
 #[derive(Clone)]
-struct RoomResourceRefreshEntry {
+struct MediaResourceRefreshEntry {
     result: Arc<tokio::sync::OnceCell<ResourceRefreshOutcome>>,
     subscription_generation: u64,
 }
 
-struct CompletedRoomRefresh {
+struct CompletedMediaResourceRefresh {
     completed_at: tokio::time::Instant,
     subscription_generation: u64,
 }
 
-pub(super) struct RoomResourceHub {
+pub(super) struct MediaResourceHub {
     room_id: RoomId,
-    state: tokio::sync::Mutex<RoomResourceHubState>,
+    state: tokio::sync::Mutex<MediaResourceHubState>,
 }
 
-static ROOM_RESOURCE_HUBS: LazyLock<
-    parking_lot::Mutex<HashMap<RoomResourceHubKey, Weak<RoomResourceHub>>>,
+static MEDIA_RESOURCE_HUBS: LazyLock<
+    parking_lot::Mutex<HashMap<MediaResourceHubKey, Weak<MediaResourceHub>>>,
 > = LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
-fn room_resource_hub(room_id: RoomId, room_service: &Arc<RoomService>) -> Arc<RoomResourceHub> {
-    let key = RoomResourceHubKey {
+fn media_resource_hub(room_id: RoomId, room_service: &Arc<RoomService>) -> Arc<MediaResourceHub> {
+    let key = MediaResourceHubKey {
         room_id,
         service_id: Arc::as_ptr(room_service) as usize,
     };
-    let mut hubs = ROOM_RESOURCE_HUBS.lock();
+    let mut hubs = MEDIA_RESOURCE_HUBS.lock();
     if let Some(hub) = hubs.get(&key).and_then(Weak::upgrade) {
         return hub;
     }
-    let hub = Arc::new(RoomResourceHub {
+    let hub = Arc::new(MediaResourceHub {
         room_id,
-        state: tokio::sync::Mutex::new(RoomResourceHubState::default()),
+        state: tokio::sync::Mutex::new(MediaResourceHubState::default()),
     });
     hubs.insert(key, Arc::downgrade(&hub));
     hub
@@ -389,7 +389,7 @@ pub(super) struct ResourceObserver {
     room_service: Arc<RoomService>,
     public_id_codec: Arc<crate::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
-    pub(super) room_hub: Arc<RoomResourceHub>,
+    pub(super) room_hub: Arc<MediaResourceHub>,
     playback_snapshot_service: parking_lot::RwLock<Option<Arc<dyn PlaybackSnapshotService>>>,
     playlist_items_snapshot_service:
         parking_lot::RwLock<Option<Arc<dyn PlaylistItemsSnapshotService>>>,
@@ -423,7 +423,7 @@ impl ResourceObserver {
             room_settings_snapshot_service,
         } = params;
         let room_settings_snapshot_service_id = Arc::as_ptr(&room_service) as usize;
-        let room_hub = room_resource_hub(room_id, &room_service);
+        let room_hub = media_resource_hub(room_id, &room_service);
         Self {
             room_id,
             user_id,
@@ -551,7 +551,7 @@ impl ResourceObserver {
 
     pub(super) async fn room_has_playback_snapshot_observers(room_id: RoomId) -> bool {
         let hubs = {
-            let mut registry = ROOM_RESOURCE_HUBS.lock();
+            let mut registry = MEDIA_RESOURCE_HUBS.lock();
             registry.retain(|_, hub| hub.strong_count() > 0);
             registry
                 .iter()
@@ -569,7 +569,7 @@ impl ResourceObserver {
 
     pub(super) async fn active_playback_snapshot_rooms() -> Vec<RoomId> {
         let hubs = {
-            let mut registry = ROOM_RESOURCE_HUBS.lock();
+            let mut registry = MEDIA_RESOURCE_HUBS.lock();
             registry.retain(|_, hub| hub.strong_count() > 0);
             registry
                 .iter()
@@ -629,7 +629,7 @@ impl ResourceObserver {
     }
 }
 
-impl RoomResourceHub {
+impl MediaResourceHub {
     async fn has_playback_snapshot_observations(&self) -> bool {
         let state = self.state.lock().await;
         state.subscriptions.values().any(|subscription| {
@@ -830,12 +830,12 @@ impl RoomResourceHub {
         }
     }
 
-    async fn start_in_flight_refresh(&self, refresh_key: &str) -> RoomResourceRefreshEntry {
+    async fn start_in_flight_refresh(&self, refresh_key: &str) -> MediaResourceRefreshEntry {
         let mut state = self.state.lock().await;
         if let Some(entry) = state.in_flight_refreshes.get(refresh_key) {
             return entry.clone();
         }
-        let entry = RoomResourceRefreshEntry {
+        let entry = MediaResourceRefreshEntry {
             result: Arc::new(tokio::sync::OnceCell::new()),
             subscription_generation: state.subscription_generation,
         };
@@ -845,11 +845,11 @@ impl RoomResourceHub {
         entry
     }
 
-    async fn start_deduped_refresh(&self, refresh_key: &str) -> Option<RoomResourceRefreshEntry> {
+    async fn start_deduped_refresh(&self, refresh_key: &str) -> Option<MediaResourceRefreshEntry> {
         let mut state = self.state.lock().await;
         let now = tokio::time::Instant::now();
         state.completed_refreshes.retain(|_, completed| {
-            now.duration_since(completed.completed_at) <= ROOM_RESOURCE_REFRESH_DEDUP_WINDOW
+            now.duration_since(completed.completed_at) <= MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW
         });
         let subscription_generation = state.subscription_generation;
         if state
@@ -858,7 +858,7 @@ impl RoomResourceHub {
             .is_some_and(|completed| {
                 completed.subscription_generation == subscription_generation
                     && now.duration_since(completed.completed_at)
-                        <= ROOM_RESOURCE_REFRESH_DEDUP_WINDOW
+                        <= MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW
             })
         {
             return None;
@@ -868,7 +868,7 @@ impl RoomResourceHub {
                 return Some(entry.clone());
             }
         }
-        let entry = RoomResourceRefreshEntry {
+        let entry = MediaResourceRefreshEntry {
             result: Arc::new(tokio::sync::OnceCell::new()),
             subscription_generation,
         };
@@ -878,7 +878,7 @@ impl RoomResourceHub {
         Some(entry)
     }
 
-    async fn finish_deduped_refresh(&self, refresh_key: &str, entry: &RoomResourceRefreshEntry) {
+    async fn finish_deduped_refresh(&self, refresh_key: &str, entry: &MediaResourceRefreshEntry) {
         let mut state = self.state.lock().await;
         if state
             .in_flight_refreshes
@@ -891,7 +891,7 @@ impl RoomResourceHub {
             state.in_flight_refreshes.remove(refresh_key);
             state.completed_refreshes.insert(
                 refresh_key.to_string(),
-                CompletedRoomRefresh {
+                CompletedMediaResourceRefresh {
                     completed_at: tokio::time::Instant::now(),
                     subscription_generation: entry.subscription_generation,
                 },
@@ -899,7 +899,7 @@ impl RoomResourceHub {
         }
     }
 
-    async fn finish_in_flight_refresh(&self, refresh_key: &str, entry: &RoomResourceRefreshEntry) {
+    async fn finish_in_flight_refresh(&self, refresh_key: &str, entry: &MediaResourceRefreshEntry) {
         let mut state = self.state.lock().await;
         if state
             .in_flight_refreshes

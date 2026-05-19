@@ -1592,7 +1592,7 @@ impl RoomService {
             settings,
         } = command;
         let room_settings = initial_room_settings(settings, password.is_some());
-        room_settings.validate_permissions()?;
+        room_settings.validate()?;
 
         tracing::info!(
             user_id = %created_by,
@@ -3590,7 +3590,7 @@ impl RoomService {
             .await?;
 
         // Validate permission escalation
-        settings.validate_permissions()?;
+        settings.validate()?;
 
         // Verify room exists
         self.room_repo
@@ -3744,7 +3744,7 @@ impl RoomService {
         settings: &RoomSettings,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
     ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
-        settings.validate_permissions()?;
+        settings.validate()?;
 
         let (previous_settings, updated_settings, updated_version) =
             super::optimistic_retry::retry_with_optimistic_lock(
@@ -3836,8 +3836,16 @@ impl RoomService {
                             .map_err(|e| {
                                 Error::InvalidInput(format!("Invalid settings JSON: {e}"))
                             })?;
-                        merged_settings.validate_permissions()?;
+                        merged_settings.validate()?;
                         let mut tx = self.pool.begin().await?;
+                        ensure_actor_has_room_permission_now_tx(
+                            &mut tx,
+                            &self.permission_service,
+                            &room_id,
+                            &user_id,
+                            PermissionBits::SET_ROOM_SETTINGS,
+                        )
+                        .await?;
                         let new_version = self
                             .room_settings_repo
                             .set_settings_with_version_with_executor(
@@ -3927,7 +3935,7 @@ impl RoomService {
                         self.room_settings_repo.get_with_version(room_id).await?;
                     let current = settings.clone();
                     settings.set_by_key(key, value)?;
-                    settings.validate_permissions()?;
+                    settings.validate()?;
 
                     let new_version = self
                         .room_settings_repo
@@ -4044,6 +4052,14 @@ impl RoomService {
                     let (current, version) =
                         self.room_settings_repo.get_with_version(room_id).await?;
                     let mut tx = self.pool.begin().await?;
+                    ensure_actor_has_room_permission_now_tx(
+                        &mut tx,
+                        &self.permission_service,
+                        room_id,
+                        user_id,
+                        PermissionBits::SET_ROOM_SETTINGS,
+                    )
+                    .await?;
                     let new_version = self
                         .room_settings_repo
                         .set_settings_with_version_with_executor(
@@ -4573,7 +4589,7 @@ impl RoomService {
             || !PermissionBits::includes_only_assignable_in_room(removed_permissions)
         {
             return Err(Error::InvalidInput(
-                "Permission set includes lifecycle-only permissions that cannot be delegated within a room"
+                "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
                     .to_string(),
             ));
         }
@@ -4904,7 +4920,7 @@ impl RoomService {
             || !PermissionBits::includes_only_assignable_in_room(admin_removed_permissions)
         {
             return Err(Error::InvalidInput(
-                "Permission set includes lifecycle-only permissions that cannot be delegated within a room"
+                "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
                     .to_string(),
             ));
         }
@@ -5036,7 +5052,7 @@ impl RoomService {
             || !PermissionBits::includes_only_assignable_in_room(admin_removed_permissions)
         {
             return Err(Error::InvalidInput(
-                "Permission set includes lifecycle-only permissions that cannot be delegated within a room"
+                "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
                     .to_string(),
             ));
         }
@@ -5511,21 +5527,6 @@ impl RoomService {
             ));
         }
 
-        if !playlist_ids.is_empty()
-            && !has_room_permission_in_tx(
-                &mut tx,
-                &self.permission_service,
-                &room_id,
-                &user_id,
-                PermissionBits::REORDER_PLAYLIST,
-            )
-            .await?
-        {
-            return Err(Error::Authorization(
-                synctv_common::messages::PERMISSION_DENIED.to_string(),
-            ));
-        }
-
         let media_items = self
             .media_repo
             .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
@@ -5536,48 +5537,57 @@ impl RoomService {
             ));
         }
 
-        let mut has_owned_media = false;
-        let mut has_foreign_media = false;
-        for media in &media_items {
-            if media.creator_id.as_ref() == Some(&user_id) {
-                has_owned_media = true;
-            } else {
-                has_foreign_media = true;
-            }
-        }
-
-        if has_owned_media
-            && !has_room_permission_in_tx(
-                &mut tx,
-                &self.permission_service,
-                &room_id,
-                &user_id,
-                PermissionBits::DELETE_MEDIA_SELF,
-            )
-            .await?
-        {
-            return Err(Error::Authorization(
-                synctv_common::messages::PERMISSION_DENIED.to_string(),
-            ));
-        }
-        if has_foreign_media
-            && !has_room_permission_in_tx(
-                &mut tx,
-                &self.permission_service,
-                &room_id,
-                &user_id,
-                PermissionBits::DELETE_MEDIA_ANY,
-            )
-            .await?
-        {
-            return Err(Error::Authorization(
-                synctv_common::messages::PERMISSION_DENIED.to_string(),
-            ));
-        }
-
         let impact =
             plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
+
+        let affected_playlists = self
+            .playlist_repo
+            .get_by_room_and_ids_with_executor(&room_id, &impact.deleted_playlist_ids, &mut *tx)
+            .await?;
+        if affected_playlists.len() != impact.deleted_playlist_ids.len() {
+            return Err(Error::Internal(
+                "Delete plan referenced a playlist that no longer exists".to_string(),
+            ));
+        }
+
+        let affected_media = self
+            .media_repo
+            .get_by_room_and_ids_with_executor(&room_id, &impact.deleted_media_ids, &mut *tx)
+            .await?;
+        if affected_media.len() != impact.deleted_media_ids.len() {
+            return Err(Error::Internal(
+                "Delete plan referenced a media item that no longer exists".to_string(),
+            ));
+        }
+
+        let has_foreign_resources = affected_playlists
+            .iter()
+            .any(|playlist| playlist.creator_id.as_ref() != Some(&user_id))
+            || affected_media
+                .iter()
+                .any(|media| media.creator_id.as_ref() != Some(&user_id));
+
+        if !has_active_room_membership_in_tx(&mut tx, &room_id, &user_id).await? {
+            return Err(Error::Authorization(
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
+            ));
+        }
+
+        if has_foreign_resources
+            && !has_room_permission_in_tx(
+                &mut tx,
+                &self.permission_service,
+                &room_id,
+                &user_id,
+                PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+            )
+            .await?
+        {
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
+        }
         let plan = DeleteEntriesPlan {
             deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
             deleted_media_ids: impact.deleted_media_ids.clone(),
@@ -5880,9 +5890,8 @@ impl RoomService {
 
     /// Clear all media directly under the room root.
     ///
-    /// Permission check is handled by the API layer (`CLEAR_PLAYLIST`).
-    /// This method no longer performs its own permission check to avoid
-    /// inconsistency with the API layer's `CLEAR_PLAYLIST` check.
+    /// The `CLEAR_MEDIA_RESOURCES` permission check is performed inside the
+    /// transaction so revocations cannot race with the clear operation.
     ///
     /// If the currently playing media is in the room root being cleared,
     /// the playback state is reset to stopped within the same transaction
@@ -5901,12 +5910,20 @@ impl RoomService {
     pub async fn clear_playlist_with_outbox(
         &self,
         room_id: RoomId,
-        _user_id: UserId,
+        user_id: UserId,
         outbox_event_factory: Option<RealtimeOutboxMediaIdsEventFactory>,
     ) -> Result<ClearPlaylistResult> {
         // Atomic reset-and-clear within a transaction to prevent TOCTOU race
         // where another user starts playing media between the check and the clear.
         let mut tx = self.pool.begin().await?;
+        ensure_actor_has_room_permission_now_tx(
+            &mut tx,
+            &self.permission_service,
+            &room_id,
+            &user_id,
+            PermissionBits::CLEAR_MEDIA_RESOURCES,
+        )
+        .await?;
 
         let deleted_media_ids = sqlx::query_scalar!(
             r#"SELECT id AS "id: MediaId"
@@ -7056,6 +7073,31 @@ async fn has_room_permission_in_tx(
     Ok((permissions & permission) == permission)
 }
 
+async fn has_active_room_membership_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<bool> {
+    let exists = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM room_members rm
+            WHERE rm.room_id = $1
+              AND rm.user_id = $2
+              AND rm.left_at IS NULL
+            FOR UPDATE
+        ) AS "exists!"
+        "#,
+        room_id.as_i64(),
+        user_id.as_i64()
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(exists)
+}
+
 async fn ensure_actor_has_room_permission_now_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     permission_service: &PermissionService,
@@ -7614,18 +7656,18 @@ mod tests {
             RoomRole::Member,
         );
         let runtime_member_default =
-            PermissionBits(PermissionBits::DEFAULT_MEMBER & !PermissionBits::ADD_MEDIA);
+            PermissionBits(PermissionBits::DEFAULT_MEMBER & !PermissionBits::CREATE_MEDIA_RESOURCE);
 
         assert!(
-            PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::ADD_MEDIA),
-            "static defaults include ADD_MEDIA, so this test guards against falling back to them"
+            PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::CREATE_MEDIA_RESOURCE),
+            "static defaults include CREATE_MEDIA_RESOURCE, so this test guards against falling back to them"
         );
         assert!(
             !super::has_room_permission_from_base(
                 &settings,
                 &member,
                 runtime_member_default,
-                PermissionBits::ADD_MEDIA,
+                PermissionBits::CREATE_MEDIA_RESOURCE,
             ),
             "transactional permission checks must honor runtime role defaults"
         );
@@ -7840,7 +7882,8 @@ mod tests {
     #[test]
     fn test_admin_permissions_with_added_and_removed() {
         let mut settings = RoomSettings::default();
-        let base = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
+        let base =
+            PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE);
 
         // Add PLAY_CONTROL, remove SEND_CHAT
         settings.admin_added_permissions =
@@ -7849,8 +7892,8 @@ mod tests {
             crate::models::room_settings::AdminRemovedPermissions(PermissionBits::SEND_CHAT);
 
         let result = settings.admin_permissions(base);
-        // Should have ADD_MEDIA and PLAY_CONTROL, but not SEND_CHAT
-        assert!(result.0 & PermissionBits::ADD_MEDIA != 0);
+        // Should have CREATE_MEDIA_RESOURCE and PLAY_CONTROL, but not SEND_CHAT
+        assert!(result.0 & PermissionBits::CREATE_MEDIA_RESOURCE != 0);
         assert!(result.0 & PermissionBits::PLAY_CONTROL != 0);
         assert_eq!(result.0 & PermissionBits::SEND_CHAT, 0);
     }

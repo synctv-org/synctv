@@ -3,8 +3,8 @@
 //! This module implements a database-compatible permission bitmask system.
 //!
 //! Key features:
-//! - Uses `u64` at API/domain boundaries while reserving the sign bit so values
-//!   fit PostgreSQL `BIGINT` storage without lossy conversion
+//! - Uses `u64` at API/domain boundaries while keeping defined permission bits
+//!   in the PostgreSQL `BIGINT` range used by persistence
 //! - Telegram-style permission inheritance
 //! - Role and Status separation
 //! - Allow/Deny permission pattern for customization
@@ -16,122 +16,131 @@ use std::str::FromStr;
 /// Permission bitmask.
 ///
 /// The public protobuf/API representation is `uint64`, but persisted room
-/// permission overrides use PostgreSQL `BIGINT`. Keep the sign bit reserved so
-/// every valid domain value is representable in storage.
+/// permission overrides use PostgreSQL `BIGINT`. Every defined product bit must
+/// remain representable in signed storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PermissionBits(pub u64);
 
 impl PermissionBits {
-    /// Maximum permission mask representable in signed database storage.
-    pub const STORAGE_MASK: u64 = i64::MAX as u64;
-
     /// Send chat messages (includes messages with position for danmaku display)
     pub const SEND_CHAT: u64 = 1 << 0;
 
-    /// Add media to a playlist
-    pub const ADD_MEDIA: u64 = 1 << 1;
+    /// Create media resources such as media items or playlists/folders, and
+    /// edit media resources created by the actor.
+    pub const CREATE_MEDIA_RESOURCE: u64 = 1 << 1;
 
-    /// Delete own media
-    pub const DELETE_MEDIA_SELF: u64 = 1 << 2;
+    /// Delete media resources created by other users or resources without a
+    /// recorded creator.
+    pub const DELETE_MEDIA_RESOURCE_ANY: u64 = 1 << 2;
 
-    /// Delete any media
-    pub const DELETE_MEDIA_ANY: u64 = 1 << 3;
+    /// Reorder media resources such as media items or playlists/folders.
+    pub const REORDER_MEDIA_RESOURCES: u64 = 1 << 3;
 
-    /// Edit own media metadata
-    pub const EDIT_MEDIA_SELF: u64 = 1 << 4;
-
-    /// Reserved for future content management use (bit 5)
-    pub const RESERVED_5: u64 = 1 << 5;
-
-    /// Reorder playlist
-    pub const REORDER_PLAYLIST: u64 = 1 << 6;
-
-    /// Clear playlist
-    pub const CLEAR_PLAYLIST: u64 = 1 << 7;
+    /// Clear media resource queues.
+    pub const CLEAR_MEDIA_RESOURCES: u64 = 1 << 4;
 
     /// Start live stream (RTMP push)
-    pub const START_LIVE: u64 = 1 << 8;
-
-    /// Reserved for future content management use (bit 9)
-    pub const RESERVED_9: u64 = 1 << 9;
+    pub const START_LIVE: u64 = 1 << 5;
 
     /// Play control (play/pause/seek)
-    pub const PLAY_CONTROL: u64 = 1 << 10;
+    pub const PLAY_CONTROL: u64 = 1 << 6;
 
     /// Switch current playback media
-    pub const CHANGE_CURRENT_MEDIA: u64 = 1 << 11;
+    pub const CHANGE_CURRENT_MEDIA: u64 = 1 << 7;
 
     /// Change playback rate
-    pub const CHANGE_PLAYBACK_RATE: u64 = 1 << 12;
+    pub const CHANGE_PLAYBACK_RATE: u64 = 1 << 8;
 
     /// Approve or reject pending join requests
-    pub const APPROVE_MEMBER: u64 = 1 << 20;
+    pub const APPROVE_MEMBER: u64 = 1 << 9;
 
     /// Kick member
-    pub const KICK_MEMBER: u64 = 1 << 21;
+    pub const KICK_MEMBER: u64 = 1 << 10;
 
     /// Ban/unban member
-    pub const BAN_MEMBER: u64 = 1 << 22;
+    pub const BAN_MEMBER: u64 = 1 << 11;
 
     /// Set member permissions
-    pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 23;
+    pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 12;
 
     /// Explicitly add a member when self-service joining is disabled
-    pub const ADD_MEMBER: u64 = 1 << 24;
+    pub const ADD_MEMBER: u64 = 1 << 13;
 
     /// Modify room settings
-    pub const SET_ROOM_SETTINGS: u64 = 1 << 30;
+    pub const SET_ROOM_SETTINGS: u64 = 1 << 14;
 
     /// Delete chat messages
-    pub const DELETE_CHAT: u64 = 1 << 32;
+    pub const DELETE_CHAT: u64 = 1 << 15;
 
     /// Delete room
-    pub const DELETE_ROOM: u64 = 1 << 35;
+    pub const DELETE_ROOM: u64 = 1 << 16;
 
-    /// Permissions that can be delegated within a room to non-creator members.
-    ///
-    /// View playlist
-    pub const VIEW_PLAYLIST: u64 = 1 << 40;
+    /// View media resources such as media items and playlists/folders.
+    pub const VIEW_MEDIA_RESOURCES: u64 = 1 << 17;
+
+    /// Manage any media resource, including deleting resources created by
+    /// others, reordering shared resource lists, and clearing resource queues.
+    pub const MANAGE_MEDIA_RESOURCES: u64 = Self::DELETE_MEDIA_RESOURCE_ANY
+        | Self::REORDER_MEDIA_RESOURCES
+        | Self::CLEAR_MEDIA_RESOURCES;
 
     /// View member list
-    pub const VIEW_MEMBER_LIST: u64 = 1 << 41;
+    pub const VIEW_MEMBER_LIST: u64 = 1 << 18;
 
     /// View chat history
-    pub const VIEW_CHAT_HISTORY: u64 = 1 << 42;
+    pub const VIEW_CHAT_HISTORY: u64 = 1 << 19;
 
     /// Use WebRTC (voice/video)
-    pub const USE_WEBRTC: u64 = 1 << 50;
+    pub const USE_WEBRTC: u64 = 1 << 20;
 
-    /// All permissions available in the current storage-compatible domain.
-    pub const ALL: u64 = Self::STORAGE_MASK;
+    /// All permissions currently defined by the product model.
+    pub const ALL: u64 = Self::SEND_CHAT
+        | Self::CREATE_MEDIA_RESOURCE
+        | Self::DELETE_MEDIA_RESOURCE_ANY
+        | Self::REORDER_MEDIA_RESOURCES
+        | Self::CLEAR_MEDIA_RESOURCES
+        | Self::START_LIVE
+        | Self::PLAY_CONTROL
+        | Self::CHANGE_CURRENT_MEDIA
+        | Self::CHANGE_PLAYBACK_RATE
+        | Self::APPROVE_MEMBER
+        | Self::KICK_MEMBER
+        | Self::BAN_MEMBER
+        | Self::SET_MEMBER_PERMISSIONS
+        | Self::ADD_MEMBER
+        | Self::SET_ROOM_SETTINGS
+        | Self::DELETE_CHAT
+        | Self::DELETE_ROOM
+        | Self::VIEW_MEDIA_RESOURCES
+        | Self::VIEW_MEMBER_LIST
+        | Self::VIEW_CHAT_HISTORY
+        | Self::USE_WEBRTC;
 
-    /// Bits that are defined but cannot be delegated through room role/member
+    /// Defined permissions that cannot be delegated through room role/member
     /// permission overrides.
-    pub const NON_ASSIGNABLE_IN_ROOM: u64 = Self::RESERVED_5 | Self::RESERVED_9 | Self::DELETE_ROOM;
+    pub const NON_ASSIGNABLE_IN_ROOM: u64 = Self::DELETE_ROOM;
 
     /// Permissions that can be delegated within a room to non-creator members.
     ///
     /// Room deletion is a lifecycle operation owned by the room creator or the
-    /// global management plane. Reserved bits are intentionally excluded so raw
-    /// bitmask update paths cannot grant draft or retired capabilities.
+    /// global management plane. Unknown bits are rejected so raw bitmask update
+    /// paths cannot grant undefined capabilities.
     pub const ASSIGNABLE_IN_ROOM: u64 = Self::ALL & !Self::NON_ASSIGNABLE_IN_ROOM;
 
     /// Default member permissions
     pub const DEFAULT_MEMBER: u64 = Self::SEND_CHAT
-        | Self::ADD_MEDIA
-        | Self::DELETE_MEDIA_SELF
-        | Self::EDIT_MEDIA_SELF
-        | Self::VIEW_PLAYLIST
+        | Self::CREATE_MEDIA_RESOURCE
+        | Self::VIEW_MEDIA_RESOURCES
         | Self::VIEW_MEMBER_LIST
         | Self::VIEW_CHAT_HISTORY
         | Self::USE_WEBRTC;
 
     /// Default admin permissions
     pub const DEFAULT_ADMIN: u64 = Self::DEFAULT_MEMBER
-        | Self::DELETE_MEDIA_ANY
-        | Self::REORDER_PLAYLIST
-        | Self::CLEAR_PLAYLIST
+        | Self::DELETE_MEDIA_RESOURCE_ANY
+        | Self::REORDER_MEDIA_RESOURCES
+        | Self::CLEAR_MEDIA_RESOURCES
         | Self::START_LIVE
         | Self::PLAY_CONTROL
         | Self::CHANGE_CURRENT_MEDIA
@@ -147,7 +156,7 @@ impl PermissionBits {
     /// Default guest permissions.
     ///
     /// Guests can enter guest-enabled public rooms, but they do not receive
-    /// room resource permissions by default.
+    /// media resource permissions by default.
     pub const DEFAULT_GUEST: u64 = Self::NONE;
 
     /// Permissions that can be granted to guests.
@@ -445,21 +454,21 @@ mod tests {
     fn test_permission_has() {
         let perms = PermissionBits(PermissionBits::SEND_CHAT);
         assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(!perms.has(PermissionBits::ADD_MEDIA));
+        assert!(!perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_permission_grant_revoke() {
         let mut perms = PermissionBits::empty();
         perms.grant(PermissionBits::SEND_CHAT);
-        perms.grant(PermissionBits::ADD_MEDIA);
+        perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
 
         assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MEDIA));
+        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 
         perms.revoke(PermissionBits::SEND_CHAT);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MEDIA));
+        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -474,8 +483,8 @@ mod tests {
         assert!(!member_perms.has(PermissionBits::DELETE_ROOM));
 
         let guest_perms = Role::Guest.permissions();
-        assert!(!guest_perms.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(!guest_perms.has(PermissionBits::ADD_MEDIA));
+        assert!(!guest_perms.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+        assert!(!guest_perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -492,7 +501,7 @@ mod tests {
         assert!(!perms.has(PermissionBits::SEND_CHAT));
 
         // Other DEFAULT_MEMBER permissions remain
-        assert!(perms.has(PermissionBits::ADD_MEDIA));
+        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -516,30 +525,30 @@ mod tests {
     #[test]
     fn test_permission_bits_std_bit_ops() {
         let chat = PermissionBits::from(PermissionBits::SEND_CHAT);
-        let media = PermissionBits::from(PermissionBits::ADD_MEDIA);
+        let media = PermissionBits::from(PermissionBits::CREATE_MEDIA_RESOURCE);
         let combined = chat | media;
 
-        assert!(combined.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
+        assert!(combined.has_all(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
         assert_eq!((combined & chat).bits(), PermissionBits::SEND_CHAT);
-        assert_eq!((combined ^ chat).bits(), PermissionBits::ADD_MEDIA);
+        assert_eq!(
+            (combined ^ chat).bits(),
+            PermissionBits::CREATE_MEDIA_RESOURCE
+        );
 
         let mut assigned = PermissionBits::empty();
         assigned |= PermissionBits::SEND_CHAT;
         assigned |= media;
         assigned &= !chat;
-        assert_eq!(assigned.bits(), PermissionBits::ADD_MEDIA);
+        assert_eq!(assigned.bits(), PermissionBits::CREATE_MEDIA_RESOURCE);
     }
 
     #[test]
-    fn test_room_assignable_permissions_reject_reserved_and_lifecycle_bits() {
+    fn test_room_assignable_permissions_reject_unknown_and_lifecycle_bits() {
         assert!(PermissionBits::includes_only_assignable_in_room(
-            PermissionBits::SEND_CHAT | PermissionBits::EDIT_MEDIA_SELF
+            PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE
         ));
         assert!(!PermissionBits::includes_only_assignable_in_room(
-            PermissionBits::RESERVED_5
-        ));
-        assert!(!PermissionBits::includes_only_assignable_in_room(
-            PermissionBits::RESERVED_9
+            PermissionBits::ALL | (1 << 21)
         ));
         assert!(!PermissionBits::includes_only_assignable_in_room(
             PermissionBits::DELETE_ROOM

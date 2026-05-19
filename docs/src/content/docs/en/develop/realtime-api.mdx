@@ -62,7 +62,7 @@ A guest can enter only when all of these are true:
 - The room has no password and is not closed or banned.
 - The guest token still matches the room guest version. Disabling guests, adding a password, or revoking guest access invalidates older tokens.
 
-Guests receive only basic realtime room state by default. They cannot read playlists, send chat or danmaku, or manage media. A room may grant guest-safe capabilities through `guest_added_permissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, playlist, media management, member administration, room administration, Provider credential, or management-plane APIs.
+Guests receive only basic realtime room state by default. They cannot read or manage media resources, send chat, or send danmaku. A room may grant guest-safe capabilities through `guest_added_permissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, media-resource management, member administration, room administration, Provider credential, or management-plane APIs.
 
 ```bash
 curl -sS "$BASE_URL/api/auth/guest-token" \

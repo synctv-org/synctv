@@ -62,7 +62,7 @@ impl MemberService {
         }
 
         Err(Error::InvalidInput(
-            "Permission set includes lifecycle-only permissions that cannot be delegated within a room"
+            "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
                 .to_string(),
         ))
     }

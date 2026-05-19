@@ -114,7 +114,7 @@ async fn test_permission_check_with_database_member() {
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
     let mut member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
-    member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA;
+    member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE;
     member_repo
         .add(&member)
         .await
@@ -129,9 +129,9 @@ async fn test_permission_check_with_database_member() {
         .expect("User should have SEND_CHAT permission");
 
     perm_service
-        .check_permission_no_cache(&room.id, &user_id, PermissionBits::ADD_MEDIA)
+        .check_permission_no_cache(&room.id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
         .await
-        .expect("User should have ADD_MEDIA permission");
+        .expect("User should have CREATE_MEDIA_RESOURCE permission");
 
     let kick_result = perm_service
         .check_permission_no_cache(&room.id, &user_id, PermissionBits::KICK_MEMBER)
@@ -266,13 +266,13 @@ async fn test_permission_bit_operations() {
     perms.grant(PermissionBits::SEND_CHAT);
     assert!(perms.has(PermissionBits::SEND_CHAT));
 
-    perms.grant(PermissionBits::ADD_MEDIA);
+    perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
     assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MEDIA));
+    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 
     perms.revoke(PermissionBits::SEND_CHAT);
     assert!(!perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MEDIA));
+    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 
     perms = PermissionBits(PermissionBits::DEFAULT_ADMIN);
     assert!(perms.has(PermissionBits::SEND_CHAT));

@@ -39,9 +39,11 @@ pub use manifest::{
     rewrite_m3u8_with_url_mapper, rewrite_uri_attribute_with_count, MAX_M3U8_URLS,
 };
 #[cfg(test)]
+pub(crate) use redirect::send_with_redirect_validation;
+#[cfg(test)]
 pub(crate) use redirect::REDIRECT_PRESERVE_HEADERS;
 pub(crate) use redirect::{
-    send_head_with_redirect_validation_with_control_and_timeout, send_with_redirect_validation,
+    send_head_with_redirect_validation_with_control_and_timeout,
     send_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
 };
 

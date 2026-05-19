@@ -19,8 +19,9 @@ impl CacheKey for UserId {
     fn cache_key(&self) -> String {
         self.to_string()
     }
-    fn from_id(id: &str) -> Self {
-        id.parse().expect("valid numeric cache key")
+    fn try_from_id(id: &str) -> Result<Self> {
+        id.parse()
+            .map_err(|_| crate::Error::InvalidInput(format!("Invalid user cache key: {id}")))
     }
 }
 
@@ -244,8 +245,8 @@ impl UserCache {
     ///
     /// Used by the cross-replica invalidation listener to remove a single
     /// entry from the local in-memory cache and L2 Redis cache.
-    pub async fn invalidate_by_id(&self, user_id: &str) {
-        self.inner.invalidate_by_id(user_id).await;
+    pub async fn invalidate_by_id(&self, user_id: &str) -> Result<()> {
+        self.inner.invalidate_by_id(user_id).await
     }
 
     /// Get multiple users at once
@@ -331,6 +332,22 @@ mod tests {
         // Invalidate
         cache.invalidate(&user_id).await.unwrap();
         assert!(cache.get(&user_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_by_id_rejects_malformed_id() {
+        let cache = UserCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
+
+        let result = cache.invalidate_by_id("not-a-user-id").await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

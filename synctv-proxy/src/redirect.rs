@@ -74,6 +74,7 @@ pub(crate) async fn send_head_with_redirect_validation_with_control_and_timeout(
 /// Headers matching [`REDIRECT_PRESERVE_HEADERS`] are captured from the
 /// initial request and re-applied on every redirect hop so that
 /// provider-controlled headers are not lost.
+#[cfg(test)]
 pub(crate) async fn send_with_redirect_validation(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
@@ -82,6 +83,7 @@ pub(crate) async fn send_with_redirect_validation(
     send_with_redirect_validation_with_control(client, request, ssrf_guard, None).await
 }
 
+#[cfg(test)]
 pub(crate) async fn send_with_redirect_validation_with_control(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
@@ -128,8 +130,6 @@ async fn send_with_redirect_validation_inner(
         .build()
         .map_err(|e| ProxyError::InvalidRequest(format!("failed to build proxy request: {e}")))?;
     validate_target_url_against_ssrf(built.url(), ssrf_guard)?;
-
-    let original_origin = built.url().origin().ascii_serialization();
 
     let preserved: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = built
         .headers()
@@ -178,10 +178,9 @@ async fn send_with_redirect_validation_inner(
             );
         }
 
-        let is_cross_origin = location.origin().ascii_serialization() != original_origin;
-        if is_cross_origin {
-            validate_target_url_against_ssrf(&location, ssrf_guard)?;
-        }
+        let is_cross_origin =
+            location.origin().ascii_serialization() != current_url.origin().ascii_serialization();
+        validate_target_url_against_ssrf(&location, ssrf_guard)?;
 
         let mut redirect_req = client.request(redirect_method.clone(), location.clone());
         for (name, value) in &preserved {

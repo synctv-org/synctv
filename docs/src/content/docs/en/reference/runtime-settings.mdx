@@ -67,10 +67,10 @@ Semantics:
 These settings are stored as JSON arrays of stable permission names, for example:
 
 ```json
-["send_chat", "add_media", "view_playlist", "view_member_list"]
+["send_chat", "create_media_resource", "view_media_resources", "view_member_list"]
 ```
 
-`permissions.guest_default` has a dedicated guest ceiling. It rejects `view_playlist`, `send_chat`, media, playback-control, and administration permissions. Valid example:
+`permissions.guest_default` has a dedicated guest ceiling. It rejects `view_media_resources`, `send_chat`, media-resource, playback-control, and administration permissions. Valid example:
 
 ```json
 ["view_member_list", "view_chat_history", "use_webrtc"]

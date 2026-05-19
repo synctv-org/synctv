@@ -778,7 +778,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::PermissionBits::CLEAR_PLAYLIST,
+                synctv_core::models::PermissionBits::CLEAR_MEDIA_RESOURCES,
             )
             .await
             .map_err(ApiError::from)?;
@@ -925,7 +925,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::PermissionBits::REORDER_PLAYLIST,
+                synctv_core::models::PermissionBits::REORDER_MEDIA_RESOURCES,
             )
             .await
             .map_err(Self::map_room_access_error)?;
@@ -1000,7 +1000,7 @@ impl ClientApiImpl {
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
             .await?;
         let rid = actor.room_id();
         let viewer_id = actor.user_id();
@@ -1429,7 +1429,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::Media, ApiError> {
         let rid = actor.room_id();
         let mid = crate::impls::parse_media_id_param(media_id, "media_id", &self.public_id_codec)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
             .await?;
 
         // Direct lookup by ID instead of loading the entire playlist.

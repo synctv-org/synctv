@@ -31,6 +31,12 @@ pub trait ShutdownHook: Send + Sync {
 /// every pending item. The overall shutdown budget always takes precedence.
 const MIN_PER_TASK_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CoordinatorShutdownMode {
+    Graceful,
+    Force,
+}
+
 struct AbortOnDropJoinHandle {
     handle: Option<JoinHandle<()>>,
 }
@@ -64,10 +70,14 @@ impl Drop for AbortOnDropJoinHandle {
 
 /// Centralized collection of all shutdown resources.
 ///
-/// Resources are executed in this order during shutdown:
+/// Resources are executed in this order during graceful shutdown:
 /// 1. Cancel all registered `CancellationToken`s (in registration order).
 /// 2. Drain all background task `JoinHandle`s (budget-aware timeouts).
 /// 3. Run all typed shutdown hooks (budget-aware timeouts).
+///
+/// Force shutdown preserves token cancellation and typed cleanup hooks, but
+/// aborts registered background tasks immediately instead of waiting for them
+/// to drain. This prevents stuck tasks from consuming the cleanup hook budget.
 ///
 /// The `total_budget` limits the overall shutdown duration to stay within
 /// K8s `terminationGracePeriodSeconds`. The remaining budget is divided
@@ -130,8 +140,29 @@ impl ShutdownCoordinator {
     /// ensuring the coordinator does not accidentally re-spend a fresh full
     /// budget and exceed the container termination window.
     pub async fn shutdown_with_deadline(self, deadline: tokio::time::Instant) {
+        self.shutdown_with_deadline_and_mode(deadline, CoordinatorShutdownMode::Graceful)
+            .await;
+    }
+
+    /// Execute a force shutdown sequence within the remaining time until `deadline`.
+    ///
+    /// Force mode still cancels tokens and runs typed cleanup hooks, but it
+    /// does not spend the hook budget waiting for background tasks to finish
+    /// naturally. Registered tasks are aborted first, then hooks get the
+    /// remaining deadline.
+    pub async fn shutdown_force_with_deadline(self, deadline: tokio::time::Instant) {
+        self.shutdown_with_deadline_and_mode(deadline, CoordinatorShutdownMode::Force)
+            .await;
+    }
+
+    async fn shutdown_with_deadline_and_mode(
+        self,
+        deadline: tokio::time::Instant,
+        mode: CoordinatorShutdownMode,
+    ) {
         info!(
-            "Starting shutdown sequence (total budget: {}s)",
+            "Starting {} shutdown sequence (total budget: {}s)",
+            mode.as_str(),
             self.total_budget.as_secs()
         );
 
@@ -144,40 +175,13 @@ impl ShutdownCoordinator {
             }
         }
 
-        // Phase 2: Drain background tasks with budget-aware timeouts
-        if !self.tasks.is_empty() {
-            let remaining_items = self.tasks.len() + self.hooks.len();
-            info!(
-                "Waiting for {} background task(s) to finish...",
-                self.tasks.len()
-            );
-            for (i, (name, mut handle)) in self.tasks.into_iter().enumerate() {
-                let remaining = remaining_items - i;
-                let per_item = Self::budget_per_item(deadline, remaining);
-                match tokio::time::timeout(per_item, &mut handle).await {
-                    Ok(Ok(())) => {
-                        info!("Background task '{name}' finished");
-                    }
-                    Ok(Err(e)) => {
-                        warn!("Background task '{name}' panicked: {e}");
-                    }
-                    Err(_) => {
-                        warn!(
-                            "Background task '{name}' did not finish within {}s, aborting",
-                            per_item.as_secs()
-                        );
-                        handle.abort();
-                        match handle.await {
-                            Ok(()) => info!("Background task '{name}' aborted cleanly"),
-                            Err(e) if e.is_cancelled() => {
-                                info!("Background task '{name}' aborted");
-                            }
-                            Err(e) => {
-                                warn!("Background task '{name}' failed after abort: {e}");
-                            }
-                        }
-                    }
-                }
+        // Phase 2: Drain or abort background tasks.
+        match mode {
+            CoordinatorShutdownMode::Graceful => {
+                Self::drain_background_tasks(self.tasks, self.hooks.len(), deadline).await;
+            }
+            CoordinatorShutdownMode::Force => {
+                Self::abort_background_tasks(self.tasks).await;
             }
         }
 
@@ -210,6 +214,80 @@ impl ShutdownCoordinator {
         }
     }
 
+    async fn drain_background_tasks(
+        tasks: Vec<(&'static str, JoinHandle<()>)>,
+        hook_count: usize,
+        deadline: tokio::time::Instant,
+    ) {
+        if tasks.is_empty() {
+            return;
+        }
+
+        let remaining_items = tasks.len() + hook_count;
+        info!(
+            "Waiting for {} background task(s) to finish...",
+            tasks.len()
+        );
+        for (i, (name, mut handle)) in tasks.into_iter().enumerate() {
+            let remaining = remaining_items - i;
+            let per_item = Self::budget_per_item(deadline, remaining);
+            match tokio::time::timeout(per_item, &mut handle).await {
+                Ok(Ok(())) => {
+                    info!("Background task '{name}' finished");
+                }
+                Ok(Err(e)) => {
+                    warn!("Background task '{name}' panicked: {e}");
+                }
+                Err(_) => {
+                    warn!(
+                        "Background task '{name}' did not finish within {}s, aborting",
+                        per_item.as_secs()
+                    );
+                    handle.abort();
+                    match handle.await {
+                        Ok(()) => info!("Background task '{name}' aborted cleanly"),
+                        Err(e) if e.is_cancelled() => {
+                            info!("Background task '{name}' aborted");
+                        }
+                        Err(e) => {
+                            warn!("Background task '{name}' failed after abort: {e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn abort_background_tasks(tasks: Vec<(&'static str, JoinHandle<()>)>) {
+        if tasks.is_empty() {
+            return;
+        }
+
+        warn!(
+            "Force shutdown: aborting {} background task(s) without drain wait",
+            tasks.len()
+        );
+        for (name, handle) in &tasks {
+            warn!("Force shutdown: aborting background task '{name}'");
+            handle.abort();
+        }
+
+        tokio::task::yield_now().await;
+
+        for (name, handle) in tasks {
+            if !handle.is_finished() {
+                warn!("Force shutdown: background task '{name}' did not stop immediately");
+                continue;
+            }
+
+            match handle.await {
+                Ok(()) => info!("Background task '{name}' aborted cleanly"),
+                Err(e) if e.is_cancelled() => info!("Background task '{name}' aborted"),
+                Err(e) => warn!("Background task '{name}' failed after forced abort: {e}"),
+            }
+        }
+    }
+
     /// Compute the timeout for a single item given the remaining budget.
     ///
     /// Divides the time remaining until `deadline` equally among
@@ -236,6 +314,15 @@ impl ShutdownCoordinator {
             equal_share.max(MIN_PER_TASK_TIMEOUT)
         } else {
             equal_share
+        }
+    }
+}
+
+impl CoordinatorShutdownMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Graceful => "graceful",
+            Self::Force => "force",
         }
     }
 }
@@ -435,14 +522,15 @@ impl ShutdownHook for PlaybackServiceShutdownHook {
     }
 }
 
-/// Stops the room settings cache invalidation listener task used by ChatService.
+/// Stops a room settings cache invalidation listener task.
 pub struct RoomSettingsServiceShutdownHook {
+    pub name: &'static str,
     pub service: synctv_core::service::RoomSettingsService,
 }
 
 impl ShutdownHook for RoomSettingsServiceShutdownHook {
-    fn name(&self) -> &'static str {
-        "room_settings_service"
+    fn name(&self) -> &str {
+        self.name
     }
     fn timeout(&self) -> Duration {
         Duration::from_secs(10)
@@ -630,6 +718,58 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "external deadline should cap shutdown duration, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_force_shutdown_aborts_tasks_before_running_hooks() {
+        struct RecordingHook {
+            ran: Arc<AtomicBool>,
+        }
+
+        impl ShutdownHook for RecordingHook {
+            fn name(&self) -> &'static str {
+                "recording_hook"
+            }
+
+            fn timeout(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+
+            fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                Box::pin(async move {
+                    self.ran.store(true, Ordering::SeqCst);
+                })
+            }
+        }
+
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
+        let hook_ran = Arc::new(AtomicBool::new(false));
+
+        for _ in 0..32 {
+            coord.register_task(
+                "stuck_task",
+                tokio::spawn(async move {
+                    std::future::pending::<()>().await;
+                }),
+            );
+        }
+        coord.register_hook(RecordingHook {
+            ran: Arc::clone(&hook_ran),
+        });
+
+        let start = tokio::time::Instant::now();
+        coord
+            .shutdown_force_with_deadline(start + Duration::from_millis(100))
+            .await;
+
+        assert!(
+            hook_ran.load(Ordering::SeqCst),
+            "force shutdown must not let stuck background tasks consume the hook budget"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "force shutdown should abort registered tasks promptly"
         );
     }
 
@@ -824,6 +964,46 @@ mod tests {
         assert!(
             cancel_token.is_cancelled(),
             "realtime manager shutdown hook must invoke RealtimeManager::shutdown"
+        );
+    }
+
+    fn make_room_settings_service_for_hook_test() -> synctv_core::service::RoomSettingsService {
+        synctv_core::service::RoomSettingsService::new(
+            synctv_core::repository::RoomSettingsRepository::new(
+                sqlx::PgPool::connect_lazy("postgres://localhost/test")
+                    .expect("lazy postgres pool for unit tests should build"),
+            ),
+            None,
+            Arc::new(synctv_core::service::notification::NotificationService::default()),
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_room_settings_shutdown_hook_uses_instance_name() {
+        let room_hook = RoomSettingsServiceShutdownHook {
+            name: "room_service_settings",
+            service: make_room_settings_service_for_hook_test(),
+        };
+        let chat_hook = RoomSettingsServiceShutdownHook {
+            name: "chat_service_settings",
+            service: make_room_settings_service_for_hook_test(),
+        };
+
+        assert_eq!(
+            ShutdownHook::name(&room_hook),
+            "room_service_settings",
+            "room service hook must expose its configured shutdown name"
+        );
+        assert_eq!(
+            ShutdownHook::name(&chat_hook),
+            "chat_service_settings",
+            "chat service hook must expose its configured shutdown name"
+        );
+        assert_ne!(
+            ShutdownHook::name(&room_hook),
+            ShutdownHook::name(&chat_hook)
         );
     }
 }

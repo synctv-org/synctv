@@ -202,15 +202,15 @@ fn test_permission_bits_operations() {
 
     perms.grant(PermissionBits::SEND_CHAT);
     assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(!perms.has(PermissionBits::ADD_MEDIA));
+    assert!(!perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 
-    perms.grant(PermissionBits::ADD_MEDIA);
+    perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
     assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MEDIA));
+    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 
     perms.revoke(PermissionBits::SEND_CHAT);
     assert!(!perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MEDIA));
+    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 }
 
 #[test]
@@ -470,7 +470,7 @@ async fn test_e2e_permission_checks() {
     let mut member_perms = PermissionBits(PermissionBits::DEFAULT_MEMBER);
 
     assert!(member_perms.has(PermissionBits::SEND_CHAT));
-    assert!(member_perms.has(PermissionBits::ADD_MEDIA));
+    assert!(member_perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     assert!(!member_perms.has(PermissionBits::KICK_MEMBER));
 
     member_perms.grant(PermissionBits::KICK_MEMBER);
@@ -593,14 +593,14 @@ async fn test_e2e_permission_inheritance() {
 
     let admin = PermissionBits(PermissionBits::DEFAULT_ADMIN);
     assert!(admin.has(PermissionBits::SEND_CHAT));
-    assert!(admin.has(PermissionBits::ADD_MEDIA));
+    assert!(admin.has(PermissionBits::CREATE_MEDIA_RESOURCE));
     assert!(admin.has(PermissionBits::KICK_MEMBER));
     assert!(admin.has(PermissionBits::SET_ROOM_SETTINGS));
 
     let guest = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    assert!(!guest.has(PermissionBits::VIEW_PLAYLIST));
+    assert!(!guest.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     assert!(!guest.has(PermissionBits::SEND_CHAT));
-    assert!(!guest.has(PermissionBits::ADD_MEDIA));
+    assert!(!guest.has(PermissionBits::CREATE_MEDIA_RESOURCE));
 }
 
 #[tokio::test]
@@ -983,11 +983,11 @@ fn test_permission_bits_remain_consistent_under_concurrent_updates() {
 
                 // Grant and revoke
                 perms.fetch_or(
-                    PermissionBits::ADD_MEDIA,
+                    PermissionBits::CREATE_MEDIA_RESOURCE,
                     std::sync::atomic::Ordering::SeqCst,
                 );
                 perms.fetch_and(
-                    !PermissionBits::ADD_MEDIA,
+                    !PermissionBits::CREATE_MEDIA_RESOURCE,
                     std::sync::atomic::Ordering::SeqCst,
                 );
             }

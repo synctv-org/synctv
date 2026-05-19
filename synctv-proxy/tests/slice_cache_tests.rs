@@ -220,6 +220,12 @@ fn test_parse_range_start_beyond_total() {
 }
 
 #[test]
+fn test_parse_range_start_after_end_rejected() {
+    let result = synctv_proxy::slice_cache::parse_range_header("bytes=10-5", 10000);
+    assert!(result.is_err(), "Range start after end must be rejected");
+}
+
+#[test]
 fn test_parse_range_end_capped_at_total() {
     // If end > total-1, should be capped
     let (start, end) =
@@ -352,6 +358,43 @@ async fn test_get_or_fetch_slice_last_slice_partial() {
         .await
         .unwrap();
     assert_eq!(slice.len(), last_slice_size);
+}
+
+#[tokio::test]
+async fn test_get_or_fetch_slice_accepts_one_byte_resource() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 1;
+    let body = Bytes::from_static(b"x");
+
+    Mock::given(method("GET"))
+        .and(path("/one-byte.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Range", "bytes 0-0/1")
+                .insert_header("Content-Length", "1"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/one-byte.bin");
+    let headers = HashMap::new();
+
+    let (slice, status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .expect("single-byte 206 response should be accepted");
+
+    assert_eq!(status, CacheStatus::Miss);
+    assert_eq!(slice, body);
 }
 
 // proxy_with_cache integration tests
@@ -2281,6 +2324,64 @@ async fn test_etag_consistency_mismatch_triggers_invalidation() {
     assert!(
         err_msg.contains("ETag") || err_msg.contains("etag") || err_msg.contains("modified"),
         "Error message should mention ETag mismatch, got: {err_msg}"
+    );
+}
+
+/// An established ETag must not silently disappear on a later slice.
+#[tokio::test]
+async fn test_etag_disappearance_triggers_invalidation() {
+    let mock_server = MockServer::start().await;
+    let slice_size = 1024_usize;
+    let total_size: u64 = 2048;
+
+    Mock::given(method("GET"))
+        .and(path("/etag-disappears.mp4"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(Bytes::from(vec![0xAAu8; slice_size]))
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"etag-v1\""),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/etag-disappears.mp4"))
+        .and(header("Range", "bytes=1024-2047"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(Bytes::from(vec![0xBBu8; slice_size]))
+                .insert_header("Content-Range", format!("bytes 1024-2047/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/etag-disappears.mp4");
+    let headers = HashMap::new();
+
+    cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .expect("first ETag-bearing slice should cache");
+
+    let err = cache
+        .get_or_fetch_slice(&url, &headers, 1, total_size)
+        .await
+        .expect_err("missing ETag after an established ETag must fail");
+
+    assert!(
+        err.to_string().contains("ETag"),
+        "error should mention ETag disappearance, got: {err}"
     );
 }
 

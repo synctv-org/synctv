@@ -578,7 +578,7 @@ mod tests {
         let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let result = member.effective_permissions(default);
         assert!(!result.has(PermissionBits::SEND_CHAT));
-        assert!(result.has(PermissionBits::ADD_MEDIA)); // other permissions intact
+        assert!(result.has(PermissionBits::CREATE_MEDIA_RESOURCE)); // other permissions intact
     }
 
     #[test]
@@ -599,7 +599,7 @@ mod tests {
         let default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         let result = member.effective_permissions(default);
         assert!(!result.has(PermissionBits::SEND_CHAT));
-        assert!(!result.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!result.has(PermissionBits::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]

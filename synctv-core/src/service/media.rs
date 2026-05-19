@@ -333,7 +333,7 @@ impl MediaService {
 
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
             .await?;
 
         if let Some(ref playlist_id) = request.playlist_id {
@@ -501,7 +501,7 @@ impl MediaService {
     ) -> Result<Vec<Media>> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
             .await?;
 
         if let Some(ref playlist_id) = playlist_id {
@@ -734,7 +734,8 @@ impl MediaService {
 
                 // Check permission: client media edits are creator-owned. Global
                 // administrators use admin_edit_media_with_outbox instead of this
-                // member-facing path.
+                // member-facing path. Creating media resources includes
+                // maintaining resources created by the same actor.
                 // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
                 // This prevents a race condition where:
                 // 1. Permission is granted and cached on first attempt
@@ -742,7 +743,11 @@ impl MediaService {
                 // 3. Retry would succeed with stale cached permission
                 // By bypassing cache, we ensure each retry checks current permission state.
                 self.permission_service
-                    .check_permission_no_cache(&room_id, &user_id, PermissionBits::EDIT_MEDIA_SELF)
+                    .check_permission_no_cache(
+                        &room_id,
+                        &user_id,
+                        PermissionBits::CREATE_MEDIA_RESOURCE,
+                    )
                     .await?;
 
                 // Capture the version before applying changes to detect concurrent edits
@@ -1061,7 +1066,11 @@ impl MediaService {
     ) -> Result<Vec<Media>> {
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
+                .check_permission_no_cache(
+                    &room_id,
+                    &user_id,
+                    PermissionBits::REORDER_MEDIA_RESOURCES,
+                )
                 .await?;
         }
 
@@ -1470,7 +1479,7 @@ impl MediaService {
     ) -> Result<Vec<DirectoryItem>> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::VIEW_PLAYLIST)
+            .check_permission(&room_id, &user_id, PermissionBits::VIEW_MEDIA_RESOURCES)
             .await?;
 
         // Get playlist

@@ -48,7 +48,7 @@ service UserService {
     rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
     rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
 
-    // User-initiated room resource operations outside room-scoped context
+    // User-initiated room lifecycle operations outside room-scoped context
     rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
     rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
     rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);

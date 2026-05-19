@@ -1608,7 +1608,9 @@ async fn test_start_user_joined_payload_uses_room_permission_overrides() {
         .await
         .expect("room settings should load");
     settings.member_removed_permissions =
-        synctv_core::models::room_settings::MemberRemovedPermissions(PermissionBits::ADD_MEDIA);
+        synctv_core::models::room_settings::MemberRemovedPermissions(
+            PermissionBits::CREATE_MEDIA_RESOURCE,
+        );
     handler
         .room_service
         .set_room_settings(&handler.room_id, &settings)
@@ -1628,11 +1630,11 @@ async fn test_start_user_joined_payload_uses_room_permission_overrides() {
     let member = joined.member.as_ref().expect("joined member should be set");
 
     assert!(
-        PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::ADD_MEDIA),
-        "static member defaults include ADD_MEDIA, so the payload must prove it used room overrides"
+        PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::CREATE_MEDIA_RESOURCE),
+        "static member defaults include CREATE_MEDIA_RESOURCE, so the payload must prove it used room overrides"
     );
     assert!(
-        !PermissionBits(member.permissions).has(PermissionBits::ADD_MEDIA),
+        !PermissionBits(member.permissions).has(PermissionBits::CREATE_MEDIA_RESOURCE),
         "initial UserJoined payload must apply room-level permission removals"
     );
 
@@ -4008,7 +4010,7 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
 }
 
 #[tokio::test]
-async fn test_room_resource_hub_coalesces_event_refresh_and_fans_out() {
+async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
     let snapshot_service =
         MutablePlaylistItemsSnapshotService::new(crate::proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
@@ -4022,7 +4024,7 @@ async fn test_room_resource_hub_coalesces_event_refresh_and_fans_out() {
         });
     let sender_a = RecordingMessageSender::new();
     let sender_b = RecordingMessageSender::new();
-    let event_service = test_realtime_manager("room_resource_hub_event_refresh").await;
+    let event_service = test_realtime_manager("media_resource_hub_event_refresh").await;
     let connection_service = test_connection_manager();
     let pool = test_pool();
     let room_service = test_room_service(pool.clone());
@@ -4145,12 +4147,12 @@ async fn test_room_resource_hub_coalesces_event_refresh_and_fans_out() {
 }
 
 #[tokio::test]
-async fn test_room_resource_hub_refresh_dedupe_tracks_subscription_generation() {
+async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation() {
     let snapshot_service =
         BlockingPlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"), 2);
     let sender_a = RecordingMessageSender::new();
     let sender_b = RecordingMessageSender::new();
-    let event_service = test_realtime_manager("room_resource_hub_generation_dedupe").await;
+    let event_service = test_realtime_manager("media_resource_hub_generation_dedupe").await;
     let connection_service = test_connection_manager();
     let pool = test_pool();
     let room_service = test_room_service(pool.clone());
@@ -5321,7 +5323,7 @@ fn test_user_joined_event_conversion() {
         permissions: PermissionBits(PermissionBits::DEFAULT_MEMBER),
         role: 3,
         added_permissions: PermissionBits(PermissionBits::PLAY_CONTROL),
-        removed_permissions: PermissionBits(PermissionBits::ADD_MEDIA),
+        removed_permissions: PermissionBits(PermissionBits::CREATE_MEDIA_RESOURCE),
         admin_added_permissions: PermissionBits(PermissionBits::KICK_MEMBER),
         admin_removed_permissions: PermissionBits(PermissionBits::BAN_MEMBER),
         joined_at: now(),
@@ -5338,7 +5340,10 @@ fn test_user_joined_event_conversion() {
             assert_eq!(member.username, "carol");
             assert_eq!(member.role, 3);
             assert_eq!(member.added_permissions, PermissionBits::PLAY_CONTROL);
-            assert_eq!(member.removed_permissions, PermissionBits::ADD_MEDIA);
+            assert_eq!(
+                member.removed_permissions,
+                PermissionBits::CREATE_MEDIA_RESOURCE
+            );
             assert_eq!(member.admin_added_permissions, PermissionBits::KICK_MEMBER);
             assert_eq!(member.admin_removed_permissions, PermissionBits::BAN_MEMBER);
             assert!(member.is_online);
@@ -6504,15 +6509,15 @@ async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_send_cha
 }
 
 #[tokio::test]
-async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_playlist()
-{
+async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_media_resources(
+) {
     let event_service = test_realtime_manager("guest_playlist_observe_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::VIEW_PLAYLIST),
+        PermissionBits(PermissionBits::VIEW_MEDIA_RESOURCES),
     );
 
     let err = handler

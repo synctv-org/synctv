@@ -157,9 +157,10 @@ impl ClientApiImpl {
         let actor_id = uid;
         let rid = self.parse_room_id(room_id)?;
 
-        // Check membership and add media permission
+        // Playlists/folders and media are both media resources; creating either
+        // requires the shared resource creation permission.
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::ADD_MEDIA)
+            .check_permission(&rid, &uid, PermissionBits::CREATE_MEDIA_RESOURCE)
             .await
             .map_err(Self::map_room_access_error)?;
         let service_req = build_create_playlist_request(&rid, req, &self.public_id_codec)?;
@@ -279,7 +280,7 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
 
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
+            .check_permission(&rid, &uid, PermissionBits::REORDER_MEDIA_RESOURCES)
             .await
             .map_err(Self::map_room_access_error)?;
         let service_req = build_move_playlist_request(req, &self.public_id_codec)?;
@@ -377,7 +378,7 @@ impl ClientApiImpl {
         actor: &RoomActor,
         playlist_id: &str,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
             .await?;
         let rid = actor.room_id();
         let pid = crate::impls::parse_playlist_id_param(
@@ -458,7 +459,7 @@ impl ClientApiImpl {
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
             .await?;
         let rid = actor.room_id();
         let page = page_i32_to_usize(req.page.max(1), "page")?;

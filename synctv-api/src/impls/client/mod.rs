@@ -383,7 +383,7 @@ impl ClientApiImpl {
             Ok(())
         } else {
             Err(ApiError::Authorization(
-                "Guests do not have permission to access this room resource".to_string(),
+                "Guests do not have permission to access this media resource".to_string(),
             ))
         }
     }

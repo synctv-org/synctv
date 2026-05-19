@@ -186,8 +186,8 @@ impl UsernameCache {
     ///
     /// Used by the cross-replica invalidation listener to remove a single
     /// entry from the local in-memory cache and L2 Redis cache.
-    pub async fn invalidate_by_id(&self, user_id: &str) {
-        self.inner.invalidate_by_id(user_id).await;
+    pub async fn invalidate_by_id(&self, user_id: &str) -> Result<()> {
+        self.inner.invalidate_by_id(user_id).await
     }
 
     /// Clear all cached usernames (memory only)
@@ -325,7 +325,7 @@ mod tests {
         cache.set(&user_id, "alice").await.unwrap();
         assert!(cache.get(&user_id).await.unwrap().is_some());
 
-        cache.invalidate_by_id(&user_id.to_string()).await;
+        cache.invalidate_by_id(&user_id.to_string()).await.unwrap();
         assert!(cache.get(&user_id).await.unwrap().is_none());
     }
 

@@ -918,6 +918,7 @@ impl Application {
                     )
                 })?;
             shutdown.register_hook(RoomSettingsServiceShutdownHook {
+                name: "room_service_settings",
                 service: synctv_services.room_service.room_settings_service().clone(),
             });
         }
@@ -936,6 +937,7 @@ impl Application {
                     anyhow::anyhow!("Failed to start RoomSettingsService invalidation runtime: {e}")
                 })?;
             shutdown.register_hook(RoomSettingsServiceShutdownHook {
+                name: "chat_service_settings",
                 service: synctv_services.chat_service.room_settings_service().clone(),
             });
         }

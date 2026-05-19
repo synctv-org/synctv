@@ -159,10 +159,15 @@ async fn test_add_media_without_permission_denied() {
         .unwrap();
     register_direct_url_provider(&room_service).await;
 
-    // Revoke ADD_MEDIA from member
+    // Revoke CREATE_MEDIA_RESOURCE from member
     room_service
         .member_service()
-        .revoke_permission(room.id, creator.id, member.id, PermissionBits::ADD_MEDIA)
+        .revoke_permission(
+            room.id,
+            creator.id,
+            member.id,
+            PermissionBits::CREATE_MEDIA_RESOURCE,
+        )
         .await
         .unwrap();
 
@@ -179,7 +184,10 @@ async fn test_add_media_without_permission_denied() {
 
     let result = media_service.add_media(room.id, member.id, request).await;
 
-    assert!(result.is_err(), "Should fail without ADD_MEDIA permission");
+    assert!(
+        result.is_err(),
+        "Should fail without CREATE_MEDIA_RESOURCE permission"
+    );
     match result.unwrap_err() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),

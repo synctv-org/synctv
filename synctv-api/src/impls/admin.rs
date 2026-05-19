@@ -6837,7 +6837,7 @@ mod tests {
             .expect("room settings should load");
         settings.member_removed_permissions =
             synctv_core::models::room_settings::MemberRemovedPermissions(
-                synctv_core::models::PermissionBits::ADD_MEDIA,
+                synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE,
             );
         admin_api
             .room_service
@@ -6865,12 +6865,12 @@ mod tests {
         let member = response.member.expect("member should be returned");
         assert!(
             synctv_core::models::PermissionBits(synctv_core::models::PermissionBits::DEFAULT_MEMBER)
-                .has(synctv_core::models::PermissionBits::ADD_MEDIA),
-            "static member defaults include ADD_MEDIA, so the response must prove it used room overrides"
+                .has(synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE),
+            "static member defaults include CREATE_MEDIA_RESOURCE, so the response must prove it used room overrides"
         );
         assert!(
             !synctv_core::models::PermissionBits(member.permissions)
-                .has(synctv_core::models::PermissionBits::ADD_MEDIA),
+                .has(synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE),
             "admin member response must apply room-level permission removals"
         );
     }

@@ -8686,12 +8686,22 @@ fn humanize_member_status(raw: i64) -> Option<String> {
 fn humanize_permission_bits(bits: u64) -> Vec<String> {
     [
         (PermissionBits::SEND_CHAT, "send_chat"),
-        (PermissionBits::ADD_MEDIA, "add_media"),
-        (PermissionBits::DELETE_MEDIA_SELF, "delete_media_self"),
-        (PermissionBits::DELETE_MEDIA_ANY, "delete_media_any"),
-        (PermissionBits::EDIT_MEDIA_SELF, "edit_media_self"),
-        (PermissionBits::REORDER_PLAYLIST, "reorder_playlist"),
-        (PermissionBits::CLEAR_PLAYLIST, "clear_playlist"),
+        (
+            PermissionBits::CREATE_MEDIA_RESOURCE,
+            "create_media_resource",
+        ),
+        (
+            PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+            "delete_media_resource_any",
+        ),
+        (
+            PermissionBits::REORDER_MEDIA_RESOURCES,
+            "reorder_media_resources",
+        ),
+        (
+            PermissionBits::CLEAR_MEDIA_RESOURCES,
+            "clear_media_resources",
+        ),
         (PermissionBits::START_LIVE, "start_live"),
         (PermissionBits::PLAY_CONTROL, "play_control"),
         (PermissionBits::CHANGE_CURRENT_MEDIA, "change_current_media"),
@@ -8707,7 +8717,7 @@ fn humanize_permission_bits(bits: u64) -> Vec<String> {
         (PermissionBits::SET_ROOM_SETTINGS, "set_room_settings"),
         (PermissionBits::DELETE_CHAT, "delete_chat"),
         (PermissionBits::DELETE_ROOM, "delete_room"),
-        (PermissionBits::VIEW_PLAYLIST, "view_playlist"),
+        (PermissionBits::VIEW_MEDIA_RESOURCES, "view_media_resources"),
         (PermissionBits::VIEW_MEMBER_LIST, "view_member_list"),
         (PermissionBits::VIEW_CHAT_HISTORY, "view_chat_history"),
         (PermissionBits::USE_WEBRTC, "use_webrtc"),
@@ -13156,10 +13166,10 @@ mod tests {
                 username: "root".into(),
                 role: synctv_proto::common::RoomMemberRole::Creator as i32,
                 permissions: synctv_core::models::PermissionBits::SEND_CHAT
-                    | synctv_core::models::PermissionBits::VIEW_PLAYLIST,
+                    | synctv_core::models::PermissionBits::VIEW_MEDIA_RESOURCES,
                 status: synctv_proto::common::MemberStatus::Active as i32,
-                added_permissions: synctv_core::models::PermissionBits::ADD_MEDIA,
-                removed_permissions: synctv_core::models::PermissionBits::DELETE_MEDIA_SELF,
+                added_permissions: synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE,
+                removed_permissions: synctv_core::models::PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
                 admin_added_permissions: synctv_core::models::PermissionBits::KICK_MEMBER,
                 admin_removed_permissions: synctv_core::models::PermissionBits::BAN_MEMBER,
                 joined_at: 1_775_291_657_i64,
@@ -13196,15 +13206,15 @@ mod tests {
         assert_eq!(rendered["members"][0]["status"], "active");
         assert_eq!(
             rendered["members"][0]["permission_names"],
-            json!(["send_chat", "view_playlist"])
+            json!(["send_chat", "view_media_resources"])
         );
         assert_eq!(
             rendered["members"][0]["added_permission_names"],
-            json!(["add_media"])
+            json!(["create_media_resource"])
         );
         assert_eq!(
             rendered["members"][0]["removed_permission_names"],
-            json!(["delete_media_self"])
+            json!(["delete_media_resource_any"])
         );
         assert_eq!(
             rendered["members"][0]["admin_added_permission_names"],

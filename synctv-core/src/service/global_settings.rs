@@ -101,12 +101,22 @@ impl PermissionSet {
 
 const NAMED_PERMISSIONS: &[(&str, u64)] = &[
     ("send_chat", PermissionBits::SEND_CHAT),
-    ("add_media", PermissionBits::ADD_MEDIA),
-    ("delete_media_self", PermissionBits::DELETE_MEDIA_SELF),
-    ("delete_media_any", PermissionBits::DELETE_MEDIA_ANY),
-    ("edit_media_self", PermissionBits::EDIT_MEDIA_SELF),
-    ("reorder_playlist", PermissionBits::REORDER_PLAYLIST),
-    ("clear_playlist", PermissionBits::CLEAR_PLAYLIST),
+    (
+        "create_media_resource",
+        PermissionBits::CREATE_MEDIA_RESOURCE,
+    ),
+    (
+        "delete_media_resource_any",
+        PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+    ),
+    (
+        "reorder_media_resources",
+        PermissionBits::REORDER_MEDIA_RESOURCES,
+    ),
+    (
+        "clear_media_resources",
+        PermissionBits::CLEAR_MEDIA_RESOURCES,
+    ),
     ("start_live", PermissionBits::START_LIVE),
     ("play_control", PermissionBits::PLAY_CONTROL),
     ("change_current_media", PermissionBits::CHANGE_CURRENT_MEDIA),
@@ -122,7 +132,7 @@ const NAMED_PERMISSIONS: &[(&str, u64)] = &[
     ("set_room_settings", PermissionBits::SET_ROOM_SETTINGS),
     ("delete_chat", PermissionBits::DELETE_CHAT),
     ("delete_room", PermissionBits::DELETE_ROOM),
-    ("view_playlist", PermissionBits::VIEW_PLAYLIST),
+    ("view_media_resources", PermissionBits::VIEW_MEDIA_RESOURCES),
     ("view_member_list", PermissionBits::VIEW_MEMBER_LIST),
     ("view_chat_history", PermissionBits::VIEW_CHAT_HISTORY),
     ("use_webrtc", PermissionBits::USE_WEBRTC),
@@ -1025,14 +1035,16 @@ mod tests {
         assert!(empty.validate_guest_default().is_ok());
 
         let rejected: PermissionSet =
-            r#"["view_playlist","send_chat","add_media"]"#.parse().unwrap();
+            r#"["view_media_resources","send_chat","create_media_resource"]"#
+                .parse()
+                .unwrap();
         let error = rejected
             .validate_guest_default()
-            .expect_err("playlist, chat, and media permissions must not be guest defaults");
+            .expect_err("media-resource and chat permissions must not be guest defaults");
         assert!(error.to_string().contains("permissions.guest_default"));
-        assert!(error.to_string().contains("view_playlist"));
+        assert!(error.to_string().contains("view_media_resources"));
         assert!(error.to_string().contains("send_chat"));
-        assert!(error.to_string().contains("add_media"));
+        assert!(error.to_string().contains("create_media_resource"));
     }
 
     #[tokio::test]
@@ -1046,7 +1058,7 @@ mod tests {
         ));
         let registry = SettingsRegistry::new(service);
 
-        let invalid = r#"["view_playlist","send_chat"]"#;
+        let invalid = r#"["view_media_resources","send_chat"]"#;
         assert!(
             !registry
                 .storage

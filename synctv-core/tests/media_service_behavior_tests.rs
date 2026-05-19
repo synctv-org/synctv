@@ -45,12 +45,12 @@ fn test_add_media_batch_empty_accepted() {
 // Permission logic tests (extracted from MediaService)
 
 /// Determines which permission is needed for `remove_media` based on ownership.
-/// Returns "self" if the user owns the media, "any" otherwise.
+/// Own media deletion is an ownership rule and needs no permission bit.
 fn required_delete_permission(creator_id: Option<&UserId>, requester_id: &UserId) -> &'static str {
     if creator_id == Some(requester_id) {
-        "DELETE_MEDIA_SELF"
+        "NONE"
     } else {
-        "DELETE_MEDIA_ANY"
+        "DELETE_MEDIA_RESOURCE_ANY"
     }
 }
 
@@ -73,7 +73,7 @@ fn test_edit_media_requires_matching_creator() {
 fn test_add_media_permission_denied() {
     // The permission check is the first thing done in add_media.
     // Without a real PermissionService, we verify the logic flow:
-    // If a user lacks ADD_MEDIA permission, the service should error before
+    // If a user lacks CREATE_MEDIA_RESOURCE permission, the service should error before
     // doing any database work.
     // This test verifies the AddMediaRequest can be constructed properly.
     let request = AddMediaRequest {
@@ -91,20 +91,20 @@ fn test_remove_media_owner_vs_non_owner_permission() {
     let owner = UserId::expect_positive(10_000_001);
     let other = UserId::expect_positive(10_000_002);
 
-    // Owner deleting their own media needs DELETE_MEDIA_SELF
-    assert_eq!(
-        required_delete_permission(Some(&owner), &owner),
-        "DELETE_MEDIA_SELF"
-    );
+    // Owner deleting their own media is allowed by ownership and needs no bit.
+    assert_eq!(required_delete_permission(Some(&owner), &owner), "NONE");
 
-    // Non-owner deleting needs DELETE_MEDIA_ANY
+    // Non-owner deleting needs DELETE_MEDIA_RESOURCE_ANY
     assert_eq!(
         required_delete_permission(Some(&owner), &other),
-        "DELETE_MEDIA_ANY"
+        "DELETE_MEDIA_RESOURCE_ANY"
     );
 
-    // Media with no creator recorded needs DELETE_MEDIA_ANY
-    assert_eq!(required_delete_permission(None, &other), "DELETE_MEDIA_ANY");
+    // Media with no creator recorded needs DELETE_MEDIA_RESOURCE_ANY
+    assert_eq!(
+        required_delete_permission(None, &other),
+        "DELETE_MEDIA_RESOURCE_ANY"
+    );
 }
 
 #[test]
@@ -114,8 +114,8 @@ fn test_remove_batch_mixed_permissions() {
     let requester = UserId::expect_positive(10_000_003);
 
     // In a batch delete with mixed ownership:
-    // - Items owned by requester need DELETE_MEDIA_SELF
-    // - Items owned by others need DELETE_MEDIA_ANY
+    // - Items owned by requester need no permission bit
+    // - Items owned by others need DELETE_MEDIA_RESOURCE_ANY
     let creators = vec![Some(user_a), Some(user_b), None];
 
     let mut needs_self = false;
@@ -128,8 +128,11 @@ fn test_remove_batch_mixed_permissions() {
         }
     }
 
-    assert!(needs_self, "Should need DELETE_MEDIA_SELF for own items");
-    assert!(needs_any, "Should need DELETE_MEDIA_ANY for others' items");
+    assert!(needs_self, "Should detect own items as ownership-allowed");
+    assert!(
+        needs_any,
+        "Should need DELETE_MEDIA_RESOURCE_ANY for others' items"
+    );
 }
 
 // Request construction tests

@@ -201,26 +201,29 @@ fn test_room_status_predicates() {
 
 #[test]
 fn test_permission_bits_has_single() {
-    let perms = PermissionBits::new(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
+    let perms =
+        PermissionBits::new(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE);
     assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MEDIA));
-    assert!(!perms.has(PermissionBits::DELETE_MEDIA_ANY));
+    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(!perms.has(PermissionBits::DELETE_MEDIA_RESOURCE_ANY));
 }
 
 #[test]
 fn test_permission_bits_has_all() {
     let perms = PermissionBits::new(
-        PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA | PermissionBits::PLAY_CONTROL,
+        PermissionBits::SEND_CHAT
+            | PermissionBits::CREATE_MEDIA_RESOURCE
+            | PermissionBits::PLAY_CONTROL,
     );
-    assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
-    assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::DELETE_MEDIA_ANY));
+    assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::DELETE_MEDIA_RESOURCE_ANY));
 }
 
 #[test]
 fn test_permission_bits_has_any() {
     let perms = PermissionBits::new(PermissionBits::SEND_CHAT);
-    assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
-    assert!(!perms.has_any(PermissionBits::ADD_MEDIA | PermissionBits::PLAY_CONTROL));
+    assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(!perms.has_any(PermissionBits::CREATE_MEDIA_RESOURCE | PermissionBits::PLAY_CONTROL));
 }
 
 #[test]
@@ -311,7 +314,7 @@ fn test_effective_permissions_remove_only() {
     let removed = PermissionBits::SEND_CHAT;
     let effective = RoomSettingsJson::effective_permissions_for_role(global, None, Some(removed));
     assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
-    assert!(effective.has(PermissionBits::ADD_MEDIA)); // Other preserved
+    assert!(effective.has(PermissionBits::CREATE_MEDIA_RESOURCE)); // Other preserved
 }
 
 #[test]
@@ -323,7 +326,7 @@ fn test_effective_permissions_add_and_remove() {
         RoomSettingsJson::effective_permissions_for_role(global, Some(added), Some(removed));
     assert!(effective.has(PermissionBits::PLAY_CONTROL)); // Added
     assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
-    assert!(effective.has(PermissionBits::ADD_MEDIA)); // Unchanged
+    assert!(effective.has(PermissionBits::CREATE_MEDIA_RESOURCE)); // Unchanged
 }
 
 #[test]

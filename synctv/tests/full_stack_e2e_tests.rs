@@ -3521,7 +3521,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissions_playback_and_batches(
+async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissions_playback_and_batches(
 ) {
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -3713,7 +3713,7 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             "--role",
             "admin",
             "--admin-added-permissions",
-            &(synctv_core::models::PermissionBits::ADD_MEDIA
+            &(synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE
                 | synctv_core::models::PermissionBits::START_LIVE)
                 .to_string(),
             "--admin-removed-permissions",

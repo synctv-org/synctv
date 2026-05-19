@@ -33,7 +33,7 @@ pub trait Timestamped {
 /// invalidation (which passes entity IDs as plain strings).
 pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static {
     fn cache_key(&self) -> String;
-    fn from_id(id: &str) -> Self;
+    fn try_from_id(id: &str) -> Result<Self>;
 }
 
 /// Generic two-tier cache with L1 (Moka in-memory) and L2 (pluggable backend).
@@ -371,9 +371,9 @@ where
     /// then L2 is cleared so other replicas don't re-populate from stale L2 data.
     ///
     /// Also increments the epoch counter.
-    pub async fn invalidate_by_id(&self, id: &str) {
+    pub async fn invalidate_by_id(&self, id: &str) -> Result<()> {
         // Increment per-key epoch before evicting from L1
-        let key = K::from_id(id);
+        let key = K::try_from_id(id)?;
         self.key_epochs
             .entry(key.clone())
             .and_modify(|v| *v += 1)
@@ -405,6 +405,7 @@ where
         }
 
         tracing::debug!(id = %id, cache_type = %self.cache_type, "Cache invalidated by id (cross-replica, L1 then L2)");
+        Ok(())
     }
 
     /// Get multiple values at once.
@@ -726,8 +727,8 @@ mod tests {
             self.0.clone()
         }
 
-        fn from_id(id: &str) -> Self {
-            Self(id.to_string())
+        fn try_from_id(id: &str) -> Result<Self> {
+            Ok(Self(id.to_string()))
         }
     }
 
@@ -816,7 +817,7 @@ mod tests {
         cache.set(&key, make_value("alice")).await.unwrap();
         assert!(cache.get(&key).await.unwrap().is_some());
 
-        cache.invalidate_by_id("k1").await;
+        cache.invalidate_by_id("k1").await.unwrap();
         assert!(cache.get(&key).await.unwrap().is_none());
     }
 

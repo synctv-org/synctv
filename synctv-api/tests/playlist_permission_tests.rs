@@ -1,253 +1,101 @@
-//! Playlist Permission Tests
+//! Media resource permission tests.
 //!
-//! Tests that playlist operations (create, update, delete) properly check permissions.
-//!
-//! Playlist mutation operations must check REORDER_PLAYLIST permission, and read
-//! operations must verify room membership.
+//! Media items and playlists/folders are the same product resource family.
+//! Permissions should describe the user capability, not the storage table.
 
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::permission::PermissionBits;
 
-// Permission Bits Tests
+const _: () = assert!(
+    PermissionBits::CREATE_MEDIA_RESOURCE > 0,
+    "CREATE_MEDIA_RESOURCE permission must have a non-zero value"
+);
 
 const _: () = assert!(
-    PermissionBits::REORDER_PLAYLIST > 0,
-    "REORDER_PLAYLIST permission must have a non-zero value"
+    PermissionBits::VIEW_MEDIA_RESOURCES > 0,
+    "VIEW_MEDIA_RESOURCES permission must have a non-zero value"
 );
 
 #[test]
-fn test_reorder_playlist_is_distinct_from_other_permissions() {
-    // REORDER_PLAYLIST should be different from other common permissions
+fn test_media_resource_permissions_are_distinct_from_chat() {
     assert_ne!(
-        PermissionBits::REORDER_PLAYLIST,
-        PermissionBits::VIEW_PLAYLIST,
-        "REORDER_PLAYLIST should be distinct from VIEW_PLAYLIST"
+        PermissionBits::CREATE_MEDIA_RESOURCE,
+        PermissionBits::SEND_CHAT
     );
     assert_ne!(
-        PermissionBits::REORDER_PLAYLIST,
-        PermissionBits::ADD_MEDIA,
-        "REORDER_PLAYLIST should be distinct from ADD_MEDIA"
+        PermissionBits::VIEW_MEDIA_RESOURCES,
+        PermissionBits::SEND_CHAT
     );
     assert_ne!(
-        PermissionBits::REORDER_PLAYLIST,
-        PermissionBits::SEND_CHAT,
-        "REORDER_PLAYLIST should be distinct from SEND_CHAT"
+        PermissionBits::REORDER_MEDIA_RESOURCES,
+        PermissionBits::CREATE_MEDIA_RESOURCE
     );
 }
 
-// Role Default Permission Tests
-
-// Permission Check Tests for Effective Permissions
-
 #[test]
-fn test_permission_check_with_removed_permission() {
-    // Member with REORDER_PLAYLIST removed should fail check
+fn test_member_default_can_view_create_and_edit_own_resources() {
     let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-    let removed = PermissionBits::REORDER_PLAYLIST;
 
-    // Calculate effective: (default) & ~removed
-    let effective = PermissionBits(member_default.0 & !removed);
-
-    assert!(
-        !effective.has(PermissionBits::REORDER_PLAYLIST),
-        "Member with removed REORDER_PLAYLIST should not have the permission"
-    );
+    assert!(member_default.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+    assert!(member_default.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(!member_default.has(PermissionBits::DELETE_MEDIA_RESOURCE_ANY));
+    assert!(!member_default.has(PermissionBits::REORDER_MEDIA_RESOURCES));
+    assert!(!member_default.has(PermissionBits::CLEAR_MEDIA_RESOURCES));
 }
 
 #[test]
-fn test_guest_cannot_receive_playlist_write_permission() {
+fn test_admin_default_can_manage_shared_resources() {
+    let admin_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
+
+    assert!(admin_default.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+    assert!(admin_default.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(admin_default.has(PermissionBits::DELETE_MEDIA_RESOURCE_ANY));
+    assert!(admin_default.has(PermissionBits::REORDER_MEDIA_RESOURCES));
+    assert!(admin_default.has(PermissionBits::CLEAR_MEDIA_RESOURCES));
+}
+
+#[test]
+fn test_guest_cannot_receive_media_resource_permissions() {
     let guest_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    let added = PermissionBits::REORDER_PLAYLIST;
+    let requested = PermissionBits(
+        PermissionBits::VIEW_MEDIA_RESOURCES
+            | PermissionBits::CREATE_MEDIA_RESOURCE
+            | PermissionBits::REORDER_MEDIA_RESOURCES,
+    );
 
     let effective = PermissionBits(
         (guest_default.0 & PermissionBits::GUEST_ASSIGNABLE)
-            | (added & PermissionBits::GUEST_ASSIGNABLE),
+            | (requested.0 & PermissionBits::GUEST_ASSIGNABLE),
     );
 
-    assert!(
-        !effective.has(PermissionBits::REORDER_PLAYLIST),
-        "Guest should not receive REORDER_PLAYLIST even when requested"
-    );
-}
-
-// View Playlist Permission Tests (for read operations)
-
-const _: () = assert!(
-    PermissionBits::VIEW_PLAYLIST > 0,
-    "VIEW_PLAYLIST permission must have a non-zero value"
-);
-
-#[test]
-fn test_signed_in_room_roles_have_view_playlist_permission() {
-    let guest_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-    let admin_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    let creator_perms = PermissionBits(PermissionBits::ALL);
-
-    assert!(
-        !guest_default.has(PermissionBits::VIEW_PLAYLIST),
-        "Guest should not have VIEW_PLAYLIST permission"
-    );
-    assert!(
-        member_default.has(PermissionBits::VIEW_PLAYLIST),
-        "Member should have VIEW_PLAYLIST permission"
-    );
-    assert!(
-        admin_default.has(PermissionBits::VIEW_PLAYLIST),
-        "Admin should have VIEW_PLAYLIST permission"
-    );
-    assert!(
-        creator_perms.has(PermissionBits::VIEW_PLAYLIST),
-        "Creator should have VIEW_PLAYLIST permission"
-    );
-}
-
-// Permission Hierarchy Tests
-
-#[test]
-fn test_admin_permissions_include_member_permissions() {
-    let admin_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-
-    // Admin should have at least all member permissions
-    let admin_extra = admin_default.0 & !member_default.0;
-    assert!(
-        admin_extra != 0 || admin_default.0 == member_default.0,
-        "Admin should have at least member permissions"
-    );
+    assert!(!effective.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+    assert!(!effective.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(!effective.has(PermissionBits::REORDER_MEDIA_RESOURCES));
 }
 
 #[test]
-fn test_creator_has_all_permissions() {
-    let creator_perms = PermissionBits(PermissionBits::ALL);
+fn test_document_media_resource_permission_requirements() {
+    let view_media_or_playlist = PermissionBits::VIEW_MEDIA_RESOURCES;
+    let create_and_edit_own_media_or_playlist = PermissionBits::CREATE_MEDIA_RESOURCE;
+    let delete_foreign_media_or_playlist = PermissionBits::DELETE_MEDIA_RESOURCE_ANY;
+    let move_media_or_playlist = PermissionBits::REORDER_MEDIA_RESOURCES;
+    let clear_resource_queue = PermissionBits::CLEAR_MEDIA_RESOURCES;
 
-    // Creator should have all defined permissions
-    assert!(
-        creator_perms.has(PermissionBits::REORDER_PLAYLIST),
-        "Creator should have REORDER_PLAYLIST"
-    );
-    assert!(
-        creator_perms.has(PermissionBits::VIEW_PLAYLIST),
-        "Creator should have VIEW_PLAYLIST"
-    );
-    assert!(
-        creator_perms.has(PermissionBits::ADD_MEDIA),
-        "Creator should have ADD_MEDIA"
-    );
-    assert!(
-        creator_perms.has(PermissionBits::KICK_MEMBER),
-        "Creator should have KICK_MEMBER"
-    );
-    assert!(
-        creator_perms.has(PermissionBits::BAN_MEMBER),
-        "Creator should have BAN_MEMBER"
-    );
-}
-
-// Permission Combination Tests
-
-#[test]
-fn test_multiple_permissions_can_be_checked() {
-    let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-
-    // Check multiple permissions at once - member has ADD_MEDIA but not REORDER_PLAYLIST
-    let required_for_reorder = PermissionBits::REORDER_PLAYLIST | PermissionBits::ADD_MEDIA;
-    let has_both = (member_default.0 & required_for_reorder) == required_for_reorder;
-
-    assert!(
-        !has_both,
-        "Member should NOT have both REORDER_PLAYLIST and ADD_MEDIA - only ADD_MEDIA"
-    );
-
-    // But member should have ADD_MEDIA alone
-    assert!(
-        member_default.has(PermissionBits::ADD_MEDIA),
-        "Member should have ADD_MEDIA permission"
-    );
-}
-
-#[test]
-fn test_permission_bitmask_operations() {
-    // Test that permission bitmask operations work correctly
-    let perm_a = PermissionBits::REORDER_PLAYLIST;
-    let perm_b = PermissionBits::VIEW_PLAYLIST;
-    let combined = PermissionBits(perm_a | perm_b);
-
-    assert!(combined.has(perm_a), "Combined should have permission A");
-    assert!(combined.has(perm_b), "Combined should have permission B");
-
-    // Remove perm_a
-    let removed = PermissionBits(combined.0 & !perm_a);
-    assert!(
-        !removed.has(perm_a),
-        "Should not have permission A after removal"
-    );
-    assert!(removed.has(perm_b), "Should still have permission B");
-}
-
-// Permission Check for API Layer Tests
-
-#[test]
-fn test_check_permission_pattern() {
-    // This tests the pattern used by playlist creation, movement, and deletion.
-    // Playlist rename is creator-owned and only requires VIEW_PLAYLIST plus a
-    // matching playlist creator.
-
-    // Simulate the check:
-    let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-
-    let has_permission = member_default.has(PermissionBits::REORDER_PLAYLIST);
-
-    // Members do NOT have REORDER_PLAYLIST by default - it's admin-only
-    assert!(
-        !has_permission,
-        "Member should NOT pass REORDER_PLAYLIST check - admin required"
-    );
-
-    // Admin should pass
-    let admin_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    let admin_has_permission = admin_default.has(PermissionBits::REORDER_PLAYLIST);
-
-    assert!(
-        admin_has_permission,
-        "Admin should pass REORDER_PLAYLIST check"
-    );
-
-    // Guest should fail
-    let guest_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    let guest_has_permission = guest_default.has(PermissionBits::REORDER_PLAYLIST);
-
-    assert!(
-        !guest_has_permission,
-        "Guest should fail REORDER_PLAYLIST check"
-    );
-}
-
-// Playlist Operation Permission Requirements Documentation
-
-#[test]
-fn test_document_playlist_permission_requirements() {
-    // Document what permissions are required for each playlist operation:
-
-    // Create: REORDER_PLAYLIST
-    let create_req = PermissionBits::REORDER_PLAYLIST;
-
-    // Rename/update: VIEW_PLAYLIST plus playlist creator ownership
-    let update_req = PermissionBits::VIEW_PLAYLIST;
-
-    // Delete: REORDER_PLAYLIST
-    let delete_req = PermissionBits::REORDER_PLAYLIST;
-
-    // Get: Membership only (VIEW_PLAYLIST implied by membership)
-    // List: Membership only (VIEW_PLAYLIST implied by membership)
-
-    assert_eq!(
-        create_req, delete_req,
-        "Create and Delete should require the playlist-structure permission"
+    assert_ne!(
+        view_media_or_playlist,
+        create_and_edit_own_media_or_playlist
     );
     assert_ne!(
-        update_req, delete_req,
-        "Rename should not require REORDER_PLAYLIST; it is creator-owned"
+        create_and_edit_own_media_or_playlist,
+        move_media_or_playlist
+    );
+    assert_ne!(
+        create_and_edit_own_media_or_playlist,
+        delete_foreign_media_or_playlist
+    );
+    assert_eq!(
+        PermissionBits::MANAGE_MEDIA_RESOURCES,
+        delete_foreign_media_or_playlist | move_media_or_playlist | clear_resource_queue
     );
 }

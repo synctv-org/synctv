@@ -3567,7 +3567,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         .as_str()
         .expect("member user should have id")
         .to_string();
-    let subject_user_id = subject_user["user"]["id"]
+    let _subject_user_id = subject_user["user"]["id"]
         .as_str()
         .expect("subject user should have id")
         .to_string();
@@ -3751,72 +3751,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "promoted admin should appear in filtered member list: {admin_members}"
     );
 
-    let banned_subject = run_synctv_remote_cli_json(
-        &server,
-        &[
-            "room",
-            "member",
-            "ban",
-            "--room-id",
-            &room_id,
-            "--user-id",
-            &joined_subject_user_id,
-            "--reason",
-            "cli-room-member-ban",
-        ],
-        "ban room member",
-    )
-    .await;
-    assert_eq!(banned_subject["success"], true);
-
-    let banned_members = run_synctv_remote_cli_json(
-        &server,
-        &[
-            "room",
-            "member",
-            "list",
-            &room_id,
-            "--status",
-            "left",
-            "--is-banned",
-            "--search",
-            &subject_username,
-        ],
-        "list banned room members",
-    )
-    .await;
-    assert!(
-        banned_members["members"]
-            .as_array()
-            .expect("banned member list should contain members array")
-            .iter()
-            .any(|member| member["user_id"] == subject_user_id),
-        "banned subject should appear in banned member list: {banned_members}"
-    );
-
-    let unbanned_subject = run_synctv_remote_cli_json(
-        &server,
-        &[
-            "room",
-            "member",
-            "unban",
-            "--room-id",
-            &room_id,
-            "--user-id",
-            &joined_subject_user_id,
-        ],
-        "unban room member",
-    )
-    .await;
-    assert_eq!(unbanned_subject["success"], true);
-
-    let rejoined_subject = join_room_http(&server, &room_id, room_password, &subject_token).await;
-    assert_eq!(
-        rejoined_subject.status(),
-        StatusCode::OK,
-        "subject should be able to rejoin after CLI unban"
-    );
-
     let kicked_subject = run_synctv_remote_cli_json(
         &server,
         &[
@@ -3827,11 +3761,28 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             &room_id,
             "--user-id",
             &joined_subject_user_id,
+            "--kick-cooldown-seconds",
+            "1",
         ],
         "kick room member",
     )
     .await;
     assert_eq!(kicked_subject["success"], true);
+
+    let kicked_subject_rejoin =
+        join_room_http(&server, &room_id, room_password, &subject_token).await;
+    assert_eq!(
+        kicked_subject_rejoin.status(),
+        StatusCode::FORBIDDEN,
+        "kicked user must not be able to rejoin during kick cooldown"
+    );
+    let kicked_subject_rejoin_body = response_json(kicked_subject_rejoin).await;
+    assert!(
+        kicked_subject_rejoin_body
+            .to_string()
+            .contains("recently kicked"),
+        "kick cooldown rejection should be explicit: {kicked_subject_rejoin_body}"
+    );
 
     let kicked_subject_ticket = post_json(
         &test_http_client(),
@@ -3880,6 +3831,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         false
     );
 
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let rejoined_without_password = join_room_http(&server, &room_id, "", &subject_token).await;
     assert_eq!(
         rejoined_without_password.status(),
@@ -7384,10 +7336,8 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
                 sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                is_banned: None,
             },
         ))
         .await
@@ -8643,10 +8593,8 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
                 sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                is_banned: None,
             },
         ),
     )

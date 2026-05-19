@@ -495,7 +495,6 @@ pub enum BanSubcommand {
 pub enum CliBanTarget {
     User,
     Room,
-    RoomMember,
 }
 
 impl CliBanTarget {
@@ -503,7 +502,6 @@ impl CliBanTarget {
         match self {
             Self::User => synctv_proto::admin::BanTargetType::User as i32,
             Self::Room => synctv_proto::admin::BanTargetType::Room as i32,
-            Self::RoomMember => synctv_proto::admin::BanTargetType::RoomMember as i32,
         }
     }
 }
@@ -746,10 +744,6 @@ pub enum RoomMemberSubcommand {
     SetPermissions(RoomMemberSetPermissionsArgs),
     /// Kick a room member
     Kick(RoomMemberKickArgs),
-    /// Ban a room member
-    Ban(RoomMemberBanArgs),
-    /// Unban a room member
-    Unban(RoomMemberUnbanArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1219,7 +1213,6 @@ pub enum CliRoomMemberSortField {
     JoinedAt,
     Username,
     Role,
-    Status,
 }
 
 impl CliRoomMemberSortField {
@@ -1228,7 +1221,6 @@ impl CliRoomMemberSortField {
             Self::JoinedAt => management_proto::RoomMemberListSortBy::JoinedAt as i32,
             Self::Username => management_proto::RoomMemberListSortBy::Username as i32,
             Self::Role => management_proto::RoomMemberListSortBy::Role as i32,
-            Self::Status => management_proto::RoomMemberListSortBy::Status as i32,
         }
     }
 }
@@ -1351,21 +1343,6 @@ impl CliRoomStreamSortField {
     const fn to_proto(self) -> i32 {
         match self {
             Self::MediaId => management_proto::RoomStreamListSortBy::MediaId as i32,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum CliMemberStatus {
-    Active,
-    Left,
-}
-
-impl CliMemberStatus {
-    const fn to_proto(self) -> i32 {
-        match self {
-            Self::Active => synctv_proto::common::MemberStatus::Active as i32,
-            Self::Left => synctv_proto::common::MemberStatus::Left as i32,
         }
     }
 }
@@ -1870,12 +1847,6 @@ pub struct RoomMembersArgs {
     pub role: Option<CliRoomMemberRole>,
 
     #[arg(long, value_enum)]
-    pub status: Option<CliMemberStatus>,
-
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    pub is_banned: Option<bool>,
-
-    #[arg(long, value_enum)]
     pub sort_by: Option<CliRoomMemberSortField>,
 
     #[arg(long = "sort-dir", value_enum, default_value_t = CliSortDirection::Asc)]
@@ -1937,27 +1908,9 @@ pub struct RoomMemberKickArgs {
 
     #[command(flatten)]
     pub user: UserRefArgs,
-}
 
-#[derive(Debug, Args)]
-pub struct RoomMemberBanArgs {
-    #[command(flatten)]
-    pub room: RoomScopedRemoteArgs,
-
-    #[command(flatten)]
-    pub user: UserRefArgs,
-
-    #[arg(long)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct RoomMemberUnbanArgs {
-    #[command(flatten)]
-    pub room: RoomScopedRemoteArgs,
-
-    #[command(flatten)]
-    pub user: UserRefArgs,
+    #[arg(long, value_name = "SECONDS")]
+    pub kick_cooldown_seconds: i64,
 }
 
 #[derive(Debug, Args)]
@@ -3796,10 +3749,6 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
                 merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomMemberSubcommand::Kick(args) => merge_room_scoped_remote_args(&mut args.room, root),
-            RoomMemberSubcommand::Ban(args) => merge_room_scoped_remote_args(&mut args.room, root),
-            RoomMemberSubcommand::Unban(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root);
-            }
         },
         RoomSubcommand::Playback(command) => match &mut command.command {
             RoomPlaybackSubcommand::Get(args) => {
@@ -4864,16 +4813,11 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                             synctv_proto::common::RoomMemberRole::Unspecified as i32,
                             CliRoomMemberRole::to_proto,
                         ),
-                        status: args.status.map_or(
-                            synctv_proto::common::MemberStatus::Unspecified as i32,
-                            CliMemberStatus::to_proto,
-                        ),
                         sort_by: args.sort_by.map_or(
                             management_proto::RoomMemberListSortBy::JoinedAt as i32,
                             CliRoomMemberSortField::to_proto,
                         ),
                         sort_direction: args.sort_dir.to_proto(),
-                        is_banned: args.is_banned,
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -4925,33 +4869,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     management_proto::KickMemberRequest {
                         room_id: args.room.room_id,
                         user: Some(args.user.to_management_proto()),
-                    }
-                )?;
-                args.room.remote.print_output(&response)
-            }
-            RoomMemberSubcommand::Ban(args) => {
-                let session = connect_remote_access(&args.room.remote).await?;
-                let response = management_unary_call!(
-                    session,
-                    "ban room member",
-                    ban_member,
-                    management_proto::BanMemberRequest {
-                        room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()),
-                        reason: args.reason.unwrap_or_default(),
-                    }
-                )?;
-                args.room.remote.print_output(&response)
-            }
-            RoomMemberSubcommand::Unban(args) => {
-                let session = connect_remote_access(&args.room.remote).await?;
-                let response = management_unary_call!(
-                    session,
-                    "unban room member",
-                    unban_member,
-                    management_proto::UnbanMemberRequest {
-                        room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()),
+                        kick_cooldown_seconds: args.kick_cooldown_seconds,
                     }
                 )?;
                 args.room.remote.print_output(&response)
@@ -6973,7 +6891,6 @@ struct HumanRoomMember {
     user_id: String,
     username: String,
     role: String,
-    status: String,
     permissions: u64,
     permission_names: Vec<String>,
     added_permissions: u64,
@@ -7778,8 +7695,6 @@ impl ToHuman for synctv_proto::common::RoomMember {
             username: self.username.clone(),
             role: humanize_room_member_role(i64::from(self.role))
                 .unwrap_or_else(|| self.role.to_string()),
-            status: humanize_member_status(i64::from(self.status))
-                .unwrap_or_else(|| self.status.to_string()),
             permissions: self.permissions,
             permission_names: humanize_permission_bits(self.permissions),
             added_permissions: self.added_permissions,
@@ -8556,8 +8471,6 @@ impl_identity_to_human!(
     synctv_proto::client::ResetRoomSettingsResponse,
     synctv_proto::client::SetRoomPasswordResponse,
     synctv_proto::client::KickMemberResponse,
-    synctv_proto::client::BanMemberResponse,
-    synctv_proto::client::UnbanMemberResponse,
     synctv_proto::client::DeletePlaylistResponse,
     synctv_proto::client::DeleteMediaResponse,
     synctv_proto::client::DeleteEntriesResponse,
@@ -8670,19 +8583,6 @@ fn humanize_room_member_role(raw: i64) -> Option<String> {
     )
 }
 
-fn humanize_member_status(raw: i64) -> Option<String> {
-    use synctv_proto::common::MemberStatus;
-
-    Some(
-        match MemberStatus::try_from(i64_to_i32(raw)?).ok()? {
-            MemberStatus::Unspecified => "unspecified",
-            MemberStatus::Active => "active",
-            MemberStatus::Left => "left",
-        }
-        .to_string(),
-    )
-}
-
 fn humanize_permission_bits(bits: u64) -> Vec<String> {
     [
         (PermissionBits::SEND_CHAT, "send_chat"),
@@ -8708,7 +8608,6 @@ fn humanize_permission_bits(bits: u64) -> Vec<String> {
         (PermissionBits::CHANGE_PLAYBACK_RATE, "change_playback_rate"),
         (PermissionBits::APPROVE_MEMBER, "approve_member"),
         (PermissionBits::KICK_MEMBER, "kick_member"),
-        (PermissionBits::BAN_MEMBER, "ban_member"),
         (
             PermissionBits::SET_MEMBER_PERMISSIONS,
             "set_member_permissions",
@@ -9671,7 +9570,6 @@ mod tests {
             "alice",
             "--role",
             "admin",
-            "--is-banned",
             "--sort-by",
             "username",
             "--sort-dir",
@@ -9687,7 +9585,6 @@ mod tests {
             }) => {
                 assert_eq!(args.search.as_deref(), Some("alice"));
                 assert!(matches!(args.role, Some(CliRoomMemberRole::Admin)));
-                assert_eq!(args.is_banned, Some(true));
                 assert!(matches!(
                     args.sort_by,
                     Some(CliRoomMemberSortField::Username)
@@ -10394,7 +10291,7 @@ mod tests {
             "ban",
             "list",
             "--target",
-            "room-member",
+            "room",
             "--active",
             "true",
             "--room-id",
@@ -10411,7 +10308,7 @@ mod tests {
                 command: BanSubcommand::List(args),
                 ..
             }) => {
-                assert_eq!(args.target, Some(CliBanTarget::RoomMember));
+                assert_eq!(args.target, Some(CliBanTarget::Room));
                 assert_eq!(args.active, Some(true));
                 assert_eq!(args.room_id.as_deref(), Some("room12345678"));
                 assert_eq!(args.user_id.as_deref(), Some("user12345678"));
@@ -12512,6 +12409,8 @@ mod tests {
             "room-1",
             "--user-id",
             "user-9",
+            "--kick-cooldown-seconds",
+            "300",
         ]);
         match cli.command {
             Commands::Room(RoomCommand {
@@ -12523,6 +12422,7 @@ mod tests {
                 assert_eq!(args.room.room_id, "room-1");
                 assert_eq!(args.user.username, None);
                 assert_eq!(args.user.user_id.as_deref(), Some("user-9"));
+                assert_eq!(args.kick_cooldown_seconds, 300);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -13167,16 +13067,12 @@ mod tests {
                 role: synctv_proto::common::RoomMemberRole::Creator as i32,
                 permissions: synctv_core::models::PermissionBits::SEND_CHAT
                     | synctv_core::models::PermissionBits::VIEW_MEDIA_RESOURCES,
-                status: synctv_proto::common::MemberStatus::Active as i32,
                 added_permissions: synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE,
                 removed_permissions: synctv_core::models::PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
                 admin_added_permissions: synctv_core::models::PermissionBits::KICK_MEMBER,
-                admin_removed_permissions: synctv_core::models::PermissionBits::BAN_MEMBER,
+                admin_removed_permissions: synctv_core::models::PermissionBits::KICK_MEMBER,
                 joined_at: 1_775_291_657_i64,
                 is_online: true,
-                is_banned: false,
-                banned_at: 0,
-                banned_reason: String::new(),
             }],
         })
         .expect("human output should render");
@@ -13203,7 +13099,6 @@ mod tests {
         assert_eq!(rendered["room"]["status"], "closed");
         assert_eq!(rendered["room"]["availability"], "creator_inactive");
         assert_eq!(rendered["members"][0]["role"], "creator");
-        assert_eq!(rendered["members"][0]["status"], "active");
         assert_eq!(
             rendered["members"][0]["permission_names"],
             json!(["send_chat", "view_media_resources"])
@@ -13222,7 +13117,7 @@ mod tests {
         );
         assert_eq!(
             rendered["members"][0]["admin_removed_permission_names"],
-            json!(["ban_member"])
+            json!(["kick_member"])
         );
         assert_eq!(
             rendered["members"][0]["joined_at"],
@@ -13365,16 +13260,12 @@ mod tests {
                 username: "alice".into(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 permissions: 7,
-                status: synctv_proto::common::MemberStatus::Active as i32,
                 added_permissions: 0,
                 removed_permissions: 0,
                 admin_added_permissions: 0,
                 admin_removed_permissions: 0,
                 joined_at: 123,
                 is_online: true,
-                is_banned: false,
-                banned_at: 0,
-                banned_reason: String::new(),
             }],
             total: 1,
             version: "members-v7".into(),

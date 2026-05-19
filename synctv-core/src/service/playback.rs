@@ -744,6 +744,44 @@ impl PlaybackService {
         Ok(state)
     }
 
+    /// Reload playback state from the database after discarding cached copies.
+    ///
+    /// Use this when a caller detects that a cached playback state references
+    /// resources that no longer exist. This avoids returning a stale playing
+    /// media/playlist during the short window before cross-replica invalidation
+    /// reaches the current node.
+    pub async fn reload_state_from_store(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
+        let cache_key = room_id.to_string();
+        self.playback_cache.invalidate(&cache_key).await;
+        if let Some(l2_cache) = self.playback_l2_cache() {
+            if let Err(e) = l2_cache.invalidate(room_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id,
+                    "Failed to invalidate playback state from L2 cache before DB reload"
+                );
+            }
+        }
+
+        let state = match self.playback_repo.get(room_id).await? {
+            Some(state) => state,
+            None => self.playback_repo.create_or_get(room_id).await?,
+        };
+
+        self.playback_cache.insert(cache_key, state.clone()).await;
+        if let Some(l2_cache) = self.playback_l2_cache() {
+            if let Err(e) = l2_cache.set(room_id, state.clone()).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id,
+                    "Failed to update playback state in L2 cache after DB reload"
+                );
+            }
+        }
+
+        Ok(state)
+    }
+
     /// Invalidate the local playback state cache for a room.
     ///
     /// If a `CacheInvalidationService` is configured, this also broadcasts the
@@ -1373,6 +1411,12 @@ impl PlaybackService {
         state: RoomPlaybackState,
     ) -> BroadcastResult {
         self.invalidate_playback_cache(&state.room_id).await;
+        self.broadcast_invalidation_with_retry(
+            &state.room_id,
+            &state,
+            "broadcast_playback_reset_after_force_delete",
+        )
+        .await;
         self.broadcast_state_change(&state)
     }
 

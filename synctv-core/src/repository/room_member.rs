@@ -9,7 +9,19 @@ use crate::{
     Error, Result,
 };
 
+pub const KICK_COOLDOWN_DENIED_MESSAGE: &str =
+    "User was recently kicked from this room and cannot access it yet";
+
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
+
+pub struct KickCooldownInsert<'a> {
+    pub room_id: &'a RoomId,
+    pub user_id: &'a UserId,
+    pub kicked_by: Option<&'a UserId>,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub ends_at: chrono::DateTime<chrono::Utc>,
+    pub reason: Option<&'a str>,
+}
 
 /// Room member repository for database operations
 #[derive(Clone)]
@@ -28,11 +40,7 @@ struct RoomMemberWithUserRow {
     admin_added_permissions: i64,
     admin_removed_permissions: i64,
     joined_at: chrono::DateTime<chrono::Utc>,
-    left_at: Option<chrono::DateTime<chrono::Utc>>,
-    is_banned: bool,
     is_active: bool,
-    banned_at: Option<chrono::DateTime<chrono::Utc>>,
-    banned_reason: Option<String>,
 }
 
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
@@ -45,37 +53,10 @@ const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
         ))";
 const ROOM_MEMBER_RETURNING_COLUMNS: &str = "room_id, user_id, role,
     added_permissions, removed_permissions, admin_added_permissions, admin_removed_permissions,
-    joined_at, left_at, version";
+    joined_at, version";
 const ROOM_MEMBER_SELECT_COLUMNS: &str = "rm.room_id, rm.user_id, rm.role,
     rm.added_permissions, rm.removed_permissions, rm.admin_added_permissions, rm.admin_removed_permissions,
-    rm.joined_at, rm.left_at, rm.version,
-    (
-        SELECT rmb.starts_at FROM room_member_bans rmb
-        WHERE rmb.room_id = rm.room_id
-          AND rmb.user_id = rm.user_id
-          AND rmb.revoked_at IS NULL
-          AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-        ORDER BY rmb.starts_at DESC
-        LIMIT 1
-    ) AS banned_at,
-    (
-        SELECT rmb.banned_by FROM room_member_bans rmb
-        WHERE rmb.room_id = rm.room_id
-          AND rmb.user_id = rm.user_id
-          AND rmb.revoked_at IS NULL
-          AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-        ORDER BY rmb.starts_at DESC
-        LIMIT 1
-    ) AS banned_by,
-    (
-        SELECT rmb.reason FROM room_member_bans rmb
-        WHERE rmb.room_id = rm.room_id
-          AND rmb.user_id = rm.user_id
-          AND rmb.revoked_at IS NULL
-          AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-        ORDER BY rmb.starts_at DESC
-        LIMIT 1
-    ) AS banned_reason";
+    rm.joined_at, rm.version";
 const ACTIVE_ROOM_BAN_EXISTS_SQL: &str = "EXISTS (
     SELECT 1 FROM room_bans rb
     WHERE rb.room_id = r.id
@@ -88,19 +69,11 @@ const ACTIVE_ROOM_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
       AND rb.revoked_at IS NULL
       AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
 )";
-const ACTIVE_MEMBER_BAN_EXISTS_SQL: &str = "EXISTS (
-    SELECT 1 FROM room_member_bans rmb
-    WHERE rmb.room_id = rm.room_id
-      AND rmb.user_id = rm.user_id
-      AND rmb.revoked_at IS NULL
-      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-)";
-const ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
-    SELECT 1 FROM room_member_bans rmb
-    WHERE rmb.room_id = rm.room_id
-      AND rmb.user_id = rm.user_id
-      AND rmb.revoked_at IS NULL
-      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+const ACTIVE_KICK_COOLDOWN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
+    SELECT 1 FROM room_member_kick_cooldowns rmkc
+    WHERE rmkc.room_id = rm.room_id
+      AND rmkc.user_id = rm.user_id
+      AND rmkc.ends_at > CURRENT_TIMESTAMP
 )";
 
 fn permission_bits_to_i64(value: u64) -> Result<i64> {
@@ -148,15 +121,12 @@ impl RoomMemberRepository {
             RoomMemberListSortBy::Role => {
                 format!("rm.role {direction}, rm.joined_at ASC, rm.user_id ASC")
             }
-            RoomMemberListSortBy::Status => {
-                format!("rm.left_at {direction} NULLS FIRST, rm.joined_at ASC, rm.user_id ASC")
-            }
         }
     }
 
     fn build_my_room_list_conditions(query: &MyRoomListQuery) -> WhereClauseBuilder {
         let mut wb = WhereClauseBuilder::new();
-        wb.push_literal("rm.left_at IS NULL");
+        wb.push_literal(ACTIVE_KICK_COOLDOWN_NOT_EXISTS_SQL);
         wb.push_literal("r.deleted_at IS NULL");
 
         match query.status {
@@ -215,28 +185,8 @@ impl RoomMemberRepository {
         }
     }
 
-    fn member_status_from_left_at(left_at: Option<chrono::DateTime<chrono::Utc>>) -> MemberStatus {
-        if left_at.is_some() {
-            MemberStatus::Left
-        } else {
-            MemberStatus::Active
-        }
-    }
-
     /// Add user to room with role.
     ///
-    /// # Re-join semantics
-    ///
-    /// This method intentionally allows users who previously left a room to
-    /// rejoin freely. When an `ON CONFLICT` row exists **and the user is not
-    /// banned**, the `DO UPDATE` branch resets `left_at` to `NULL`, refreshes
-    /// `joined_at`, and bumps the version. This is the designed rejoin flow:
-    /// left users can re-enter without needing an explicit invite or approval.
-    ///
-    /// When the `ON CONFLICT` row exists but the `DO UPDATE... WHERE` condition
-    /// is not satisfied (user is **banned**), no row is returned. In that case a
-    /// follow-up query determines the specific reason and returns a semantic
-    /// error (`Authorization` for banned).
     pub async fn add(&self, member: &RoomMember) -> Result<RoomMember> {
         let sql = format!(
             "INSERT INTO room_members (
@@ -244,24 +194,14 @@ impl RoomMemberRepository {
                 added_permissions, removed_permissions,
                 joined_at, version
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (room_id, user_id) DO UPDATE
-             SET
-                role = EXCLUDED.role,
-                added_permissions = EXCLUDED.added_permissions,
-                removed_permissions = EXCLUDED.removed_permissions,
-                admin_added_permissions = 0,
-                admin_removed_permissions = 0,
-                left_at = NULL,
-                joined_at = EXCLUDED.joined_at,
-                version = room_members.version + 1
+             SELECT $1, $2, $3, $4, $5, $6, $7
              WHERE NOT EXISTS (
-                SELECT 1 FROM room_member_bans rmb
-                WHERE rmb.room_id = room_members.room_id
-                  AND rmb.user_id = room_members.user_id
-                  AND rmb.revoked_at IS NULL
-                  AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                SELECT 1 FROM room_member_kick_cooldowns rmkc
+                WHERE rmkc.room_id = $1
+                  AND rmkc.user_id = $2
+                  AND rmkc.ends_at > CURRENT_TIMESTAMP
              )
+             ON CONFLICT (room_id, user_id) DO NOTHING
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let result = sqlx::query_as::<_, RoomMember>(&sql)
@@ -278,7 +218,6 @@ impl RoomMemberRepository {
         match result {
             Some(m) => Ok(m),
             None => {
-                // The ON CONFLICT WHERE condition was not met. Determine why.
                 self.diagnose_add_conflict(&member.room_id, &member.user_id, &self.pool)
                     .await
             }
@@ -287,11 +226,10 @@ impl RoomMemberRepository {
 
     /// Add user to room using a provided connection (pool or transaction)
     ///
-    /// Accepts `&mut PgConnection` so the connection can be reborrowed for
-    /// the fallback `diagnose_add_conflict` query (fixes reading outside
-    /// the caller's transaction).
+    /// Accepts `&mut PgConnection` so the caller can decide which connection
+    /// context owns the insert and fallback diagnostics.
     ///
-    /// See [`add`] for the `ON CONFLICT` semantics and error handling.
+    /// See [`add`] for conflict and access-rule semantics.
     pub async fn add_with_executor(
         &self,
         member: &RoomMember,
@@ -303,24 +241,14 @@ impl RoomMemberRepository {
                 added_permissions, removed_permissions,
                 joined_at, version
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (room_id, user_id) DO UPDATE
-             SET
-                role = EXCLUDED.role,
-                added_permissions = EXCLUDED.added_permissions,
-                removed_permissions = EXCLUDED.removed_permissions,
-                admin_added_permissions = 0,
-                admin_removed_permissions = 0,
-                left_at = NULL,
-                joined_at = EXCLUDED.joined_at,
-                version = room_members.version + 1
+             SELECT $1, $2, $3, $4, $5, $6, $7
              WHERE NOT EXISTS (
-                SELECT 1 FROM room_member_bans rmb
-                WHERE rmb.room_id = room_members.room_id
-                  AND rmb.user_id = room_members.user_id
-                  AND rmb.revoked_at IS NULL
-                  AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                SELECT 1 FROM room_member_kick_cooldowns rmkc
+                WHERE rmkc.room_id = $1
+                  AND rmkc.user_id = $2
+                  AND rmkc.ends_at > CURRENT_TIMESTAMP
              )
+             ON CONFLICT (room_id, user_id) DO NOTHING
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let result = sqlx::query_as::<_, RoomMember>(&sql)
@@ -337,7 +265,6 @@ impl RoomMemberRepository {
         match result {
             Some(m) => Ok(m),
             None => {
-                // The ON CONFLICT WHERE condition was not met. Determine why.
                 self.diagnose_add_conflict(&member.room_id, &member.user_id, &mut *conn)
                     .await
             }
@@ -401,7 +328,7 @@ impl RoomMemberRepository {
         if options.check_duplicate {
             let existing = sqlx::query_scalar!(
                 "SELECT user_id FROM room_members
-                 WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+                 WHERE room_id = $1 AND user_id = $2
                  FOR UPDATE",
                 member.room_id as RoomId,
                 member.user_id as UserId,
@@ -438,7 +365,7 @@ impl RoomMemberRepository {
                 let count = sqlx::query_scalar!(
                     "SELECT COUNT(*) as count FROM (
                         SELECT 1 FROM room_members
-                        WHERE room_id = $1 AND left_at IS NULL
+                        WHERE room_id = $1
                         FOR UPDATE
                     ) sub",
                     member.room_id as RoomId,
@@ -469,24 +396,14 @@ impl RoomMemberRepository {
                 added_permissions, removed_permissions,
                 joined_at, version
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (room_id, user_id) DO UPDATE
-             SET
-                role = EXCLUDED.role,
-                added_permissions = EXCLUDED.added_permissions,
-                removed_permissions = EXCLUDED.removed_permissions,
-                admin_added_permissions = 0,
-                admin_removed_permissions = 0,
-                left_at = NULL,
-                joined_at = EXCLUDED.joined_at,
-                version = room_members.version + 1
+             SELECT $1, $2, $3, $4, $5, $6, $7
              WHERE NOT EXISTS (
-                SELECT 1 FROM room_member_bans rmb
-                WHERE rmb.room_id = room_members.room_id
-                  AND rmb.user_id = room_members.user_id
-                  AND rmb.revoked_at IS NULL
-                  AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                SELECT 1 FROM room_member_kick_cooldowns rmkc
+                WHERE rmkc.room_id = $1
+                  AND rmkc.user_id = $2
+                  AND rmkc.ends_at > CURRENT_TIMESTAMP
              )
+             ON CONFLICT (room_id, user_id) DO NOTHING
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let result = sqlx::query_as::<_, RoomMember>(&sql)
@@ -503,14 +420,13 @@ impl RoomMemberRepository {
         match result {
             Some(m) => Ok(m),
             None => {
-                // The ON CONFLICT WHERE condition was not met. Determine why.
                 self.diagnose_add_conflict(&member.room_id, &member.user_id, &mut **tx)
                     .await
             }
         }
     }
 
-    /// Remove a user from all rooms (soft delete - set `status = Left` and `left_at`).
+    /// Delete a user's current memberships from all rooms.
     ///
     /// Used during user deletion/ban to clean up room memberships.
     /// Returns the number of memberships removed.
@@ -532,11 +448,9 @@ impl RoomMemberRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let result = sqlx::query!(
-            "UPDATE room_members
-             SET left_at = $2, version = version + 1
-             WHERE user_id = $1 AND left_at IS NULL",
+            "DELETE FROM room_members
+             WHERE user_id = $1",
             user_id as &UserId,
-            chrono::Utc::now(),
         )
         .execute(executor)
         .await?;
@@ -561,11 +475,9 @@ impl RoomMemberRepository {
 
         let room_id_strs: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
         let result = sqlx::query!(
-            "UPDATE room_members
-             SET left_at = $2, version = version + 1
-             WHERE room_id = ANY($1) AND left_at IS NULL",
+            "DELETE FROM room_members
+             WHERE room_id = ANY($1)",
             &room_id_strs,
-            chrono::Utc::now(),
         )
         .execute(executor)
         .await?;
@@ -573,7 +485,7 @@ impl RoomMemberRepository {
         Ok(result.rows_affected())
     }
 
-    /// Remove user from room (soft delete - set `status = Left` and `left_at`)
+    /// Delete a user's current room membership.
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         self.remove_with_executor(room_id, user_id, &self.pool)
             .await
@@ -589,12 +501,10 @@ impl RoomMemberRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let result = sqlx::query!(
-            "UPDATE room_members
-             SET left_at = $3, version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL",
+            "DELETE FROM room_members
+             WHERE room_id = $1 AND user_id = $2",
             room_id as &RoomId,
             user_id as &UserId,
-            chrono::Utc::now(),
         )
         .execute(executor)
         .await?;
@@ -607,8 +517,8 @@ impl RoomMemberRepository {
         let sql = format!(
             "SELECT {ROOM_MEMBER_SELECT_COLUMNS}
              FROM room_members rm
-             WHERE rm.room_id = $1 AND rm.user_id = $2 AND rm.left_at IS NULL
-               AND {ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL}"
+             WHERE rm.room_id = $1 AND rm.user_id = $2
+               AND {ACTIVE_KICK_COOLDOWN_NOT_EXISTS_SQL}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
             .bind(room_id)
@@ -619,7 +529,7 @@ impl RoomMemberRepository {
         Ok(member)
     }
 
-    /// Get member by ID (including banned/inactive)
+    /// Get current member by ID without applying kick cooldown access filters.
     pub async fn get_any(&self, room_id: &RoomId, user_id: &UserId) -> Result<Option<RoomMember>> {
         self.get_any_with_executor(room_id, user_id, &self.pool)
             .await
@@ -658,23 +568,19 @@ impl RoomMemberRepository {
                 rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
-                rm.joined_at, rm.left_at,
-                FALSE AS "is_banned!",
+                rm.joined_at,
                 TRUE AS "is_active!",
-                NULL::timestamptz AS "banned_at?",
-                NULL::text AS banned_reason,
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM room_member_bans rmb
-                   WHERE rmb.room_id = rm.room_id
-                     AND rmb.user_id = rm.user_id
-                     AND rmb.revoked_at IS NULL
-                     AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-               )
-               AND u.deleted_at IS NULL
+             WHERE rm.room_id = $1
+	               AND NOT EXISTS (
+	                   SELECT 1 FROM room_member_kick_cooldowns rmkc
+	                   WHERE rmkc.room_id = rm.room_id
+	                     AND rmkc.user_id = rm.user_id
+	                     AND rmkc.ends_at > CURRENT_TIMESTAMP
+	               )
+	               AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC"#,
             room_id.as_i64()
         )
@@ -697,10 +603,8 @@ impl RoomMemberRepository {
     ///
     /// # Exclusions
     ///
-    /// This method excludes:
-    /// - Members who have left the room (`left_at IS NOT NULL`)
-    /// - Banned members (`banned_at IS NOT NULL`)
-    /// - Soft-deleted users (`u.deleted_at IS NOT NULL`)
+    /// This method excludes members blocked by active kick cooldown rules and
+    /// soft-deleted users.
     pub async fn list_by_room_paginated(
         &self,
         room_id: &RoomId,
@@ -729,20 +633,8 @@ impl RoomMemberRepository {
             "SELECT COUNT(*) FROM room_members rm JOIN users u ON rm.user_id = u.id WHERE rm.room_id = ",
         );
         count_builder.push_bind(room_id);
-        match query.status {
-            Some(MemberStatus::Left) => {
-                count_builder.push(" AND rm.left_at IS NOT NULL");
-            }
-            Some(MemberStatus::Active) | None => {
-                count_builder.push(" AND rm.left_at IS NULL");
-            }
-        }
         count_builder.push(" AND ");
-        if let Some(true) = query.is_banned {
-            count_builder.push(ACTIVE_MEMBER_BAN_EXISTS_SQL);
-        } else {
-            count_builder.push(ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL);
-        }
+        count_builder.push(ACTIVE_KICK_COOLDOWN_NOT_EXISTS_SQL);
         count_builder.push(" AND u.deleted_at IS NULL");
         if let Some(pattern) = &search_pattern {
             count_builder.push(" AND (u.username ILIKE ");
@@ -766,53 +658,16 @@ impl RoomMemberRepository {
                 rm.room_id, rm.user_id, rm.role,
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
-                rm.joined_at, rm.left_at,
-                EXISTS (
-                    SELECT 1 FROM room_member_bans rmb
-                    WHERE rmb.room_id = rm.room_id
-                      AND rmb.user_id = rm.user_id
-                      AND rmb.revoked_at IS NULL
-                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                ) AS is_banned,
-                (rm.left_at IS NULL) AS is_active,
-                (
-                    SELECT rmb.starts_at FROM room_member_bans rmb
-                    WHERE rmb.room_id = rm.room_id
-                      AND rmb.user_id = rm.user_id
-                      AND rmb.revoked_at IS NULL
-                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                    ORDER BY rmb.starts_at DESC
-                    LIMIT 1
-                ) AS banned_at,
-                (
-                    SELECT rmb.reason FROM room_member_bans rmb
-                    WHERE rmb.room_id = rm.room_id
-                      AND rmb.user_id = rm.user_id
-                      AND rmb.revoked_at IS NULL
-                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                    ORDER BY rmb.starts_at DESC
-                    LIMIT 1
-                ) AS banned_reason,
+                rm.joined_at,
+                TRUE AS is_active,
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = ",
         );
         list_builder.push_bind(room_id);
-        match query.status {
-            Some(MemberStatus::Left) => {
-                list_builder.push(" AND rm.left_at IS NOT NULL");
-            }
-            Some(MemberStatus::Active) | None => {
-                list_builder.push(" AND rm.left_at IS NULL");
-            }
-        }
         list_builder.push(" AND ");
-        if let Some(true) = query.is_banned {
-            list_builder.push(ACTIVE_MEMBER_BAN_EXISTS_SQL);
-        } else {
-            list_builder.push(ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL);
-        }
+        list_builder.push(ACTIVE_KICK_COOLDOWN_NOT_EXISTS_SQL);
         list_builder.push(" AND u.deleted_at IS NULL");
         if let Some(pattern) = &search_pattern {
             list_builder.push(" AND (u.username ILIKE ");
@@ -856,23 +711,19 @@ impl RoomMemberRepository {
                 rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
-                rm.joined_at, rm.left_at,
-                FALSE AS "is_banned!",
+                rm.joined_at,
                 TRUE AS "is_active!",
-                NULL::timestamptz AS "banned_at?",
-                NULL::text AS banned_reason,
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM room_member_bans rmb
-                   WHERE rmb.room_id = rm.room_id
-                     AND rmb.user_id = rm.user_id
-                     AND rmb.revoked_at IS NULL
-                     AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-               )
-               AND u.deleted_at IS NULL
+             WHERE rm.room_id = $1
+	               AND NOT EXISTS (
+	                   SELECT 1 FROM room_member_kick_cooldowns rmkc
+	                   WHERE rmkc.room_id = rm.room_id
+	                     AND rmkc.user_id = rm.user_id
+	                     AND rmkc.ends_at > CURRENT_TIMESTAMP
+	               )
+	               AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC"#,
             room_id.as_i64()
         )
@@ -893,11 +744,7 @@ impl RoomMemberRepository {
             .collect()
     }
 
-    /// Update member role with optimistic locking
-    ///
-    /// Only updates members that are still active (`left_at IS NULL`). Members
-    /// who have left the room will not have their role modified; the call returns
-    /// `OptimisticLockConflict` in that case (same as a version mismatch).
+    /// Update member role with optimistic locking.
     pub async fn update_role(
         &self,
         room_id: &RoomId,
@@ -910,7 +757,7 @@ impl RoomMemberRepository {
              SET
                 role = $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $4 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND version = $4
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -941,7 +788,7 @@ impl RoomMemberRepository {
              SET
                 role = $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $4 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND version = $4
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -958,49 +805,7 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Update member status with optimistic locking
-    ///
-    /// Only updates members that are still active (`left_at IS NULL`). Members
-    /// who have left the room will not have their status modified; the call
-    /// returns `OptimisticLockConflict` in that case (same as a version mismatch).
-    pub async fn update_status(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        status: MemberStatus,
-        current_version: i64,
-    ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                left_at = $3,
-                version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let left_at = match status {
-            MemberStatus::Active => None,
-            MemberStatus::Left => Some(chrono::Utc::now()),
-        };
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(left_at)
-            .bind(current_version)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        match member {
-            Some(m) => Ok(m),
-            None => Err(Error::OptimisticLockConflict),
-        }
-    }
-
-    /// Update member Allow/Deny permissions with optimistic locking
-    ///
-    /// Only updates members that are still active (`left_at IS NULL`). Members
-    /// who have left the room will not have their permissions modified; the call
-    /// returns `OptimisticLockConflict` in that case (same as a version mismatch).
+    /// Update member Allow/Deny permissions with optimistic locking.
     pub async fn update_permissions(
         &self,
         room_id: &RoomId,
@@ -1038,7 +843,7 @@ impl RoomMemberRepository {
                 added_permissions = $3,
                 removed_permissions = $4,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $5 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND version = $5
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1057,10 +862,6 @@ impl RoomMemberRepository {
     }
 
     /// Update admin-specific Allow/Deny permissions with optimistic locking.
-    ///
-    /// Only updates members that are still active (`left_at IS NULL`). Members
-    /// who have left the room will not have their permissions modified; the call
-    /// returns `OptimisticLockConflict` in that case (same as a version mismatch).
     pub async fn update_admin_permissions(
         &self,
         room_id: &RoomId,
@@ -1098,7 +899,7 @@ impl RoomMemberRepository {
                 admin_added_permissions = $3,
                 admin_removed_permissions = $4,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $5 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND version = $5
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1118,8 +919,7 @@ impl RoomMemberRepository {
 
     /// Atomically grant permission bits (bitwise OR in SQL to avoid read-modify-write TOCTOU)
     ///
-    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
-    /// the member has left, preventing ghost permission grants on departed users.
+    /// Only applies to current members. Returns `NotFound` if the membership no longer exists.
     pub async fn grant_permission_atomic(
         &self,
         room_id: &RoomId,
@@ -1131,7 +931,7 @@ impl RoomMemberRepository {
              SET
                 added_permissions = added_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1160,7 +960,7 @@ impl RoomMemberRepository {
              SET
                 added_permissions = added_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             WHERE room_id = $1 AND user_id = $2 AND role = $4
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1179,8 +979,7 @@ impl RoomMemberRepository {
 
     /// Atomically grant admin-specific permission bits.
     ///
-    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
-    /// the member has left, preventing ghost permission grants on departed users.
+    /// Only applies to current members. Returns `NotFound` if the membership no longer exists.
     pub async fn grant_admin_permission_atomic(
         &self,
         room_id: &RoomId,
@@ -1192,7 +991,7 @@ impl RoomMemberRepository {
              SET
                 admin_added_permissions = admin_added_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1221,7 +1020,7 @@ impl RoomMemberRepository {
              SET
                 admin_added_permissions = admin_added_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             WHERE room_id = $1 AND user_id = $2 AND role = $4
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1240,8 +1039,7 @@ impl RoomMemberRepository {
 
     /// Atomically revoke permission bits (bitwise OR on `removed_permissions` in SQL)
     ///
-    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
-    /// the member has left, preventing ghost permission revokes on departed users.
+    /// Only applies to current members. Returns `NotFound` if the membership no longer exists.
     pub async fn revoke_permission_atomic(
         &self,
         room_id: &RoomId,
@@ -1253,7 +1051,7 @@ impl RoomMemberRepository {
              SET
                 removed_permissions = removed_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1282,7 +1080,7 @@ impl RoomMemberRepository {
              SET
                 removed_permissions = removed_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             WHERE room_id = $1 AND user_id = $2 AND role = $4
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1301,8 +1099,7 @@ impl RoomMemberRepository {
 
     /// Atomically revoke admin-specific permission bits.
     ///
-    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
-    /// the member has left, preventing ghost permission revokes on departed users.
+    /// Only applies to current members. Returns `NotFound` if the membership no longer exists.
     pub async fn revoke_admin_permission_atomic(
         &self,
         room_id: &RoomId,
@@ -1314,7 +1111,7 @@ impl RoomMemberRepository {
              SET
                 admin_removed_permissions = admin_removed_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1343,7 +1140,7 @@ impl RoomMemberRepository {
              SET
                 admin_removed_permissions = admin_removed_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             WHERE room_id = $1 AND user_id = $2 AND role = $4
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
@@ -1391,138 +1188,21 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Ban member from room.
-    ///
-    /// Ban is independent from lifecycle status. Active members are moved to
-    /// `Left` immediately; historical rows keep their existing lifecycle. Unban
-    /// clears ban metadata only and does not rejoin the user.
-    pub async fn ban_member(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        banned_by: Option<&UserId>,
-        reason: Option<String>,
-    ) -> Result<RoomMember> {
-        let now = chrono::Utc::now();
-        let mut tx = self.pool.begin().await?;
-        let member = self
-            .ban_member_with_executor(room_id, user_id, banned_by, reason, now, &mut tx)
-            .await?;
-        tx.commit().await?;
-        Ok(member)
-    }
-
-    pub async fn ban_member_with_executor(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        banned_by: Option<&UserId>,
-        reason: Option<String>,
-        now: chrono::DateTime<chrono::Utc>,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<RoomMember> {
-        let lock_key = format!("room-member-ban:{room_id}:{user_id}");
-        let inserted = sqlx::query(
-            r"
-            WITH _lock AS (
-                SELECT pg_advisory_xact_lock(hashtextextended($6, 0))
-            )
-            INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
-            SELECT rm.room_id, rm.user_id, $3, $4, $5
-            FROM room_members rm, _lock
-            WHERE rm.room_id = $1 AND rm.user_id = $2
-              AND NOT EXISTS (
-                  SELECT 1 FROM room_member_bans rmb
-                  WHERE rmb.room_id = rm.room_id
-                    AND rmb.user_id = rm.user_id
-                    AND rmb.revoked_at IS NULL
-                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                  )
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(user_id.as_i64())
-        .bind(banned_by.map(UserId::as_i64))
-        .bind(reason)
-        .bind(now)
-        .bind(lock_key)
-        .execute(&mut **tx)
-        .await?;
-
-        if inserted.rows_affected() == 0 {
-            return Err(Error::NotFound(
-                "Member not found or already banned".to_string(),
-            ));
-        }
-
-        sqlx::query!(
-            "UPDATE room_members
-             SET left_at = COALESCE(left_at, $3), version = version + 1
-             WHERE room_id = $1 AND user_id = $2",
-            room_id as &RoomId,
-            user_id as &UserId,
-            now,
-        )
-        .execute(&mut **tx)
-        .await?;
-
-        self.get_any_with_executor(room_id, user_id, &mut **tx)
-            .await?
-            .ok_or_else(|| Error::NotFound("Member not found".to_string()))
-    }
-
-    /// Unban member from room.
-    ///
-    /// Uses `fetch_optional` (not `fetch_one`) so that a missing or already-unbanned
-    /// member returns a descriptive `NotFound` error rather than a raw sqlx
-    /// `RowNotFound` panic-like error. Unban only clears ban metadata; it never
-    /// restores lifecycle state or implicitly rejoins the user.
-    pub async fn unban_member(&self, room_id: &RoomId, user_id: &UserId) -> Result<RoomMember> {
-        let mut tx = self.pool.begin().await?;
-        let member = self
-            .unban_member_with_executor(room_id, user_id, &mut tx)
-            .await?;
-        tx.commit().await?;
-        Ok(member)
-    }
-
-    pub async fn unban_member_with_executor(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<RoomMember> {
-        let result = sqlx::query!(
-            "UPDATE room_member_bans
-             SET revoked_at = CURRENT_TIMESTAMP
-             WHERE room_id = $1 AND user_id = $2
-               AND revoked_at IS NULL
-               AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)",
-            room_id as &RoomId,
-            user_id as &UserId,
-        )
-        .execute(&mut **tx)
-        .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(Error::NotFound(
-                "Member not found or not banned".to_string(),
-            ));
-        }
-
-        self.get_any_with_executor(room_id, user_id, &mut **tx)
-            .await?
-            .ok_or_else(|| Error::NotFound("Member not found".to_string()))
-    }
-
-    /// Check if user is an active member of room (excludes banned members)
+    /// Check if user is an active member of room.
     pub async fn is_member(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         let exists = sqlx::query_scalar!(
             r#"
             SELECT EXISTS(
                 SELECT 1
-                FROM room_members
-                WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+                FROM room_members rm
+                WHERE rm.room_id = $1 AND rm.user_id = $2
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM room_member_kick_cooldowns rmkc
+                      WHERE rmkc.room_id = rm.room_id
+                        AND rmkc.user_id = rm.user_id
+                        AND rmkc.ends_at > CURRENT_TIMESTAMP
+                  )
             ) as "exists!"
             "#,
             room_id as &RoomId,
@@ -1534,16 +1214,15 @@ impl RoomMemberRepository {
         Ok(exists)
     }
 
-    /// Check if user is banned from room
-    pub async fn is_banned(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
+    pub async fn is_in_kick_cooldown(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         let exists = sqlx::query_scalar!(
             r#"
             SELECT EXISTS(
                 SELECT 1
-                FROM room_member_bans
-                WHERE room_id = $1 AND user_id = $2
-                  AND revoked_at IS NULL
-                  AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)
+                FROM room_member_kick_cooldowns
+                WHERE room_id = $1
+                  AND user_id = $2
+                  AND ends_at > CURRENT_TIMESTAMP
             ) as "exists!"
             "#,
             room_id as &RoomId,
@@ -1553,29 +1232,83 @@ impl RoomMemberRepository {
         .await?;
 
         Ok(exists)
+    }
+
+    pub async fn is_in_kick_cooldown_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM room_member_kick_cooldowns
+                WHERE room_id = $1
+                  AND user_id = $2
+                  AND ends_at > CURRENT_TIMESTAMP
+            ) as "exists!"
+            "#,
+            room_id as &RoomId,
+            user_id as &UserId,
+        )
+        .fetch_one(executor)
+        .await?;
+
+        Ok(exists)
+    }
+
+    pub async fn add_kick_cooldown_with_executor<'e, E>(
+        &self,
+        insert: KickCooldownInsert<'_>,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        sqlx::query!(
+            r#"
+            INSERT INTO room_member_kick_cooldowns (
+                room_id, user_id, kicked_by, starts_at, ends_at, reason
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+            insert.room_id as &RoomId,
+            insert.user_id as &UserId,
+            insert.kicked_by.map(UserId::as_i64),
+            insert.starts_at,
+            insert.ends_at,
+            insert.reason,
+        )
+        .execute(executor)
+        .await?;
+
+        Ok(())
     }
 
     /// Get member count for room
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i32> {
         let count = sqlx::query_scalar!(
-            r"
-            SELECT COUNT(*) as count
+            r#"
+            SELECT COUNT(*) as "count!"
             FROM room_members rm
             WHERE rm.room_id = $1
-              AND rm.left_at IS NULL
+             
               AND NOT EXISTS (
-                  SELECT 1 FROM room_member_bans rmb
-                  WHERE rmb.room_id = rm.room_id
-                    AND rmb.user_id = rm.user_id
-                    AND rmb.revoked_at IS NULL
-                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                  SELECT 1 FROM room_member_kick_cooldowns rmkc
+                  WHERE rmkc.room_id = rm.room_id
+                    AND rmkc.user_id = rm.user_id
+                    AND rmkc.ends_at > CURRENT_TIMESTAMP
               )
-            ",
+            "#,
             room_id as &RoomId,
         )
         .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+        .await?;
 
         Ok(i32::try_from(count).unwrap_or(i32::MAX))
     }
@@ -1598,13 +1331,12 @@ impl RoomMemberRepository {
             SELECT room_id as "room_id: RoomId", COUNT(*)::int as "member_count!"
             FROM room_members rm
             WHERE rm.room_id = ANY($1)
-              AND rm.left_at IS NULL
+             
               AND NOT EXISTS (
-                  SELECT 1 FROM room_member_bans rmb
-                  WHERE rmb.room_id = rm.room_id
-                    AND rmb.user_id = rm.user_id
-                    AND rmb.revoked_at IS NULL
-                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+                  SELECT 1 FROM room_member_kick_cooldowns rmkc
+                  WHERE rmkc.room_id = rm.room_id
+                    AND rmkc.user_id = rm.user_id
+                    AND rmkc.ends_at > CURRENT_TIMESTAMP
               )
             GROUP BY room_id
             "#,
@@ -1636,7 +1368,7 @@ impl RoomMemberRepository {
             SELECT rm.room_id as "room_id: RoomId", COUNT(*) OVER() as "total_count!"
              FROM room_members rm
              JOIN rooms r ON rm.room_id = r.id
-             WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL
+             WHERE rm.user_id = $1 AND r.deleted_at IS NULL
              ORDER BY rm.joined_at DESC
              LIMIT $2 OFFSET $3
             "#,
@@ -1692,25 +1424,22 @@ impl RoomMemberRepository {
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
-                rm.left_at as user_left_at,
                 COUNT(rm2.user_id)::int as member_count,
                 COUNT(*) OVER() as total_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2
                 ON r.id = rm2.room_id
-	               AND rm2.left_at IS NULL
-                   AND NOT EXISTS (
-                       SELECT 1 FROM room_member_bans rmb2
-                       WHERE rmb2.room_id = rm2.room_id
-                         AND rmb2.user_id = rm2.user_id
-                         AND rmb2.revoked_at IS NULL
-                         AND (rmb2.ends_at IS NULL OR rmb2.ends_at > CURRENT_TIMESTAMP)
-                   )
-	            WHERE rm.user_id = $1 AND {where_sql}
+	                   AND NOT EXISTS (
+	                       SELECT 1 FROM room_member_kick_cooldowns rmkc2
+	                       WHERE rmkc2.room_id = rm2.room_id
+	                         AND rmkc2.user_id = rm2.user_id
+	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
+	                   )
+		            WHERE rm.user_id = $1 AND {where_sql}
 	            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-	                     rm.role, rm.left_at, rm.joined_at
+	                     rm.role, rm.joined_at
             ORDER BY {order_by}
             LIMIT $2 OFFSET $3
             "
@@ -1755,7 +1484,7 @@ impl RoomMemberRepository {
                 Ok((
                     room,
                     row.try_get("user_role")?,
-                    Self::member_status_from_left_at(row.try_get("user_left_at")?),
+                    MemberStatus::Active,
                     row.try_get("member_count")?,
                 ))
             })
@@ -1783,25 +1512,22 @@ impl RoomMemberRepository {
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
-                rm.left_at as user_left_at,
                 COUNT(rm2.user_id)::int as member_count,
                 COUNT(*) OVER() as total_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2
                 ON r.id = rm2.room_id
-	               AND rm2.left_at IS NULL
-                   AND NOT EXISTS (
-                       SELECT 1 FROM room_member_bans rmb2
-                       WHERE rmb2.room_id = rm2.room_id
-                         AND rmb2.user_id = rm2.user_id
-                         AND rmb2.revoked_at IS NULL
-                         AND (rmb2.ends_at IS NULL OR rmb2.ends_at > CURRENT_TIMESTAMP)
-                   )
+	                   AND NOT EXISTS (
+	                       SELECT 1 FROM room_member_kick_cooldowns rmkc2
+	                       WHERE rmkc2.room_id = rm2.room_id
+	                         AND rmkc2.user_id = rm2.user_id
+	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
+	                   )
 	            WHERE rm.user_id = $1 AND {where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
 	            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-	                     rm.role, rm.left_at, rm.joined_at
+	                     rm.role, rm.joined_at
             ORDER BY {order_by}
             LIMIT $2 OFFSET $3
             "
@@ -1846,7 +1572,7 @@ impl RoomMemberRepository {
                 Ok((
                     room,
                     row.try_get("user_role")?,
-                    Self::member_status_from_left_at(row.try_get("user_left_at")?),
+                    MemberStatus::Active,
                     row.try_get("member_count")?,
                 ))
             })
@@ -1855,7 +1581,7 @@ impl RoomMemberRepository {
         Ok((results?, total_count))
     }
 
-    /// List all members including inactive (left) (admin view)
+    /// List all current members for an admin view.
     pub async fn list_by_room_all(&self, room_id: &RoomId) -> Result<Vec<RoomMemberWithUser>> {
         let rows = sqlx::query_as!(
             RoomMemberWithUserRow,
@@ -1865,26 +1591,9 @@ impl RoomMemberRepository {
                 rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
-                rm.joined_at, rm.left_at,
-                EXISTS (
-                    SELECT 1 FROM room_member_bans rmb
-                    WHERE rmb.room_id = rm.room_id
-                      AND rmb.user_id = rm.user_id
-                      AND rmb.revoked_at IS NULL
-                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                ) AS "is_banned!",
-                NULL::timestamptz AS "banned_at?",
-                (
-                    SELECT rmb.reason FROM room_member_bans rmb
-                    WHERE rmb.room_id = rm.room_id
-                      AND rmb.user_id = rm.user_id
-                      AND rmb.revoked_at IS NULL
-                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                    ORDER BY rmb.starts_at DESC
-                    LIMIT 1
-                ) AS banned_reason,
+                rm.joined_at,
                 u.username,
-                (rm.left_at IS NULL) AS "is_active!"
+                TRUE AS "is_active!"
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = $1 AND u.deleted_at IS NULL
@@ -1899,25 +1608,26 @@ impl RoomMemberRepository {
             .collect()
     }
 
-    /// Atomically remove a member only if the actor has a strictly higher role.
+    /// Atomically kick a member only if the actor has a strictly higher role.
     ///
     /// Role values in DB: 1=Creator, 2=Admin, 3=Member, 4=Guest (lower = higher authority).
     /// The WHERE clause `actor.role < target.role` ensures the actor outranks the target,
-    /// eliminating the TOCTOU race between checking roles and performing the removal.
+    /// eliminating the TOCTOU race between checking roles and deleting the
+    /// target membership row.
     ///
-    /// Returns `Ok(true)` if the member was removed, `Ok(false)` if the target was not
+    /// Returns `Ok(true)` if the member was kicked, `Ok(false)` if the target was not
     /// found or the actor does not outrank the target.
-    pub async fn remove_with_role_check(
+    pub async fn kick_with_role_check(
         &self,
         room_id: &RoomId,
         actor_id: &UserId,
         target_id: &UserId,
     ) -> Result<bool> {
-        self.remove_with_role_check_with_executor(room_id, actor_id, target_id, &self.pool)
+        self.kick_with_role_check_with_executor(room_id, actor_id, target_id, &self.pool)
             .await
     }
 
-    pub async fn remove_with_role_check_with_executor<'e, E>(
+    pub async fn kick_with_role_check_with_executor<'e, E>(
         &self,
         room_id: &RoomId,
         actor_id: &UserId,
@@ -1928,22 +1638,18 @@ impl RoomMemberRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let result = sqlx::query!(
-            "UPDATE room_members AS target
-             SET left_at = $4, version = target.version + 1
+            "DELETE FROM room_members AS target
              WHERE target.room_id = $1
                AND target.user_id = $3
-               AND target.left_at IS NULL
                AND EXISTS (
                    SELECT 1 FROM room_members AS actor
                    WHERE actor.room_id = $1
                      AND actor.user_id = $2
-                     AND actor.left_at IS NULL
                      AND actor.role < target.role
                )",
             room_id as &RoomId,
             actor_id as &UserId,
             target_id as &UserId,
-            chrono::Utc::now(),
         )
         .execute(executor)
         .await?;
@@ -1951,101 +1657,7 @@ impl RoomMemberRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Atomically ban a member only if the actor has a strictly higher role.
-    ///
-    /// Combines the role hierarchy check and ban update into a single SQL statement
-    /// to prevent TOCTOU races. See `remove_with_role_check` for role value semantics.
-    ///
-    /// Returns the banned member on success. Returns `Err(NotFound)` if the target
-    /// does not exist or the actor does not outrank the target.
-    pub async fn ban_with_role_check(
-        &self,
-        room_id: &RoomId,
-        actor_id: &UserId,
-        target_id: &UserId,
-        reason: Option<String>,
-    ) -> Result<RoomMember> {
-        let now = chrono::Utc::now();
-        let mut tx = self.pool.begin().await?;
-        let member = self
-            .ban_with_role_check_with_executor(room_id, actor_id, target_id, reason, now, &mut tx)
-            .await?;
-        tx.commit().await?;
-        Ok(member)
-    }
-
-    pub async fn ban_with_role_check_with_executor(
-        &self,
-        room_id: &RoomId,
-        actor_id: &UserId,
-        target_id: &UserId,
-        reason: Option<String>,
-        now: chrono::DateTime<chrono::Utc>,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<RoomMember> {
-        let lock_key = format!("room-member-ban:{room_id}:{target_id}");
-        let inserted = sqlx::query(
-            r"
-            WITH _lock AS (
-                SELECT pg_advisory_xact_lock(hashtextextended($6, 0))
-            )
-            INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
-            SELECT target.room_id, target.user_id, $3, $4, $5
-            FROM room_members AS target, _lock
-            WHERE target.room_id = $1
-              AND target.user_id = $2
-              AND target.left_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM room_member_bans rmb
-                  WHERE rmb.room_id = target.room_id
-                    AND rmb.user_id = target.user_id
-                    AND rmb.revoked_at IS NULL
-                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-              )
-              AND EXISTS (
-                  SELECT 1 FROM room_members AS actor
-                  WHERE actor.room_id = $1
-                    AND actor.user_id = $3
-                    AND actor.left_at IS NULL
-                    AND actor.role < target.role
-                  )
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(target_id.as_i64())
-        .bind(actor_id.as_i64())
-        .bind(reason)
-        .bind(now)
-        .bind(lock_key)
-        .execute(&mut **tx)
-        .await?;
-
-        if inserted.rows_affected() == 0 {
-            return Err(Error::NotFound(
-                "Target not found, already banned, or actor does not outrank target".to_string(),
-            ));
-        }
-
-        sqlx::query!(
-            "UPDATE room_members
-             SET left_at = $3, version = version + 1
-             WHERE room_id = $1 AND user_id = $2",
-            room_id as &RoomId,
-            target_id as &UserId,
-            now,
-        )
-        .execute(&mut **tx)
-        .await?;
-
-        self.get_any_with_executor(room_id, target_id, &mut **tx)
-            .await?
-            .ok_or_else(|| Error::NotFound("Member not found".to_string()))
-    }
-
-    /// Diagnose why an `ON CONFLICT DO UPDATE... WHERE` clause did not match.
-    ///
-    /// Queries the existing membership row to determine if the user is banned
-    /// or has already left the room, returning a semantic error.
+    /// Diagnose why a guarded insert did not return a membership row.
     async fn diagnose_add_conflict<'e, E>(
         &self,
         room_id: &RoomId,
@@ -2055,49 +1667,49 @@ impl RoomMemberRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let sql = format!(
-            "SELECT {ROOM_MEMBER_RETURNING_COLUMNS}
-             FROM room_members
-             WHERE room_id = $1 AND user_id = $2"
-        );
-        let existing = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .fetch_optional(executor)
-            .await?;
+        let row = sqlx::query(
+            r"
+            SELECT
+                EXISTS (
+                    SELECT 1 FROM room_members
+                    WHERE room_id = $1 AND user_id = $2
+                ) AS is_member,
+                EXISTS (
+                    SELECT 1 FROM room_member_kick_cooldowns
+                    WHERE room_id = $1 AND user_id = $2
+                      AND ends_at > CURRENT_TIMESTAMP
+                ) AS is_in_kick_cooldown
+            ",
+        )
+        .bind(room_id)
+        .bind(user_id)
+        .fetch_one(executor)
+        .await?;
 
-        match existing {
-            Some(_) if self.is_banned(room_id, user_id).await? => Err(Error::Authorization(
-                "User is banned from this room".to_string(),
-            )),
-            Some(m) if m.left_at.is_some() => Err(Error::InvalidInput(
-                "User has already left this room".to_string(),
-            )),
-            Some(_) => {
-                // Unexpected: row exists, not banned, not left — should have matched
-                Err(Error::Internal(
-                    "Unexpected conflict adding room member".to_string(),
-                ))
-            }
-            None => {
-                // No existing row — shouldn't happen with ON CONFLICT
-                Err(Error::Internal(
-                    "Unexpected state: no conflicting row found".to_string(),
-                ))
-            }
+        if row.try_get::<bool, _>("is_in_kick_cooldown")? {
+            return Err(Error::Authorization(
+                KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
+            ));
         }
+        if row.try_get::<bool, _>("is_member")? {
+            return Err(Error::AlreadyExists(
+                "Already a member of this room".to_string(),
+            ));
+        }
+
+        Err(Error::Internal(
+            "Unexpected conflict adding room member".to_string(),
+        ))
     }
 
     /// Convert database row to `RoomMemberWithUser`
     fn typed_row_to_member_with_user(row: RoomMemberWithUserRow) -> Result<RoomMemberWithUser> {
-        let status = Self::member_status_from_left_at(row.left_at);
-
         Ok(RoomMemberWithUser {
             room_id: row.room_id,
             user_id: row.user_id,
             username: row.username,
             role: row.role,
-            status,
+            status: MemberStatus::Active,
             added_permissions: db_permission_i64_to_u64(
                 row.added_permissions,
                 "added_permissions",
@@ -2115,12 +1727,8 @@ impl RoomMemberRepository {
                 "admin_removed_permissions",
             )?,
             joined_at: row.joined_at,
-            left_at: row.left_at,
             is_online: false,
             is_active: row.is_active,
-            is_banned: row.is_banned,
-            banned_at: row.banned_at,
-            banned_reason: row.banned_reason,
         })
     }
 }

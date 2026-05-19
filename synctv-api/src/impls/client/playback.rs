@@ -39,6 +39,24 @@ pub(super) fn static_media_source_provider(
     Ok(source_provider)
 }
 
+fn stale_cached_playback_reference<T>(
+    state: &RoomPlaybackState,
+    snapshot_result: &Result<T, ApiError>,
+) -> bool {
+    if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
+        return false;
+    }
+
+    matches!(
+        snapshot_result,
+        Err(ApiError::NotFound(message))
+            if matches!(
+                message.as_str(),
+                "Media not found" | "Playlist not found" | "Dynamic playlist item not found"
+            )
+    )
+}
+
 #[derive(Debug)]
 pub(crate) struct StartPlaybackTarget {
     pub media_id: Option<MediaId>,
@@ -770,13 +788,12 @@ impl ClientApiImpl {
         let playback_client_profile =
             playback_client_profile_from_proto(req.playback_client_profile.as_ref());
 
-        // Get playback state
-        let state = self
+        let mut state = self
             .room_service
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
-        let playback_snapshot = match self
+        let mut playback_snapshot_result = self
             .build_playback_snapshot_from_state(
                 &uid,
                 &rid,
@@ -784,8 +801,33 @@ impl ClientApiImpl {
                 playback_client_profile.as_ref(),
                 request_control,
             )
-            .await
-        {
+            .await;
+        if stale_cached_playback_reference(&state, &playback_snapshot_result) {
+            tracing::info!(
+                room_id = %rid,
+                user_id = %uid,
+                version = state.version,
+                media_id = ?state.playing_media_id,
+                playlist_id = ?state.playing_playlist_id,
+                "Cached playback state references deleted media resources; reloading from database"
+            );
+            state = self
+                .room_service
+                .playback_service()
+                .reload_state_from_store(&rid)
+                .await
+                .map_err(ApiError::from)?;
+            playback_snapshot_result = self
+                .build_playback_snapshot_from_state(
+                    &uid,
+                    &rid,
+                    &state,
+                    playback_client_profile.as_ref(),
+                    request_control,
+                )
+                .await;
+        }
+        let playback_snapshot = match playback_snapshot_result {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 tracing::warn!(

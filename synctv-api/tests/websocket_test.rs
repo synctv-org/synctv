@@ -5024,14 +5024,14 @@ mod slow_client_disconnect_tests {
     }
 }
 
-// Critical messages (kick/ban) must be delivered even when the client is slow.
+// Critical messages (room kick or platform ban) must be delivered even when the client is slow.
 
 mod slow_client_message_recovery {
 
     /// Test that critical messages are identified correctly.
-    /// Kick/ban notifications arrive as Error messages which are critical.
+    /// Kick or platform-ban notifications arrive as Error messages which are critical.
     #[test]
-    fn test_kick_ban_are_critical_messages() {
+    fn test_kick_and_platform_ban_are_critical_messages() {
         use synctv_api::proto::client::{server_message::Message, ErrorMessage, ServerMessage};
 
         let kick_message = ServerMessage {
@@ -5059,7 +5059,7 @@ mod slow_client_message_recovery {
     }
 
     /// Test that membership validation serves as fallback for missed signals.
-    /// Even if disconnect signal is missed, heartbeat validation catches bans.
+    /// Even if disconnect signal is missed, heartbeat validation catches kicks and platform bans.
     #[test]
     fn test_heartbeat_validates_membership() {
         // disconnected within 30-65 seconds even if signals are missed.
@@ -5074,9 +5074,9 @@ mod slow_client_message_recovery {
     fn test_message_channel_recovery_relationship() {
         // - Non-critical messages are dropped (after threshold, client disconnects)
         // - Critical messages return error, triggering disconnect
-        // (e.g., user is banned regardless of whether they saw the message).
+        // (e.g., user is disconnected regardless of whether they saw the message).
         // - Current playback state
-        // - Room membership status (will be rejected if banned)
+        // - Room membership status (will be rejected if not allowed)
         // - Room settings
 
         const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
@@ -5084,18 +5084,18 @@ mod slow_client_message_recovery {
     }
 }
 
-// of banned/kicked users when disconnect signals are missed.
+// of kicked or platform-banned users when disconnect signals are missed.
 
 mod membership_cache_ttl_tests {
 
     /// Test that membership cache TTL is set to 30 seconds.
     ///
     /// This was reduced from 60 seconds to improve responsiveness to
-    /// membership changes (kick/ban) when disconnect signals are missed.
+    /// membership changes (room kick or platform ban) when disconnect signals are missed.
     ///
     /// With 30-second TTL:
     /// - Maximum 2 DB queries per minute per connection (vs. every heartbeat without cache)
-    /// - Banned users disconnected within 30-65 seconds worst case
+    /// - Kicked or platform-banned users disconnected within 30-65 seconds worst case
     /// - Still provides significant DB load reduction
     #[test]
     fn test_membership_cache_ttl_is_30_seconds() {

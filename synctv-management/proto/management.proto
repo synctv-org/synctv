@@ -40,8 +40,6 @@ service ManagementService {
     rpc AddMember(AddMemberRequest) returns (synctv.client.AddMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
-    rpc BanMember(BanMemberRequest) returns (synctv.client.BanMemberResponse);
-    rpc UnbanMember(UnbanMemberRequest) returns (synctv.client.UnbanMemberResponse);
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
     rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (synctv.admin.UpdateRoomSettingsResponse);
     rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.ResetRoomSettingsResponse);
@@ -185,7 +183,6 @@ enum RoomMemberListSortBy {
     ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
     ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
     ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
-    ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
 }
 
 enum PlaylistListSortBy {
@@ -422,10 +419,8 @@ message GetRoomMembersRequest {
     int32 page_size = 3;
     string search = 4;
     synctv.common.RoomMemberRole role = 5;
-    synctv.common.MemberStatus status = 6;
     RoomMemberListSortBy sort_by = 7;
     SortDirection sort_direction = 8;
-    optional bool is_banned = 9;
 }
 
 message TransferRoomOwnershipRequest {
@@ -454,17 +449,7 @@ message UpdateMemberPermissionsRequest {
 message KickMemberRequest {
     string room_id = 1;
     UserRef user = 2;
-}
-
-message BanMemberRequest {
-    string room_id = 1;
-    UserRef user = 2;
-    string reason = 3;
-}
-
-message UnbanMemberRequest {
-    string room_id = 1;
-    UserRef user = 2;
+    int64 kick_cooldown_seconds = 3;
 }
 
 message GetRoomSettingsRequest {

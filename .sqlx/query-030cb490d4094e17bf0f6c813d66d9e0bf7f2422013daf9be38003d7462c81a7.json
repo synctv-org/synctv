@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: PlaylistId\"\n           FROM playlists\n           WHERE room_id = $1\n             AND creator_id = $2\n             AND (\n                 parent_id IS NULL\n                 OR parent_id NOT IN (\n                     SELECT id\n                     FROM playlists\n                     WHERE room_id = $1\n                       AND creator_id = $2\n                 )\n             )\n           ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: PlaylistId",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "030cb490d4094e17bf0f6c813d66d9e0bf7f2422013daf9be38003d7462c81a7"
+}

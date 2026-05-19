@@ -157,15 +157,15 @@ async fn test_set_member_permissions_creator_can_set() {
             room.id,
             creator.id,
             target.id,
-            PermissionBits::BAN_MEMBER | PermissionBits::KICK_MEMBER,
+            PermissionBits::KICK_MEMBER | PermissionBits::USE_WEBRTC,
             0,
         )
         .await
         .unwrap();
 
     assert!(
-        updated.added_permissions & PermissionBits::BAN_MEMBER != 0,
-        "BAN_MEMBER should be added"
+        updated.added_permissions & PermissionBits::USE_WEBRTC != 0,
+        "USE_WEBRTC should be added"
     );
     assert!(
         updated.added_permissions & PermissionBits::KICK_MEMBER != 0,
@@ -218,7 +218,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
             creator.id,
             target.id,
             PermissionBits::USE_WEBRTC,
-            PermissionBits::BAN_MEMBER,
+            PermissionBits::KICK_MEMBER,
         )
         .await
         .unwrap();
@@ -229,8 +229,8 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         "admin target must persist allow overrides into admin_added_permissions"
     );
     assert_eq!(
-        updated.admin_removed_permissions & PermissionBits::BAN_MEMBER,
-        PermissionBits::BAN_MEMBER,
+        updated.admin_removed_permissions & PermissionBits::KICK_MEMBER,
+        PermissionBits::KICK_MEMBER,
         "admin target must persist deny overrides into admin_removed_permissions"
     );
     assert_eq!(
@@ -252,7 +252,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         "admin allow override should affect effective permissions"
     );
     assert!(
-        !effective.has(PermissionBits::BAN_MEMBER),
+        !effective.has(PermissionBits::KICK_MEMBER),
         "admin deny override should affect effective permissions"
     );
 }
@@ -361,7 +361,7 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
             room.id,
             creator.id,
             target.id,
-            PermissionBits::BAN_MEMBER,
+            PermissionBits::KICK_MEMBER,
             0,
         )
         .await;
@@ -421,7 +421,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
             room.id,
             creator.id,
             target.id,
-            PermissionBits::BAN_MEMBER | PermissionBits::KICK_MEMBER,
+            PermissionBits::KICK_MEMBER | PermissionBits::USE_WEBRTC,
             PermissionBits::SEND_CHAT,
         )
         .await
@@ -435,8 +435,8 @@ async fn test_reset_member_permissions_clears_all_overrides() {
         .unwrap()
         .unwrap();
     assert!(
-        member_before.added_permissions & PermissionBits::BAN_MEMBER != 0,
-        "Should have BAN_MEMBER added before reset"
+        member_before.added_permissions & PermissionBits::KICK_MEMBER != 0,
+        "Should have KICK_MEMBER added before reset"
     );
     assert!(
         member_before.removed_permissions & PermissionBits::SEND_CHAT != 0,
@@ -565,13 +565,13 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
     );
 
     let updated = member_service
-        .revoke_permission(room.id, creator.id, target.id, PermissionBits::BAN_MEMBER)
+        .revoke_permission(room.id, creator.id, target.id, PermissionBits::KICK_MEMBER)
         .await
         .unwrap();
 
     assert_eq!(
-        updated.admin_removed_permissions & PermissionBits::BAN_MEMBER,
-        PermissionBits::BAN_MEMBER,
+        updated.admin_removed_permissions & PermissionBits::KICK_MEMBER,
+        PermissionBits::KICK_MEMBER,
         "revoke_permission must target admin_removed_permissions for admin members"
     );
     assert_eq!(
@@ -589,7 +589,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         "granted admin override should be visible in effective permissions"
     );
     assert!(
-        !effective.has(PermissionBits::BAN_MEMBER),
+        !effective.has(PermissionBits::KICK_MEMBER),
         "revoked admin override should be visible in effective permissions"
     );
 }

@@ -81,6 +81,7 @@ use crate::{
         media::MediaListItem,
         playlist::PlaylistListItem,
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
+        room_member::KickCooldownInsert,
         ChatRepository, MediaRepository, PlaylistRepository, ReviewRepository,
         RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
         UserProviderCredentialRepository,
@@ -99,6 +100,8 @@ use crate::{
     },
     Error, InternalExt, Result,
 };
+
+pub const MAX_KICK_COOLDOWN_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug)]
 struct PendingRoomCreationRequest {
@@ -138,6 +141,15 @@ pub type RealtimeOutboxPermissionChangedEventFactory =
     Arc<dyn Fn(&PermissionChangedOutboxSnapshot) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxUserLeftEventFactory =
     Arc<dyn Fn(&UserLeftOutboxSnapshot) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxMemberResourceCleanupEventFactory =
+    Arc<dyn Fn(&MemberResourceCleanupResult) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
+
+#[derive(Default)]
+pub struct KickMemberOutboxOptions {
+    pub permission_changed: Option<RealtimeOutboxPermissionChangedEventFactory>,
+    pub cleanup: Option<RealtimeOutboxMemberResourceCleanupEventFactory>,
+    pub lifecycle: Option<NewRealtimeOutboxEvent>,
+}
 
 #[derive(Debug, Clone)]
 pub struct PermissionChangedOutboxSnapshot {
@@ -179,16 +191,6 @@ pub struct AdminRejectJoinRequestWithOutbox<'a> {
     pub request_id: ReviewRequestId,
     pub reason: Option<&'a str>,
     pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-}
-
-pub struct AdminBanMemberWithOutboxRequest {
-    pub room_id: RoomId,
-    pub actor_id: UserId,
-    pub target_user_id: UserId,
-    pub persisted_banned_by: Option<UserId>,
-    pub reason: Option<String>,
-    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    pub lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
 }
 
 fn initial_room_settings(settings: Option<RoomSettings>, password_provided: bool) -> RoomSettings {
@@ -349,7 +351,7 @@ pub struct DeleteEntriesResult {
     pub deleted_media_ids: Vec<MediaId>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeleteEntriesPlan {
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
@@ -363,12 +365,13 @@ pub struct ClearPlaylistResult {
     pub playback_state: Option<RoomPlaybackState>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct EntryDeletionImpact {
     pub playlist_nodes: Vec<(PlaylistId, i32)>,
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_reset: bool,
+    pub playback_state: Option<RoomPlaybackState>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -379,6 +382,21 @@ pub(crate) struct RoomCleanupImpact {
     pub settings_deleted: u64,
     pub playback_rows_deleted: u64,
     pub chat_deleted: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemberResourceCleanupResult {
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub playback_reset: bool,
+    pub playback_state: Option<RoomPlaybackState>,
+}
+
+impl MemberResourceCleanupResult {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.deleted_playlist_ids.is_empty() && self.deleted_media_ids.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -554,14 +572,13 @@ impl RoomService {
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                    ) AS is_banned,
                    EXISTS (
-                       SELECT 1
-                       FROM room_member_bans rmb
-                       WHERE rmb.room_id = rooms.id
-                         AND rmb.user_id = $2
-                         AND rmb.revoked_at IS NULL
-                         AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                   ) AS is_target_banned
-            FROM rooms
+		                       SELECT 1
+		                       FROM room_member_kick_cooldowns rmkc
+		                       WHERE rmkc.room_id = rooms.id
+	                         AND rmkc.user_id = $2
+	                         AND rmkc.ends_at > CURRENT_TIMESTAMP
+	                   ) AS is_target_in_kick_cooldown
+	            FROM rooms
             WHERE id = $1
               AND deleted_at IS NULL
             FOR UPDATE
@@ -575,7 +592,7 @@ impl RoomService {
 
         let closed_at: Option<DateTime<Utc>> = room_state.try_get("closed_at")?;
         let is_banned: bool = room_state.try_get("is_banned")?;
-        let is_target_banned: bool = room_state.try_get("is_target_banned")?;
+        let is_target_in_kick_cooldown: bool = room_state.try_get("is_target_in_kick_cooldown")?;
 
         if closed_at.is_some() {
             return Err(Error::InvalidInput("Room is closed".to_string()));
@@ -583,9 +600,9 @@ impl RoomService {
         if is_banned {
             return Err(Error::Authorization("Room is banned".to_string()));
         }
-        if is_target_banned {
+        if is_target_in_kick_cooldown {
             return Err(Error::Authorization(
-                "Target user is banned from this room".to_string(),
+                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
             ));
         }
 
@@ -1469,6 +1486,19 @@ impl RoomService {
         Ok(())
     }
 
+    async fn insert_realtime_outbox_events_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        outbox_events: &[NewRealtimeOutboxEvent],
+    ) -> Result<()> {
+        if let Some(outbox) = &self.realtime_outbox {
+            for event in outbox_events {
+                outbox.insert_with_executor(event, &mut **tx).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn insert_user_left_outbox_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1990,11 +2020,20 @@ impl RoomService {
             return Err(Error::InvalidInput("Room is closed".to_string()));
         }
 
-        // Check if user is banned from this room
-        if ctx.is_banned {
-            tracing::warn!(room_id = %room_id, user_id = %user_id, "Banned user attempted to join room");
+        if ctx.is_in_kick_cooldown {
+            tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
             return Err(Error::Authorization(
-                "You are banned from this room".to_string(),
+                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
+            ));
+        }
+        if self
+            .member_repo
+            .is_in_kick_cooldown(&room_id, &user_id)
+            .await?
+        {
+            tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
+            return Err(Error::Authorization(
+                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
             ));
         }
 
@@ -2039,36 +2078,49 @@ impl RoomService {
                     let password = password.clone();
                     let outbox_event_factory = outbox_event_factory.clone();
                     async move {
- // Re-validate state under lock to catch changes that occurred
- // between the initial check and lock acquisition
-                    let fresh_ctx = self
-                        .room_repo
-                        .get_join_context(&room_id, &user_id)
-                        .await?
-                        .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+                        // Re-validate state under lock to catch changes that occurred
+                        // between the initial check and lock acquisition.
+                        let fresh_ctx = self
+                            .room_repo
+                            .get_join_context(&room_id, &user_id)
+                            .await?
+                            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-                    self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
-                        .await?;
+                        self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
+                            .await?;
 
-                    if fresh_ctx.room.is_banned {
-                        return Err(Error::Authorization("Room is banned".to_string()));
-                    }
+                        if fresh_ctx.room.is_banned {
+                            return Err(Error::Authorization("Room is banned".to_string()));
+                        }
 
-                    if fresh_ctx.room.status != RoomStatus::Active {
-                        return Err(Error::InvalidInput("Room is closed".to_string()));
-                    }
-                    if fresh_ctx.is_banned {
-                        return Err(Error::Authorization("You are banned from this room".to_string()));
-                    }
+                        if fresh_ctx.room.status != RoomStatus::Active {
+                            return Err(Error::InvalidInput("Room is closed".to_string()));
+                        }
+                        if fresh_ctx.is_in_kick_cooldown {
+                            return Err(Error::Authorization(
+                                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
+                                    .to_string(),
+                            ));
+                        }
+                        if self
+                            .member_repo
+                            .is_in_kick_cooldown(&room_id, &user_id)
+                            .await?
+                        {
+                            return Err(Error::Authorization(
+                                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
+                                    .to_string(),
+                            ));
+                        }
 
- // Re-verify password under lock to prevent race condition where
- // the password was changed between the initial verification and
- // lock acquisition. This ensures the provided password is still
- // valid against the current password hash.
- // Always re-verify under lock, even if the hash appears unchanged.
- // This prevents the A→B→A race condition where the password changes
- // and then changes back to the same hash between the initial check
- // and lock acquisition.
+                        // Re-verify password under lock to prevent race condition where
+                        // the password was changed between the initial verification and
+                        // lock acquisition. This ensures the provided password is still
+                        // valid against the current password hash.
+                        // Always re-verify under lock, even if the hash appears unchanged.
+                        // This prevents the A->B->A race condition where the password changes
+                        // and then changes back to the same hash between the initial check
+                        // and lock acquisition.
                     if fresh_ctx.settings.require_password.0 {
                         if let Some(ref hash) = fresh_ctx.password_hash {
                             let provided_password = password.ok_or_else(|| {
@@ -2082,7 +2134,7 @@ impl RoomService {
                             }
                             tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
                         } else {
- // Room requires password but none is configured -- reject join
+                            // Room requires password but none is configured -- reject join.
                             tracing::warn!(room_id = %room_id, "Room requires password but none is set under lock");
                             return Err(Error::Authorization("Invalid password".to_string()));
                         }
@@ -2159,11 +2211,8 @@ impl RoomService {
         // AddMemberOptions::new() defaults to check_max_members=false; explicitly
         // enforce the room's max_members inside the same transaction as the join
         // and realtime outbox insert.
-        let options = AddMemberOptions::new()
-            .with_max_members(settings.max_members.0)
-            .with_initial_status(MemberStatus::Active); // 0 = read from RoomSettings
-        let mut member = RoomMember::new(room_id, user_id, RoomRole::Member);
-        member.status = MemberStatus::Active;
+        let options = AddMemberOptions::new().with_max_members(settings.max_members.0);
+        let member = RoomMember::new(room_id, user_id, RoomRole::Member);
         let mut tx = self.pool.begin().await?;
         let created_member = match self
             .member_repo
@@ -2356,9 +2405,7 @@ impl RoomService {
 
     async fn active_member_add_options(&self, room_id: &RoomId) -> Result<AddMemberOptions> {
         let room_settings = self.room_settings_repo.get(room_id).await?;
-        Ok(AddMemberOptions::new()
-            .with_max_members(room_settings.max_members.0)
-            .with_initial_status(MemberStatus::Active))
+        Ok(AddMemberOptions::new().with_max_members(room_settings.max_members.0))
     }
 
     async fn add_active_member_and_resolve_join_review_tx(
@@ -3068,7 +3115,8 @@ impl RoomService {
     /// and sends an in-app notification. It does NOT disconnect active room
     /// connections or fan out cluster disconnect events.
     pub async fn leave_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
-        self.leave_room_with_outbox(room_id, user_id, None).await
+        self.leave_room_with_outbox(room_id, user_id, None, None)
+            .await
     }
 
     pub async fn leave_room_with_outbox(
@@ -3076,6 +3124,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         outbox_event_factory: Option<RealtimeOutboxUserLeftEventFactory>,
+        cleanup_outbox_event_factory: Option<RealtimeOutboxMemberResourceCleanupEventFactory>,
     ) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "User leaving room");
 
@@ -3116,12 +3165,20 @@ impl RoomService {
                 synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
             ));
         }
+        let cleanup = cleanup_member_resources_in_tx(&mut tx, &room_id, &user_id).await?;
+        let cleanup_outbox_events = cleanup_outbox_event_factory
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&cleanup));
         self.insert_user_left_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await?;
+        self.insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
             .await?;
         tx.commit().await?;
 
         self.permission_service
             .invalidate_cache(&room_id, &user_id)
+            .await;
+        self.finalize_member_resource_cleanup_after_commit(&room_id, &user_id, &cleanup)
             .await;
 
         // Notify room members with username
@@ -3130,7 +3187,14 @@ impl RoomService {
             .notification_service
             .notify_user_left(&room_id, &user_id, &username);
 
-        tracing::info!(room_id = %room_id, user_id = %user_id, username = %username, "User left room");
+        tracing::info!(
+            room_id = %room_id,
+            user_id = %user_id,
+            username = %username,
+            deleted_playlists = cleanup.deleted_playlist_ids.len(),
+            deleted_media = cleanup.deleted_media_ids.len(),
+            "User left room"
+        );
 
         Ok(())
     }
@@ -4742,9 +4806,16 @@ impl RoomService {
         room_id: RoomId,
         kicker_id: UserId,
         target_user_id: UserId,
+        cooldown_seconds: i64,
     ) -> Result<()> {
-        self.kick_member_with_outbox(room_id, kicker_id, target_user_id, None, None)
-            .await
+        self.kick_member_with_outbox(
+            room_id,
+            kicker_id,
+            target_user_id,
+            cooldown_seconds,
+            KickMemberOutboxOptions::default(),
+        )
+        .await
     }
 
     pub async fn kick_member_with_outbox(
@@ -4752,9 +4823,10 @@ impl RoomService {
         room_id: RoomId,
         kicker_id: UserId,
         target_user_id: UserId,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
+        cooldown_seconds: i64,
+        outbox: KickMemberOutboxOptions,
     ) -> Result<()> {
+        validate_kick_cooldown_seconds(cooldown_seconds)?;
         if kicker_id == target_user_id {
             return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
         }
@@ -4770,7 +4842,7 @@ impl RoomService {
         .await?;
         let removed = self
             .member_repo
-            .remove_with_role_check_with_executor(&room_id, &kicker_id, &target_user_id, &mut *tx)
+            .kick_with_role_check_with_executor(&room_id, &kicker_id, &target_user_id, &mut *tx)
             .await?;
         if !removed {
             return Err(Error::Authorization(
@@ -4778,17 +4850,44 @@ impl RoomService {
                     .to_string(),
             ));
         }
+        let now = Utc::now();
+        self.member_repo
+            .add_kick_cooldown_with_executor(
+                KickCooldownInsert {
+                    room_id: &room_id,
+                    user_id: &target_user_id,
+                    kicked_by: Some(&kicker_id),
+                    starts_at: now,
+                    ends_at: now + Duration::seconds(cooldown_seconds),
+                    reason: Some("kicked"),
+                },
+                &mut *tx,
+            )
+            .await?;
+        let cleanup = cleanup_member_resources_in_tx(&mut tx, &room_id, &target_user_id).await?;
+        let cleanup_outbox_events = outbox
+            .cleanup
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&cleanup));
         let snapshot = self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, kicker_id, None)
             .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+        self.insert_permission_changed_outbox_tx(
+            &mut tx,
+            &snapshot,
+            outbox.permission_changed.as_ref(),
+        )
+        .await?;
+        self.insert_realtime_outbox_tx(&mut tx, outbox.lifecycle.as_ref())
             .await?;
-        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
+        self.insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
             .await?;
         tx.commit().await?;
 
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
+            .await;
+        self.finalize_member_resource_cleanup_after_commit(&room_id, &target_user_id, &cleanup)
             .await;
         if let Err(e) = self
             .notification_service
@@ -4801,100 +4900,6 @@ impl RoomService {
                 "Failed to notify local clients of member kick"
             );
         }
-        Ok(())
-    }
-
-    pub async fn ban_member_with_outbox(
-        &self,
-        room_id: RoomId,
-        admin_id: UserId,
-        target_user_id: UserId,
-        reason: Option<String>,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
-    ) -> Result<()> {
-        let now = chrono::Utc::now();
-        let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
-            &mut tx,
-            &self.permission_service,
-            &room_id,
-            &admin_id,
-            PermissionBits::BAN_MEMBER,
-        )
-        .await?;
-        self.member_repo
-            .ban_with_role_check_with_executor(
-                &room_id,
-                &admin_id,
-                &target_user_id,
-                reason.clone(),
-                now,
-                &mut tx,
-            )
-            .await?;
-        let snapshot = self
-            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, admin_id, None)
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
-            .await?;
-        tx.commit().await?;
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-        if let Err(e) = self
-            .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Failed to notify local clients of member ban"
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn unban_member_with_outbox(
-        &self,
-        room_id: RoomId,
-        admin_id: UserId,
-        target_user_id: UserId,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
-            &mut tx,
-            &self.permission_service,
-            &room_id,
-            &admin_id,
-            PermissionBits::BAN_MEMBER,
-        )
-        .await?;
-        let member = self
-            .member_repo
-            .unban_member_with_executor(&room_id, &target_user_id, &mut tx)
-            .await?;
-        let snapshot = self
-            .permission_changed_snapshot_tx(
-                &mut tx,
-                room_id,
-                target_user_id,
-                admin_id,
-                Some(&member),
-            )
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        tx.commit().await?;
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
         Ok(())
     }
 
@@ -5185,9 +5190,11 @@ impl RoomService {
         room_id: RoomId,
         actor_id: UserId,
         target_user_id: UserId,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
+        cooldown_seconds: i64,
+        persisted_kicked_by: Option<UserId>,
+        outbox: KickMemberOutboxOptions,
     ) -> Result<()> {
+        validate_kick_cooldown_seconds(cooldown_seconds)?;
         if actor_id == target_user_id {
             return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
         }
@@ -5202,17 +5209,44 @@ impl RoomService {
                 "User is not an active member of this room".to_string(),
             ));
         }
+        let now = Utc::now();
+        self.member_repo
+            .add_kick_cooldown_with_executor(
+                KickCooldownInsert {
+                    room_id: &room_id,
+                    user_id: &target_user_id,
+                    kicked_by: persisted_kicked_by.as_ref(),
+                    starts_at: now,
+                    ends_at: now + Duration::seconds(cooldown_seconds),
+                    reason: Some("kicked"),
+                },
+                &mut *tx,
+            )
+            .await?;
+        let cleanup = cleanup_member_resources_in_tx(&mut tx, &room_id, &target_user_id).await?;
+        let cleanup_outbox_events = outbox
+            .cleanup
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&cleanup));
         let snapshot = self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+        self.insert_permission_changed_outbox_tx(
+            &mut tx,
+            &snapshot,
+            outbox.permission_changed.as_ref(),
+        )
+        .await?;
+        self.insert_realtime_outbox_tx(&mut tx, outbox.lifecycle.as_ref())
             .await?;
-        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
+        self.insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
             .await?;
         tx.commit().await?;
 
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
+            .await;
+        self.finalize_member_resource_cleanup_after_commit(&room_id, &target_user_id, &cleanup)
             .await;
         if let Err(e) = self
             .notification_service
@@ -5225,92 +5259,6 @@ impl RoomService {
                 "Failed to notify local clients of admin member kick"
             );
         }
-        Ok(())
-    }
-
-    pub async fn admin_ban_member_with_outbox(
-        &self,
-        request: AdminBanMemberWithOutboxRequest,
-    ) -> Result<()> {
-        let AdminBanMemberWithOutboxRequest {
-            room_id,
-            actor_id,
-            target_user_id,
-            persisted_banned_by,
-            reason,
-            outbox_event_factory,
-            lifecycle_outbox_event,
-        } = request;
-        if actor_id == target_user_id {
-            return Err(Error::InvalidInput("Cannot ban yourself".to_string()));
-        }
-
-        let now = chrono::Utc::now();
-        let mut tx = self.pool.begin().await?;
-        self.member_repo
-            .ban_member_with_executor(
-                &room_id,
-                &target_user_id,
-                persisted_banned_by.as_ref(),
-                reason.clone(),
-                now,
-                &mut tx,
-            )
-            .await?;
-        let snapshot = self
-            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
-            .await?;
-        tx.commit().await?;
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-        if let Err(e) = self
-            .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Failed to notify local clients of admin member ban"
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn admin_unban_member_with_outbox(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        target_user_id: UserId,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        let member = self
-            .member_repo
-            .unban_member_with_executor(&room_id, &target_user_id, &mut tx)
-            .await?;
-        let snapshot = self
-            .permission_changed_snapshot_tx(
-                &mut tx,
-                room_id,
-                target_user_id,
-                actor_id,
-                Some(&member),
-            )
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        tx.commit().await?;
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
         Ok(())
     }
 
@@ -5537,7 +5485,7 @@ impl RoomService {
             ));
         }
 
-        let impact =
+        let mut impact =
             plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
 
@@ -5597,7 +5545,7 @@ impl RoomService {
         let outbox_events = outbox_event_factory
             .as_ref()
             .map_or_else(Vec::new, |factory| factory(&plan));
-        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &impact).await?;
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -5606,8 +5554,7 @@ impl RoomService {
 
         tx.commit().await?;
 
-        if impact.playback_reset {
-            let state = self.playback_service.get_state(&room_id).await?;
+        if let Some(state) = impact.playback_state.clone() {
             self.playback_service
                 .broadcast_playback_reset_after_force_delete(state)
                 .await;
@@ -5741,7 +5688,7 @@ impl RoomService {
             ));
         }
 
-        let impact =
+        let mut impact =
             plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
         let plan = DeleteEntriesPlan {
@@ -5753,7 +5700,7 @@ impl RoomService {
         let outbox_events = outbox_event_factory
             .as_ref()
             .map_or_else(Vec::new, |factory| factory(&plan));
-        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &impact).await?;
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -5762,8 +5709,7 @@ impl RoomService {
 
         tx.commit().await?;
 
-        if impact.playback_reset {
-            let state = self.playback_service.get_state(&room_id).await?;
+        if let Some(state) = impact.playback_state.clone() {
             self.playback_service
                 .broadcast_playback_reset_after_force_delete(state)
                 .await;
@@ -6635,7 +6581,7 @@ impl RoomService {
         for member in members {
             if member.role == RoomRole::Guest {
                 self.member_service
-                    .remove_member(*room_id, member.user_id)
+                    .delete_active_membership(*room_id, member.user_id)
                     .await?;
             }
         }
@@ -6890,25 +6836,14 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         deleted_media_ids: &[MediaId],
-        playback_reset: bool,
+        playback_state: Option<&RoomPlaybackState>,
     ) {
         self.invalidate_room_caches(room_id).await;
 
-        if playback_reset {
-            match self.playback_service.get_state(room_id).await {
-                Ok(state) => {
-                    self.playback_service
-                        .broadcast_playback_reset_after_force_delete(state)
-                        .await;
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %room_id,
-                        "Failed to reload playback state after user cleanup reset"
-                    );
-                }
-            }
+        if let Some(state) = playback_state {
+            self.playback_service
+                .broadcast_playback_reset_after_force_delete(state.clone())
+                .await;
         }
 
         for media_id in deleted_media_ids {
@@ -6921,6 +6856,41 @@ impl RoomService {
                     room_id = %room_id,
                     media_id = %media_id,
                     "Failed to broadcast media removed event after user cleanup"
+                );
+            }
+        }
+    }
+
+    async fn finalize_member_resource_cleanup_after_commit(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        cleanup: &MemberResourceCleanupResult,
+    ) {
+        if cleanup.is_empty() {
+            return;
+        }
+
+        self.finalize_entry_deletions_after_commit(
+            room_id,
+            &cleanup.deleted_media_ids,
+            cleanup.playback_state.as_ref(),
+        )
+        .await;
+
+        let username = self.resolve_actor_username(user_id).await;
+        for playlist_id in &cleanup.deleted_playlist_ids {
+            if let Err(error) = self.notification_service.notify_playlist_deleted(
+                room_id,
+                Some(user_id),
+                &username,
+                *playlist_id,
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    playlist_id = %playlist_id,
+                    "Failed to broadcast playlist deleted event after member resource cleanup"
                 );
             }
         }
@@ -7012,6 +6982,20 @@ where
     deduped
 }
 
+pub(crate) fn validate_kick_cooldown_seconds(cooldown_seconds: i64) -> Result<()> {
+    if cooldown_seconds <= 0 {
+        return Err(Error::InvalidInput(
+            "kick_cooldown_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if cooldown_seconds > MAX_KICK_COOLDOWN_SECONDS {
+        return Err(Error::InvalidInput(format!(
+            "kick_cooldown_seconds must be at most {MAX_KICK_COOLDOWN_SECONDS}"
+        )));
+    }
+    Ok(())
+}
+
 async fn has_room_permission_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     permission_service: &PermissionService,
@@ -7026,14 +7010,20 @@ async fn has_room_permission_in_tx(
                rm.removed_permissions,
                rm.admin_added_permissions,
                rm.admin_removed_permissions,
-               rs.value AS "settings_value?"
+	               rs.value AS "settings_value?: String"
         FROM room_members rm
         LEFT JOIN room_settings rs
           ON rs.room_id = rm.room_id
          AND rs.key = '_settings'
         WHERE rm.room_id = $1
           AND rm.user_id = $2
-          AND rm.left_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM room_member_kick_cooldowns rmkc
+              WHERE rmkc.room_id = rm.room_id
+                AND rmkc.user_id = rm.user_id
+                AND rmkc.ends_at > CURRENT_TIMESTAMP
+          )
         FOR UPDATE OF rm
         "#,
         room_id.as_i64(),
@@ -7085,7 +7075,13 @@ async fn has_active_room_membership_in_tx(
             FROM room_members rm
             WHERE rm.room_id = $1
               AND rm.user_id = $2
-              AND rm.left_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM room_member_kick_cooldowns rmkc
+                  WHERE rmkc.room_id = rm.room_id
+                    AND rmkc.user_id = rm.user_id
+                    AND rmkc.ends_at > CURRENT_TIMESTAMP
+              )
             FOR UPDATE
         ) AS "exists!"
         "#,
@@ -7397,10 +7393,11 @@ fn delete_entries_result_from_impact(impact: EntryDeletionImpact) -> DeleteEntri
 async fn apply_delete_entries_impact_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
-    impact: &EntryDeletionImpact,
+    impact: &mut EntryDeletionImpact,
 ) -> Result<()> {
     if impact.playback_reset {
-        sqlx::query!(
+        let state = sqlx::query_as!(
+            RoomPlaybackState,
             r#"UPDATE room_playback_state
              SET playing_media_id = NULL,
                  playing_playlist_id = NULL,
@@ -7410,11 +7407,21 @@ async fn apply_delete_entries_impact_in_tx(
                  is_playing = false,
                  version = version + 1,
                  updated_at = NOW()
-             WHERE room_id = $1"#,
+             WHERE room_id = $1
+             RETURNING room_id AS "room_id: RoomId",
+                       playing_media_id AS "playing_media_id: MediaId",
+                       playing_playlist_id AS "playing_playlist_id: PlaylistId",
+                       target,
+                       "position",
+                       speed,
+                       is_playing,
+                       updated_at,
+                       version"#,
             room_id.as_i64(),
         )
-        .execute(&mut **tx)
+        .fetch_one(&mut **tx)
         .await?;
+        impact.playback_state = Some(state);
     }
 
     if !impact.deleted_media_ids.is_empty() {
@@ -7463,6 +7470,89 @@ async fn plan_delete_entries_in_room_in_tx(
         deleted_playlist_ids,
         deleted_media_ids,
         playback_reset,
+        playback_state: None,
+    })
+}
+
+async fn collect_member_owned_root_playlist_ids_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<Vec<PlaylistId>> {
+    let playlist_ids = sqlx::query_scalar!(
+        r#"SELECT id AS "id: PlaylistId"
+           FROM playlists
+           WHERE room_id = $1
+             AND creator_id = $2
+             AND (
+                 parent_id IS NULL
+                 OR parent_id NOT IN (
+                     SELECT id
+                     FROM playlists
+                     WHERE room_id = $1
+                       AND creator_id = $2
+                 )
+             )
+           ORDER BY id"#,
+        room_id.as_i64(),
+        user_id.as_i64()
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(playlist_ids)
+}
+
+async fn collect_member_owned_root_media_ids_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<Vec<MediaId>> {
+    let media_ids = sqlx::query_scalar!(
+        r#"SELECT id AS "id: MediaId"
+           FROM media
+           WHERE room_id = $1
+             AND creator_id = $2
+             AND (
+                 playlist_id IS NULL
+                 OR playlist_id NOT IN (
+                     SELECT id
+                     FROM playlists
+                     WHERE room_id = $1
+                       AND creator_id = $2
+                 )
+             )
+           ORDER BY id"#,
+        room_id.as_i64(),
+        user_id.as_i64()
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(media_ids)
+}
+
+async fn cleanup_member_resources_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<MemberResourceCleanupResult> {
+    let playlist_ids = collect_member_owned_root_playlist_ids_in_tx(tx, room_id, user_id).await?;
+    let media_ids = collect_member_owned_root_media_ids_in_tx(tx, room_id, user_id).await?;
+
+    if playlist_ids.is_empty() && media_ids.is_empty() {
+        return Ok(MemberResourceCleanupResult::default());
+    }
+
+    let mut impact =
+        plan_delete_entries_in_room_in_tx(tx, room_id, &playlist_ids, &media_ids, true).await?;
+    apply_delete_entries_impact_in_tx(tx, room_id, &mut impact).await?;
+
+    Ok(MemberResourceCleanupResult {
+        deleted_playlist_ids: impact.deleted_playlist_ids,
+        deleted_media_ids: impact.deleted_media_ids,
+        playback_reset: impact.playback_reset,
+        playback_state: impact.playback_state,
     })
 }
 
@@ -7976,67 +8066,6 @@ mod tests {
         let mut closed_room = room;
         closed_room.close();
         assert!(!closed_room.is_active());
-    }
-
-    #[test]
-    fn test_room_member_ban_sets_status_and_metadata() {
-        use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
-
-        let mut member = RoomMember::new(
-            RoomId::expect_positive(1),
-            UserId::expect_positive(1),
-            RoomRole::Member,
-        );
-        assert!(member.is_active());
-
-        let banner = UserId::expect_positive(2);
-        member.ban(banner, Some("spamming".to_string()));
-
-        assert_eq!(member.status, MemberStatus::Left);
-        assert!(member.banned_at.is_some());
-        assert_eq!(member.banned_by, Some(banner));
-        assert_eq!(member.banned_reason, Some("spamming".to_string()));
-        assert!(!member.is_active());
-    }
-
-    #[test]
-    fn test_room_member_unban_clears_metadata() {
-        use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
-
-        let mut member = RoomMember::new(
-            RoomId::expect_positive(1),
-            UserId::expect_positive(1),
-            RoomRole::Member,
-        );
-        member.ban(UserId::expect_positive(2), Some("reason".to_string()));
-
-        member.unban();
-        assert_eq!(member.status, MemberStatus::Left);
-        assert!(member.banned_at.is_none());
-        assert!(member.banned_by.is_none());
-        assert!(member.banned_reason.is_none());
-        assert!(!member.is_active());
-    }
-
-    #[test]
-    fn test_room_member_banned_has_no_permissions() {
-        use crate::models::{RoomId, RoomMember, RoomRole, UserId};
-
-        let mut member = RoomMember::new(
-            RoomId::expect_positive(1),
-            UserId::expect_positive(1),
-            RoomRole::Admin,
-        );
-        let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-
-        // Before ban: has permissions
-        assert!(member.has_permission(PermissionBits::SEND_CHAT, role_default));
-
-        member.ban(UserId::expect_positive(2), None);
-
-        // After ban: zero permissions
-        assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
-        assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
     }
 
     #[test]

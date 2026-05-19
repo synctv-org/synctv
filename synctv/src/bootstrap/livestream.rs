@@ -99,7 +99,7 @@ pub async fn init_livestream(
     let publisher_registry = runtime.publisher_registry.clone();
     let user_stream_index = runtime.user_stream_index.clone();
 
-    // Shared tracker for user->stream mapping (kick-on-ban)
+    // Shared tracker for user->stream mapping (kick-on-user-ban)
     let user_stream_tracker = Arc::new(synctv_livestream::api::StreamTracker::new());
 
     // Stream lifecycle event channel (app-level logging)

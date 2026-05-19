@@ -12,8 +12,8 @@ use crate::{
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{
-        MediaId, OpaquePasswordRecord, PlaylistId, ReviewStatus, RoomId, SignupMethod, User,
-        UserAuthFactors, UserId, UserPreferences, UserStatus,
+        MediaId, OpaquePasswordRecord, PlaylistId, ReviewStatus, RoomId, RoomPlaybackState,
+        SignupMethod, User, UserAuthFactors, UserId, UserPreferences, UserStatus,
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -749,14 +749,15 @@ impl Default for RefreshRateLimitConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct UserDeletedRoomImpact {
     pub room_id: RoomId,
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_reset: bool,
+    pub playback_state: Option<RoomPlaybackState>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct UserDeletionSummary {
     pub user_id: UserId,
     pub username: String,
@@ -772,7 +773,7 @@ struct UserDeletionCleanupStats {
     email_tokens_deleted: u64,
     provider_credentials_deleted: u64,
     notifications_deleted: u64,
-    room_member_bans_cleared: u64,
+    ban_actor_references_cleared: u64,
     chat_messages_anonymized: u64,
     memberships_removed: u64,
     deleted_rooms: usize,
@@ -1227,7 +1228,6 @@ impl UserService {
              FROM room_members rm
              JOIN rooms r ON r.id = rm.room_id
              WHERE rm.user_id = $1
-               AND rm.left_at IS NULL
                AND r.deleted_at IS NULL
              ORDER BY rm.room_id"#,
             user_id.as_i64(),
@@ -1367,7 +1367,7 @@ impl UserService {
         .fetch_optional(&mut **tx)
         .await?;
 
-        let mut playback_reset = false;
+        let mut playback_state = None;
         if let Some(row) = playback_row {
             let deletes_playing_media = row.playing_media_id.as_ref().is_some_and(|current_id| {
                 deleted_media_ids
@@ -1408,8 +1408,10 @@ impl UserService {
                 };
 
             if deletes_playing_media || deletes_playing_playlist {
-                sqlx::query!(
-                    r#"UPDATE room_playback_state
+                playback_state = Some(
+                    sqlx::query_as!(
+                        RoomPlaybackState,
+                        r#"UPDATE room_playback_state
                      SET playing_media_id = NULL,
                          playing_playlist_id = NULL,
                          target = ''::bytea,
@@ -1418,12 +1420,21 @@ impl UserService {
                          is_playing = false,
                          version = version + 1,
                          updated_at = NOW()
-                     WHERE room_id = $1"#,
-                    room_id.as_i64(),
-                )
-                .execute(&mut **tx)
-                .await?;
-                playback_reset = true;
+                     WHERE room_id = $1
+                     RETURNING room_id AS "room_id: RoomId",
+                               playing_media_id AS "playing_media_id: MediaId",
+                               playing_playlist_id AS "playing_playlist_id: PlaylistId",
+                               target,
+                               "position",
+                               speed,
+                               is_playing,
+                               updated_at,
+                               version"#,
+                        room_id.as_i64(),
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?,
+                );
             }
         }
 
@@ -1447,7 +1458,8 @@ impl UserService {
         Ok(UserDeletedRoomImpact {
             room_id: *room_id,
             deleted_media_ids,
-            playback_reset,
+            playback_reset: playback_state.is_some(),
+            playback_state,
         })
     }
 
@@ -1568,42 +1580,28 @@ impl UserService {
         .await?
         .rows_affected();
 
-        let mut room_member_bans_cleared = sqlx::query!(
-            "UPDATE room_member_bans SET banned_by = NULL WHERE banned_by = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        room_member_bans_cleared += sqlx::query!(
-            "UPDATE room_member_bans SET revoked_by = NULL WHERE revoked_by = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        room_member_bans_cleared += sqlx::query!(
+        let mut ban_actor_references_cleared = sqlx::query!(
             "UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1",
             user_id.as_i64(),
         )
         .execute(&mut **tx)
         .await?
         .rows_affected();
-        room_member_bans_cleared += sqlx::query!(
+        ban_actor_references_cleared += sqlx::query!(
             "UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1",
             user_id.as_i64(),
         )
         .execute(&mut **tx)
         .await?
         .rows_affected();
-        room_member_bans_cleared += sqlx::query!(
+        ban_actor_references_cleared += sqlx::query!(
             "UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1",
             user_id.as_i64(),
         )
         .execute(&mut **tx)
         .await?
         .rows_affected();
-        room_member_bans_cleared += sqlx::query!(
+        ban_actor_references_cleared += sqlx::query!(
             "UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1",
             user_id.as_i64(),
         )
@@ -1631,7 +1629,7 @@ impl UserService {
                 email_tokens_deleted,
                 provider_credentials_deleted,
                 notifications_deleted,
-                room_member_bans_cleared,
+                ban_actor_references_cleared,
                 chat_messages_anonymized,
                 memberships_removed,
                 deleted_rooms: owned_room_ids.len(),
@@ -4397,7 +4395,7 @@ impl UserService {
             email_tokens_deleted = cleanup.email_tokens_deleted,
             provider_credentials_deleted = cleanup.provider_credentials_deleted,
             notifications_deleted = cleanup.notifications_deleted,
-            room_member_bans_cleared = cleanup.room_member_bans_cleared,
+            ban_actor_references_cleared = cleanup.ban_actor_references_cleared,
             chat_messages_anonymized = cleanup.chat_messages_anonymized,
             memberships_removed = cleanup.memberships_removed,
             deleted_rooms = cleanup.deleted_rooms,

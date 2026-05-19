@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS room_members (
         CHECK (admin_removed_permissions >= 0),
 
     joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    left_at TIMESTAMPTZ NULL,
 
     version BIGINT NOT NULL DEFAULT 0,
 
@@ -22,10 +21,8 @@ CREATE TABLE IF NOT EXISTS room_members (
 
 CREATE INDEX IF NOT EXISTS idx_room_members_user_id ON room_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_room_members_joined_at ON room_members(joined_at);
-CREATE INDEX IF NOT EXISTS idx_room_members_room_active ON room_members(room_id) WHERE left_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_id);
 CREATE INDEX IF NOT EXISTS idx_room_members_user_active
-    ON room_members(user_id, room_id, role, joined_at DESC)
-    WHERE left_at IS NULL;
+    ON room_members(user_id, room_id, role, joined_at DESC);
 CREATE INDEX IF NOT EXISTS idx_room_members_role
-    ON room_members(room_id, role)
-    WHERE left_at IS NULL;
+    ON room_members(room_id, role);

@@ -535,8 +535,6 @@ fn test_get_room_members_request_rejects_too_long_search() {
         page_size: 20,
         search: "a".repeat(101),
         role: None,
-        status: None,
-        is_banned: None,
         sort_by: synctv_proto::client::RoomMemberListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
     };

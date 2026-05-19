@@ -638,28 +638,19 @@ impl Default for MessageConcurrencyConfig {
 struct CachedMembership {
     /// Whether the user is still a valid member of the room
     is_member: bool,
-    /// Whether the user is banned
-    is_banned: bool,
 }
 
 impl CachedMembership {
     /// Create a cached membership from a member lookup result.
     fn from_member(member: Option<&synctv_core::models::RoomMember>) -> Self {
         match member {
-            Some(m) => Self {
-                is_member: true,
-                is_banned: m.is_banned(),
-            },
-            None => Self {
-                is_member: false,
-                is_banned: false,
-            },
+            Some(_) => Self { is_member: true },
+            None => Self { is_member: false },
         }
     }
 }
 
-// Re-use the canonical member/role proto mappers from client::convert.
-use crate::impls::client::convert::member_status_to_proto;
+// Re-use the canonical role proto mapper from client::convert.
 use crate::impls::client::room_role_to_proto;
 
 /// Trait for sending server messages to clients
@@ -2344,7 +2335,7 @@ impl StreamMessageHandler {
                             if uid == self.user_id {
                                 tracing::info!(
                                     user_id = %self.user_id,
-                                    "Received disconnect signal for this user (ban/kick)"
+                                    "Received disconnect signal for this user (room kick or platform ban)"
                                 );
                                 self.skip_cleanup_user_left
                                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2379,7 +2370,7 @@ impl StreamMessageHandler {
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             // Channel lagged: we may have missed critical disconnect signals.
                             // Re-subscribe to get a fresh receiver so future signals are not lost,
-                            // then verify membership to catch any missed kick/ban.
+                            // then verify membership to catch any missed room kick or platform ban.
                             tracing::warn!(
                                 lagged = n,
                                 user_id = %self.user_id,
@@ -2388,7 +2379,7 @@ impl StreamMessageHandler {
                             );
                             disconnect_rx = self.connection_service.subscribe_disconnect();
 
-                            // Fallback: check database to see if we were kicked/banned while lagged
+                            // Fallback: check database to see if we were kicked or platform-banned while lagged
                             match probe_realtime_membership_access(
                                 &self.room_service,
                                 &self.room_id,
@@ -2424,11 +2415,11 @@ impl StreamMessageHandler {
                     }
                 }
 
-                // Admin events from cluster (cross-replica kick/ban propagation)
+                // Admin events from cluster (cross-replica room kick or platform ban propagation)
                 admin_event = admin_rx.recv() => {
                     match admin_event {
                         Ok(RealtimeEvent::KickUser { ref user_id, ref reason, .. }) => {
-                            // Invalidate membership cache immediately so the banned user
+                            // Invalidate membership cache immediately so the disconnected user
                             // cannot send messages during the remaining cache TTL window.
                             let cache_key = (self.room_id, *user_id);
                             self.membership_cache.invalidate(&cache_key);
@@ -2447,7 +2438,7 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(RealtimeEvent::KickUserFromRoom { ref user_id, ref room_id, ref reason, .. }) => {
-                            // Invalidate membership cache immediately so the kicked/banned
+                            // Invalidate membership cache immediately so the kicked or platform-banned
                             // user cannot send messages during the remaining cache TTL window.
                             let cache_key = (*room_id, *user_id);
                             self.membership_cache.invalidate(&cache_key);
@@ -2621,9 +2612,8 @@ impl StreamMessageHandler {
 
                 // Heartbeat/health check every 30 seconds.
                 // Also acts as a periodic membership re-validation backstop:
-                // verifies the user is still a valid (non-banned, non-removed)
-                // member of the room. This catches cases where the disconnect
-                // signal channel lagged and the ban/kick signal was lost.
+                // verifies the user is still a valid (active member of the room. This catches cases where the disconnect
+                // signal channel lagged and the room kick or platform ban signal was lost.
                 // Uses the membership cache to reduce database queries: if a
                 // cached entry exists and shows the user as a valid member, the
                 // DB query is skipped. When a KickUser or KickUserFromRoom admin
@@ -2665,16 +2655,6 @@ impl StreamMessageHandler {
                     // Check membership cache first to avoid unnecessary DB queries.
                     let cache_key = (self.room_id, self.user_id);
                     if let Some(cached) = self.membership_cache.get(&cache_key) {
-                        if cached.is_banned {
-                            tracing::info!(
-                                user_id = %self.user_id,
-                                room_id = %self.room_id,
-                                "Periodic check (cached): user is banned, disconnecting"
-                            );
-                            self.skip_cleanup_user_left
-                                .store(true, std::sync::atomic::Ordering::Relaxed);
-                            break;
-                        }
                         if !cached.is_member {
                             tracing::info!(
                                 user_id = %self.user_id,
@@ -2806,23 +2786,12 @@ impl StreamMessageHandler {
                     username: self.username.clone(),
                     role: role_proto,
                     permissions,
-                    status: if self.principal.is_guest() {
-                        member_status_to_proto(synctv_core::models::MemberStatus::Active)
-                    } else {
-                        member.map_or(
-                            member_status_to_proto(synctv_core::models::MemberStatus::Active),
-                            |member| member_status_to_proto(member.status),
-                        )
-                    },
                     added_permissions: added,
                     removed_permissions: removed,
                     admin_added_permissions: admin_added,
                     admin_removed_permissions: admin_removed,
                     joined_at: chrono::Utc::now().timestamp(),
                     is_online: true,
-                    is_banned: false,
-                    banned_at: 0,
-                    banned_reason: String::new(),
                 }),
             })),
         }
@@ -3665,7 +3634,7 @@ impl StreamMessageHandler {
         }
 
         // Spawn periodic heartbeat task for membership re-validation (mirrors run() behavior).
-        // Verifies every 25-35 seconds that the user is still a valid, non-banned member.
+        // Verifies every 25-35 seconds that the user is still a valid, member.
         // Jitter prevents the thundering-herd problem where all 1000+ concurrent connections
         // fire their DB membership checks simultaneously at the same 30-second boundary.
         // This catches cases where disconnect signals were lost (e.g., channel lag).
@@ -4614,16 +4583,12 @@ fn realtime_event_to_server_messages(
                     username: username.clone(),
                     role: *role,
                     permissions: permissions.0,
-                    status: member_status_to_proto(synctv_core::models::MemberStatus::Active),
                     added_permissions: added_permissions.0,
                     removed_permissions: removed_permissions.0,
                     admin_added_permissions: admin_added_permissions.0,
                     admin_removed_permissions: admin_removed_permissions.0,
                     joined_at: joined_at.timestamp(),
                     is_online: true,
-                    is_banned: false,
-                    banned_at: 0,
-                    banned_reason: String::new(),
                 }),
             })),
         }],
@@ -4643,16 +4608,12 @@ fn realtime_event_to_server_messages(
                     username: username.clone(),
                     role: *role,
                     permissions: permissions.0,
-                    status: member_status_to_proto(synctv_core::models::MemberStatus::Active),
                     added_permissions: 0,
                     removed_permissions: 0,
                     admin_added_permissions: 0,
                     admin_removed_permissions: 0,
                     joined_at: joined_at.timestamp(),
                     is_online: true,
-                    is_banned: false,
-                    banned_at: 0,
-                    banned_reason: String::new(),
                 }),
             })),
         }],
@@ -5203,15 +5164,16 @@ async fn probe_realtime_membership_access_with_room(
         Err(synctv_core::Error::Authorization(message))
             if message == synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM =>
         {
-            match room_service
+            if room_service
                 .member_service()
-                .get_member(&room.id, user_id)
+                .is_in_kick_cooldown(&room.id, user_id)
                 .await?
             {
-                Some(member) if member.is_banned() => Ok(RealtimeMembershipAccess::Denied(
-                    "User is banned from this room".to_string(),
-                )),
-                Some(_) | None => Ok(RealtimeMembershipAccess::Denied(message)),
+                Ok(RealtimeMembershipAccess::Denied(
+                    synctv_core::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
+                ))
+            } else {
+                Ok(RealtimeMembershipAccess::Denied(message))
             }
         }
         Err(synctv_core::Error::Authorization(message)) => {

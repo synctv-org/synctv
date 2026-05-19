@@ -402,9 +402,9 @@ async fn test_list_by_room_paginated_excludes_left_members() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_left")).await.unwrap();
+    let owner = user_repo.create(&make_user("owner_removed")).await.unwrap();
     let room = room_repo
-        .create(&make_room("Room Left", &owner.id))
+        .create(&make_room("Room Removed", &owner.id))
         .await
         .unwrap();
 
@@ -427,22 +427,22 @@ async fn test_list_by_room_paginated_excludes_left_members() {
         active_users.push(user);
     }
 
-    // Add 3 members who will leave
-    let mut left_users = Vec::new();
+    // Add 3 members who will be removed
+    let mut removed_users = Vec::new();
     for i in 0..3 {
         let user = user_repo
-            .create(&make_user(&format!("left_{i}")))
+            .create(&make_user(&format!("removed_{i}")))
             .await
             .unwrap();
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
-        left_users.push(user);
+        removed_users.push(user);
     }
 
-    // Remove the "left" members
-    for user in &left_users {
+    // Remove those members
+    for user in &removed_users {
         member_repo.remove(&room.id, &user.id).await.unwrap();
     }
 
@@ -455,12 +455,12 @@ async fn test_list_by_room_paginated_excludes_left_members() {
     assert_eq!(total, 6, "Total should only count active members");
     assert_eq!(members.len(), 6);
 
-    // Verify left members are not in the result
+    // Verify removed members are not in the result
     let member_ids: std::collections::HashSet<_> = members.iter().map(|m| m.user_id).collect();
-    for user in left_users {
+    for user in removed_users {
         assert!(
             !member_ids.contains(&user.id),
-            "Left member {} should not appear in results",
+            "Removed member {} should not appear in results",
             user.id
         );
     }
@@ -468,15 +468,18 @@ async fn test_list_by_room_paginated_excludes_left_members() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_excludes_banned_members() {
+async fn test_list_by_room_paginated_counts_active_only_after_removals() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_banned")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_removed_count"))
+        .await
+        .unwrap();
     let room = room_repo
-        .create(&make_room("Room Banned", &owner.id))
+        .create(&make_room("Room Removed Count", &owner.id))
         .await
         .unwrap();
 
@@ -497,44 +500,32 @@ async fn test_list_by_room_paginated_excludes_banned_members() {
             .unwrap();
     }
 
-    // Add 2 members who will be banned
-    let mut banned_users = Vec::new();
+    // Add 2 members who will be removed
+    let mut removed_users = Vec::new();
     for i in 0..2 {
         let user = user_repo
-            .create(&make_user(&format!("banned_{i}")))
+            .create(&make_user(&format!("removed_count_{i}")))
             .await
             .unwrap();
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
-        banned_users.push(user);
+        removed_users.push(user);
     }
 
-    // Ban these members
-    for user in &banned_users {
-        member_repo
-            .ban_member(
-                &room.id,
-                &user.id,
-                Some(&owner.id),
-                Some("test ban".to_string()),
-            )
-            .await
-            .unwrap();
+    // Remove these members
+    for user in &removed_users {
+        member_repo.remove(&room.id, &user.id).await.unwrap();
     }
 
-    // Paginated query should only return active members (1 creator + 5 active = 7)
-    // Note: Banned members have status=Banned but left_at IS NULL, so they should be excluded
-    // based on status filtering
+    // Paginated query should only return active members (1 creator + 5 active = 6)
     let (_members, total) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
         .await
         .unwrap();
 
-    // The expected behavior is that banned members are NOT included in list_by_room
-    // (the existing list_by_room excludes banned members)
-    assert_eq!(total, 6, "Total should only count non-banned members");
+    assert_eq!(total, 6, "Total should only count active members");
 }
 
 #[tokio::test]

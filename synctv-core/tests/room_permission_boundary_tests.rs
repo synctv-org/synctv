@@ -26,7 +26,12 @@ use synctv_core::{
         UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{member::MemberService, permission::PermissionService, NotificationService},
+    service::{
+        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        member::MemberService,
+        permission::PermissionService,
+        InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
+    },
     Error,
 };
 use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
@@ -126,6 +131,31 @@ fn make_member_service(pool: PgPool) -> MemberService {
     );
     member_service.set_room_settings_repo(RoomSettingsRepository::new(pool));
     member_service
+}
+
+fn make_user_service(pool: &PgPool) -> UserService {
+    let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
+    let username_cache =
+        synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
+    let token_blacklist = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let mut service = UserService::new(
+        pool,
+        jwt_service,
+        username_cache,
+        synctv_core::config::PasswordComplexityConfig::default(),
+        token_blacklist,
+        synctv_core::cache::KeyBuilder::new("test"),
+        BruteForceProtection::in_memory("test".to_string()),
+    );
+    service.set_password_hasher(std::sync::Arc::new(TestPasswordHasher::new()));
+    service
+}
+
+fn make_room_service(pool: PgPool) -> RoomService {
+    let user_service = make_user_service(&pool);
+    let mut service = RoomService::new(pool, user_service);
+    service.set_password_hasher(std::sync::Arc::new(TestPasswordHasher::new()));
+    service
 }
 
 /// Test that Admin cannot delete room (Creator-only operation).
@@ -249,6 +279,7 @@ async fn test_member_cannot_kick() {
     let pool = &infra.pool;
 
     let (_owner, room) = setup_test_room(pool, "Kick Test").await;
+    let room_service = make_room_service(pool.clone());
 
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -274,9 +305,8 @@ async fn test_member_cannot_kick() {
         .expect("Failed to add target");
 
     // Member tries to kick another member (should fail)
-    let member_service = make_member_service(pool.clone());
-    let result = member_service
-        .kick_member(room.id, kicker.id, target.id)
+    let result = room_service
+        .kick_member(room.id, kicker.id, target.id, 60)
         .await;
 
     assert!(result.is_err(), "Member cannot kick other members");
@@ -291,47 +321,6 @@ async fn test_member_cannot_kick() {
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
-}
-
-/// Test that Member cannot ban other members (Admin operation).
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_member_cannot_ban() {
-    let infra = create_test_pool().await;
-    let pool = &infra.pool;
-
-    let (_owner, room) = setup_test_room(pool, "Ban Test").await;
-
-    let user_repo = UserRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let banner = user_repo
-        .create(&make_user("member_banner"))
-        .await
-        .expect("Failed to create banner");
-    let banner_member = RoomMember::new(room.id, banner.id, RoomRole::Member);
-    member_repo
-        .add(&banner_member)
-        .await
-        .expect("Failed to add banner");
-
-    let target = user_repo
-        .create(&make_user("ban_target"))
-        .await
-        .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
-    member_repo
-        .add(&target_member)
-        .await
-        .expect("Failed to add target");
-
-    // Member tries to ban another member (should fail)
-    let member_service = make_member_service(pool.clone());
-    let result = member_service
-        .ban_member(room.id, banner.id, target.id, Some("Test ban".to_string()))
-        .await;
-
-    assert!(result.is_err(), "Member cannot ban other members");
 }
 
 /// Test that Member cannot change room settings (Admin operation).
@@ -444,6 +433,7 @@ async fn test_cross_room_permission_isolation() {
         .expect("Failed to add to Room A");
 
     let (_owner_b, room_b) = setup_test_room(pool, "Room B").await;
+    let room_service = make_room_service(pool.clone());
     let member_b = RoomMember::new(room_b.id, cross_user.id, RoomRole::Member);
     member_repo
         .add(&member_b)
@@ -461,60 +451,53 @@ async fn test_cross_room_permission_isolation() {
         .expect("Failed to add target");
 
     // User (Admin in Room A) tries to kick member in Room B (should fail)
-    let member_service = make_member_service(pool.clone());
-    let result = member_service
-        .kick_member(room_b.id, cross_user.id, target.id)
+    let result = room_service
+        .kick_member(room_b.id, cross_user.id, target.id, 60)
         .await;
 
     assert!(result.is_err(), "Admin in Room A cannot kick in Room B");
 }
 
-/// Test that a user banned in one room can still join other rooms.
+/// Test that a user kicked in one room can still join other rooms.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_isolated_to_single_room() {
+async fn test_kick_cooldown_isolated_to_single_room() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    let (owner_a, room_a) = setup_test_room(pool, "Ban Room A").await;
+    let (owner_a, room_a) = setup_test_room(pool, "Kick Room A").await;
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let banned_user = user_repo
-        .create(&make_user("banned_user"))
+    let kicked_user = user_repo
+        .create(&make_user("kicked_user"))
         .await
         .expect("Failed to create user");
-    let member_a = RoomMember::new(room_a.id, banned_user.id, RoomRole::Member);
+    let member_a = RoomMember::new(room_a.id, kicked_user.id, RoomRole::Member);
     member_repo
         .add(&member_a)
         .await
         .expect("Failed to add to Room A");
 
-    // Ban user from Room A
-    let member_service = make_member_service(pool.clone());
-    member_service
-        .ban_member(
-            room_a.id,
-            owner_a.id,
-            banned_user.id,
-            Some("Test ban".to_string()),
-        )
+    let room_service = make_room_service(pool.clone());
+    room_service
+        .kick_member(room_a.id, owner_a.id, kicked_user.id, 3600)
         .await
-        .expect("Failed to ban user");
+        .expect("Failed to kick user");
 
-    let (_owner_b, room_b) = setup_test_room(pool, "Ban Room B").await;
+    let (_owner_b, room_b) = setup_test_room(pool, "Kick Room B").await;
 
-    // User should be able to join Room B (ban is only in Room A)
-    let result = member_service
+    // User should be able to join Room B (kick cooldown is only in Room A)
+    let result = make_member_service(pool.clone())
         .add_member_with_options(
             room_b.id,
-            banned_user.id,
+            kicked_user.id,
             RoomRole::Member,
             AddMemberOptions::new(),
         )
         .await;
 
-    assert!(result.is_ok(), "User banned in Room A can join Room B");
+    assert!(result.is_ok(), "User kicked in Room A can join Room B");
 }
 
 /// Test that Creator role in one room doesn't grant Creator permissions in another.
@@ -608,14 +591,14 @@ async fn test_member_cannot_grant_self_permissions() {
         .await
         .expect("Failed to add member");
 
-    // Member tries to grant themselves BAN_MEMBER permission (should fail)
+    // Member tries to grant themselves KICK_MEMBER permission (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
         .grant_permission(
             room.id,
             member_user.id,
             member_user.id,
-            PermissionBits::BAN_MEMBER,
+            PermissionBits::KICK_MEMBER,
         )
         .await;
 
@@ -757,6 +740,7 @@ async fn test_cannot_downgrade_equal_role() {
 async fn test_kick_respects_role_hierarchy() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
+    let room_service = make_room_service(pool.clone());
 
     let (_owner, room) = setup_test_room(pool, "Kick Hierarchy Test").await;
 
@@ -784,9 +768,8 @@ async fn test_kick_respects_role_hierarchy() {
         .expect("Failed to add member");
 
     // Member tries to kick Admin (should fail - lower role)
-    let member_service = make_member_service(pool.clone());
-    let result = member_service
-        .kick_member(room.id, member.id, admin.id)
+    let result = room_service
+        .kick_member(room.id, member.id, admin.id, 60)
         .await;
 
     assert!(result.is_err(), "Member cannot kick Admin (role hierarchy)");
@@ -802,37 +785,6 @@ async fn test_kick_respects_role_hierarchy() {
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
-}
-
-/// Test that ban respects role hierarchy.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_ban_respects_role_hierarchy() {
-    let infra = create_test_pool().await;
-    let pool = &infra.pool;
-
-    let (owner, room) = setup_test_room(pool, "Ban Hierarchy Test").await;
-
-    let user_repo = UserRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let admin = user_repo
-        .create(&make_user("ban_admin"))
-        .await
-        .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id, admin.id, RoomRole::Admin);
-    member_repo
-        .add(&admin_member)
-        .await
-        .expect("Failed to add admin");
-
-    // Admin tries to ban Creator (should fail - Creator has higher role)
-    let member_service = make_member_service(pool.clone());
-    let result = member_service
-        .ban_member(room.id, admin.id, owner.id, Some("Test ban".to_string()))
-        .await;
-
-    assert!(result.is_err(), "Admin cannot ban Creator (role hierarchy)");
 }
 
 /// Test that revoked permissions are actually denied.

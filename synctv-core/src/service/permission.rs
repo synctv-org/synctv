@@ -836,7 +836,7 @@ impl PermissionService {
     /// Use this for security-sensitive operations where permission changes
     /// must be immediately reflected, such as:
     /// - Deleting a room
-    /// - Banning/kicking users
+    /// - Kicking members and changing room/user ban state
     /// - Changing user roles or permissions
     ///
     /// This bypasses the cache and always fetches fresh permissions from the database.
@@ -1283,10 +1283,10 @@ mod tests {
         let service = make_service();
         let mut settings = RoomSettings::default();
         settings.admin_added_permissions = AdminAddedPermissions(PermissionBits::PLAY_CONTROL);
-        settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::BAN_MEMBER);
+        settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::KICK_MEMBER);
         let perms = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
         assert!(perms.has(PermissionBits::PLAY_CONTROL));
-        assert!(!perms.has(PermissionBits::BAN_MEMBER));
+        assert!(!perms.has(PermissionBits::KICK_MEMBER));
     }
 
     #[test]
@@ -1301,10 +1301,10 @@ mod tests {
     #[test]
     fn test_member_allow_pattern() {
         let mut member = make_member(RoomRole::Member);
-        member.added_permissions = PermissionBits::BAN_MEMBER;
+        member.added_permissions = PermissionBits::KICK_MEMBER;
         let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let effective = member.effective_permissions(role_default);
-        assert!(effective.has(PermissionBits::BAN_MEMBER));
+        assert!(effective.has(PermissionBits::KICK_MEMBER));
         assert!(effective.has(PermissionBits::SEND_CHAT));
     }
 
@@ -1322,13 +1322,13 @@ mod tests {
     fn test_admin_uses_admin_overrides() {
         let mut member = make_member(RoomRole::Admin);
         member.admin_added_permissions = PermissionBits::PLAY_CONTROL;
-        member.admin_removed_permissions = PermissionBits::BAN_MEMBER;
+        member.admin_removed_permissions = PermissionBits::KICK_MEMBER;
         member.added_permissions = PermissionBits::USE_WEBRTC;
 
         let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let effective = member.effective_permissions(role_default);
         assert!(effective.has(PermissionBits::PLAY_CONTROL));
-        assert!(!effective.has(PermissionBits::BAN_MEMBER));
+        assert!(!effective.has(PermissionBits::KICK_MEMBER));
     }
 
     #[test]
@@ -1377,23 +1377,6 @@ mod tests {
     }
 
     #[test]
-    fn test_banned_member_has_no_permissions() {
-        let mut member = make_member(RoomRole::Admin);
-        member.ban(crate::models::UserId::expect_positive(30_001), None);
-        let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-        assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
-        assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
-    }
-
-    #[test]
-    fn test_left_member_has_no_permissions() {
-        let mut member = make_member(RoomRole::Member);
-        member.leave();
-        let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-        assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
-    }
-
-    #[test]
     fn test_cache_degraded_flag_toggling() {
         let degraded = AtomicBool::new(false);
         degraded.store(true, Ordering::Release);
@@ -1422,14 +1405,14 @@ mod tests {
         let perms =
             PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE);
         assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
-        assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::BAN_MEMBER));
+        assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::KICK_MEMBER));
     }
 
     #[test]
     fn test_has_any_requires_any_bit() {
         let perms = PermissionBits(PermissionBits::SEND_CHAT);
-        assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::BAN_MEMBER));
-        assert!(!perms.has_any(PermissionBits::BAN_MEMBER | PermissionBits::DELETE_ROOM));
+        assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::KICK_MEMBER));
+        assert!(!perms.has_any(PermissionBits::KICK_MEMBER | PermissionBits::DELETE_ROOM));
     }
 
     #[test]
@@ -1494,19 +1477,19 @@ mod tests {
     fn test_three_layer_admin_chain() {
         let service = make_service();
 
-        // Layer 2: Room removes BAN_MEMBER for admins
+        // Layer 2: Room removes KICK_MEMBER for admins
         let mut settings = RoomSettings::default();
-        settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::BAN_MEMBER);
+        settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::KICK_MEMBER);
         let role_default = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
-        assert!(!role_default.has(PermissionBits::BAN_MEMBER));
-        assert!(role_default.has(PermissionBits::KICK_MEMBER));
+        assert!(!role_default.has(PermissionBits::KICK_MEMBER));
+        assert!(role_default.has(PermissionBits::SET_MEMBER_PERMISSIONS));
 
-        // Layer 3: Admin-level re-adds BAN_MEMBER (specific admin override)
+        // Layer 3: Admin-level re-adds KICK_MEMBER (specific admin override)
         let mut member = make_member(RoomRole::Admin);
-        member.admin_added_permissions = PermissionBits::BAN_MEMBER;
+        member.admin_added_permissions = PermissionBits::KICK_MEMBER;
         let effective = member.effective_permissions(role_default);
-        assert!(effective.has(PermissionBits::BAN_MEMBER));
         assert!(effective.has(PermissionBits::KICK_MEMBER));
+        assert!(effective.has(PermissionBits::SET_MEMBER_PERMISSIONS));
     }
 
     #[test]
@@ -1571,23 +1554,6 @@ mod tests {
     }
 
     #[test]
-    fn test_banned_creator_has_no_permissions_via_has_permission() {
-        // RoomMember::has_permission checks status first
-        let mut member = make_member(RoomRole::Creator);
-        member.ban(crate::models::UserId::expect_positive(30_002), None);
-        let role_default = PermissionBits(PermissionBits::ALL);
-        assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
-    }
-
-    #[test]
-    fn test_banned_guest_has_no_permissions() {
-        let mut member = make_member(RoomRole::Guest);
-        member.ban(crate::models::UserId::expect_positive(30_003), None);
-        let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
-        assert!(!member.has_permission(PermissionBits::VIEW_MEDIA_RESOURCES, role_default));
-    }
-
-    #[test]
     fn test_room_level_add_and_remove_same_permission_for_member() {
         let service = make_service();
         let mut settings = RoomSettings::default();
@@ -1612,17 +1578,6 @@ mod tests {
     }
 
     #[test]
-    fn test_member_leave_sets_left_at() {
-        let mut member = make_member(RoomRole::Member);
-        assert!(member.left_at.is_none());
-        assert!(member.is_active());
-
-        member.leave();
-        assert!(member.left_at.is_some());
-        assert!(!member.is_active());
-    }
-
-    #[test]
     fn test_permission_bits_grant_revoke() {
         let mut perms = PermissionBits(0);
         perms.grant(PermissionBits::SEND_CHAT);
@@ -1642,7 +1597,7 @@ mod tests {
         let all = PermissionBits(PermissionBits::ALL);
         assert!(all.has(PermissionBits::SEND_CHAT));
         assert!(all.has(PermissionBits::CREATE_MEDIA_RESOURCE));
-        assert!(all.has(PermissionBits::BAN_MEMBER));
+        assert!(all.has(PermissionBits::KICK_MEMBER));
         assert!(all.has(PermissionBits::DELETE_ROOM));
         assert!(all.has(PermissionBits::USE_WEBRTC));
         assert!(all.has(PermissionBits::VIEW_MEDIA_RESOURCES));

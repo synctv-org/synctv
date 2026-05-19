@@ -793,11 +793,6 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
                 .route(
                     "/api/rooms/{room_id}/members/{user_id}",
                     axum::routing::patch(room_extra::set_member_permissions),
-                )
-                .route("/api/rooms/{room_id}/bans", post(room_extra::ban_member))
-                .route(
-                    "/api/rooms/{room_id}/bans/{user_id}",
-                    axum::routing::delete(room_extra::unban_member),
                 ),
         )
         .merge(Router::new().route("/api/tickets", post(ticket::create_ticket)))

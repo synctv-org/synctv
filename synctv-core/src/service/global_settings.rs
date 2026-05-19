@@ -123,7 +123,6 @@ const NAMED_PERMISSIONS: &[(&str, u64)] = &[
     ("change_playback_rate", PermissionBits::CHANGE_PLAYBACK_RATE),
     ("approve_member", PermissionBits::APPROVE_MEMBER),
     ("kick_member", PermissionBits::KICK_MEMBER),
-    ("ban_member", PermissionBits::BAN_MEMBER),
     (
         "set_member_permissions",
         PermissionBits::SET_MEMBER_PERMISSIONS,

@@ -16,7 +16,8 @@ use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
 use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
 use synctv_core::service::room::{
     DeleteEntriesPlan, DeleteEntriesRequest as CoreDeleteEntriesRequest,
-    RealtimeOutboxDeleteEntriesEventFactory,
+    MemberResourceCleanupResult, RealtimeOutboxDeleteEntriesEventFactory,
+    RealtimeOutboxMemberResourceCleanupEventFactory,
 };
 use synctv_core::service::MediaService;
 
@@ -113,6 +114,21 @@ impl PreparedDeleteEntriesOutboxFanout {
                 .expect("delete entries fanout events mutex should not be poisoned") =
                 prepared_events;
             outbox_events
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn member_cleanup_outbox_factory(
+        &self,
+    ) -> RealtimeOutboxMemberResourceCleanupEventFactory {
+        let factory = self.outbox_factory();
+        Arc::new(move |cleanup: &MemberResourceCleanupResult| {
+            let plan = DeleteEntriesPlan {
+                deleted_playlist_ids: cleanup.deleted_playlist_ids.clone(),
+                deleted_media_ids: cleanup.deleted_media_ids.clone(),
+                playback_reset: cleanup.playback_reset,
+            };
+            factory(&plan)
         })
     }
 

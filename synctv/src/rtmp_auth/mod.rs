@@ -896,7 +896,7 @@ impl SyncTvRtmpAuth {
             return Err(format!("Failed to write shared user-stream index: {error}").into());
         }
 
-        // Track user->stream mapping locally for kick-on-ban (O(1) local lookup)
+        // Track user->stream mapping locally for kick-on-user-ban (O(1) local lookup)
         self.user_stream_tracker.insert(
             validated.user_id.to_string(),
             validated.room_id.to_string(),

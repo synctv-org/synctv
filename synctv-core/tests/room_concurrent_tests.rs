@@ -232,13 +232,12 @@ async fn test_concurrent_join_respects_max_members() {
     );
 
     // Verify final member count
-    let member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
-    )
-    .bind(room.id)
-    .fetch_one(pool)
-    .await
-    .expect("Failed to count members");
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
+            .bind(room.id)
+            .fetch_one(pool)
+            .await
+            .expect("Failed to count members");
 
     assert_eq!(member_count, 10, "Final member count should be 10");
 }
@@ -463,8 +462,7 @@ async fn test_concurrent_permission_grant() {
 
         // Grant different permissions to each member
         let permission = match i {
-            0 => PermissionBits::BAN_MEMBER,
-            1 => PermissionBits::KICK_MEMBER,
+            0 | 1 => PermissionBits::KICK_MEMBER,
             2 => PermissionBits::CLEAR_MEDIA_RESOURCES,
             3 => PermissionBits::SEND_CHAT,
             _ => PermissionBits::PLAY_CONTROL,
@@ -800,13 +798,12 @@ async fn test_concurrent_leave_and_rejoin() {
     assert_eq!(join_success, 10, "All join operations should succeed");
 
     // Final count: owner (1) + 10 new = 11
-    let final_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
-    )
-    .bind(room.id)
-    .fetch_one(pool)
-    .await
-    .expect("Failed to count members");
+    let final_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
+            .bind(room.id)
+            .fetch_one(pool)
+            .await
+            .expect("Failed to count members");
 
     assert_eq!(
         final_count, 11,

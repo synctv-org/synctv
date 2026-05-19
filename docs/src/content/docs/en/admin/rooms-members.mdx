@@ -10,7 +10,7 @@ Room management affects online users. Query current state first, then validate j
 | Category | Common commands | Risk |
 | --- | --- | --- |
 | Lifecycle | `room create`, `room delete`, `room ban`, `room transfer-owner` | Visibility, ownership, and data retention |
-| Members | `room member add/kick/ban/unban/set-permissions` | Access and administration capability |
+| Members | `room member add/kick/set-permissions` | Access and administration capability |
 | Settings | `room settings update/reset` | Join rules, guests, chat, danmaku, and defaults |
 | Playback | `room playback play/pause/seek/start/stop` | All online members see the change |
 | Livestream | `room stream list`, `provider rtmp create-publish-key` | Publish keys and live sessions |
@@ -30,7 +30,7 @@ Room management affects online users. Query current state first, then validate j
 | --- | --- | --- |
 | Temporarily mute | Remove `send_chat` from the member | Smaller blast radius than disabling chat |
 | Allow playback control | Add `play_control` | Media switching also needs `change_current_media` |
-| Remove disruptive member | Kick or ban member | Room ban is not a platform ban |
+| Remove disruptive member | Kick member | After a kick, the member enters a temporary rejoin cooldown |
 | Change long-term responsibility | Change room role or defaults | Avoid long-lived piles of member overrides |
 
 Room concepts are in [Rooms](../../concepts/rooms/). Permission evaluation is in [Permissions Model](../../concepts/permissions/).

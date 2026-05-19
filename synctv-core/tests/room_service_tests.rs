@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use parking_lot::RwLock;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
@@ -15,8 +16,8 @@ use synctv_core::{
     models::{
         room_settings::{AllowAutoJoin, RequireApproval},
         Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Playlist,
-        PlaylistId, ReviewRequestId, RoomId, RoomListQuery, RoomRole, RoomSettings, RoomStatus,
-        User, UserId, UserRole, UserStatus,
+        PlaylistId, ReviewRequestId, RoomId, RoomListQuery, RoomPlaybackState, RoomRole,
+        RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -25,17 +26,68 @@ use synctv_core::{
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         notification::{GuestKickReason, RoomEvent},
+        playback::{BroadcastResult, PlaybackBroadcaster},
         InMemoryTokenBlacklistStore, RoomService, SettingsRegistry, SettingsService, UserService,
     },
     Error,
 };
 use synctv_core_testing::create_test_pool;
 
+async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
+    sqlx::query!(
+        "UPDATE room_member_kick_cooldowns
+         SET ends_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+         WHERE room_id = $1 AND user_id = $2",
+        room_id as RoomId,
+        user_id as UserId,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 fn assert_f64_eq(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() < f64::EPSILON,
         "expected {expected}, got {actual}"
     );
+}
+
+fn assert_playback_reset_event(broadcaster: &RecordingPlaybackBroadcaster, operation: &str) {
+    let broadcasts = broadcaster.broadcasts();
+    assert!(
+        broadcasts.iter().any(|state| {
+            state.playing_media_id.is_none()
+                && state.playing_playlist_id.is_none()
+                && state.target.is_empty()
+                && !state.is_playing
+                && (state.position - 0.0).abs() < f64::EPSILON
+                && (state.speed - 1.0).abs() < f64::EPSILON
+        }),
+        "{operation} must broadcast a playback reset when member cleanup deletes current media; got {broadcasts:?}"
+    );
+}
+
+#[derive(Debug, Default)]
+struct RecordingPlaybackBroadcaster {
+    broadcasts: RwLock<Vec<RoomPlaybackState>>,
+}
+
+impl RecordingPlaybackBroadcaster {
+    fn broadcasts(&self) -> Vec<RoomPlaybackState> {
+        self.broadcasts.read().clone()
+    }
+}
+
+impl PlaybackBroadcaster for RecordingPlaybackBroadcaster {
+    fn broadcast_playback_state(&self, state: &RoomPlaybackState) -> BroadcastResult {
+        self.broadcasts.write().push(state.clone());
+        BroadcastResult {
+            local_sent: 1,
+            redis_sent: true,
+            single_node: false,
+        }
+    }
 }
 
 fn u64_to_i64(value: u64) -> i64 {
@@ -70,6 +122,15 @@ fn make_room_service(pool: PgPool) -> RoomService {
     let mut svc = RoomService::new(pool, user_service);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
+}
+
+async fn register_direct_url_provider(room_service: &RoomService) {
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider("direct_url", "direct_url", &serde_json::json!({}))
+        .await
+        .expect("direct_url provider should register");
 }
 
 fn make_user(username: &str) -> User {
@@ -890,6 +951,237 @@ async fn test_leave_room_member_succeeds() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_leave_room_cleans_member_created_media_resources() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let playback_broadcaster = Arc::new(RecordingPlaybackBroadcaster::default());
+    room_service.set_playback_realtime_broadcaster(playback_broadcaster.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("leave_cleanup_owner"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("leave_cleanup_member"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Leave Cleanup Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_direct_url_provider(&room_service).await;
+
+    room_service
+        .join_room(room.id, member.id, None)
+        .await
+        .unwrap();
+
+    let playlist = room_service
+        .playlist_service()
+        .create_playlist(
+            room.id,
+            member.id,
+            synctv_core::service::playlist::CreatePlaylistRequest {
+                room_id: room.id,
+                name: "member folder".to_string(),
+                parent_id: None,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let media = room_service
+        .media_service()
+        .add_media(
+            room.id,
+            member.id,
+            synctv_core::service::media::AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "member media".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: None,
+                source_config: serde_json::json!({
+                    "url": "https://example.com/video.mp4"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .set_playing_media(room.id, owner.id, media.id)
+        .await
+        .unwrap();
+    let warm_state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(warm_state.playing_media_id, Some(media.id));
+    room_service.leave_room(room.id, member.id).await.unwrap();
+
+    assert!(!member_repo.is_member(&room.id, &member.id).await.unwrap());
+    assert!(playlist_repo
+        .get_by_id(&playlist.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+
+    let refreshed_state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed_state.playing_media_id, None);
+    assert_eq!(refreshed_state.playing_playlist_id, None);
+    assert!(refreshed_state.target.is_empty());
+    assert!(!refreshed_state.is_playing);
+    assert_f64_eq(refreshed_state.position, 0.0);
+    assert_f64_eq(refreshed_state.speed, 1.0);
+    assert_playback_reset_event(&playback_broadcaster, "leave_room");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let playback_broadcaster = Arc::new(RecordingPlaybackBroadcaster::default());
+    room_service.set_playback_realtime_broadcaster(playback_broadcaster.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("kick_cleanup_owner"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("kick_cleanup_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Kick Cleanup Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_direct_url_provider(&room_service).await;
+
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .unwrap();
+
+    let playlist = room_service
+        .playlist_service()
+        .create_playlist(
+            room.id,
+            target.id,
+            synctv_core::service::playlist::CreatePlaylistRequest {
+                room_id: room.id,
+                name: "target folder".to_string(),
+                parent_id: None,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let media = room_service
+        .media_service()
+        .add_media(
+            room.id,
+            target.id,
+            synctv_core::service::media::AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "target media".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: None,
+                source_config: serde_json::json!({
+                    "url": "https://example.com/kick.mp4"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .set_playing_media(room.id, owner.id, media.id)
+        .await
+        .unwrap();
+    let warm_state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(warm_state.playing_media_id, Some(media.id));
+    room_service
+        .kick_member(room.id, owner.id, target.id, 3600)
+        .await
+        .unwrap();
+
+    assert!(!member_repo.is_member(&room.id, &target.id).await.unwrap());
+    assert!(member_repo
+        .is_in_kick_cooldown(&room.id, &target.id)
+        .await
+        .unwrap());
+    assert!(playlist_repo
+        .get_by_id(&playlist.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+
+    let refreshed_state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed_state.playing_media_id, None);
+    assert_eq!(refreshed_state.playing_playlist_id, None);
+    assert!(refreshed_state.target.is_empty());
+    assert!(!refreshed_state.is_playing);
+    assert_f64_eq(refreshed_state.position, 0.0);
+    assert_f64_eq(refreshed_state.speed, 1.0);
+    assert_playback_reset_event(&playback_broadcaster, "kick_member");
+
+    let blocked_rejoin = room_service.join_room(room.id, target.id, None).await;
+    assert!(
+        matches!(blocked_rejoin, Err(Error::Authorization(ref msg)) if msg.contains("recently kicked")),
+        "rejoin during kick cooldown should be blocked, got {blocked_rejoin:?}"
+    );
+
+    expire_kick_cooldown(&pool, room.id, target.id).await;
+    assert!(room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_leave_room_non_member_is_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1049,7 +1341,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_banned_user_cannot_rejoin_room() {
+async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1080,25 +1372,32 @@ async fn test_banned_user_cannot_rejoin_room() {
         .await
         .unwrap();
 
-    // Ban the member
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(room.id, creator.id, target.id, Some("Spamming".to_string()))
+    room_service
+        .kick_member(room.id, creator.id, target.id, 3600)
         .await
         .unwrap();
 
     let result = room_service.join_room(room.id, target.id, None).await;
 
-    assert!(result.is_err(), "Banned user should not be able to rejoin");
+    assert!(
+        result.is_err(),
+        "Kicked user should not be able to rejoin during cooldown"
+    );
     match result.unwrap_err() {
         Error::Authorization(msg) => {
             assert!(
-                msg.contains("banned") || msg.contains("ban"),
-                "Error should mention ban: {msg}"
+                msg.contains("recently kicked") || msg.contains("cooldown"),
+                "Error should mention kick cooldown: {msg}"
             );
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
+
+    expire_kick_cooldown(&pool, room.id, target.id).await;
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .expect("kicked user should rejoin after cooldown expiry");
 }
 
 #[tokio::test]
@@ -1902,7 +2201,7 @@ async fn test_password_update_allows_join_with_new_password() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_member_invalidates_permission_cache() {
+async fn test_kick_member_invalidates_permission_cache() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1942,118 +2241,40 @@ async fn test_ban_member_invalidates_permission_cache() {
         .unwrap();
     assert!(initial_perms.0 > 0, "Member should have some permissions");
 
-    // Ban the target
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(room.id, creator.id, target.id, Some("Test ban".to_string()))
+    room_service
+        .kick_member(room.id, creator.id, target.id, 3600)
         .await
         .unwrap();
 
-    // Verify permission cache is invalidated - banned user should have no permissions
-    // Note: get_user_permissions_no_cache returns an error for banned users (not a member),
-    // so we verify the ban was applied by checking member status directly
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(member.is_banned(), "Member should have an active ban");
-    assert_eq!(member.status, MemberStatus::Left);
+    assert!(
+        member_repo
+            .get_any(&room.id, &target.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "kick should delete the active membership row"
+    );
+    assert!(
+        member_repo
+            .is_in_kick_cooldown(&room.id, &target.id)
+            .await
+            .unwrap(),
+        "kick should create an active cooldown"
+    );
 
-    // Verify that get_user_permissions returns error for banned user
+    // Verify that get_user_permissions returns error for kicked user
     let perms_result = perm_service
         .get_user_permissions_no_cache(&room.id, &target.id)
         .await;
     assert!(
         perms_result.is_err(),
-        "Banned user should not have permissions"
-    );
-
-    // Verify member is still auditable as left with an active ban.
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(member.is_banned());
-    assert_eq!(member.status, MemberStatus::Left);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_unban_member_restores_permission_access() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("unban_sync_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("unban_sync_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Unban Sync Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Target joins and then gets banned
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(room.id, creator.id, target.id, None)
-        .await
-        .unwrap();
-
-    // Verify banned
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(member.is_banned());
-    assert_eq!(member.status, MemberStatus::Left);
-
-    // Unban
-    member_service
-        .unban_member(room.id, creator.id, target.id)
-        .await
-        .unwrap();
-
-    // Verify unbanned; unban clears moderation state but does not implicitly rejoin.
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!member.is_banned());
-    assert_eq!(member.status, MemberStatus::Left);
-
-    // User should be able to join again
-    let result = room_service.join_room(room.id, target.id, None).await;
-    assert!(
-        result.is_ok(),
-        "Unbanned user should be able to join: {:?}",
-        result.err()
+        "Kicked user should not have permissions"
     );
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_prevents_room_access_even_with_cached_permissions() {
+async fn test_kick_prevents_room_access_even_with_cached_permissions() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2091,23 +2312,24 @@ async fn test_ban_prevents_room_access_even_with_cached_permissions() {
         .await
         .unwrap();
 
-    // Ban the target
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(room.id, creator.id, target.id, None)
+    room_service
+        .kick_member(room.id, creator.id, target.id, 3600)
         .await
         .unwrap();
 
-    // Try to rejoin - should fail because banned
+    // Try to rejoin - should fail because kick cooldown is active
     let result = room_service.join_room(room.id, target.id, None).await;
     assert!(
         result.is_err(),
-        "Banned user should not be able to join even with cached permissions"
+        "Kicked user should not be able to join even with cached permissions"
     );
 
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("banned"), "Error should mention ban: {msg}");
+            assert!(
+                msg.contains("recently kicked") || msg.contains("cooldown"),
+                "Error should mention kick cooldown: {msg}"
+            );
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
@@ -3378,7 +3600,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_entries_requires_active_membership_even_for_owned_resources() {
+async fn test_leave_room_removes_owned_resources_before_former_member_can_delete() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
@@ -3431,16 +3653,9 @@ async fn test_delete_entries_requires_active_membership_even_for_owned_resources
 
     room_service.leave_room(room.id, member.id).await.unwrap();
 
-    let result = room_service
-        .remove_media(room.id, member.id, media.id)
-        .await;
     assert!(
-        matches!(result, Err(Error::Authorization(_))),
-        "former members must not delete owned media resources after leaving, got: {result:?}"
-    );
-    assert!(
-        media_repo.get_by_id(&media.id).await.unwrap().is_some(),
-        "owned media resource must remain after rejected delete"
+        media_repo.get_by_id(&media.id).await.unwrap().is_none(),
+        "owned media resource must be cleaned when the member leaves"
     );
 }
 
@@ -4821,23 +5036,25 @@ async fn test_cannot_join_banned_room() {
         .await
         .unwrap();
 
-    // Now ban the joiner from the room
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(room.id, owner.id, joiner.id, Some("Test ban".to_string()))
+    // Now kick the joiner from the room
+    room_service
+        .kick_member(room.id, owner.id, joiner.id, 3600)
         .await
         .unwrap();
 
-    // Try to join again - should fail because user is banned
+    // Try to join again - should fail because kick cooldown is active
     let result = room_service.join_room(room.id, joiner.id, None).await;
     assert!(
         result.is_err(),
-        "Should not be able to join room when banned"
+        "Should not be able to join room during kick cooldown"
     );
 
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("banned"), "Error should mention ban: {msg}");
+            assert!(
+                msg.contains("recently kicked") || msg.contains("cooldown"),
+                "Error should mention kick cooldown: {msg}"
+            );
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
@@ -7384,19 +7601,19 @@ async fn test_set_member_role_only_creator_can_change_roles() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_member_completes_quickly() {
+async fn test_kick_member_completes_quickly() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("ban_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("ban_target")).await.unwrap();
+    let creator = user_repo.create(&make_user("kick_creator")).await.unwrap();
+    let target = user_repo.create(&make_user("kick_target")).await.unwrap();
 
     let (room, _) = room_service
         .create_room(
-            "Ban Test Room".to_string(),
-            "Testing ban".to_string(),
+            "Kick Test Room".to_string(),
+            "Testing kick".to_string(),
             creator.id,
             None,
             None,
@@ -7409,11 +7626,10 @@ async fn test_ban_member_completes_quickly() {
         .await
         .unwrap();
 
-    // Ban should complete without the 100ms sleep overhead
+    // Kick should complete without fixed sleep overhead
     let start = std::time::Instant::now();
     room_service
-        .member_service()
-        .ban_member(room.id, creator.id, target.id, Some("test ban".to_string()))
+        .kick_member(room.id, creator.id, target.id, 60)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -7423,15 +7639,22 @@ async fn test_ban_member_completes_quickly() {
     // The main point is it shouldn't have the hardcoded 100ms sleep
     assert!(
         elapsed < std::time::Duration::from_secs(5),
-        "Ban operation took too long: {elapsed:?}"
+        "Kick operation took too long: {elapsed:?}"
     );
 
-    // Verify the member is actually banned (use get_any since banned members have left_at set)
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(member.is_banned());
-    assert_eq!(member.status, MemberStatus::Left);
+    assert!(
+        member_repo
+            .get_any(&room.id, &target.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "kick should delete the member row"
+    );
+    assert!(
+        member_repo
+            .is_in_kick_cooldown(&room.id, &target.id)
+            .await
+            .unwrap(),
+        "kick should create cooldown"
+    );
 }

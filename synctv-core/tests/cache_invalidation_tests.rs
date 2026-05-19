@@ -785,11 +785,7 @@ async fn test_cache_invalidation_after_commit() {
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
             joined_at: chrono::Utc::now(),
-            left_at: None,
             version: 0,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
         })
         .await
         .expect("Failed to create member");

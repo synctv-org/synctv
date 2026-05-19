@@ -1,6 +1,6 @@
 //! `MemberService` integration tests
 //!
-//! Tests member management including max members, kick hierarchy, ban/unban,
+//! Tests member management including max members, kick hierarchy,
 //! and permission operations with real `PostgreSQL` via testcontainers.
 //!
 //! Run with: cargo test -p synctv-core --test `member_service_tests` -- --nocapture
@@ -14,7 +14,7 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::MaxMembers, MemberStatus, PermissionBits, RoomRole, User, UserId, UserRole,
+        room_settings::MaxMembers, PermissionBits, RoomId, RoomRole, User, UserId, UserRole,
         UserStatus,
     },
     repository::{RoomMemberRepository, UserRepository},
@@ -25,6 +25,19 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+
+async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
+    sqlx::query!(
+        "UPDATE room_member_kick_cooldowns
+         SET ends_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+         WHERE room_id = $1 AND user_id = $2",
+        room_id as RoomId,
+        user_id as UserId,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
 
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -150,8 +163,8 @@ async fn test_kick_member_role_hierarchy() {
         .unwrap();
 
     // Admin trying to kick Creator should fail
-    let result = member_service
-        .kick_member(room.id, admin.id, creator.id)
+    let result = room_service
+        .kick_member(room.id, admin.id, creator.id, 60)
         .await;
 
     assert!(result.is_err(), "Admin cannot kick Creator");
@@ -204,8 +217,8 @@ async fn test_kick_member_creator_can_kick_admin() {
         .unwrap();
 
     // Creator should be able to kick admin
-    let result = member_service
-        .kick_member(room.id, creator.id, admin.id)
+    let result = room_service
+        .kick_member(room.id, creator.id, admin.id, 60)
         .await;
 
     assert!(result.is_ok(), "Creator should be able to kick admin");
@@ -305,331 +318,6 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_sets_status_and_banned_at() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let creator = user_repo.create(&make_user("ban_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("ban_target")).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Ban Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    // Ban the member
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(
-            room.id,
-            creator.id,
-            target.id,
-            Some("Test ban reason".to_string()),
-        )
-        .await
-        .unwrap();
-
-    // Verify ban status (use get_any because banned members have left_at set)
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left, "Member should be banned");
-    assert!(member.banned_at.is_some(), "banned_at should be set");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_unban_clears_ban_metadata_without_rejoining_member() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let creator = user_repo.create(&make_user("unban_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("unban_target")).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Unban Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_service = room_service.member_service();
-
-    // Ban first
-    member_service
-        .ban_member(room.id, creator.id, target.id, None)
-        .await
-        .unwrap();
-
-    // Verify banned (use get_any because banned members have left_at set)
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left);
-    assert!(member.is_banned());
-
-    // Unban
-    member_service
-        .unban_member(room.id, creator.id, target.id)
-        .await
-        .unwrap();
-
-    // Unban only revokes moderation state. It must not silently rejoin a
-    // user who was removed from the active member set by the ban.
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left);
-    assert!(
-        member.banned_at.is_none(),
-        "banned_at should be cleared after unban"
-    );
-    assert!(
-        member_repo
-            .get(&room.id, &target.id)
-            .await
-            .unwrap()
-            .is_none(),
-        "unban must not restore active membership"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_ban_member_can_ban_departed_member() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("admin_ban_departed_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("admin_ban_departed_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Admin Ban Departed Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-    room_service.leave_room(room.id, target.id).await.unwrap();
-
-    room_service
-        .member_service()
-        .admin_ban_member(
-            room.id,
-            creator.id,
-            &creator.username,
-            target.id,
-            Some(creator.id),
-            Some("prevent rejoin".to_string()),
-        )
-        .await
-        .expect("admin ban should also work for departed historical memberships");
-
-    let persisted = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .expect("departed member row should still exist");
-    assert_eq!(persisted.status, MemberStatus::Left);
-    assert!(persisted.is_banned());
-    assert_eq!(persisted.banned_by.as_ref(), Some(&creator.id));
-    assert_eq!(persisted.banned_reason.as_deref(), Some("prevent rejoin"));
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_ban_member_preserves_ban_semantics() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("status_ban_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("status_ban_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Status Ban Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_service = room_service.member_service();
-    member_service
-        .ban_member(room.id, creator.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left);
-    assert!(member.is_banned());
-    assert!(
-        member.left_at.is_some(),
-        "ban must evict the member from the active set"
-    );
-    assert!(member.banned_at.is_some(), "ban must record ban metadata");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_set_member_status_can_set_member_pending_and_approve_back_to_active() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("status_pending_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("status_pending_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Status Pending Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let pending = room_service
-        .member_service()
-        .set_member_status(room.id, creator.id, target.id, MemberStatus::Active)
-        .await
-        .unwrap();
-
-    assert_eq!(pending.status, MemberStatus::Active);
-
-    let active = room_service
-        .member_service()
-        .set_member_status(room.id, creator.id, target.id, MemberStatus::Active)
-        .await
-        .unwrap();
-
-    assert_eq!(active.status, MemberStatus::Active);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_set_member_status_rejects_specialized_left_transition() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("status_special_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("status_special_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Status Specialized Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_service = room_service.member_service();
-
-    let left_err = member_service
-        .set_member_status(room.id, creator.id, target.id, MemberStatus::Left)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(left_err, Error::InvalidInput(ref msg) if msg.contains("Use remove_member or kick_member")),
-        "Left must stay on the dedicated removal path, got: {left_err}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_grant_permission_bitwise_or() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -656,27 +344,12 @@ async fn test_grant_permission_bitwise_or() {
 
     let member_service = room_service.member_service();
 
-    // Grant BAN_MEMBER permission
-    let updated = member_service
-        .grant_permission(room.id, creator.id, target.id, PermissionBits::BAN_MEMBER)
-        .await
-        .unwrap();
-
-    assert!(
-        updated.added_permissions & PermissionBits::BAN_MEMBER != 0,
-        "BAN_MEMBER should be in added_permissions"
-    );
-
-    // Grant another permission (KICK_MEMBER) - should be bitwise OR'd
+    // Grant KICK_MEMBER permission
     let updated = member_service
         .grant_permission(room.id, creator.id, target.id, PermissionBits::KICK_MEMBER)
         .await
         .unwrap();
 
-    assert!(
-        updated.added_permissions & PermissionBits::BAN_MEMBER != 0,
-        "BAN_MEMBER should still be set"
-    );
     assert!(
         updated.added_permissions & PermissionBits::KICK_MEMBER != 0,
         "KICK_MEMBER should now also be set"
@@ -739,169 +412,6 @@ async fn test_revoke_permission() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_records_reason_without_realtime_side_effects() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("ban_bc_creator"))
-        .await
-        .unwrap();
-    let target = user_repo.create(&make_user("ban_bc_target")).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Ban Broadcast Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_service = room_service.member_service();
-
-    // Ban with a specific reason
-    let ban_reason = "Violating community guidelines";
-    member_service
-        .ban_member(room.id, creator.id, target.id, Some(ban_reason.to_string()))
-        .await
-        .unwrap();
-
-    // Verify the member is banned
-    let member_repo = RoomMemberRepository::new(pool.clone());
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left);
-    assert!(member.is_banned());
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_ban_has_no_realtime_propagation_delay_in_member_service() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("ban_delay_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("ban_delay_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Ban Delay Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_service = room_service.member_service();
-
-    // Measure time taken for ban operation
-    let start = std::time::Instant::now();
-
-    member_service
-        .ban_member(
-            room.id,
-            creator.id,
-            target.id,
-            Some("Testing propagation delay".to_string()),
-        )
-        .await
-        .unwrap();
-
-    let elapsed = start.elapsed();
-
-    // Verify the member is banned
-    let member_repo = RoomMemberRepository::new(pool.clone());
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left);
-    assert!(member.is_banned());
-
-    assert!(
-        elapsed < std::time::Duration::from_millis(200),
-        "MemberService ban should complete quickly without realtime propagation delay, took {elapsed:?}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_member_service_ban_persists_banned_status_only() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("status_bc_creator"))
-        .await
-        .unwrap();
-    let target = user_repo
-        .create(&make_user("status_bc_target"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Status Broadcast Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_service = room_service.member_service();
-
-    member_service
-        .ban_member(room.id, creator.id, target.id, None)
-        .await
-        .unwrap();
-
-    let member_repo = RoomMemberRepository::new(pool.clone());
-    let member = member_repo
-        .get_any(&room.id, &target.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(member.status, MemberStatus::Left);
-    assert!(member.is_banned());
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_kick_member_removes_active_membership() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -932,11 +442,9 @@ async fn test_kick_member_removes_active_membership() {
         .await
         .unwrap();
 
-    let member_service = room_service.member_service();
-
     // Kick the member
-    member_service
-        .kick_member(room.id, creator.id, member.id)
+    room_service
+        .kick_member(room.id, creator.id, member.id, 60)
         .await
         .unwrap();
 
@@ -949,28 +457,26 @@ async fn test_kick_member_removes_active_membership() {
     );
 }
 
-/// Test that `remove_member` handles the case atomically where a member is removed
-/// concurrently. The operation should return `NotFound` if the member doesn't exist
-/// or was already removed, rather than proceeding with cache invalidation etc.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_remove_member_returns_not_found_for_non_member() {
+async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator = user_repo
-        .create(&make_user("remove_nf_creator"))
+        .create(&make_user("kick_cd_creator"))
         .await
         .unwrap();
-    let non_member = user_repo
-        .create(&make_user("remove_nf_non_member"))
+    let member = user_repo
+        .create(&make_user("kick_cd_member"))
         .await
         .unwrap();
 
     let (room, _) = room_service
         .create_room(
-            "Remove NotFound Room".to_string(),
+            "Kick Cooldown Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -979,11 +485,83 @@ async fn test_remove_member_returns_not_found_for_non_member() {
         .await
         .unwrap();
 
-    // non_member never joined, so remove_member should return NotFound
-    let member_service = room_service.member_service();
-    let result = member_service.remove_member(room.id, non_member.id).await;
+    room_service
+        .join_room(room.id, member.id, None)
+        .await
+        .unwrap();
 
-    assert!(result.is_err(), "remove_member should fail for non-member");
+    room_service
+        .kick_member(room.id, creator.id, member.id, 3600)
+        .await
+        .unwrap();
+
+    assert!(
+        member_repo
+            .is_in_kick_cooldown(&room.id, &member.id)
+            .await
+            .unwrap(),
+        "Kicked member should be in room kick cooldown"
+    );
+
+    let rejoin_during_cooldown = room_service.join_room(room.id, member.id, None).await;
+    assert!(
+        matches!(rejoin_during_cooldown, Err(Error::Authorization(ref msg)) if msg.contains("recently kicked")),
+        "Rejoin during kick cooldown should be denied, got {rejoin_during_cooldown:?}"
+    );
+
+    expire_kick_cooldown(&pool, room.id, member.id).await;
+
+    let rejoin_after_expiry = room_service.join_room(room.id, member.id, None).await;
+    assert!(
+        rejoin_after_expiry.is_ok(),
+        "Rejoin after kick cooldown expiry should succeed, got {rejoin_after_expiry:?}"
+    );
+    assert!(
+        member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        "Member should be active again after rejoin"
+    );
+}
+
+/// Test that `delete_active_membership` handles the case atomically where a membership is deleted
+/// concurrently. The operation should return `NotFound` if the member doesn't exist
+/// or was already deleted, rather than proceeding with cache invalidation etc.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_active_membership_returns_not_found_for_non_member() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("delete_membership_nf_creator"))
+        .await
+        .unwrap();
+    let non_member = user_repo
+        .create(&make_user("delete_membership_nf_non_member"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Delete Membership NotFound Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // non_member never joined, so delete_active_membership should return NotFound
+    let member_service = room_service.member_service();
+    let result = member_service
+        .delete_active_membership(room.id, non_member.id)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "delete_active_membership should fail for non-member"
+    );
     match result.unwrap_err() {
         Error::NotFound(msg) => {
             assert!(
@@ -995,28 +573,28 @@ async fn test_remove_member_returns_not_found_for_non_member() {
     }
 }
 
-/// Test that `remove_member` is idempotent-safe: calling it twice should return
-/// `NotFound` on the second call (member was already removed).
+/// Test that `delete_active_membership` is idempotent-safe: calling it twice should return
+/// `NotFound` on the second call (membership was already deleted).
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_remove_member_idempotent_not_found_after_removal() {
+async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator = user_repo
-        .create(&make_user("remove_idem_creator"))
+        .create(&make_user("delete_membership_idem_creator"))
         .await
         .unwrap();
     let member = user_repo
-        .create(&make_user("remove_idem_member"))
+        .create(&make_user("delete_membership_idem_member"))
         .await
         .unwrap();
 
     let (room, _) = room_service
         .create_room(
-            "Remove Idempotent Room".to_string(),
+            "Delete Membership Idempotent Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -1034,25 +612,32 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
     // Verify member exists
     assert!(
         member_repo.is_member(&room.id, &member.id).await.unwrap(),
-        "Member should exist before removal"
+        "Member should exist before membership deletion"
     );
 
-    // First remove should succeed
+    // First deletion should succeed
     let member_service = room_service.member_service();
-    let result = member_service.remove_member(room.id, member.id).await;
-    assert!(result.is_ok(), "First remove_member should succeed");
+    let result = member_service
+        .delete_active_membership(room.id, member.id)
+        .await;
+    assert!(
+        result.is_ok(),
+        "First delete_active_membership should succeed"
+    );
 
-    // Verify member is removed
+    // Verify membership is deleted
     assert!(
         !member_repo.is_member(&room.id, &member.id).await.unwrap(),
-        "Member should not exist after removal"
+        "Member should not exist after membership deletion"
     );
 
-    // Second remove should return NotFound (atomic check + remove)
-    let result = member_service.remove_member(room.id, member.id).await;
+    // Second deletion should return NotFound.
+    let result = member_service
+        .delete_active_membership(room.id, member.id)
+        .await;
     assert!(
         result.is_err(),
-        "Second remove_member should fail for already-removed member"
+        "Second delete_active_membership should fail for already-removed member"
     );
     match result.unwrap_err() {
         Error::NotFound(msg) => {
@@ -1065,11 +650,11 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
     }
 }
 
-/// Test concurrent `remove_member` calls: both should complete without errors,
-/// and the member should be removed (only one should actually do the removal).
+/// Test concurrent `delete_active_membership` calls: both should complete without errors,
+/// and the membership should be deleted (only one should actually delete it).
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_remove_member_concurrent_no_race() {
+async fn test_delete_active_membership_concurrent_no_race() {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
@@ -1079,17 +664,17 @@ async fn test_remove_member_concurrent_no_race() {
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator = user_repo
-        .create(&make_user("remove_conc_creator"))
+        .create(&make_user("delete_membership_conc_creator"))
         .await
         .unwrap();
     let member = user_repo
-        .create(&make_user("remove_conc_member"))
+        .create(&make_user("delete_membership_conc_member"))
         .await
         .unwrap();
 
     let (room, _) = room_service
         .create_room(
-            "Remove Concurrent Room".to_string(),
+            "Delete Membership Concurrent Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -1108,7 +693,7 @@ async fn test_remove_member_concurrent_no_race() {
     let success_count = Arc::new(AtomicU32::new(0));
     let notfound_count = Arc::new(AtomicU32::new(0));
 
-    // Spawn concurrent remove_member calls
+    // Spawn concurrent delete_active_membership calls
     let mut handles = vec![];
     for _ in 0..5 {
         let ms = member_service.clone();
@@ -1118,7 +703,7 @@ async fn test_remove_member_concurrent_no_race() {
         let nc = notfound_count.clone();
 
         handles.push(tokio::spawn(async move {
-            match ms.remove_member(room_id, user_id).await {
+            match ms.delete_active_membership(room_id, user_id).await {
                 Ok(()) => sc.fetch_add(1, Ordering::SeqCst),
                 Err(Error::NotFound(_)) => nc.fetch_add(1, Ordering::SeqCst),
                 Err(e) => panic!("Unexpected error: {e:?}"),
@@ -1134,12 +719,15 @@ async fn test_remove_member_concurrent_no_race() {
     let successes = success_count.load(Ordering::SeqCst);
     let notfounds = notfound_count.load(Ordering::SeqCst);
 
-    assert_eq!(successes, 1, "Exactly one remove should succeed");
-    assert_eq!(notfounds, 4, "Four removes should get NotFound");
+    assert_eq!(
+        successes, 1,
+        "Exactly one membership deletion should succeed"
+    );
+    assert_eq!(notfounds, 4, "Four deletions should get NotFound");
 
     // Member should no longer exist
     assert!(
         !member_repo.is_member(&room.id, &member.id).await.unwrap(),
-        "Member should be removed after concurrent operations"
+        "Member should be gone after concurrent membership deletion"
     );
 }

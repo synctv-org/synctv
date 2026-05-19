@@ -20,22 +20,22 @@ use crate::proto::client::{
     public_service_server::PublicService, room_service_server::RoomService,
     user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
     AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
-    ApproveRoomJoinReviewResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
-    CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
-    CreateGuestTokenRequest, CreateGuestTokenResponse, CreatePlaylistRequest,
-    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, DeleteEntriesRequest,
-    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePasskeyRequest,
-    DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
-    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, FinishMfaPasskeyRequest,
-    FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
-    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
-    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
-    GetIceServersResponse, GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest,
-    GetPlaylistResponse, GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest,
-    GetPublicSettingsResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
-    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetUserPreferencesRequest,
+    ApproveRoomJoinReviewResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
+    ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest, ConfirmEmailResponse,
+    ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
+    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
+    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
+    DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse,
+    DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
+    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest,
+    FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
+    FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest, FinishPasskeyLoginRequest,
+    FinishPasskeyRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
+    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
+    GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse,
+    GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse,
+    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
+    GetRoomSettingsRequest, GetRoomSettingsResponse, GetUserPreferencesRequest,
     GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
     KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
     ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse, ListPlaylistItemsRequest,
@@ -57,14 +57,13 @@ use crate::proto::client::{
     StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
     StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
-    TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
-    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
-    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
-    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, VerifyMfaEmailCodeRequest,
-    WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest, WatchPlaybackStateEvent,
-    WatchPlaybackStateRequest, WatchPlaylistItemsEvent, WatchPlaylistItemsRequest,
-    WatchRoomMembersEvent, WatchRoomMembersRequest, WatchRoomSettingsEvent,
-    WatchRoomSettingsRequest,
+    TransferRoomOwnershipResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
+    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    VerifyMfaEmailCodeRequest, WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest,
+    WatchPlaybackStateEvent, WatchPlaybackStateRequest, WatchPlaylistItemsEvent,
+    WatchPlaylistItemsRequest, WatchRoomMembersEvent, WatchRoomMembersRequest,
+    WatchRoomSettingsEvent, WatchRoomSettingsRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -1497,52 +1496,6 @@ impl RoomService for ClientServiceImpl {
                 move |authenticated| async move {
                     client_api
                         .kick_member(&authenticated.user_id, room_id.as_str(), req)
-                        .await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn ban_member(
-        &self,
-        request: Request<BanMemberRequest>,
-    ) -> Result<Response<BanMemberResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Write,
-                move |authenticated| async move {
-                    client_api
-                        .ban_member(&authenticated.user_id, room_id.as_str(), req)
-                        .await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn unban_member(
-        &self,
-        request: Request<UnbanMemberRequest>,
-    ) -> Result<Response<UnbanMemberResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Write,
-                move |authenticated| async move {
-                    client_api
-                        .unban_member(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )

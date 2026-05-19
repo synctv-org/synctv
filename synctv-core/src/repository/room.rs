@@ -67,19 +67,11 @@ const ACTIVE_ROOM_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
       AND rb.revoked_at IS NULL
       AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
 )";
-const ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
-    SELECT 1 FROM room_member_bans rmb
-    WHERE rmb.room_id = rm.room_id
-      AND rmb.user_id = rm.user_id
-      AND rmb.revoked_at IS NULL
-      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-)";
-
 /// Pre-fetched context for the join-room flow, retrieved in a single DB round-trip.
 #[derive(Debug)]
 pub struct JoinRoomContext {
     pub room: Room,
-    pub is_banned: bool,
+    pub is_in_kick_cooldown: bool,
     pub settings: RoomSettings,
     pub password_hash: Option<String>,
 }
@@ -542,7 +534,6 @@ impl RoomRepository {
                 FROM room_members rm
                 WHERE rm.room_id = r.id
                   AND rm.user_id = $1
-                  AND rm.left_at IS NULL
             ))";
 
         let (count_where, _) = wb.build(2);
@@ -610,9 +601,7 @@ impl RoomRepository {
             r"
             SELECT
                 {ROOM_SELECT_COLUMNS},
-                COALESCE(COUNT(rm.user_id) FILTER (
-                    WHERE rm.left_at IS NULL AND {ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL}
-                ), 0)::int as member_count
+                COALESCE(COUNT(rm.user_id), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
@@ -691,21 +680,13 @@ impl RoomRepository {
         Ok(exists)
     }
 
-    /// Get room member count (excludes banned members)
+    /// Get room member count.
     pub async fn get_member_count(&self, room_id: &RoomId) -> Result<i32> {
         let count = sqlx::query_scalar!(
             r"
             SELECT COUNT(*) as count
             FROM room_members rm
             WHERE rm.room_id = $1
-              AND rm.left_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM room_member_bans rmb
-                  WHERE rmb.room_id = rm.room_id
-                    AND rmb.user_id = rm.user_id
-                    AND rmb.revoked_at IS NULL
-                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-              )
             ",
             room_id as &RoomId,
         )
@@ -779,9 +760,7 @@ impl RoomRepository {
             r"
             SELECT
                 {ROOM_SELECT_COLUMNS},
-                COALESCE(COUNT(rm.user_id) FILTER (
-                    WHERE rm.left_at IS NULL AND {ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL}
-                ), 0)::int as member_count
+                COALESCE(COUNT(rm.user_id), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
@@ -1068,7 +1047,7 @@ impl RoomRepository {
     ///
     /// Combines three lookups that were previously sequential:
     ///   1. `rooms` row (by id, not soft-deleted)
-    ///   2. Ban check (`room_members` where banned_at IS NOT NULL)
+    ///   2. Active kick cooldown check
     ///   3. Room settings + password hash (`room_settings`)
     ///
     /// Returns `None` if the room does not exist or is soft-deleted.
@@ -1082,12 +1061,11 @@ impl RoomRepository {
             SELECT
                 {ROOM_SELECT_COLUMNS},
                 EXISTS(
-                    SELECT 1 FROM room_member_bans rmb
-                    WHERE rmb.room_id = r.id
-                      AND rmb.user_id = $2
-                      AND rmb.revoked_at IS NULL
-                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                ) AS user_is_banned,
+                    SELECT 1 FROM room_member_kick_cooldowns rmkc
+                    WHERE rmkc.room_id = r.id
+                      AND rmkc.user_id = $2
+                      AND rmkc.ends_at > CURRENT_TIMESTAMP
+                ) AS is_in_kick_cooldown,
                 rs_settings.value  AS settings_json,
                 rs_password.value  AS password_hash
             FROM rooms r
@@ -1107,7 +1085,7 @@ impl RoomRepository {
         let Some(row) = row else { return Ok(None) };
 
         let room = Room::from_row(&row)?;
-        let is_banned: bool = row.try_get("user_is_banned")?;
+        let is_in_kick_cooldown: bool = row.try_get("is_in_kick_cooldown")?;
 
         // Deserialize settings from JSON, falling back to defaults
         let settings: RoomSettings = match row.try_get::<Option<String>, _>("settings_json")? {
@@ -1121,7 +1099,7 @@ impl RoomRepository {
 
         Ok(Some(JoinRoomContext {
             room,
-            is_banned,
+            is_in_kick_cooldown,
             settings,
             password_hash,
         }))
@@ -1869,14 +1847,13 @@ mod tests {
         assert!(rooms.iter().all(|r| r.name.contains("Active")));
     }
 
-    /// Integration test: room member_count excludes banned and departed members.
+    /// Integration test: room member_count counts current member rows.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_list_with_count_excludes_banned_and_departed_members() {
+    async fn test_list_with_count_counts_current_members() {
         use crate::models::{RoomMember, RoomRole, User};
         use crate::repository::{RoomMemberRepository, UserRepository};
         use crate::test_helpers::{RoomFixture, UserFixture};
-        use chrono::Utc;
 
         fn make_user(username: &str) -> User {
             User::new(
@@ -1918,38 +1895,8 @@ mod tests {
             .await
             .unwrap();
 
-        member_repo
-            .add(&RoomMember {
-                ..RoomMember::new(room.id, banned.id, RoomRole::Member)
-            })
-            .await
-            .unwrap();
-        member_repo
-            .ban_member(
-                &room.id,
-                &banned.id,
-                Some(&owner.id),
-                Some("count test".to_string()),
-            )
-            .await
-            .unwrap();
-
-        sqlx::query(
-            "INSERT INTO room_members (
-                room_id, user_id, role,
-                added_permissions, removed_permissions,
-                admin_added_permissions, admin_removed_permissions,
-                joined_at, left_at, version
-             ) VALUES ($1, $2, $3, 0, 0, 0, 0, $4, $5, 0)",
-        )
-        .bind(room.id.as_i64())
-        .bind(rejected.id.as_i64())
-        .bind(i16::try_from(i32::from(RoomRole::Member)).unwrap())
-        .bind(Utc::now())
-        .bind(Some(Utc::now()))
-        .execute(&pool)
-        .await
-        .unwrap();
+        let _ = banned;
+        let _ = rejected;
 
         let query = RoomListQuery {
             pagination: PageParams::new(Some(1), Some(10)),
@@ -1967,7 +1914,7 @@ mod tests {
         assert_eq!(rows[0].room.id, room.id);
         assert_eq!(
             rows[0].member_count, 1,
-            "room member_count should exclude banned/departed rows"
+            "room member_count should include only current member rows"
         );
         assert_eq!(room_repo.get_member_count(&room.id).await.unwrap(), 1);
     }
@@ -2100,7 +2047,7 @@ mod tests {
 
         let context = context.unwrap();
         assert_eq!(context.room.id, created.id);
-        assert!(!context.is_banned); // Owner is not banned
+        assert!(!context.is_in_kick_cooldown);
 
         // Non-existent room returns None
         let non_existent = RoomId::expect_positive(92_002);

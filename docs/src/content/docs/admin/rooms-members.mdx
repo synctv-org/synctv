@@ -10,7 +10,7 @@ description: 管理房间生命周期、成员角色、成员权限、房间设�
 | 类别 | 常见命令 | 风险 |
 | --- | --- | --- |
 | 生命周期 | `room create`、`room delete`、`room ban`、`room transfer-owner` | 影响房间可见性、所有权和数据保留 |
-| 成员 | `room member add/kick/ban/unban/set-permissions` | 改变访问和管理能力 |
+| 成员 | `room member add/kick/set-permissions` | 改变访问和管理能力 |
 | 设置 | `room settings update/reset` | 改变加入规则、游客、聊天、弹幕和权限默认值 |
 | 播放 | `room playback play/pause/seek/start/stop` | 改变所有在线成员看到的播放状态 |
 | 直播 | `room stream list`、`provider rtmp create-publish-key` | 涉及推流密钥和直播会话 |
@@ -30,7 +30,7 @@ description: 管理房间生命周期、成员角色、成员权限、房间设�
 | --- | --- | --- |
 | 临时禁言 | 移除成员 `send_chat` | 比关闭全房间聊天影响小 |
 | 允许控制播放 | 增加 `play_control` | 切换媒体还需要 `change_current_media` |
-| 清理扰乱成员 | kick 或 ban member | 房间封禁不等于平台封禁 |
+| 清理扰乱成员 | kick 成员 | 房间封禁不等于平台封禁 |
 | 调整长期职责 | 修改房间角色或默认权限 | 不要长期堆叠大量个人覆盖 |
 
 房间对象见 [房间概念](../../concepts/rooms/)；权限计算见 [权限模型](../../concepts/permissions/)。

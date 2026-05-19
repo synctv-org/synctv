@@ -60,8 +60,6 @@ service AdminService {
     rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
-    rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
-    rpc UnbanMember(UnbanMemberRequest) returns (UnbanMemberResponse);
 
     // =========================
     // Admin Management (Root Only)
@@ -143,7 +141,6 @@ enum BanTargetType {
     BAN_TARGET_TYPE_UNSPECIFIED = 0;
     BAN_TARGET_TYPE_USER = 1;
     BAN_TARGET_TYPE_ROOM = 2;
-    BAN_TARGET_TYPE_ROOM_MEMBER = 3;
 }
 
 message UserRegistrationReview {
@@ -504,7 +501,6 @@ enum RoomMemberListSortBy {
     ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
     ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
     ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
-    ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
 }
 
 enum ActiveStreamListSortBy {
@@ -841,10 +837,8 @@ message GetRoomMembersRequest {
         max_len: 100
     }];
     synctv.common.RoomMemberRole role = 5 [(buf.validate.field).enum.defined_only = true];
-    synctv.common.MemberStatus status = 6 [(buf.validate.field).enum.defined_only = true];
     RoomMemberListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
     SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
-    optional bool is_banned = 9;
 }
 
 message GetRoomMembersResponse {
@@ -904,44 +898,13 @@ message KickMemberRequest {
         max_len: 64,
         pattern: "^usr_[A-Za-z0-9]+$"
     }];
+    int64 kick_cooldown_seconds = 3 [(buf.validate.field).int64 = {
+        gte: 1,
+        lte: 2592000
+    }];
 }
 
 message KickMemberResponse {
-    bool success = 1;
-}
-
-message BanMemberRequest {
-    string room_id = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^room_[A-Za-z0-9]+$"
-    }];
-    string user_id = 2 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^usr_[A-Za-z0-9]+$"
-    }];
-    string reason = 3 [(buf.validate.field).string.max_len = 500];
-}
-
-message BanMemberResponse {
-    bool success = 1;
-}
-
-message UnbanMemberRequest {
-    string room_id = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^room_[A-Za-z0-9]+$"
-    }];
-    string user_id = 2 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^usr_[A-Za-z0-9]+$"
-    }];
-}
-
-message UnbanMemberResponse {
     bool success = 1;
 }
 

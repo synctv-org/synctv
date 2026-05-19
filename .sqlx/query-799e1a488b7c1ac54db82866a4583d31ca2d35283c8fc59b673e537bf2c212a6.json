@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1\n                FROM room_member_kick_cooldowns\n                WHERE room_id = $1\n                  AND user_id = $2\n                  AND ends_at > CURRENT_TIMESTAMP\n            ) as \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "799e1a488b7c1ac54db82866a4583d31ca2d35283c8fc59b673e537bf2c212a6"
+}

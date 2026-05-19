@@ -8,7 +8,6 @@ use crate::Result;
 pub enum BanRecordTargetType {
     User,
     Room,
-    RoomMember,
 }
 
 impl BanRecordTargetType {
@@ -17,7 +16,6 @@ impl BanRecordTargetType {
         match self {
             Self::User => 1,
             Self::Room => 2,
-            Self::RoomMember => 3,
         }
     }
 }
@@ -79,10 +77,6 @@ impl BanRecordRepository {
                 SELECT 2::int4 AS target_type, NULL::bigint AS user_id, room_id,
                        revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
                 FROM room_bans
-                UNION ALL
-                SELECT 3::int4 AS target_type, user_id, room_id,
-                       revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
-                FROM room_member_bans
             ) bans
             WHERE ($1::int4 IS NULL OR target_type = $1)
               AND ($2::bool IS NULL OR is_active = $2)
@@ -117,16 +111,6 @@ impl BanRecordRepository {
                 FROM room_bans rb
                 LEFT JOIN rooms r ON r.id = rb.room_id
                 LEFT JOIN users actor ON actor.id = rb.banned_by
-                UNION ALL
-                SELECT rmb.id, 3::int4 AS target_type, rmb.user_id, COALESCE(u.username, '') AS username,
-                       rmb.room_id, COALESCE(r.name, '') AS room_name, rmb.banned_by,
-                       COALESCE(actor.username, '') AS banned_by_username, COALESCE(rmb.reason, '') AS reason,
-                       rmb.starts_at, rmb.ends_at, rmb.revoked_at, rmb.revoked_by,
-                       rmb.revoked_at IS NULL AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP) AS is_active
-                FROM room_member_bans rmb
-                LEFT JOIN users u ON u.id = rmb.user_id
-                LEFT JOIN rooms r ON r.id = rmb.room_id
-                LEFT JOIN users actor ON actor.id = rmb.banned_by
             ) bans
             WHERE ($1::int4 IS NULL OR target_type = $1)
               AND ($2::bool IS NULL OR is_active = $2)

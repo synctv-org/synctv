@@ -239,9 +239,17 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         ))
         .await
         .unwrap();
-    let ban_target = user_repo
+    let kick_target = user_repo
         .create(&make_user(
             "permission_matrix_guest",
+            UserRole::User,
+            UserStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let kick_after_reset_target = user_repo
+        .create(&make_user(
+            "permission_matrix_reset_target",
             UserRole::User,
             UserStatus::Active,
         ))
@@ -280,14 +288,26 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
     .await
     .unwrap();
     room_service
-        .add_member(room.id, owner.id, ban_target.id, RoomRole::Guest, false)
+        .add_member(room.id, owner.id, kick_target.id, RoomRole::Guest, false)
+        .await
+        .unwrap();
+    room_service
+        .add_member(
+            room.id,
+            owner.id,
+            kick_after_reset_target.id,
+            RoomRole::Guest,
+            false,
+        )
         .await
         .unwrap();
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let moderator_public_id = codec.encode_user_id(moderator.id).unwrap();
     let pending_target_public_id = codec.encode_user_id(pending_target.id).unwrap();
-    let ban_target_public_id = codec.encode_user_id(ban_target.id).unwrap();
+    let kick_target_public_id = codec.encode_user_id(kick_target.id).unwrap();
+    let kick_after_reset_target_public_id =
+        codec.encode_user_id(kick_after_reset_target.id).unwrap();
 
     let pending_list_error = client_api
         .list_room_join_reviews(
@@ -329,7 +349,7 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
             synctv_proto::client::UpdateMemberPermissionsRequest {
                 user_id: moderator_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
-                added_permissions: PermissionBits::APPROVE_MEMBER | PermissionBits::BAN_MEMBER,
+                added_permissions: PermissionBits::APPROVE_MEMBER | PermissionBits::KICK_MEMBER,
                 removed_permissions: 0,
                 admin_added_permissions: 0,
                 admin_removed_permissions: 0,
@@ -374,29 +394,15 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .unwrap()
         .member
         .expect("approved member");
-    assert_eq!(
-        approved.status,
-        synctv_proto::common::MemberStatus::Active as i32
-    );
+    assert_eq!(approved.user_id, pending_target_public_id);
 
     client_api
-        .ban_member(
+        .kick_member(
             &moderator.id,
             &room_public_id,
-            synctv_proto::client::BanMemberRequest {
-                user_id: ban_target_public_id.clone(),
-                reason: "matrix coverage".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-    client_api
-        .unban_member(
-            &moderator.id,
-            &room_public_id,
-            synctv_proto::client::UnbanMemberRequest {
-                user_id: ban_target_public_id.clone(),
+            synctv_proto::client::KickMemberRequest {
+                user_id: kick_target_public_id.clone(),
+                kick_cooldown_seconds: 300,
             },
         )
         .await
@@ -418,20 +424,20 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .await
         .unwrap();
 
-    let ban_error = client_api
-        .ban_member(
+    let kick_error = client_api
+        .kick_member(
             &moderator.id,
             &room_public_id,
-            synctv_proto::client::BanMemberRequest {
-                user_id: ban_target_public_id,
-                reason: "should fail after reset".to_string(),
+            synctv_proto::client::KickMemberRequest {
+                user_id: kick_after_reset_target_public_id,
+                kick_cooldown_seconds: 300,
             },
         )
         .await
         .expect_err("resetting permission overrides must remove moderation powers");
     assert!(
-        matches!(ban_error, ApiError::Authorization(ref message) if message.contains("Permission denied")),
-        "moderation permission reset must block ban_member, got: {ban_error:?}"
+        matches!(kick_error, ApiError::Authorization(ref message) if message.contains("Permission denied")),
+        "moderation permission reset must block kick_member, got: {kick_error:?}"
     );
 }
 
@@ -489,7 +495,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
                 user_id: target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Admin as i32,
                 added_permissions: 0,
-                removed_permissions: PermissionBits::BAN_MEMBER,
+                removed_permissions: PermissionBits::KICK_MEMBER,
                 admin_added_permissions: 0,
                 admin_removed_permissions: 0,
             },
@@ -511,7 +517,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
                 added_permissions: 0,
                 removed_permissions: 0,
                 admin_added_permissions: 0,
-                admin_removed_permissions: PermissionBits::BAN_MEMBER,
+                admin_removed_permissions: PermissionBits::KICK_MEMBER,
             },
         )
         .await
@@ -525,10 +531,10 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
     );
     assert_eq!(
         updated.admin_removed_permissions,
-        PermissionBits::BAN_MEMBER
+        PermissionBits::KICK_MEMBER
     );
     assert_eq!(updated.removed_permissions, 0);
-    assert_eq!(updated.permissions & PermissionBits::BAN_MEMBER, 0);
+    assert_eq!(updated.permissions & PermissionBits::KICK_MEMBER, 0);
 }
 
 #[tokio::test]
@@ -706,9 +712,9 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         ))
         .await
         .unwrap();
-    let banned_peer = user_repo
+    let kicked_peer = user_repo
         .create(&make_user(
-            "rooms_matrix_banned_peer",
+            "rooms_matrix_kicked_peer",
             UserRole::User,
             UserStatus::Active,
         ))
@@ -841,20 +847,14 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .add_member(
             joined_room.id,
             external_owner.id,
-            banned_peer.id,
+            kicked_peer.id,
             RoomRole::Member,
             false,
         )
         .await
         .unwrap();
     room_service
-        .member_service()
-        .ban_member(
-            joined_room.id,
-            external_owner.id,
-            banned_peer.id,
-            Some("coverage".to_string()),
-        )
+        .kick_member(joined_room.id, external_owner.id, kicked_peer.id, 300)
         .await
         .unwrap();
 
@@ -989,8 +989,8 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
     let joined_members = member_repo.list_by_room_all(&joined_room.id).await.unwrap();
     assert_eq!(
         joined_members.len(),
-        4,
-        "fixture should contain 4 membership rows"
+        3,
+        "fixture should contain only active membership rows"
     );
     assert_eq!(
         joined_members

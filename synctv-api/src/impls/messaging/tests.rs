@@ -4645,16 +4645,12 @@ async fn test_observe_room_members_without_version_sends_snapshot_immediately() 
                     username: handler.username.clone(),
                     role: synctv_proto::common::RoomMemberRole::Creator as i32,
                     permissions: PermissionBits::ALL,
-                    status: synctv_proto::common::MemberStatus::Active as i32,
                     added_permissions: 0,
                     removed_permissions: 0,
                     admin_added_permissions: 0,
                     admin_removed_permissions: 0,
                     joined_at: 1,
                     is_online: true,
-                    is_banned: false,
-                    banned_at: 0,
-                    banned_reason: String::new(),
                 }],
                 total: 1,
                 version: "members-v1".to_string(),
@@ -4673,8 +4669,6 @@ async fn test_observe_room_members_without_version_sends_snapshot_immediately() 
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
-                is_banned: None,
                 sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
                 sort_direction: crate::proto::client::SortDirection::Asc as i32,
             },
@@ -4756,8 +4750,6 @@ async fn test_observe_room_members_with_current_version_skips_immediate_resend()
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
-                is_banned: None,
                 sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
                 sort_direction: crate::proto::client::SortDirection::Asc as i32,
             },
@@ -4825,8 +4817,6 @@ async fn test_observed_room_members_receive_future_permission_updates() {
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
-                is_banned: None,
                 sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
                 sort_direction: crate::proto::client::SortDirection::Asc as i32,
             },
@@ -4852,16 +4842,12 @@ async fn test_observed_room_members_receive_future_permission_updates() {
             username: "member_two".to_string(),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             permissions: PermissionBits::VIEW_MEMBER_LIST,
-            status: synctv_proto::common::MemberStatus::Active as i32,
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
             joined_at: 2,
             is_online: false,
-            is_banned: false,
-            banned_at: 0,
-            banned_reason: String::new(),
         }],
         total: 1,
         version: "members-v2".to_string(),
@@ -4939,8 +4925,6 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
-                is_banned: None,
                 sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
                 sort_direction: crate::proto::client::SortDirection::Asc as i32,
             },
@@ -4966,16 +4950,12 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
             username: handler.username.clone(),
             role: synctv_proto::common::RoomMemberRole::Creator as i32,
             permissions: PermissionBits::ALL | PermissionBits::PLAY_CONTROL,
-            status: synctv_proto::common::MemberStatus::Active as i32,
             added_permissions: PermissionBits::PLAY_CONTROL,
             removed_permissions: 0,
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
             joined_at: 1,
             is_online: true,
-            is_banned: false,
-            banned_at: 0,
-            banned_reason: String::new(),
         }],
         total: 1,
         version: "members-v2".to_string(),
@@ -5325,7 +5305,7 @@ fn test_user_joined_event_conversion() {
         added_permissions: PermissionBits(PermissionBits::PLAY_CONTROL),
         removed_permissions: PermissionBits(PermissionBits::CREATE_MEDIA_RESOURCE),
         admin_added_permissions: PermissionBits(PermissionBits::KICK_MEMBER),
-        admin_removed_permissions: PermissionBits(PermissionBits::BAN_MEMBER),
+        admin_removed_permissions: PermissionBits(PermissionBits::KICK_MEMBER),
         joined_at: now(),
         timestamp: now(),
     };
@@ -5345,7 +5325,10 @@ fn test_user_joined_event_conversion() {
                 PermissionBits::CREATE_MEDIA_RESOURCE
             );
             assert_eq!(member.admin_added_permissions, PermissionBits::KICK_MEMBER);
-            assert_eq!(member.admin_removed_permissions, PermissionBits::BAN_MEMBER);
+            assert_eq!(
+                member.admin_removed_permissions,
+                PermissionBits::KICK_MEMBER
+            );
             assert!(member.is_online);
         }
         other => panic!("Expected UserJoined, got: {other:?}"),
@@ -6029,17 +6012,13 @@ fn test_membership_cache_stores_and_retrieves() {
             .build();
 
     let key = ("room1".to_string(), "user1".to_string());
-    let membership = super::CachedMembership {
-        is_member: true,
-        is_banned: false,
-    };
+    let membership = super::CachedMembership { is_member: true };
 
     cache.insert(key.clone(), membership);
     let cached = cache.get(&key);
     assert!(cached.is_some());
     let cached = cached.unwrap();
     assert!(cached.is_member);
-    assert!(!cached.is_banned);
 }
 
 #[test]
@@ -6052,10 +6031,7 @@ fn test_membership_cache_invalidation_removes_entry() {
             .build();
 
     let key = ("room1".to_string(), "user1".to_string());
-    let membership = super::CachedMembership {
-        is_member: true,
-        is_banned: false,
-    };
+    let membership = super::CachedMembership { is_member: true };
 
     cache.insert(key.clone(), membership);
     assert!(
@@ -6084,17 +6060,11 @@ fn test_membership_cache_invalidation_only_affects_target_user() {
 
     cache.insert(
         key_user1.clone(),
-        super::CachedMembership {
-            is_member: true,
-            is_banned: false,
-        },
+        super::CachedMembership { is_member: true },
     );
     cache.insert(
         key_user2.clone(),
-        super::CachedMembership {
-            is_member: true,
-            is_banned: false,
-        },
+        super::CachedMembership { is_member: true },
     );
 
     // Invalidate only user1
@@ -6111,38 +6081,10 @@ fn test_membership_cache_invalidation_only_affects_target_user() {
 }
 
 #[test]
-fn test_cached_membership_from_member_banned() {
-    // Verify CachedMembership correctly identifies banned users
-    use synctv_core::models::{RoomMember, RoomRole};
-
-    let member = RoomMember {
-        room_id: room_id(),
-        user_id: user_id(),
-        role: RoomRole::Member,
-        status: synctv_core::models::MemberStatus::Left,
-        added_permissions: 0,
-        removed_permissions: 0,
-        admin_added_permissions: 0,
-        admin_removed_permissions: 0,
-        joined_at: now(),
-        left_at: None,
-        version: 1,
-        banned_at: Some(now()),
-        banned_by: None,
-        banned_reason: Some("test ban".to_string()),
-    };
-
-    let cached = super::CachedMembership::from_member(Some(&member));
-    assert!(cached.is_member);
-    assert!(cached.is_banned, "Banned user should have is_banned=true");
-}
-
-#[test]
 fn test_cached_membership_from_member_none() {
     // Verify CachedMembership correctly handles non-members
     let cached = super::CachedMembership::from_member(None);
     assert!(!cached.is_member, "Non-member should have is_member=false");
-    assert!(!cached.is_banned);
 }
 
 #[test]
@@ -6160,16 +6102,11 @@ fn test_cached_membership_from_member_active() {
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: now(),
-        left_at: None,
         version: 1,
-        banned_at: None,
-        banned_by: None,
-        banned_reason: None,
     };
 
     let cached = super::CachedMembership::from_member(Some(&member));
     assert!(cached.is_member);
-    assert!(!cached.is_banned, "Active member should not be banned");
 }
 
 #[test]
@@ -7258,8 +7195,8 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
     let user_service = room_service.user_service().clone();
     let owner = user_service
         .register(
-            "room-owner-ban".to_string(),
-            Some("owner-ban@test.invalid".to_string()),
+            "room-owner-user-ban".to_string(),
+            Some("owner-user-ban@test.invalid".to_string()),
             "Password123!".to_string(),
             None,
         )
@@ -7268,8 +7205,8 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
         .0;
     let member = user_service
         .register(
-            "room-member-ban".to_string(),
-            Some("member-ban@test.invalid".to_string()),
+            "room-member-user-ban".to_string(),
+            Some("member-user-ban@test.invalid".to_string()),
             "Password123!".to_string(),
             None,
         )
@@ -7278,7 +7215,7 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
         .0;
     let (room, _) = room_service
         .create_room(
-            "Realtime Room Ban".to_string(),
+            "Realtime User Ban".to_string(),
             "test".to_string(),
             owner.id,
             None,

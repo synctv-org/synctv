@@ -58,26 +58,23 @@ impl PermissionBits {
     /// Kick member
     pub const KICK_MEMBER: u64 = 1 << 10;
 
-    /// Ban/unban member
-    pub const BAN_MEMBER: u64 = 1 << 11;
-
     /// Set member permissions
-    pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 12;
+    pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 11;
 
     /// Explicitly add a member when self-service joining is disabled
-    pub const ADD_MEMBER: u64 = 1 << 13;
+    pub const ADD_MEMBER: u64 = 1 << 12;
 
     /// Modify room settings
-    pub const SET_ROOM_SETTINGS: u64 = 1 << 14;
+    pub const SET_ROOM_SETTINGS: u64 = 1 << 13;
 
     /// Delete chat messages
-    pub const DELETE_CHAT: u64 = 1 << 15;
+    pub const DELETE_CHAT: u64 = 1 << 14;
 
     /// Delete room
-    pub const DELETE_ROOM: u64 = 1 << 16;
+    pub const DELETE_ROOM: u64 = 1 << 15;
 
     /// View media resources such as media items and playlists/folders.
-    pub const VIEW_MEDIA_RESOURCES: u64 = 1 << 17;
+    pub const VIEW_MEDIA_RESOURCES: u64 = 1 << 16;
 
     /// Manage any media resource, including deleting resources created by
     /// others, reordering shared resource lists, and clearing resource queues.
@@ -86,13 +83,13 @@ impl PermissionBits {
         | Self::CLEAR_MEDIA_RESOURCES;
 
     /// View member list
-    pub const VIEW_MEMBER_LIST: u64 = 1 << 18;
+    pub const VIEW_MEMBER_LIST: u64 = 1 << 17;
 
     /// View chat history
-    pub const VIEW_CHAT_HISTORY: u64 = 1 << 19;
+    pub const VIEW_CHAT_HISTORY: u64 = 1 << 18;
 
     /// Use WebRTC (voice/video)
-    pub const USE_WEBRTC: u64 = 1 << 20;
+    pub const USE_WEBRTC: u64 = 1 << 19;
 
     /// All permissions currently defined by the product model.
     pub const ALL: u64 = Self::SEND_CHAT
@@ -106,7 +103,6 @@ impl PermissionBits {
         | Self::CHANGE_PLAYBACK_RATE
         | Self::APPROVE_MEMBER
         | Self::KICK_MEMBER
-        | Self::BAN_MEMBER
         | Self::SET_MEMBER_PERMISSIONS
         | Self::ADD_MEMBER
         | Self::SET_ROOM_SETTINGS
@@ -147,7 +143,6 @@ impl PermissionBits {
         | Self::CHANGE_PLAYBACK_RATE
         | Self::APPROVE_MEMBER
         | Self::KICK_MEMBER
-        | Self::BAN_MEMBER
         | Self::SET_MEMBER_PERMISSIONS
         | Self::ADD_MEMBER
         | Self::SET_ROOM_SETTINGS
@@ -492,9 +487,9 @@ mod tests {
         // Start with DEFAULT_MEMBER
         let mut perms = PermissionBits(PermissionBits::DEFAULT_MEMBER);
 
-        // Add admin permission (Allow pattern)
-        perms.grant(PermissionBits::BAN_MEMBER);
-        assert!(perms.has(PermissionBits::BAN_MEMBER));
+        // Add moderation permission (Allow pattern)
+        perms.grant(PermissionBits::KICK_MEMBER);
+        assert!(perms.has(PermissionBits::KICK_MEMBER));
 
         // Remove chat permission (Deny pattern)
         perms.revoke(PermissionBits::SEND_CHAT);

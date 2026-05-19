@@ -21,16 +21,16 @@ use crate::proto::{
     AddDirectUrlMediaRequest, AddEmbyMediaRequest, AddMediaRequest, AddMemberRequest,
     AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
     AlistLogoutRequest, AlistSearchRequest, ApproveRoomCreationReviewRequest,
-    ApproveRoomJoinReviewRequest, ApproveUserRegistrationReviewRequest, BanMemberRequest,
-    BanRoomRequest, BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest,
-    BatchDeleteRoomsRequest, BatchDeleteUsersRequest, BilibiliCheckQrRequest,
-    BilibiliGetBindsRequest, BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest,
-    BilibiliLoginQrRequest, BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest,
-    BilibiliSendSmsRequest, CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest,
-    CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
-    DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
-    EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-    EmbyLogoutRequest, EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
+    ApproveRoomJoinReviewRequest, ApproveUserRegistrationReviewRequest, BanRoomRequest,
+    BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
+    BatchDeleteUsersRequest, BilibiliCheckQrRequest, BilibiliGetBindsRequest,
+    BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest, BilibiliLoginQrRequest,
+    BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest,
+    CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest, CreatePlaylistRequest,
+    CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
+    DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
+    EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest, EmbyLogoutRequest,
+    EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
     EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
     GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
     GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
@@ -44,11 +44,11 @@ use crate::proto::{
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
     SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo,
     SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest,
-    StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest,
-    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
-    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-    UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+    StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest,
+    UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest, UpdatePlaylistRequest,
+    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
+    UpdateUserPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
+    UpdateUserUsernameRequest, UserRef,
 };
 use synctv_api::grpc_support::map_api_error_ref as map_api_error;
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
@@ -1770,8 +1770,6 @@ impl ManagementService for ManagementServiceImpl {
                 page_size: req.page_size,
                 search: req.search,
                 role: req.role,
-                status: req.status,
-                is_banned: req.is_banned,
                 sort_by: map_room_member_list_sort_by(req.sort_by)?,
                 sort_direction: map_sort_direction(
                     req.sort_direction,
@@ -1856,6 +1854,7 @@ impl ManagementService for ManagementServiceImpl {
                 admin_proto::KickMemberRequest {
                     room_id: req.room_id,
                     user_id,
+                    kick_cooldown_seconds: req.kick_cooldown_seconds,
                 },
                 &validated.user_id,
                 &ctx,
@@ -1863,57 +1862,6 @@ impl ManagementService for ManagementServiceImpl {
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(client_proto::KickMemberResponse {
-            success: response.success,
-        }))
-    }
-
-    async fn ban_member(
-        &self,
-        request: Request<BanMemberRequest>,
-    ) -> Result<Response<client_proto::BanMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request)?;
-        let ctx = self.grpc_request_context(&request);
-        let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
-        let response = self
-            .admin_api
-            .ban_member(
-                admin_proto::BanMemberRequest {
-                    room_id: req.room_id,
-                    user_id,
-                    reason: req.reason,
-                },
-                &validated.user_id,
-                &ctx,
-            )
-            .await
-            .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(client_proto::BanMemberResponse {
-            success: response.success,
-        }))
-    }
-
-    async fn unban_member(
-        &self,
-        request: Request<UnbanMemberRequest>,
-    ) -> Result<Response<client_proto::UnbanMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request)?;
-        let ctx = self.grpc_request_context(&request);
-        let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
-        let response = self
-            .admin_api
-            .unban_member(
-                admin_proto::UnbanMemberRequest {
-                    room_id: req.room_id,
-                    user_id,
-                },
-                &validated.user_id,
-                &ctx,
-            )
-            .await
-            .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(client_proto::UnbanMemberResponse {
             success: response.success,
         }))
     }

@@ -76,9 +76,6 @@ pub(crate) fn map_room_member_list_sort_by(sort_by: i32) -> Result<i32, Status> 
             admin_proto::RoomMemberListSortBy::Username as i32
         }
         crate::proto::RoomMemberListSortBy::Role => admin_proto::RoomMemberListSortBy::Role as i32,
-        crate::proto::RoomMemberListSortBy::Status => {
-            admin_proto::RoomMemberListSortBy::Status as i32
-        }
         crate::proto::RoomMemberListSortBy::JoinedAt
         | crate::proto::RoomMemberListSortBy::Unspecified => {
             admin_proto::RoomMemberListSortBy::JoinedAt as i32

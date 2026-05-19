@@ -9,8 +9,7 @@
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        MemberStatus, PermissionBits, Room, RoomId, RoomMember, RoomRole, SignupMethod, User,
-        UserId, UserStatus,
+        PermissionBits, Room, RoomId, RoomMember, RoomRole, SignupMethod, User, UserId, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
     service::permission::PermissionService,
@@ -47,27 +46,18 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         .expect("Failed to create test user");
 }
 
-fn make_member(
-    room_id: RoomId,
-    user_id: UserId,
-    role: RoomRole,
-    status: MemberStatus,
-) -> RoomMember {
+fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
     RoomMember {
         room_id,
         user_id,
         role,
-        status,
+        status: synctv_core::models::MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: chrono::Utc::now(),
-        left_at: None,
         version: 0,
-        banned_at: None,
-        banned_by: None,
-        banned_reason: None,
     }
 }
 
@@ -113,7 +103,7 @@ async fn test_permission_check_with_database_member() {
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    let mut member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
+    let mut member = make_member(room.id, user_id, RoomRole::Member);
     member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE;
     member_repo
         .add(&member)
@@ -160,7 +150,7 @@ async fn test_permission_allow_deny_pattern() {
 
     let admin_id = UserId::new();
     create_test_user(&pool, &admin_id).await;
-    let admin_member = make_member(room.id, admin_id, RoomRole::Admin, MemberStatus::Active);
+    let admin_member = make_member(room.id, admin_id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -168,7 +158,7 @@ async fn test_permission_allow_deny_pattern() {
 
     let guest_id = UserId::new();
     create_test_user(&pool, &guest_id).await;
-    let guest_member = make_member(room.id, guest_id, RoomRole::Guest, MemberStatus::Active);
+    let guest_member = make_member(room.id, guest_id, RoomRole::Guest);
     member_repo
         .add(&guest_member)
         .await
@@ -192,7 +182,7 @@ async fn test_permission_allow_deny_pattern() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_permission_banned_member_denied() {
+async fn test_permission_removed_member_denied() {
     let (_container, pool) = create_test_pool().await;
 
     let room_repo = RoomRepository::new(pool.clone());
@@ -208,29 +198,25 @@ async fn test_permission_banned_member_denied() {
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    // First add as active member, then ban them (the add() method doesn't support setting banned_at/left_at)
-    let member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
+    let member = make_member(room.id, user_id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
         .expect("Failed to create member");
-    // Now ban the member (this sets banned_at, left_at, and status properly)
     member_repo
-        .ban_member(
-            &room.id,
-            &user_id,
-            Some(&creator_id),
-            Some("Test ban".to_string()),
-        )
+        .remove(&room.id, &user_id)
         .await
-        .expect("Failed to ban member");
+        .expect("Failed to delete membership");
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
     let result = perm_service
         .check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
         .await;
-    assert!(result.is_err(), "Banned member should not have permissions");
+    assert!(
+        result.is_err(),
+        "Removed member should not have permissions"
+    );
 }
 
 #[tokio::test]
@@ -300,7 +286,7 @@ async fn test_concurrent_permission_checks() {
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    let member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
+    let member = make_member(room.id, user_id, RoomRole::Member);
     member_repo
         .add(&member)
         .await

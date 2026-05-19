@@ -266,11 +266,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: Utc::now(),
-        left_at: None,
         version: 0,
-        banned_at: None,
-        banned_by: None,
-        banned_reason: None,
     };
     member_repo.add(&rm).await.unwrap();
 

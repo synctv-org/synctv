@@ -243,9 +243,7 @@ impl MemberService {
             options.max_members = room_settings.max_members.0;
         }
 
-        // Create member object
-        let mut member = RoomMember::new(room_id, user_id, role);
-        member.status = options.initial_status;
+        let member = RoomMember::new(room_id, user_id, role);
 
         // Add member with options (transaction happens in repository)
         let created_member = self.member_repo.add_with_options(&member, &options).await?;
@@ -268,13 +266,12 @@ impl MemberService {
         self.member_repo.remove_all_for_user(user_id).await
     }
 
-    /// Remove a member from a room
+    /// Delete the active membership row for an internal room lifecycle operation.
     ///
-    /// Uses an atomic SQL operation that combines the membership check with the removal,
-    /// eliminating the TOCTOU race between checking membership and performing the removal.
-    pub async fn remove_member(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
-        // Atomic check + removal: the SQL WHERE clause ensures the member exists
-        // and hasn't left yet, preventing TOCTOU races.
+    /// This is not a member-management API. Product-level exits are modeled as
+    /// `leave_room` or `kick_member`; this helper only performs the shared
+    /// physical row deletion and cache invalidation.
+    pub async fn delete_active_membership(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         let removed = self.member_repo.remove(&room_id, &user_id).await?;
         if !removed {
             return Err(Error::NotFound(
@@ -282,132 +279,9 @@ impl MemberService {
             ));
         }
 
-        // Invalidate permission cache
         self.permission_service
             .invalidate_cache(&room_id, &user_id)
             .await;
-
-        Ok(())
-    }
-
-    /// Kick a member from a room (requires permission)
-    ///
-    /// Uses an atomic SQL statement that combines the role hierarchy check with the
-    /// removal, eliminating the TOCTOU race between checking roles and performing
-    /// the kick.
-    pub async fn kick_member(
-        &self,
-        room_id: RoomId,
-        kicker_id: UserId,
-        target_user_id: UserId,
-    ) -> Result<()> {
-        // Check if kicker has permission to kick (no cache - security-critical)
-        self.permission_service
-            .check_permission_no_cache(&room_id, &kicker_id, PermissionBits::KICK_MEMBER)
-            .await?;
-
-        // Can't kick yourself
-        if kicker_id == target_user_id {
-            return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
-        }
-
-        // Atomic role check + removal: the SQL WHERE clause ensures the kicker
-        // outranks the target, preventing TOCTOU races.
-        let removed = self
-            .member_repo
-            .remove_with_role_check(&room_id, &kicker_id, &target_user_id)
-            .await?;
-        if !removed {
-            return Err(Error::Authorization(
-                "User is not a member or cannot kick a member with equal or higher role"
-                    .to_string(),
-            ));
-        }
-
-        // Invalidate permission cache for kicked user (local)
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Notify local WebSocket clients that member was kicked
-        if let Err(e) = self
-            .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Failed to notify local clients of member kick"
-            );
-        }
-
-        // Audit log
-        self.audit_log(
-            &kicker_id,
-            "",
-            AuditAction::MemberKicked,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-            }),
-        )
-        .await;
-
-        Ok(())
-    }
-
-    /// Administrative member removal that bypasses room-local permission and role checks.
-    ///
-    /// This is intended only for the global management plane. The target must
-    /// still be an active member, but the actor does not need room membership.
-    pub async fn admin_kick_member(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        actor_username: &str,
-        target_user_id: UserId,
-    ) -> Result<()> {
-        if actor_id == target_user_id {
-            return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
-        }
-
-        let removed = self.member_repo.remove(&room_id, &target_user_id).await?;
-        if !removed {
-            return Err(Error::NotFound(
-                "User is not an active member of this room".to_string(),
-            ));
-        }
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        if let Err(e) = self
-            .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Failed to notify local clients of admin member kick"
-            );
-        }
-
-        self.audit_log(
-            &actor_id,
-            actor_username,
-            AuditAction::MemberKicked,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "mode": "admin_override",
-            }),
-        )
-        .await;
 
         Ok(())
     }
@@ -943,8 +817,8 @@ impl MemberService {
     }
 
     /// Check if a user is banned from a room
-    pub async fn is_banned(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        self.member_repo.is_banned(room_id, user_id).await
+    pub async fn is_in_kick_cooldown(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
+        self.member_repo.is_in_kick_cooldown(room_id, user_id).await
     }
 
     /// Get a specific member
@@ -988,194 +862,6 @@ impl MemberService {
         self.member_repo
             .list_by_user_with_query(user_id, query)
             .await
-    }
-
-    /// Ban a member from a room
-    ///
-    /// Uses an atomic SQL statement that combines the role hierarchy check with the
-    /// ban update, eliminating the TOCTOU race between checking roles and performing
-    /// the ban.
-    pub async fn ban_member(
-        &self,
-        room_id: RoomId,
-        admin_id: UserId,
-        target_user_id: UserId,
-        reason: Option<String>,
-    ) -> Result<()> {
-        // Check admin permission without cache - critical operation requires fresh permissions
-        self.permission_service
-            .check_permission_no_cache(&room_id, &admin_id, PermissionBits::BAN_MEMBER)
-            .await?;
-
-        // Atomic role check + ban: the SQL WHERE clause ensures the admin outranks
-        // the target, preventing TOCTOU races.
-        self.member_repo
-            .ban_with_role_check(&room_id, &admin_id, &target_user_id, reason.clone())
-            .await?;
-
-        // Invalidate permission cache for banned user (local)
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Notify local WebSocket clients that member was kicked (ban implies kick)
-        if let Err(e) = self
-            .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Failed to notify local clients of member ban"
-            );
-        }
-
-        // Audit log
-        self.audit_log(
-            &admin_id,
-            "",
-            AuditAction::MemberBanned,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "reason": reason,
-            }),
-        )
-        .await;
-
-        Ok(())
-    }
-
-    /// Administrative member ban that bypasses room-local permission and role checks.
-    ///
-    /// This is intended only for the global management plane. The actor does
-    /// not need to be a room member.
-    pub async fn admin_ban_member(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        actor_username: &str,
-        target_user_id: UserId,
-        persisted_banned_by: Option<UserId>,
-        reason: Option<String>,
-    ) -> Result<()> {
-        if actor_id == target_user_id {
-            return Err(Error::InvalidInput("Cannot ban yourself".to_string()));
-        }
-
-        self.member_repo
-            .ban_member(
-                &room_id,
-                &target_user_id,
-                persisted_banned_by.as_ref(),
-                reason.clone(),
-            )
-            .await?;
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        if let Err(e) = self
-            .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Failed to notify local clients of admin member ban"
-            );
-        }
-
-        self.audit_log(
-            &actor_id,
-            actor_username,
-            AuditAction::MemberBanned,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "reason": reason,
-                "mode": "admin_override",
-            }),
-        )
-        .await;
-
-        Ok(())
-    }
-
-    /// Unban a member from a room
-    pub async fn unban_member(
-        &self,
-        room_id: RoomId,
-        admin_id: UserId,
-        target_user_id: UserId,
-    ) -> Result<()> {
-        // Check admin permission without cache - security-critical
-        self.permission_service
-            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::BAN_MEMBER)
-            .await?;
-
-        // Unban member
-        self.member_repo
-            .unban_member(&room_id, &target_user_id)
-            .await?;
-
-        // Invalidate permission cache for unbanned user
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Audit log
-        self.audit_log(
-            &admin_id,
-            "",
-            AuditAction::MemberUnbanned,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({ "room_id": room_id }),
-        )
-        .await;
-
-        Ok(())
-    }
-
-    /// Administrative member unban that bypasses room-local permission checks.
-    ///
-    /// This is intended only for the global management plane. The actor does
-    /// not need to be a room member.
-    pub async fn admin_unban_member(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        actor_username: &str,
-        target_user_id: UserId,
-    ) -> Result<()> {
-        self.member_repo
-            .unban_member(&room_id, &target_user_id)
-            .await?;
-
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        self.audit_log(
-            &actor_id,
-            actor_username,
-            AuditAction::MemberUnbanned,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "mode": "admin_override",
-            }),
-        )
-        .await;
-
-        Ok(())
     }
 
     /// Set member role (member/admin/creator)
@@ -1274,84 +960,6 @@ impl MemberService {
         Ok(updated_member)
     }
 
-    /// Set member lifecycle status.
-    pub async fn set_member_status(
-        &self,
-        room_id: RoomId,
-        admin_id: UserId,
-        target_user_id: UserId,
-        status: MemberStatus,
-    ) -> Result<RoomMember> {
-        match status {
-            MemberStatus::Active => {
-                if self.is_banned(&room_id, &target_user_id).await? {
-                    return Err(Error::InvalidInput(
-                        "Use unban_member before changing a banned member lifecycle status"
-                            .to_string(),
-                    ));
-                }
-            }
-            MemberStatus::Left => {
-                return Err(Error::InvalidInput(
-                    "Use remove_member or kick_member instead of set_member_status(..., Left)"
-                        .to_string(),
-                ));
-            }
-        }
-
-        // Active lifecycle transitions stay on the approval permission path.
-        self.permission_service
-            .check_permission_no_cache(&room_id, &admin_id, PermissionBits::APPROVE_MEMBER)
-            .await?;
-
-        // Get current member and update status with optimistic lock retry
-        let (updated_member, old_status) = super::optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
-            Self::BACKOFF_BASE_MS,
-            "Status update failed after maximum retry attempts",
-            || async {
-                let member = self
-                    .member_repo
-                    .get(&room_id, &target_user_id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::NotFound("User is not a member of this room".to_string())
-                    })?;
-
-                let old_status = member.status;
-
-                let updated = self
-                    .member_repo
-                    .update_status(&room_id, &target_user_id, status, member.version)
-                    .await?;
-                Ok((updated, old_status))
-            },
-        )
-        .await?;
-
-        // Invalidate permission cache
-        self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Audit log
-        self.audit_log(
-            &admin_id,
-            "",
-            AuditAction::MemberStatusUpdated,
-            AuditTargetType::Member,
-            Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "old_status": format!("{:?}", old_status),
-                "new_status": format!("{:?}", status),
-            }),
-        )
-        .await;
-
-        Ok(updated_member)
-    }
-
     /// List all members including inactive (left) (admin view)
     pub async fn list_members_all(
         &self,
@@ -1363,7 +971,7 @@ impl MemberService {
             .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::KICK_MEMBER)
             .await?;
 
-        // Get all members regardless of left_at status
+        // Get all current member rows.
         self.member_repo.list_by_room_all(room_id).await
     }
 }

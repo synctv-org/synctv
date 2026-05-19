@@ -204,13 +204,12 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     .expect("Failed to soft-delete owned room");
 
     sqlx::query(
-        "INSERT INTO room_members (room_id, user_id, role, joined_at, left_at, version)
-         VALUES ($1, $2, $3, $4, $5, 0)",
+        "INSERT INTO room_members (room_id, user_id, role, joined_at, version)
+         VALUES ($1, $2, $3, $4, 0)",
     )
     .bind(surviving_room.id)
     .bind(deleted_user.id)
     .bind(3_i16)
-    .bind(forty_days_ago)
     .bind(forty_days_ago)
     .execute(&pool)
     .await

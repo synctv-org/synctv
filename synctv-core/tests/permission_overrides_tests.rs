@@ -40,11 +40,11 @@ async fn test_allow_override_role_default() {
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(!perms_before.has(PermissionBits::BAN_MEMBER));
+    assert!(!perms_before.has(PermissionBits::KICK_MEMBER));
 
     room_service
         .member_service()
-        .grant_permission(room.id, creator.id, member.id, PermissionBits::BAN_MEMBER)
+        .grant_permission(room.id, creator.id, member.id, PermissionBits::KICK_MEMBER)
         .await
         .unwrap();
 
@@ -52,7 +52,7 @@ async fn test_allow_override_role_default() {
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(perms_after.has(PermissionBits::BAN_MEMBER));
+    assert!(perms_after.has(PermissionBits::KICK_MEMBER));
     assert!(perms_after.has(PermissionBits::SEND_CHAT));
 }
 

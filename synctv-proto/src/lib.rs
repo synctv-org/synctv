@@ -183,16 +183,12 @@ mod tests {
             username: "alice".into(),
             role: crate::common::RoomMemberRole::Admin.into(),
             permissions: 0xFF,
-            status: crate::common::MemberStatus::Active.into(),
             added_permissions: 0x0F,
             removed_permissions: 0x01,
             admin_added_permissions: 0x00,
             admin_removed_permissions: 0x00,
             joined_at: 1_700_000_500,
             is_online: true,
-            is_banned: false,
-            banned_at: 0,
-            banned_reason: String::new(),
         };
         let bytes = member.encode_to_vec();
         let decoded = crate::common::RoomMember::decode(bytes.as_slice()).unwrap();
@@ -790,17 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn http_json_ban_member_request_defaults_reason() {
-        let json = r#"{"user_id":"user-456"}"#;
-
-        let decoded: crate::client::BanMemberRequest =
-            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
-
-        assert_eq!(decoded.user_id, "user-456");
-        assert_eq!(decoded.reason, "");
-    }
-
-    #[test]
     fn http_json_update_user_role_request_accepts_numeric_role() {
         let json = format!(r#"{{"role":{}}}"#, crate::common::UserRole::Admin as i32);
 
@@ -859,11 +844,13 @@ mod tests {
     }
 
     #[test]
-    fn http_json_kick_member_request_defaults_user_id() {
+    fn http_json_kick_member_request_defaults_user_id_only() {
         let decoded: crate::client::KickMemberRequest =
-            serde_json::from_str("{}").expect("path-populated user_id should default");
+            serde_json::from_str(r#"{"kick_cooldown_seconds":300}"#)
+                .expect("path-populated user_id should default");
 
         assert_eq!(decoded.user_id, "");
+        assert_eq!(decoded.kick_cooldown_seconds, 300);
     }
 
     #[test]
@@ -1337,8 +1324,6 @@ mod tests {
             page_size: 101,
             search: String::new(),
             role: Some(99),
-            status: Some(99),
-            is_banned: None,
             sort_by: 99,
             sort_direction: 99,
         };
@@ -1381,8 +1366,6 @@ mod tests {
             page_size: 0,
             search: String::new(),
             role: Some(crate::common::RoomMemberRole::Member as i32),
-            status: Some(crate::common::MemberStatus::Active as i32),
-            is_banned: Some(false),
             sort_by: crate::client::RoomMemberListSortBy::Unspecified as i32,
             sort_direction: crate::client::SortDirection::Unspecified as i32,
         })
@@ -1506,8 +1489,6 @@ mod tests {
             page_size: 101,
             search: String::new(),
             role: 99,
-            status: 99,
-            is_banned: None,
             sort_by: 99,
             sort_direction: 99,
         };
@@ -1599,8 +1580,6 @@ mod tests {
             page_size: 0,
             search: String::new(),
             role: crate::common::RoomMemberRole::Member as i32,
-            status: crate::common::MemberStatus::Active as i32,
-            is_banned: Some(false),
             sort_by: crate::admin::RoomMemberListSortBy::Unspecified as i32,
             sort_direction: crate::admin::SortDirection::Unspecified as i32,
         })

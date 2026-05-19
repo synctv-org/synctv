@@ -304,7 +304,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 .finalize_entry_deletions_after_commit(
                     &impact.room_id,
                     &impact.deleted_media_ids,
-                    impact.playback_reset,
+                    impact.playback_state.as_ref(),
                 )
                 .await;
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT user_id FROM room_members\n                 WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL\n                 FOR UPDATE",
+  "query": "SELECT user_id FROM room_members\n                 WHERE room_id = $1 AND user_id = $2\n                 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "7ea6af420bfc70f80462557e271595bf223152b92d78770de449acd0e18a70cc"
+  "hash": "8b96526b64555619f65db15a8fc3dad7f11f47d7e07d85c330bff286f1403670"
 }

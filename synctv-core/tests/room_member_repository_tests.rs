@@ -1,6 +1,6 @@
 //! `RoomMemberRepository` integration tests
 //!
-//! Tests the core room member operations: `add_with_options`, role-check ban/remove,
+//! Tests the core room member operations: `add_with_options`, role-check remove,
 //! atomic permission grants/revokes, permission reset, batch counts, pagination,
 //! and `diagnose_add_conflict` error branches.
 //!
@@ -14,14 +14,12 @@ use synctv_core::{
         RoomId, RoomMember, RoomRole, RoomStatus, SortDirection, User, UserId, UserRole,
         UserStatus,
     },
-    repository::{RoomMemberRepository, RoomRepository, UserRepository},
+    repository::{
+        room_member::KickCooldownInsert, RoomMemberRepository, RoomRepository, UserRepository,
+    },
     Error,
 };
 use synctv_core_testing::create_test_pool;
-
-fn u64_to_i64(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -67,6 +65,29 @@ fn make_room(name: &str, owner: &UserId) -> Room {
 
 fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
     RoomMember::new(room_id, user_id, role)
+}
+
+async fn add_kick_cooldown(
+    member_repo: &RoomMemberRepository,
+    room_id: RoomId,
+    user_id: UserId,
+    kicked_by: Option<UserId>,
+) {
+    let now = Utc::now();
+    member_repo
+        .add_kick_cooldown_with_executor(
+            KickCooldownInsert {
+                room_id: &room_id,
+                user_id: &user_id,
+                kicked_by: kicked_by.as_ref(),
+                starts_at: now,
+                ends_at: now + chrono::Duration::hours(1),
+                reason: Some("test kick"),
+            },
+            member_repo.pool(),
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -132,7 +153,7 @@ async fn test_add_with_options_capacity_at_max_members() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_add_with_options_left_members_do_not_consume_capacity() {
+async fn test_add_with_options_removed_members_do_not_consume_capacity() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -147,19 +168,19 @@ async fn test_add_with_options_left_members_do_not_consume_capacity() {
         .await
         .unwrap();
 
-    let left_user = user_repo
-        .create(&make_user("user_left_capacity"))
+    let removed_user = user_repo
+        .create(&make_user("user_removed_capacity"))
         .await
         .unwrap();
-    let departed_member = make_member(room.id, left_user.id, RoomRole::Member);
+    let departed_member = make_member(room.id, removed_user.id, RoomRole::Member);
     member_repo
         .add_with_options(&departed_member, &AddMemberOptions::new())
         .await
         .unwrap();
     member_repo
-        .remove(&room.id, &left_user.id)
+        .remove(&room.id, &removed_user.id)
         .await
-        .expect("fixture member should be marked left");
+        .expect("fixture member should be removed");
 
     let active_user = user_repo
         .create(&make_user("user_active_capacity"))
@@ -281,27 +302,27 @@ async fn test_add_with_options_max_members_zero_bypass() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_with_role_check_member_cannot_ban_admin() {
+async fn test_kick_with_role_check_member_cannot_kick_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("owner_ban_role"))
+        .create(&make_user("owner_kick_role"))
         .await
         .unwrap();
     let room = room_repo
-        .create(&make_room("Room BanRole", &owner.id))
+        .create(&make_room("Room KickRole", &owner.id))
         .await
         .unwrap();
 
     let admin_user = user_repo
-        .create(&make_user("admin_ban_role"))
+        .create(&make_user("admin_kick_role"))
         .await
         .unwrap();
     let member_user = user_repo
-        .create(&make_user("member_ban_role"))
+        .create(&make_user("member_kick_role"))
         .await
         .unwrap();
 
@@ -314,25 +335,28 @@ async fn test_ban_with_role_check_member_cannot_ban_admin() {
         .await
         .unwrap();
 
-    // Member (role=3) trying to ban Admin (role=2) => should fail
-    let err = member_repo
-        .ban_with_role_check(&room.id, &member_user.id, &admin_user.id, None)
+    // Member (role=3) trying to kick Admin (role=2) => should fail
+    let result = member_repo
+        .kick_with_role_check(&room.id, &member_user.id, &admin_user.id)
         .await
-        .unwrap_err();
-    assert!(matches!(err, Error::NotFound(_)));
+        .unwrap();
+    assert!(!result);
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_with_role_check_creator_can_ban_admin() {
+async fn test_kick_with_role_check_creator_can_kick_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator = user_repo.create(&make_user("creator_ban")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("creator_kick_admin"))
+        .await
+        .unwrap();
     let room = room_repo
-        .create(&make_room("Room CreatorBan", &creator.id))
+        .create(&make_room("Room CreatorKickAdmin", &creator.id))
         .await
         .unwrap();
 
@@ -342,32 +366,32 @@ async fn test_ban_with_role_check_creator_can_ban_admin() {
         .await
         .unwrap();
 
-    let admin_user = user_repo.create(&make_user("admin_ban")).await.unwrap();
+    let admin_user = user_repo
+        .create(&make_user("admin_kick_by_creator"))
+        .await
+        .unwrap();
     member_repo
         .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
         .unwrap();
 
-    // Creator (role=1) banning Admin (role=2) => should succeed
-    let banned = member_repo
-        .ban_with_role_check(
-            &room.id,
-            &creator.id,
-            &admin_user.id,
-            Some("test reason".to_string()),
-        )
+    // Creator (role=1) kicking Admin (role=2) => should succeed
+    let kicked = member_repo
+        .kick_with_role_check(&room.id, &creator.id, &admin_user.id)
         .await
         .unwrap();
 
-    assert_eq!(banned.status, MemberStatus::Left);
-    assert!(banned.is_banned());
-    assert!(banned.banned_at.is_some());
-    assert_eq!(banned.banned_reason, Some("test reason".to_string()));
+    assert!(kicked);
+    assert!(member_repo
+        .get_any(&room.id, &admin_user.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_remove_with_role_check_equal_rank_rejected() {
+async fn test_kick_with_role_check_equal_rank_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -391,9 +415,9 @@ async fn test_remove_with_role_check_equal_rank_rejected() {
         .await
         .unwrap();
 
-    // Admin (role=2) trying to remove another Admin (role=2) => equal rank, should fail
+    // Admin (role=2) trying to kick another Admin (role=2) => equal rank, should fail
     let result = member_repo
-        .remove_with_role_check(&room.id, &admin1.id, &admin2.id)
+        .kick_with_role_check(&room.id, &admin1.id, &admin2.id)
         .await
         .unwrap();
     assert!(!result);
@@ -401,7 +425,7 @@ async fn test_remove_with_role_check_equal_rank_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_remove_with_role_check_self_kick_fails() {
+async fn test_kick_with_role_check_self_kick_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -427,7 +451,7 @@ async fn test_remove_with_role_check_self_kick_fails() {
 
     // Self-kick: actor.role == target.role (not strictly less), should fail
     let result = member_repo
-        .remove_with_role_check(&room.id, &admin_user.id, &admin_user.id)
+        .kick_with_role_check(&room.id, &admin_user.id, &admin_user.id)
         .await
         .unwrap();
     assert!(!result);
@@ -435,7 +459,7 @@ async fn test_remove_with_role_check_self_kick_fails() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_remove_with_role_check_creator_kicks_admin() {
+async fn test_kick_with_role_check_creator_kicks_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -460,14 +484,14 @@ async fn test_remove_with_role_check_creator_kicks_admin() {
 
     // Creator (role=1) kicking Admin (role=2) => should succeed
     let result = member_repo
-        .remove_with_role_check(&room.id, &creator.id, &admin_user.id)
+        .kick_with_role_check(&room.id, &creator.id, &admin_user.id)
         .await
         .unwrap();
     assert!(result);
 
-    // Verify admin is now gone (left_at set)
+    // Verify admin is now gone
     let member = member_repo.get(&room.id, &admin_user.id).await.unwrap();
-    assert!(member.is_none()); // get() filters left_at IS NULL
+    assert!(member.is_none());
 }
 
 #[tokio::test]
@@ -542,22 +566,22 @@ async fn test_revoke_permission_atomic_bitwise_or() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_grant_permission_atomic_left_member_returns_not_found() {
+async fn test_grant_permission_atomic_removed_member_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("owner_left_grant"))
+        .create(&make_user("owner_removed_grant"))
         .await
         .unwrap();
     let room = room_repo
-        .create(&make_room("Room LeftGrant", &owner.id))
+        .create(&make_room("Room RemovedGrant", &owner.id))
         .await
         .unwrap();
     let user = user_repo
-        .create(&make_user("user_left_grant"))
+        .create(&make_user("user_removed_grant"))
         .await
         .unwrap();
 
@@ -569,7 +593,7 @@ async fn test_grant_permission_atomic_left_member_returns_not_found() {
     // Remove the member
     member_repo.remove(&room.id, &user.id).await.unwrap();
 
-    // Attempting to grant on left member should return NotFound
+    // Attempting to grant on removed member should return NotFound
     let err = member_repo
         .grant_permission_atomic(&room.id, &user.id, 0x01)
         .await
@@ -579,22 +603,22 @@ async fn test_grant_permission_atomic_left_member_returns_not_found() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_revoke_permission_atomic_left_member_returns_not_found() {
+async fn test_revoke_permission_atomic_removed_member_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("owner_left_revoke"))
+        .create(&make_user("owner_removed_revoke"))
         .await
         .unwrap();
     let room = room_repo
-        .create(&make_room("Room LeftRevoke", &owner.id))
+        .create(&make_room("Room RemovedRevoke", &owner.id))
         .await
         .unwrap();
     let user = user_repo
-        .create(&make_user("user_left_revoke"))
+        .create(&make_user("user_removed_revoke"))
         .await
         .unwrap();
 
@@ -606,7 +630,7 @@ async fn test_revoke_permission_atomic_left_member_returns_not_found() {
     // Remove the member
     member_repo.remove(&room.id, &user.id).await.unwrap();
 
-    // Attempting to revoke on left member should return NotFound
+    // Attempting to revoke on removed member should return NotFound
     let err = member_repo
         .revoke_permission_atomic(&room.id, &user.id, 0x01)
         .await
@@ -940,7 +964,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected() {
+async fn test_list_by_user_with_query_member_count_counts_active_only_rows() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -954,12 +978,8 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
         .create(&make_user("viewer_member_count_filters"))
         .await
         .unwrap();
-    let banned = user_repo
-        .create(&make_user("banned_member_count_filters"))
-        .await
-        .unwrap();
-    let rejected = user_repo
-        .create(&make_user("rejected_member_count_filters"))
+    let removed = user_repo
+        .create(&make_user("removed_member_count_filters"))
         .await
         .unwrap();
 
@@ -979,40 +999,10 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
         .unwrap();
 
     member_repo
-        .add(&make_member(room.id, banned.id, RoomRole::Member))
+        .add(&make_member(room.id, removed.id, RoomRole::Member))
         .await
         .unwrap();
-    member_repo
-        .ban_member(&room.id, &banned.id, Some(&owner.id), None)
-        .await
-        .unwrap();
-
-    let mut rejected_member = RoomMember {
-        status: MemberStatus::Left,
-        ..make_member(room.id, rejected.id, RoomRole::Member)
-    };
-    rejected_member.left_at = Some(Utc::now());
-    sqlx::query(
-        "INSERT INTO room_members (
-            room_id, user_id, role,
-            added_permissions, removed_permissions,
-            admin_added_permissions, admin_removed_permissions,
-            joined_at, left_at, version
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    )
-    .bind(room.id)
-    .bind(rejected_member.user_id)
-    .bind(rejected_member.role)
-    .bind(u64_to_i64(rejected_member.added_permissions))
-    .bind(u64_to_i64(rejected_member.removed_permissions))
-    .bind(u64_to_i64(rejected_member.admin_added_permissions))
-    .bind(u64_to_i64(rejected_member.admin_removed_permissions))
-    .bind(rejected_member.joined_at)
-    .bind(rejected_member.left_at)
-    .bind(rejected_member.version)
-    .execute(&pool)
-    .await
-    .unwrap();
+    member_repo.remove(&room.id, &removed.id).await.unwrap();
 
     let (rows, total) = member_repo
         .list_by_user_with_query(
@@ -1034,18 +1024,18 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_diagnose_add_conflict_banned_user() {
+async fn test_add_member_rejects_active_kick_cooldown() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_banned")).await.unwrap();
+    let owner = user_repo.create(&make_user("owner_kicked")).await.unwrap();
     let room = room_repo
-        .create(&make_room("Room Banned", &owner.id))
+        .create(&make_room("Room Kicked", &owner.id))
         .await
         .unwrap();
-    let user = user_repo.create(&make_user("user_banned")).await.unwrap();
+    let user = user_repo.create(&make_user("user_kicked")).await.unwrap();
 
     // Add the user first
     member_repo
@@ -1053,18 +1043,10 @@ async fn test_diagnose_add_conflict_banned_user() {
         .await
         .unwrap();
 
-    // Ban the user
-    member_repo
-        .ban_member(
-            &room.id,
-            &user.id,
-            Some(&owner.id),
-            Some("bad behavior".to_string()),
-        )
-        .await
-        .unwrap();
+    member_repo.remove(&room.id, &user.id).await.unwrap();
+    add_kick_cooldown(&member_repo, room.id, user.id, Some(owner.id)).await;
 
-    // Try to re-add -> should get Authorization error (banned)
+    // Try to re-add -> should get Authorization error while cooldown is active.
     let member = make_member(room.id, user.id, RoomRole::Member);
     let err = member_repo.add(&member).await.unwrap_err();
     assert!(matches!(err, Error::Authorization(_)));
@@ -1072,53 +1054,32 @@ async fn test_diagnose_add_conflict_banned_user() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_diagnose_add_conflict_left_user() {
+async fn test_add_after_remove_creates_fresh_membership() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_left")).await.unwrap();
+    let owner = user_repo.create(&make_user("owner_removed")).await.unwrap();
     let room = room_repo
-        .create(&make_room("Room Left", &owner.id))
+        .create(&make_room("Room Removed", &owner.id))
         .await
         .unwrap();
-    let user = user_repo.create(&make_user("user_left")).await.unwrap();
+    let user = user_repo.create(&make_user("user_removed")).await.unwrap();
 
     // Add the user
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
-    member_repo
-        .grant_permission_atomic(&room.id, &user.id, 0x01)
-        .await
-        .unwrap();
-    member_repo
-        .revoke_permission_atomic(&room.id, &user.id, 0x02)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE room_members SET admin_added_permissions = 4, admin_removed_permissions = 8 WHERE room_id = $1 AND user_id = $2")
-        .bind(room.id)
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    // User leaves
     member_repo.remove(&room.id, &user.id).await.unwrap();
 
-    // Try to re-add -- the ON CONFLICT DO UPDATE with WHERE status != Banned
-    // will succeed for "Left" status (since Left != Banned), so re-join works.
     let member = make_member(room.id, user.id, RoomRole::Member);
     let result = member_repo.add(&member).await;
 
-    // The ON CONFLICT clause should allow re-joining a "Left" member
-    // (the WHERE condition is `status != Banned`, so Left passes)
     assert!(result.is_ok());
     let rejoined = result.unwrap();
     assert_eq!(rejoined.status, MemberStatus::Active);
-    assert!(rejoined.left_at.is_none());
     assert_eq!(rejoined.added_permissions, 0);
     assert_eq!(rejoined.removed_permissions, 0);
     assert_eq!(rejoined.admin_added_permissions, 0);
@@ -1127,98 +1088,18 @@ async fn test_diagnose_add_conflict_left_user() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_banned_by_restricts_user_delete() {
+async fn test_update_permissions_after_member_removed_should_fail() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("owner_banned_by"))
-        .await
-        .unwrap();
-    let room = room_repo
-        .create(&make_room("Room BannedBy", &owner.id))
-        .await
-        .unwrap();
-
-    // Add owner as creator
-    member_repo
-        .add(&make_member(room.id, owner.id, RoomRole::Creator))
-        .await
-        .unwrap();
-
-    let admin = user_repo
-        .create(&make_user("admin_banned_by"))
-        .await
-        .unwrap();
-    member_repo
-        .add(&make_member(room.id, admin.id, RoomRole::Admin))
-        .await
-        .unwrap();
-
-    let banned_user = user_repo
-        .create(&make_user("banned_by_user"))
-        .await
-        .unwrap();
-    member_repo
-        .add(&make_member(room.id, banned_user.id, RoomRole::Member))
-        .await
-        .unwrap();
-
-    // Admin bans the member
-    member_repo
-        .ban_member(
-            &room.id,
-            &banned_user.id,
-            Some(&admin.id),
-            Some("test banned_by constraint".to_string()),
-        )
-        .await
-        .unwrap();
-
-    // Verify banned_by is set
-    let banned_member: Option<(Option<UserId>,)> = sqlx::query_as(
-        "SELECT banned_by FROM room_member_bans
-             WHERE room_id = $1 AND user_id = $2 AND revoked_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(banned_user.id)
-    .fetch_optional(&pool)
-    .await
-    .unwrap();
-    assert!(banned_member.is_some());
-    assert_eq!(banned_member.unwrap().0, Some(admin.id));
-
-    // Deleting the admin should now be blocked until application-level cleanup runs.
-    let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(admin.id)
-        .execute(&pool)
-        .await;
-
-    assert!(
-        delete_result.is_err(),
-        "Deleting user who banned someone should be blocked by ON DELETE RESTRICT"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_update_permissions_after_member_left_should_fail() {
-    // update_permissions must reject members who have left the room
-    // (left_at IS NOT NULL).
-
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("owner_permissions_test"))
+        .create(&make_user("owner_removed_permissions_test"))
         .await
         .unwrap();
     let member_user = user_repo
-        .create(&make_user("member_left_test"))
+        .create(&make_user("member_removed_test"))
         .await
         .unwrap();
 
@@ -1234,49 +1115,28 @@ async fn test_update_permissions_after_member_left_should_fail() {
         .await
         .unwrap();
 
-    // Member leaves the room - set left_at directly via SQL
-    sqlx::query(
-        "UPDATE room_members SET left_at = CURRENT_TIMESTAMP \
-         WHERE room_id = $1 AND user_id = $2",
-    )
-    .bind(room.id)
-    .bind(member_user.id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    member_repo.remove(&room.id, &member_user.id).await.unwrap();
 
-    // Get the updated member (use get_any because get only returns active members)
-    let left_member = member_repo
-        .get_any(&room.id, &member_user.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        left_member.left_at.is_some(),
-        "Member should have left_at set"
-    );
-
-    // SECURITY CHECK: Try to update permissions for departed member
-    // This should fail with OptimisticLockConflict because left_at IS NOT NULL
+    // SECURITY CHECK: Try to update permissions for removed member.
     let result = member_repo
         .update_permissions(
             &room.id,
             &member_user.id,
             0b0000_0001, // Add permission bit 0
             0,           // Remove nothing
-            left_member.version,
+            0,
         )
         .await;
 
     assert!(
         result.is_err(),
-        "update_permissions should fail for departed member (left_at IS NOT NULL)"
+        "update_permissions should fail for removed member"
     );
 
     match result {
         Err(Error::OptimisticLockConflict) => { /* Expected */ }
         Err(e) => panic!("Expected OptimisticLockConflict, got: {e:?}"),
-        Ok(_) => panic!("update_permissions should not succeed for departed member"),
+        Ok(_) => panic!("update_permissions should not succeed for removed member"),
     }
 }
 
@@ -1307,11 +1167,6 @@ async fn test_update_permissions_for_active_member_should_succeed() {
         .add_with_options(&new_member, &AddMemberOptions::new())
         .await
         .unwrap();
-
-    assert!(
-        member.left_at.is_none(),
-        "Active member should have left_at = NULL"
-    );
 
     // Update permissions for active member - this should succeed
     let updated = member_repo

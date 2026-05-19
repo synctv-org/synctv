@@ -347,15 +347,15 @@ mod tests {
         AddEmbyMediaRequest, AddMediaRequest, AddMemberRequest, AlistGetBindsRequest,
         AlistGetMeRequest, AlistListRequest, AlistLoginRequest, AlistLogoutRequest,
         AlistSearchRequest, ApproveRoomCreationReviewRequest, ApproveRoomJoinReviewRequest,
-        ApproveUserRegistrationReviewRequest, BanMemberRequest, BanRoomRequest, BanUserRequest,
-        BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
-        BatchDeleteUsersRequest, BilibiliCheckQrRequest, BilibiliGetBindsRequest,
-        BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest, BilibiliLoginQrRequest,
-        BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest,
-        BilibiliSendSmsRequest, CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest,
-        CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
-        DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
-        EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
+        ApproveUserRegistrationReviewRequest, BanRoomRequest, BanUserRequest, BatchBanRoomsRequest,
+        BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
+        BilibiliCheckQrRequest, BilibiliGetBindsRequest, BilibiliGetCaptchaRequest,
+        BilibiliGetUserInfoRequest, BilibiliLoginQrRequest, BilibiliLoginSmsRequest,
+        BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest,
+        CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest, CreatePlaylistRequest,
+        CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
+        DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
+        EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
         EmbyLogoutRequest, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
         GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
         GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
@@ -369,11 +369,11 @@ mod tests {
         RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
         SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
-        StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest,
-        UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
-        UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-        UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
-        UpdateUserRoleRequest, UpdateUserUsernameRequest,
+        StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
+        UpdateMemberPermissionsRequest, UpdatePlaybackRequest, UpdatePlaylistRequest,
+        UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
+        UpdateUserPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
+        UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
     use synctv_proto::{
@@ -714,18 +714,6 @@ mod tests {
             &self,
             _: Request<KickMemberRequest>,
         ) -> std::result::Result<Response<client_proto::KickMemberResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
-        }
-        async fn ban_member(
-            &self,
-            _: Request<BanMemberRequest>,
-        ) -> std::result::Result<Response<client_proto::BanMemberResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
-        }
-        async fn unban_member(
-            &self,
-            _: Request<UnbanMemberRequest>,
-        ) -> std::result::Result<Response<client_proto::UnbanMemberResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn get_room_settings(

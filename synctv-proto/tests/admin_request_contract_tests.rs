@@ -322,8 +322,6 @@ fn test_admin_get_room_members_request_rejects_too_long_search() {
         page_size: 20,
         search: "a".repeat(101),
         role: 0,
-        status: 0,
-        is_banned: None,
         sort_by: 0,
         sort_direction: 0,
     };

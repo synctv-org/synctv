@@ -34,6 +34,11 @@ fn parse_proxy_room_id(codec: &crate::PublicIdCodec, value: &str) -> Result<Room
 
 pub(crate) fn map_proxy_membership_probe_error(err: synctv_core::Error) -> ApiError {
     match err {
+        synctv_core::Error::Authorization(message)
+            if message == synctv_core::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE =>
+        {
+            ApiError::Authorization(message)
+        }
         synctv_core::Error::Authorization(_) => {
             ApiError::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
         }

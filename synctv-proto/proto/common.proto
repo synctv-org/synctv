@@ -31,7 +31,6 @@ enum RoomMemberRole {
 enum MemberStatus {
     MEMBER_STATUS_UNSPECIFIED = 0;
     MEMBER_STATUS_ACTIVE = 1;
-    MEMBER_STATUS_LEFT = 2;
 }
 
 // Room lifecycle status. Banned state is tracked via is_banned.
@@ -78,9 +77,6 @@ message RoomMember {
     // Effective permissions (calculated from role + added/removed)
     uint64 permissions = 5;
 
-    // Membership lifecycle status
-    MemberStatus status = 12;
-
     // Allow/Deny permission pattern fields
     // For member role: uses added_permissions/removed_permissions
     // For admin role: uses admin_added_permissions/admin_removed_permissions
@@ -91,7 +87,4 @@ message RoomMember {
 
     int64 joined_at = 10;
     bool is_online = 11;
-    bool is_banned = 13;
-    int64 banned_at = 14;
-    string banned_reason = 15;
 }

@@ -295,9 +295,7 @@ Members:
 synctv room member list <ROOM_ID>
 synctv room member add <ROOM_ID> alice
 synctv room member set-permissions <ROOM_ID> alice --role admin
-synctv room member kick <ROOM_ID> alice
-synctv room member ban <ROOM_ID> alice
-synctv room member unban <ROOM_ID> alice
+synctv room member kick --room-id <ROOM_ID> alice --kick-cooldown-seconds 300
 ```
 
 Playback:

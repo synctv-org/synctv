@@ -198,10 +198,6 @@ async fn test_client_member_approval_api_contracts() {
         added.role,
         synctv_proto::common::RoomMemberRole::Member as i32
     );
-    assert_eq!(
-        added.status,
-        synctv_proto::common::MemberStatus::Active as i32
-    );
 
     room_service
         .join_room(room.id, approve_target.id, None)
@@ -237,10 +233,6 @@ async fn test_client_member_approval_api_contracts() {
         .member
         .expect("approve_room_join_review response member");
     assert_eq!(approved.user_id, approve_target_public_id);
-    assert_eq!(
-        approved.status,
-        synctv_proto::common::MemberStatus::Active as i32
-    );
 
     room_service
         .join_room(room.id, reject_target.id, None)
@@ -356,10 +348,6 @@ async fn test_admin_member_approval_api_contracts() {
         added.role,
         synctv_proto::common::RoomMemberRole::Member as i32
     );
-    assert_eq!(
-        added.status,
-        synctv_proto::common::MemberStatus::Active as i32
-    );
 
     room_service
         .join_room(room.id, approve_target.id, None)
@@ -388,10 +376,6 @@ async fn test_admin_member_approval_api_contracts() {
     assert_eq!(
         approved.user_id,
         public_id_codec().encode_user_id(approve_target.id).unwrap()
-    );
-    assert_eq!(
-        approved.status,
-        synctv_proto::common::MemberStatus::Active as i32
     );
 
     room_service

@@ -7,7 +7,7 @@
 //! - `auth`: register, login, `refresh_token`
 //! - `user`: `get_profile`, `set_username`, `set_password`
 //! - `room`: create/get/join/leave/delete room, settings, chat, hot rooms
-//! - `member`: `get_members`, kick, ban, unban, `set_permissions`
+//! - `member`: `get_members`, kick, `set_permissions`
 //! - `media`: add/remove/edit/swap media, batch operations, playlist items
 //! - `playlist`: create/update/delete/list playlists
 //! - `playback`: play, pause, seek, speed, `set_current_media`, `get_playback_state`

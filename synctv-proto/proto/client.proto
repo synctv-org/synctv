@@ -79,8 +79,6 @@ service RoomService {
     rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RejectRoomJoinReviewResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
-    rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
-    rpc UnbanMember(UnbanMemberRequest) returns (UnbanMemberResponse);
 
     // Real-time Messaging (room-scoped)
     rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
@@ -885,7 +883,6 @@ enum RoomMemberListSortBy {
     ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
     ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
     ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
-    ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
 }
 
 enum RoomListSortBy {
@@ -984,10 +981,8 @@ message GetRoomMembersRequest {
         max_len: 100
     }];
     optional synctv.common.RoomMemberRole role = 4 [(buf.validate.field).enum.defined_only = true];
-    optional synctv.common.MemberStatus status = 5 [(buf.validate.field).enum.defined_only = true];
     RoomMemberListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
     SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
-    optional bool is_banned = 8;
 }
 
 message GetRoomMembersResponse {
@@ -1136,34 +1131,13 @@ message KickMemberRequest {
         max_len: 64,
         pattern: "^usr_[A-Za-z0-9]+$"
     }];  // Target user to kick
+    int64 kick_cooldown_seconds = 2 [(buf.validate.field).int64 = {
+        gte: 1,
+        lte: 2592000
+    }];
 }
 
 message KickMemberResponse {
-    bool success = 1;
-}
-
-message BanMemberRequest {
-    string user_id = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^usr_[A-Za-z0-9]+$"
-    }];   // Target user to ban
-    string reason = 2 [(buf.validate.field).string.max_len = 500];    // Optional ban reason
-}
-
-message BanMemberResponse {
-    bool success = 1;
-}
-
-message UnbanMemberRequest {
-    string user_id = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^usr_[A-Za-z0-9]+$"
-    }];  // Target user to unban
-}
-
-message UnbanMemberResponse {
     bool success = 1;
 }
 

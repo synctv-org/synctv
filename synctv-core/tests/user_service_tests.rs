@@ -448,11 +448,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
             joined_at: Utc::now(),
-            left_at: None,
             version: 0,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
         })
         .await
         .expect("create foreign room membership");

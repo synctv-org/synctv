@@ -12,33 +12,32 @@ use crate::proto::admin::{
     AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse,
     ApproveRoomCreationReviewRequest, ApproveRoomCreationReviewResponse,
     ApproveRoomJoinReviewRequest, ApproveRoomJoinReviewResponse,
-    ApproveUserRegistrationReviewRequest, ApproveUserRegistrationReviewResponse, BanMemberRequest,
-    BanMemberResponse, BanRoomRequest, BanRoomResponse, BanUserRequest, BanUserResponse,
-    BatchBanRoomsRequest, BatchBanRoomsResponse, BatchBanUsersRequest, BatchBanUsersResponse,
-    BatchDeleteRoomsRequest, BatchDeleteRoomsResponse, BatchDeleteUsersRequest,
-    BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse, DeleteRoomRequest,
-    DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse, GetRoomMembersRequest,
-    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse, GetSettingsRequest,
-    GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
-    GetUserPreferencesResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
-    GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
-    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
-    ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse,
-    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
-    ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
+    ApproveUserRegistrationReviewRequest, ApproveUserRegistrationReviewResponse, BanRoomRequest,
+    BanRoomResponse, BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
+    BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
+    BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
+    DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
+    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
+    GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
+    GetSettingsGroupResponse, GetSettingsRequest, GetSettingsResponse, GetSystemStatsRequest,
+    GetSystemStatsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse, GetUserRequest,
+    GetUserResponse, GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest,
+    KickMemberResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest,
+    ListBanRecordsResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
+    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
     ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
     ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
     RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
     RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
-    SendTestEmailResponse, UnbanMemberRequest, UnbanMemberResponse, UnbanRoomRequest,
-    UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateMemberPermissionsRequest,
-    UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
-    UpdateSettingsResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse,
-    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UpdateUserRoleRequest,
-    UpdateUserRoleResponse, UpdateUserUsernameRequest, UpdateUserUsernameResponse,
+    SendTestEmailResponse, UnbanRoomRequest, UnbanRoomResponse, UnbanUserRequest,
+    UnbanUserResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
+    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse, UpdateSettingsRequest, UpdateSettingsResponse,
+    UpdateUserPasswordRequest, UpdateUserPasswordResponse, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserRoleResponse,
+    UpdateUserUsernameRequest, UpdateUserUsernameResponse,
 };
 use crate::proto::admin_service_server::AdminService;
 
@@ -516,26 +515,6 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<KickMemberResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.kick_member(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
-    async fn ban_member(
-        &self,
-        request: Request<BanMemberRequest>,
-    ) -> Result<Response<BanMemberResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.ban_member(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
-    async fn unban_member(
-        &self,
-        request: Request<UnbanMemberRequest>,
-    ) -> Result<Response<UnbanMemberResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.unban_member(req, &validated.user_id, &ctx).await
         })
         .await
     }

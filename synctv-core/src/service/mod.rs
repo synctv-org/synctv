@@ -112,12 +112,11 @@ pub use review::{
     UserRegistrationReviewRecord,
 };
 pub use room::{
-    AdminAddMemberWithOutboxRequest, AdminBanMemberWithOutboxRequest,
-    AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor, PermissionChangedOutboxSnapshot,
-    RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxMediaIdsEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomService,
-    UserLeftOutboxSnapshot,
+    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
+    PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
+    RealtimeOutboxMediaIdsEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot,
 };
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};

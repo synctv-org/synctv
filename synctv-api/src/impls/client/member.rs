@@ -1,4 +1,4 @@
-//! Member operations: `get_room_members`, `update_member_permissions`, kick, ban, unban
+//! Member operations: `get_room_members`, `update_member_permissions`, and kick.
 
 use crate::impls::ApiError;
 use hex::encode as hex_encode;
@@ -10,6 +10,7 @@ use super::convert::{
     members_to_proto, proto_role_filter_to_room_role, proto_role_to_assignable_room_role,
     proto_role_to_room_role, room_member_to_proto_with_permissions,
 };
+use super::media::prepare_delete_entries_outbox_fanout;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 pub(crate) fn compute_room_members_response_version(
@@ -27,7 +28,6 @@ pub(crate) fn compute_room_members_response_version(
         hasher.update([0]);
         hasher.update(member.role.to_le_bytes());
         hasher.update(member.permissions.to_le_bytes());
-        hasher.update(member.status.to_le_bytes());
         hasher.update(member.added_permissions.to_le_bytes());
         hasher.update(member.removed_permissions.to_le_bytes());
         hasher.update(member.admin_added_permissions.to_le_bytes());
@@ -206,47 +206,11 @@ impl ClientApiImpl {
             .await?;
         let rid = actor.room_id();
 
-        let permissions = match actor {
-            RoomActor::User { room_id, user_id } => self
-                .room_service
-                .permission_service()
-                .get_user_permissions_no_cache(room_id, user_id)
-                .await
-                .map_err(ApiError::from)?,
-            RoomActor::Guest(access) => access.permissions,
-        };
-
         let role = req.role.and_then(proto_role_filter_to_room_role);
-        let requested_status = req
-            .status
-            .and_then(|value| synctv_core::models::MemberStatus::try_from(value).ok());
-        let can_view_non_active_members = permissions.has_any(
-            PermissionBits::APPROVE_MEMBER
-                | PermissionBits::KICK_MEMBER
-                | PermissionBits::BAN_MEMBER
-                | PermissionBits::ADD_MEMBER
-                | PermissionBits::SET_MEMBER_PERMISSIONS,
-        );
-        let status = if can_view_non_active_members {
-            requested_status
-        } else {
-            match requested_status {
-                Some(synctv_core::models::MemberStatus::Active) | None => {
-                    Some(synctv_core::models::MemberStatus::Active)
-                }
-                Some(_) => {
-                    return Err(ApiError::Authorization(
-                        "Forbidden: Viewing pending or historical room members requires room moderation permissions".to_string(),
-                    ));
-                }
-            }
-        };
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             role,
-            status,
-            is_banned: req.is_banned,
             is_online: None,
             sort_by: match crate::proto::client::RoomMemberListSortBy::try_from(req.sort_by) {
                 Ok(crate::proto::client::RoomMemberListSortBy::Username) => {
@@ -254,9 +218,6 @@ impl ClientApiImpl {
                 }
                 Ok(crate::proto::client::RoomMemberListSortBy::Role) => {
                     synctv_core::models::RoomMemberListSortBy::Role
-                }
-                Ok(crate::proto::client::RoomMemberListSortBy::Status) => {
-                    synctv_core::models::RoomMemberListSortBy::Status
                 }
                 _ => synctv_core::models::RoomMemberListSortBy::JoinedAt,
             },
@@ -355,12 +316,8 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
-            is_banned: member.is_banned(),
-            banned_at: member.banned_at,
-            banned_reason: member.banned_reason,
         };
         let room_settings = self
             .room_service
@@ -431,12 +388,8 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
-            is_banned: member.is_banned(),
-            banned_at: member.banned_at,
-            banned_reason: member.banned_reason,
         };
         let room_settings = self
             .room_service
@@ -626,12 +579,8 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            left_at: member.left_at,
             is_online,
             is_active: true,
-            is_banned: member.is_banned(),
-            banned_at: member.banned_at,
-            banned_reason: member.banned_reason,
         };
 
         // Fetch room settings for proper three-layer permission calculation
@@ -663,6 +612,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let crate::proto::client::KickMemberRequest {
             user_id: target_user_id,
+            kick_cooldown_seconds,
         } = req;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -672,6 +622,19 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, uid);
+        let actor_username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map_or_else(|_| uid.to_string(), |user| user.username);
+        let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
+            self.media_fanout.clone(),
+            self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
+            rid,
+            uid,
+            actor_username,
+        );
         let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
             room_id: rid,
@@ -685,12 +648,17 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 target_uid,
-                Some(prepared_membership_fanout.outbox_factory()),
-                lifecycle_outbox_event,
+                kick_cooldown_seconds,
+                synctv_core::service::room::KickMemberOutboxOptions {
+                    permission_changed: Some(prepared_membership_fanout.outbox_factory()),
+                    cleanup: Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
+                    lifecycle: lifecycle_outbox_event,
+                },
             )
             .await
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
+        prepared_cleanup_fanout.publish_after_outbox_commit();
         self.realtime_fanout
             .publish_after_outbox_commit(lifecycle_event);
 
@@ -699,94 +667,6 @@ impl ClientApiImpl {
             .await;
 
         Ok(crate::proto::client::KickMemberResponse { success: true })
-    }
-
-    pub async fn ban_member(
-        &self,
-        user_id: &UserId,
-        room_id: &str,
-        req: crate::proto::client::BanMemberRequest,
-    ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::BanMemberRequest {
-            user_id: target_user_id,
-            reason,
-        } = req;
-
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
-        let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
-        let reason = if reason.is_empty() {
-            None
-        } else {
-            Some(reason)
-        };
-
-        let prepared_membership_fanout = self
-            .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, uid);
-        let lifecycle_reason = reason.clone().unwrap_or_else(|| "banned".to_string());
-        let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
-            event_id: synctv_common::snanoid!(16),
-            room_id: rid,
-            user_id: target_uid,
-            reason: lifecycle_reason,
-            timestamp: chrono::Utc::now(),
-        };
-        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
-        self.room_service
-            .ban_member_with_outbox(
-                rid,
-                uid,
-                target_uid,
-                reason,
-                Some(prepared_membership_fanout.outbox_factory()),
-                lifecycle_outbox_event,
-            )
-            .await
-            .map_err(ApiError::from)?;
-        prepared_membership_fanout.publish_after_outbox_commit();
-        self.realtime_fanout
-            .publish_after_outbox_commit(lifecycle_event);
-
-        self.realtime_lifecycle
-            .disconnect_user_from_room(&rid, &target_uid)
-            .await;
-
-        Ok(crate::proto::client::BanMemberResponse { success: true })
-    }
-
-    pub async fn unban_member(
-        &self,
-        user_id: &UserId,
-        room_id: &str,
-        req: crate::proto::client::UnbanMemberRequest,
-    ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::UnbanMemberRequest {
-            user_id: target_user_id,
-        } = req;
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
-        let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
-
-        let prepared_membership_fanout = self
-            .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, uid);
-        self.room_service
-            .unban_member_with_outbox(
-                rid,
-                uid,
-                target_uid,
-                Some(prepared_membership_fanout.outbox_factory()),
-            )
-            .await
-            .map_err(ApiError::from)?;
-        prepared_membership_fanout.publish_after_outbox_commit();
-
-        Ok(crate::proto::client::UnbanMemberResponse { success: true })
     }
 }
 

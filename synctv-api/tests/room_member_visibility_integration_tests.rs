@@ -136,8 +136,6 @@ async fn test_get_room_members_requires_view_member_list_permission() {
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
-                is_banned: None,
                 sort_by: 0,
                 sort_direction: 0,
             },
@@ -211,8 +209,6 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                status: None,
-                is_banned: None,
                 sort_by: 0,
                 sort_direction: 0,
             },
@@ -229,8 +225,8 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         response
             .members
             .iter()
-            .all(|member| member.status == synctv_proto::common::MemberStatus::Active as i32),
-        "non-moderators must not receive pending memberships in the default list"
+            .all(|member| !member.user_id.is_empty()),
+        "non-moderators must receive active member records in the default list"
     );
 
     let err = client_api
@@ -318,8 +314,6 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         page_size: 20,
         search: String::new(),
         role: None,
-        status: None,
-        is_banned: None,
         sort_by: 0,
         sort_direction: 0,
     };

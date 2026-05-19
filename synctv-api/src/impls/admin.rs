@@ -19,23 +19,22 @@ use synctv_core::models::{
 };
 use synctv_core::provider::{DynamicListQuery, ExecutionControl};
 use synctv_core::service::{
-    AdminAddMemberWithOutboxRequest, AdminBanMemberWithOutboxRequest,
-    AdminRejectJoinRequestWithOutbox, AuditService, AuthorizedAdminActor, BanRecordListQuery,
-    BanRecordRow, BanRecordService, BanRecordTargetType, EmailService, RemoteProviderManager,
-    ReviewService, RoomCreationReviewListQuery, RoomCreationReviewRecord, RoomJoinReviewListQuery,
-    RoomJoinReviewRecord, RoomService, SettingsRegistry, SettingsService,
-    UserRegistrationReviewListQuery, UserRegistrationReviewRecord, UserService,
+    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuditService,
+    AuthorizedAdminActor, BanRecordListQuery, BanRecordRow, BanRecordService, BanRecordTargetType,
+    EmailService, RemoteProviderManager, ReviewService, RoomCreationReviewListQuery,
+    RoomCreationReviewRecord, RoomJoinReviewListQuery, RoomJoinReviewRecord, RoomService,
+    SettingsRegistry, SettingsService, UserRegistrationReviewListQuery,
+    UserRegistrationReviewRecord, UserService,
 };
 use synctv_core::Error as CoreError;
 use synctv_livestream::api::LiveStreamingInfrastructure;
 
 use super::client::convert::{
     bilibili_live_danmaku_for_static_media, map_slice_preserve_order, media_list_to_proto,
-    media_to_proto_with_availability, member_status_to_proto, members_to_proto,
-    playback_client_profile_from_proto, playback_snapshot_to_proto, playback_state_to_proto,
-    playlist_list_to_proto, playlist_path_node_to_proto, playlist_to_proto,
-    playlist_to_proto_with_availability, provider_playback_info_to_model,
-    sign_local_bilibili_danmaku_urls, user_status_to_proto,
+    media_to_proto_with_availability, members_to_proto, playback_client_profile_from_proto,
+    playback_snapshot_to_proto, playback_state_to_proto, playlist_list_to_proto,
+    playlist_path_node_to_proto, playlist_to_proto, playlist_to_proto_with_availability,
+    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::client::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 use super::ApiError;
@@ -1785,13 +1784,10 @@ impl AdminApiImpl {
         let rid =
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let role = proto_role_filter_to_room_role(req.role);
-        let status = synctv_core::models::MemberStatus::try_from(req.status).ok();
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             role,
-            status,
-            is_banned: req.is_banned,
             is_online: None,
             sort_by: match crate::proto::admin::RoomMemberListSortBy::try_from(req.sort_by) {
                 Ok(crate::proto::admin::RoomMemberListSortBy::Username) => {
@@ -1799,9 +1795,6 @@ impl AdminApiImpl {
                 }
                 Ok(crate::proto::admin::RoomMemberListSortBy::Role) => {
                     synctv_core::models::RoomMemberListSortBy::Role
-                }
-                Ok(crate::proto::admin::RoomMemberListSortBy::Status) => {
-                    synctv_core::models::RoomMemberListSortBy::Status
                 }
                 _ => synctv_core::models::RoomMemberListSortBy::JoinedAt,
             },
@@ -1895,12 +1888,8 @@ impl AdminApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
-            is_banned: member.is_banned(),
-            banned_at: member.banned_at,
-            banned_reason: member.banned_reason,
         };
 
         self.log_admin_action(
@@ -1971,12 +1960,8 @@ impl AdminApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
-            is_banned: member.is_banned(),
-            banned_at: member.banned_at,
-            banned_reason: member.banned_reason,
         };
 
         self.log_admin_action(
@@ -2086,7 +2071,6 @@ impl AdminApiImpl {
             .await
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
-
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
@@ -2131,12 +2115,8 @@ impl AdminApiImpl {
             admin_added_permissions: updated_member.admin_added_permissions,
             admin_removed_permissions: updated_member.admin_removed_permissions,
             joined_at: updated_member.joined_at,
-            left_at: updated_member.left_at,
             is_online,
             is_active: true,
-            is_banned: updated_member.is_banned(),
-            banned_at: updated_member.banned_at,
-            banned_reason: updated_member.banned_reason,
         };
 
         self.log_admin_action(
@@ -2170,7 +2150,11 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::KickMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let crate::proto::admin::KickMemberRequest { room_id, user_id } = req;
+        let crate::proto::admin::KickMemberRequest {
+            room_id,
+            user_id,
+            kick_cooldown_seconds,
+        } = req;
         let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
         let admin_username = self
@@ -2178,10 +2162,20 @@ impl AdminApiImpl {
             .await
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
+        let persisted_kicked_by =
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(*admin_user_id);
 
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
+        let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
+            self.media_fanout.clone(),
+            self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
+            rid,
+            *admin_user_id,
+            admin_username.clone(),
+        );
         let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
             room_id: rid,
@@ -2195,13 +2189,18 @@ impl AdminApiImpl {
                 rid,
                 *admin_user_id,
                 target_uid,
-                Some(prepared_membership_fanout.outbox_factory()),
-                lifecycle_outbox_event,
+                kick_cooldown_seconds,
+                persisted_kicked_by,
+                synctv_core::service::room::KickMemberOutboxOptions {
+                    permission_changed: Some(prepared_membership_fanout.outbox_factory()),
+                    cleanup: Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
+                    lifecycle: lifecycle_outbox_event,
+                },
             )
             .await
             .map_err(ApiError::from)?;
-        drop(admin_username);
         prepared_membership_fanout.publish_after_outbox_commit();
+        prepared_cleanup_fanout.publish_after_outbox_commit();
         self.realtime_fanout
             .publish_after_outbox_commit(lifecycle_event);
 
@@ -2228,141 +2227,6 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::KickMemberResponse { success: true })
-    }
-
-    pub async fn ban_member(
-        &self,
-        req: crate::proto::admin::BanMemberRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::BanMemberResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let crate::proto::admin::BanMemberRequest {
-            room_id,
-            user_id,
-            reason,
-        } = req;
-
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
-        let reason = if reason.is_empty() {
-            None
-        } else {
-            Some(reason)
-        };
-        let persisted_banned_by =
-            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(*admin_user_id);
-        let admin_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_err(|_| ApiError::NotFound("User not found".to_string()))?
-            .username;
-
-        let prepared_membership_fanout = self
-            .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
-        let lifecycle_reason = reason.clone().unwrap_or_else(|| "banned".to_string());
-        let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
-            event_id: synctv_common::snanoid!(16),
-            room_id: rid,
-            user_id: target_uid,
-            reason: lifecycle_reason,
-            timestamp: chrono::Utc::now(),
-        };
-        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
-        self.room_service
-            .admin_ban_member_with_outbox(AdminBanMemberWithOutboxRequest {
-                room_id: rid,
-                actor_id: *admin_user_id,
-                target_user_id: target_uid,
-                persisted_banned_by,
-                reason: reason.clone(),
-                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
-                lifecycle_outbox_event,
-            })
-            .await
-            .map_err(ApiError::from)?;
-        drop(admin_username);
-        prepared_membership_fanout.publish_after_outbox_commit();
-        self.realtime_fanout
-            .publish_after_outbox_commit(lifecycle_event);
-
-        self.realtime_lifecycle
-            .disconnect_user_from_room(&rid, &target_uid)
-            .await;
-
-        self.room_service
-            .permission_service()
-            .invalidate_cache(&rid, &target_uid)
-            .await;
-
-        self.log_admin_action(
-            admin_user_id,
-            synctv_core::models::AuditAction::MemberBanned,
-            synctv_core::models::AuditTargetType::Member,
-            Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "reason": reason,
-                "mode": "admin_override",
-            }),
-            ctx,
-        )
-        .await;
-
-        Ok(crate::proto::admin::BanMemberResponse { success: true })
-    }
-
-    pub async fn unban_member(
-        &self,
-        req: crate::proto::admin::UnbanMemberRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::UnbanMemberResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let crate::proto::admin::UnbanMemberRequest { room_id, user_id } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
-        let admin_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_err(|_| ApiError::NotFound("User not found".to_string()))?
-            .username;
-
-        let prepared_membership_fanout = self
-            .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
-        self.room_service
-            .admin_unban_member_with_outbox(
-                rid,
-                *admin_user_id,
-                target_uid,
-                Some(prepared_membership_fanout.outbox_factory()),
-            )
-            .await
-            .map_err(ApiError::from)?;
-        drop(admin_username);
-        prepared_membership_fanout.publish_after_outbox_commit();
-
-        self.room_service
-            .permission_service()
-            .invalidate_cache(&rid, &target_uid)
-            .await;
-
-        self.log_admin_action(
-            admin_user_id,
-            synctv_core::models::AuditAction::MemberUnbanned,
-            synctv_core::models::AuditTargetType::Member,
-            Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "mode": "admin_override",
-            }),
-            ctx,
-        )
-        .await;
-
-        Ok(crate::proto::admin::UnbanMemberResponse { success: true })
     }
 
     pub async fn list_users(
@@ -3385,9 +3249,6 @@ impl AdminApiImpl {
                 target_type: match crate::proto::admin::BanTargetType::try_from(req.target_type) {
                     Ok(crate::proto::admin::BanTargetType::User) => Some(BanRecordTargetType::User),
                     Ok(crate::proto::admin::BanTargetType::Room) => Some(BanRecordTargetType::Room),
-                    Ok(crate::proto::admin::BanTargetType::RoomMember) => {
-                        Some(BanRecordTargetType::RoomMember)
-                    }
                     _ => None,
                 },
                 active: req.active,
@@ -5857,16 +5718,12 @@ fn admin_room_member_to_proto_with_permissions(
         username: member.username.clone(),
         role: crate::impls::client::room_role_to_proto(member.role),
         permissions: permissions.0,
-        status: member_status_to_proto(member.status),
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
-        is_banned: member.is_banned,
-        banned_at: member.banned_at.map_or(0, |value| value.timestamp()),
-        banned_reason: member.banned_reason.clone().unwrap_or_default(),
     }
 }
 
@@ -5940,8 +5797,8 @@ mod tests {
         cache::{KeyBuilder, UsernameCache},
         config::{Config, PasswordComplexityConfig},
         repository::{
-            MediaRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
-            SettingsRepository, UserRepository,
+            MediaRepository, ProviderInstanceRepository, RoomRepository, SettingsRepository,
+            UserRepository,
         },
         service::{
             auth::{BruteForceProtection, JwtService, TestPasswordHasher},
@@ -6960,6 +6817,7 @@ mod tests {
                 crate::proto::admin::KickMemberRequest {
                     room_id: public_room_id(&admin_api, room.id),
                     user_id: public_user_id(&admin_api, target.id),
+                    kick_cooldown_seconds: 60,
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -7445,12 +7303,8 @@ mod tests {
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
             joined_at: chrono::Utc::now(),
-            left_at: None,
             is_online: false,
             is_active: true,
-            is_banned: false,
-            banned_at: None,
-            banned_reason: None,
         }
     }
 
@@ -7620,8 +7474,6 @@ mod tests {
                 page_size: 101,
                 search: "a".repeat(101),
                 role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
-                status: synctv_proto::common::MemberStatus::Unspecified as i32,
-                is_banned: None,
                 sort_by: crate::proto::admin::RoomMemberListSortBy::Unspecified as i32,
                 sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
             })
@@ -8632,8 +8484,8 @@ mod tests {
 
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
-            username: "root_ban_membership".to_string(),
-            email: Some("root_ban_membership@example.com".to_string()),
+            username: "root_user_ban_cleanup".to_string(),
+            email: Some("root_user_ban_cleanup@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
@@ -9591,6 +9443,7 @@ mod tests {
                 crate::proto::admin::KickMemberRequest {
                     room_id: public_room_id(&admin_api, room.id),
                     user_id: public_user_id(&admin_api, target.id),
+                    kick_cooldown_seconds: 60,
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -9607,302 +9460,6 @@ mod tests {
         assert!(
             persisted.is_none(),
             "kicked member should no longer appear as an active room member"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_ban_member_bypasses_room_membership_requirement_for_global_admin() {
-        let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, _redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
-        let user_repo = UserRepository::new(pool.clone());
-        let member_repo = RoomMemberRepository::new(pool.clone());
-
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_member_ban".to_string(),
-            email: Some("global_admin_member_ban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::Root,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_member_ban".to_string(),
-            email: Some("room_owner_member_ban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::User,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_member_ban".to_string(),
-            email: Some("target_member_ban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::User,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
-
-        let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
-
-        let response = admin_api
-            .ban_member(
-                crate::proto::admin::BanMemberRequest {
-                    room_id: public_room_id(&admin_api, room.id),
-                    user_id: public_user_id(&admin_api, target.id),
-                    reason: "policy".to_string(),
-                },
-                &global_admin.id,
-                &RequestContext::default(),
-            )
-            .await
-            .expect("global admin should ban member without being in the room");
-        assert!(response.success);
-
-        let persisted = member_repo
-            .get_any(&room.id, &target.id)
-            .await
-            .expect("persisted member query should succeed")
-            .expect("banned member row should remain");
-        assert_eq!(persisted.status, MemberStatus::Left);
-        assert!(persisted.is_banned());
-        assert_eq!(persisted.banned_reason.as_deref(), Some("policy"));
-        assert_eq!(persisted.banned_by.as_ref(), Some(&global_admin.id));
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_unban_member_bypasses_room_membership_requirement_for_global_admin() {
-        let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, _redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
-        let user_repo = UserRepository::new(pool.clone());
-
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_member_unban".to_string(),
-            email: Some("global_admin_member_unban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::Root,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_member_unban".to_string(),
-            email: Some("room_owner_member_unban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::User,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_member_unban".to_string(),
-            email: Some("target_member_unban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::User,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
-
-        let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
-        admin_api
-            .room_service
-            .member_service()
-            .ban_member(room.id, owner.id, target.id, Some("temporary".to_string()))
-            .await
-            .expect("owner should be able to seed a banned membership");
-
-        let response = admin_api
-            .unban_member(
-                crate::proto::admin::UnbanMemberRequest {
-                    room_id: public_room_id(&admin_api, room.id),
-                    user_id: public_user_id(&admin_api, target.id),
-                },
-                &global_admin.id,
-                &RequestContext::default(),
-            )
-            .await
-            .expect("global admin should unban member without being in the room");
-        assert!(response.success);
-
-        let member_repo = RoomMemberRepository::new(pool.clone());
-        let persisted = member_repo
-            .get_any(&room.id, &target.id)
-            .await
-            .expect("persisted member query should succeed")
-            .expect("unbanned member row should remain");
-        assert_eq!(persisted.status, MemberStatus::Left);
-        assert!(persisted.banned_reason.is_none());
-        assert!(persisted.banned_by.is_none());
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_ban_member_uses_nullable_banned_by_for_local_management_actor() {
-        let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, _redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
-        let member_repo = RoomMemberRepository::new(pool.clone());
-        let user_repo = UserRepository::new(pool.clone());
-
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_local_mgmt_ban".to_string(),
-            email: Some("room_owner_local_mgmt_ban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::User,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_local_mgmt_ban".to_string(),
-            email: Some("target_local_mgmt_ban@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: UserRole::User,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            email_verified: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
-            version: 0,
-        };
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
-
-        let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
-        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
-
-        let response = admin_api
-            .ban_member(
-                crate::proto::admin::BanMemberRequest {
-                    room_id: public_room_id(&admin_api, room.id),
-                    user_id: public_user_id(&admin_api, target.id),
-                    reason: "local-management-ban".to_string(),
-                },
-                &management_actor,
-                &RequestContext::default(),
-            )
-            .await
-            .expect("local management actor should ban room members");
-        assert!(response.success);
-
-        let persisted = member_repo
-            .get_any(&room.id, &target.id)
-            .await
-            .expect("persisted member query should succeed")
-            .expect("banned member row should remain");
-        assert_eq!(persisted.status, MemberStatus::Left);
-        assert!(persisted.is_banned());
-        assert!(
-            persisted.banned_by.is_none(),
-            "local management actor must not be written to banned_by foreign key"
-        );
-        assert_eq!(
-            persisted.banned_reason.as_deref(),
-            Some("local-management-ban")
         );
     }
 

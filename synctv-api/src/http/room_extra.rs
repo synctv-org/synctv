@@ -1,7 +1,7 @@
 //! Room member management API endpoints (room-scoped, requires room-level permissions)
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
@@ -15,7 +15,11 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
 }
 
 pub type AddMemberBody = crate::proto::client::AddMemberRequest;
-pub type BanMemberBody = crate::proto::client::BanMemberRequest;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct KickMemberQuery {
+    kick_cooldown_seconds: i64,
+}
 
 /// Add a member to a room.
 #[cfg_attr(
@@ -216,7 +220,8 @@ pub async fn reject_room_join_review(
         tag = "Room Member",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
+            ("user_id" = String, Path, description = "Target user ID"),
+            ("kick_cooldown_seconds" = i64, Query, description = "Room access cooldown duration after the kick, in seconds")
         ),
         responses(
             (status = 200, description = "Member kicked", body = crate::proto::client::KickMemberResponse),
@@ -233,9 +238,13 @@ pub async fn kick_member(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
+    Query(query): Query<KickMemberQuery>,
 ) -> AppResult<Json<crate::proto::client::KickMemberResponse>> {
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = crate::proto::client::KickMemberRequest { user_id };
+    let req = crate::proto::client::KickMemberRequest {
+        user_id,
+        kick_cooldown_seconds: query.kick_cooldown_seconds,
+    };
     let request_meta = request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
@@ -301,104 +310,6 @@ pub async fn set_member_permissions(
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    Ok(Json(resp))
-}
-
-/// Ban a member from a room
-/// POST /`api/rooms/:room_id/bans` with body: {`user_id`, reason}
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/rooms/{room_id}/bans",
-        tag = "Room Member",
-        params(
-            ("room_id" = String, Path, description = "Room ID")
-        ),
-        request_body = crate::proto::client::BanMemberRequest,
-        responses(
-            (status = 200, description = "Member banned", body = crate::proto::client::BanMemberResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub async fn ban_member(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<BanMemberBody>,
-) -> AppResult<Json<crate::proto::client::BanMemberResponse>> {
-    let room_id = path.room_id;
-    let request_meta = request_metadata(request_meta);
-    let client_api = state.shared_api_runtime.client_api.clone();
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Write,
-            move |authenticated| async move {
-                client_api
-                    .ban_member(&authenticated.user_id, &room_id, req)
-                    .await
-            },
-        )
-        .await
-        .map_err(crate::http::error::map_api_error)?;
-
-    Ok(Json(resp))
-}
-
-/// Unban a member from a room
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        delete,
-        path = "/api/rooms/{room_id}/bans/{user_id}",
-        tag = "Room Member",
-        params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
-        ),
-        responses(
-            (status = 200, description = "Member unbanned", body = crate::proto::client::UnbanMemberResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub async fn unban_member(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
-) -> AppResult<Json<crate::proto::client::UnbanMemberResponse>> {
-    let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = crate::proto::client::UnbanMemberRequest { user_id };
-    let request_meta = request_metadata(request_meta);
-    let client_api = state.shared_api_runtime.client_api.clone();
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Write,
-            move |authenticated| async move {
-                client_api
-                    .unban_member(&authenticated.user_id, &room_id, req)
-                    .await
-            },
-        )
-        .await
-        .map_err(crate::http::error::map_api_error)?;
-
     Ok(Json(resp))
 }
 

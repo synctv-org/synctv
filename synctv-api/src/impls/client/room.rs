@@ -11,6 +11,7 @@ use super::convert::{
     resource_availability_enum_to_proto, room_role_to_proto, room_to_proto_basic,
     room_to_proto_with_availability,
 };
+use super::media::prepare_delete_entries_outbox_fanout;
 use super::{validate_password_for_set, validate_password_for_verify};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
@@ -637,8 +638,26 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_user_left_outbox_fanout();
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map_or_else(|_| uid.to_string(), |user| user.username);
+        let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
+            self.media_fanout.clone(),
+            self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
+            rid,
+            uid,
+            username,
+        );
         self.room_service
-            .leave_room_with_outbox(rid, uid, Some(prepared_membership_fanout.outbox_factory()))
+            .leave_room_with_outbox(
+                rid,
+                uid,
+                Some(prepared_membership_fanout.outbox_factory()),
+                Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -649,6 +668,7 @@ impl ClientApiImpl {
             .await;
 
         prepared_membership_fanout.publish_after_outbox_commit();
+        prepared_cleanup_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
     }

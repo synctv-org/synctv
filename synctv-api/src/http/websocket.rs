@@ -820,7 +820,7 @@ async fn forward_websocket_messages<S>(
 }
 
 /// Returns `true` if the given `ServerMessage` carries a critical payload that
-/// MUST be delivered (playback state changes, kick/ban notifications, room
+/// MUST be delivered (playback state changes, room kick or platform ban notifications, room
 /// deletion). Critical messages use a blocking send with timeout so they are
 /// not silently dropped.
 const fn is_critical_message(message: &ServerMessage) -> bool {

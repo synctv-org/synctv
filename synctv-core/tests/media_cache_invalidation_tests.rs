@@ -94,11 +94,7 @@ async fn test_edit_media_sends_notification() {
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: Utc::now(),
-        left_at: None,
         version: 0,
-        banned_at: None,
-        banned_by: None,
-        banned_reason: None,
     };
     member_repo_setup
         .add(&owner_member)
@@ -278,11 +274,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: Utc::now(),
-        left_at: None,
         version: 0,
-        banned_at: None,
-        banned_by: None,
-        banned_reason: None,
     };
     member_repo_setup
         .add(&owner_member)

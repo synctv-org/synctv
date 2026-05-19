@@ -526,16 +526,12 @@ pub(crate) fn room_member_to_proto_with_permissions(
         username: member.username.clone(),
         role: room_role_to_proto(member.role),
         permissions: permissions.0,
-        status: member_status_to_proto(member.status),
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
-        is_banned: member.is_banned,
-        banned_at: member.banned_at.map_or(0, |value| value.timestamp()),
-        banned_reason: member.banned_reason.clone().unwrap_or_default(),
     }
 }
 

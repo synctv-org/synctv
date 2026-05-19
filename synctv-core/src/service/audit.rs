@@ -919,8 +919,6 @@ mod tests {
             ),
             (AuditAction::SettingsUpdated, "settings_updated"),
             (AuditAction::MemberKicked, "member_kicked"),
-            (AuditAction::MemberBanned, "member_banned"),
-            (AuditAction::MemberUnbanned, "member_unbanned"),
             (AuditAction::MemberRoleUpdated, "member_role_updated"),
             (
                 AuditAction::MemberPermissionUpdated,

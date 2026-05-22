@@ -11,12 +11,14 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache},
+    cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     config::PasswordComplexityConfig,
     models::{PermissionBits, RoomRole, User, UserId, UserRole, UserStatus},
     repository::{RoomMemberRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        member::AdminMemberUpdate,
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
@@ -47,6 +49,23 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
     let mut svc = RoomService::new(pool, user_service);
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
+}
+
+fn make_room_service_with_fence(
+    pool: PgPool,
+    version_fence: Arc<dyn VersionFenceStore>,
+) -> RoomService {
+    let user_service = make_user_service(&pool);
+    let mut svc = RoomService::new_with_options(
+        pool,
+        user_service,
+        RoomServiceOptions {
+            version_fence: Some(version_fence),
+            ..RoomServiceOptions::default()
+        },
+    );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
 }
@@ -259,6 +278,172 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let version_fence = Arc::new(LocalVersionFenceStore::new());
+    let room_service = make_room_service_with_fence(pool.clone(), version_fence.clone());
+
+    let creator = user_repo
+        .create(&make_user("aum_admin_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("aum_admin_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Admin Update Member Override Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .unwrap();
+
+    let updated = room_service
+        .member_service()
+        .admin_update_member(AdminMemberUpdate {
+            room_id: room.id,
+            actor_id: creator.id,
+            actor_username: creator.username.clone(),
+            target_user_id: target.id,
+            role: Some(RoomRole::Admin),
+            added_permissions: 0,
+            removed_permissions: 0,
+            admin_added_permissions: PermissionBits::USE_WEBRTC,
+            admin_removed_permissions: PermissionBits::KICK_MEMBER,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.role, RoomRole::Admin);
+    assert_eq!(
+        updated.admin_added_permissions & PermissionBits::USE_WEBRTC,
+        PermissionBits::USE_WEBRTC,
+        "role-to-admin update must persist allow override in admin_added_permissions"
+    );
+    assert_eq!(
+        updated.admin_removed_permissions & PermissionBits::KICK_MEMBER,
+        PermissionBits::KICK_MEMBER,
+        "role-to-admin update must persist deny override in admin_removed_permissions"
+    );
+    assert_eq!(
+        updated.added_permissions, 0,
+        "role-to-admin update must not write admin override into member added_permissions"
+    );
+    assert_eq!(
+        updated.removed_permissions, 0,
+        "role-to-admin update must not write admin override into member removed_permissions"
+    );
+
+    let state = version_fence
+        .current_state(&CacheDomain::Permission {
+            room_id: room.id,
+            user_id: target.id,
+        })
+        .await
+        .unwrap()
+        .expect("permission fence should be committed after update");
+    assert_eq!(
+        state.pending_version, None,
+        "role plus permission update must commit every reservation it created"
+    );
+    assert_eq!(state.committed_version, updated.version);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_transfer_room_ownership_commits_permission_fences_for_both_members() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let version_fence = Arc::new(LocalVersionFenceStore::new());
+    let room_service = make_room_service_with_fence(pool.clone(), version_fence.clone());
+
+    let old_owner = user_repo
+        .create(&make_user("transfer_fence_old_owner"))
+        .await
+        .unwrap();
+    let new_owner = user_repo
+        .create(&make_user("transfer_fence_new_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Transfer Fence Room".to_string(),
+            String::new(),
+            old_owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, new_owner.id, None)
+        .await
+        .unwrap();
+
+    room_service
+        .transfer_room_ownership(room.id, old_owner.id, new_owner.id)
+        .await
+        .unwrap();
+
+    let updated_old_owner = member_repo
+        .get(&room.id, &old_owner.id)
+        .await
+        .unwrap()
+        .expect("old owner member should remain active");
+    let updated_new_owner = member_repo
+        .get(&room.id, &new_owner.id)
+        .await
+        .unwrap()
+        .expect("new owner member should remain active");
+
+    assert_eq!(updated_old_owner.role, RoomRole::Admin);
+    assert_eq!(updated_new_owner.role, RoomRole::Creator);
+
+    let old_owner_fence = version_fence
+        .current_state(&CacheDomain::Permission {
+            room_id: room.id,
+            user_id: old_owner.id,
+        })
+        .await
+        .unwrap()
+        .expect("old owner permission fence should be committed");
+    let new_owner_fence = version_fence
+        .current_state(&CacheDomain::Permission {
+            room_id: room.id,
+            user_id: new_owner.id,
+        })
+        .await
+        .unwrap()
+        .expect("new owner permission fence should be committed");
+
+    assert_eq!(old_owner_fence.pending_version, None);
+    assert_eq!(new_owner_fence.pending_version, None);
+    assert_eq!(
+        old_owner_fence.committed_version, updated_old_owner.version,
+        "ownership transfer must finalize the previous owner's permission fence"
+    );
+    assert_eq!(
+        new_owner_fence.committed_version, updated_new_owner.version,
+        "ownership transfer must finalize the new owner's permission fence"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -385,6 +570,154 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
             panic!("Unexpected error: {other:?}");
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+
+    let creator = user_repo
+        .create(&make_user("grant_race_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("grant_race_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Grant Race Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .unwrap();
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_service = room_service.clone();
+    let first_barrier = barrier.clone();
+    let first = tokio::spawn(async move {
+        first_barrier.wait().await;
+        first_service
+            .member_service()
+            .grant_permission(room.id, creator.id, target.id, PermissionBits::USE_WEBRTC)
+            .await
+    });
+    let second_service = room_service.clone();
+    let second = tokio::spawn(async move {
+        barrier.wait().await;
+        second_service
+            .member_service()
+            .grant_permission(
+                room.id,
+                creator.id,
+                target.id,
+                PermissionBits::CHANGE_PLAYBACK_RATE,
+            )
+            .await
+    });
+
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+
+    let refreshed = RoomMemberRepository::new(pool)
+        .get(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        refreshed.added_permissions & PermissionBits::USE_WEBRTC,
+        PermissionBits::USE_WEBRTC
+    );
+    assert_eq!(
+        refreshed.added_permissions & PermissionBits::CHANGE_PLAYBACK_RATE,
+        PermissionBits::CHANGE_PLAYBACK_RATE
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+
+    let creator = user_repo
+        .create(&make_user("revoke_race_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("revoke_race_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Revoke Race Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .unwrap();
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_service = room_service.clone();
+    let first_barrier = barrier.clone();
+    let first = tokio::spawn(async move {
+        first_barrier.wait().await;
+        first_service
+            .member_service()
+            .revoke_permission(room.id, creator.id, target.id, PermissionBits::USE_WEBRTC)
+            .await
+    });
+    let second_service = room_service.clone();
+    let second = tokio::spawn(async move {
+        barrier.wait().await;
+        second_service
+            .member_service()
+            .revoke_permission(
+                room.id,
+                creator.id,
+                target.id,
+                PermissionBits::CHANGE_PLAYBACK_RATE,
+            )
+            .await
+    });
+
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+
+    let refreshed = RoomMemberRepository::new(pool)
+        .get(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        refreshed.removed_permissions & PermissionBits::USE_WEBRTC,
+        PermissionBits::USE_WEBRTC
+    );
+    assert_eq!(
+        refreshed.removed_permissions & PermissionBits::CHANGE_PLAYBACK_RATE,
+        PermissionBits::CHANGE_PLAYBACK_RATE
+    );
 }
 
 #[tokio::test]

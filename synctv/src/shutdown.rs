@@ -445,6 +445,32 @@ impl ShutdownHook for ProviderInvalidationHook {
     }
 }
 
+/// Stops the cache fence repair worker before process exit.
+pub struct CacheFenceRepairHook {
+    pub cancel: CancellationToken,
+    pub task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl ShutdownHook for CacheFenceRepairHook {
+    fn name(&self) -> &'static str {
+        "cache_fence_repair_worker"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.cancel.cancel();
+            let mut guard = self.task.lock().await;
+            if let Some(task) = guard.take() {
+                let mut task = AbortOnDropJoinHandle::new(task);
+                let _ = task.wait().await;
+                task.disarm();
+            }
+        })
+    }
+}
+
 /// Stops the health monitor background task.
 pub struct HealthMonitorShutdownHook {
     pub monitor: Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>,
@@ -842,6 +868,40 @@ mod tests {
         assert!(
             dropped.load(Ordering::SeqCst),
             "timed-out shutdown hook must abort the owned background task instead of detaching it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_fence_repair_hook_cancels_and_joins_worker() {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let task_finished = Arc::clone(&finished);
+        let task = tokio::spawn(async move {
+            task_cancel.cancelled().await;
+            task_finished.store(true, Ordering::SeqCst);
+        });
+        let task_slot = Arc::new(Mutex::new(Some(task)));
+
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
+        coord.register_hook(CacheFenceRepairHook {
+            cancel: cancel.clone(),
+            task: Arc::clone(&task_slot),
+        });
+
+        coord.shutdown().await;
+
+        assert!(
+            cancel.is_cancelled(),
+            "cache fence repair hook must cancel the worker token"
+        );
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "cache fence repair hook must wait for the worker to exit after cancellation"
+        );
+        assert!(
+            task_slot.lock().await.is_none(),
+            "cache fence repair hook must consume the tracked join handle"
         );
     }
 

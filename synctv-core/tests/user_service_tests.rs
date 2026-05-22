@@ -11,7 +11,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache},
+    cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     config::PasswordComplexityConfig,
     models::{
         Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
@@ -23,8 +23,11 @@ use synctv_core::{
     },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        local_passkey_session_store, AuthFactorMethod, AuthenticatedLogin,
-        InMemoryTokenBlacklistStore, PasskeyService, SecurityPipeline, UserService,
+        local_passkey_session_store,
+        permission::PermissionServiceRuntime,
+        user::UserServiceRuntimeOptions,
+        AuthFactorMethod, AuthenticatedLogin, InMemoryTokenBlacklistStore, PasskeyService,
+        PermissionService, SecurityPipeline, UserService,
     },
     Config, Error,
 };
@@ -36,6 +39,13 @@ fn create_jwt_service() -> JwtService {
 }
 
 fn create_user_service(pool: &PgPool) -> UserService {
+    create_user_service_with_runtime(pool, UserServiceRuntimeOptions::default())
+}
+
+fn create_user_service_with_runtime(
+    pool: &PgPool,
+    runtime: UserServiceRuntimeOptions,
+) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_config = PasswordComplexityConfig::default();
@@ -44,14 +54,17 @@ fn create_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    let mut svc = UserService::new_with_brute_force_service_and_runtime(
         pool,
-        jwt,
-        username_cache,
-        password_config,
-        token_blacklist,
-        key_builder,
-        brute_force,
+        synctv_core::service::user::UserServiceDependencies {
+            jwt_service: jwt,
+            username_cache,
+            password_complexity: password_config,
+            token_blacklist,
+            key_builder,
+            brute_force: Arc::new(brute_force),
+        },
+        runtime,
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
@@ -772,7 +785,22 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
 #[ignore = "Requires Docker"]
 async fn test_ban_user_cleans_up_owned_room_memberships() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(&pool);
+    let version_fence: Arc<dyn VersionFenceStore> = Arc::new(LocalVersionFenceStore::new());
+    let permission_service = PermissionService::new_with_runtime(
+        RoomMemberRepository::new(pool.clone()),
+        RoomRepository::new(pool.clone()),
+        PermissionServiceRuntime {
+            version_fence: Some(version_fence.clone()),
+            ..PermissionServiceRuntime::default()
+        },
+    );
+    let user_service = create_user_service_with_runtime(
+        &pool,
+        UserServiceRuntimeOptions {
+            permission_service: Some(permission_service),
+            ..UserServiceRuntimeOptions::default()
+        },
+    );
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_member_repo = RoomMemberRepository::new(pool.clone());
@@ -825,7 +853,19 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
         .expect("member membership lookup should succeed");
     assert!(
         member_membership.is_none(),
-        "owned room members must be removed when the owner is banned"
+        "banning a room owner must remove other memberships from the owned room"
+    );
+
+    let member_fence = version_fence
+        .current_version(&CacheDomain::Permission {
+            room_id: owned_room.id,
+            user_id: member.id,
+        })
+        .await
+        .expect("member permission fence should be readable");
+    assert!(
+        member_fence.is_some(),
+        "banning a room owner must commit permission fences for removed owned-room members"
     );
 }
 

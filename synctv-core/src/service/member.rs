@@ -17,6 +17,9 @@ use crate::{
     Error, Result,
 };
 
+use super::permission::PermissionWriteFence;
+
+use std::future::Future;
 use std::sync::Arc;
 
 /// Member management service
@@ -251,7 +254,7 @@ impl MemberService {
         // Invalidate permission cache (outside transaction)
         if options.invalidate_cache {
             self.permission_service
-                .invalidate_cache(&room_id, &user_id)
+                .seed_added_member_cache(&room_id, &user_id, created_member.version)
                 .await;
         }
 
@@ -272,15 +275,52 @@ impl MemberService {
     /// `leave_room` or `kick_member`; this helper only performs the shared
     /// physical row deletion and cache invalidation.
     pub async fn delete_active_membership(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
-        let removed = self.member_repo.remove(&room_id, &user_id).await?;
-        if !removed {
+        let mut tx = self.member_repo.pool().begin().await?;
+        let Some(observed_version) = self
+            .member_repo
+            .active_member_version_for_update_with_executor(&room_id, &user_id, &mut tx)
+            .await?
+        else {
             return Err(Error::NotFound(
                 synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
             ));
+        };
+        let fence = self
+            .permission_service
+            .begin_permission_write(&room_id, &user_id, observed_version)
+            .await?;
+        let removed_version = match self
+            .member_repo
+            .remove_with_version_executor(&room_id, &user_id, &mut tx)
+            .await
+        {
+            Ok(version) => version,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        let Some(removed_version) = removed_version else {
+            self.abort_permission_write(&fence).await;
+            return Err(Error::NotFound(
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
+            ));
+        };
+        if let Err(error) = tx.commit().await {
+            self.abort_permission_write(&fence).await;
+            return Err(error.into());
         }
+        self.finalize_committed_permission_write_best_effort(
+            &fence,
+            &room_id,
+            &user_id,
+            removed_version,
+            "delete_active_membership",
+        )
+        .await;
 
         self.permission_service
-            .invalidate_cache(&room_id, &user_id)
+            .invalidate_removed_member_cache(&room_id, &user_id)
             .await;
 
         Ok(())
@@ -292,6 +332,68 @@ impl MemberService {
     const PERMISSION_UPDATE_MAX_RETRIES: u32 = 8;
     /// Base delay for exponential backoff (milliseconds)
     const BACKOFF_BASE_MS: u64 = 5;
+
+    async fn finalize_committed_permission_write_best_effort(
+        &self,
+        fence: &PermissionWriteFence,
+        room_id: &RoomId,
+        user_id: &UserId,
+        version: i64,
+        operation: &'static str,
+    ) {
+        if let Err(error) = self
+            .permission_service
+            .commit_permission_write(fence, version)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                user_id = %user_id,
+                version,
+                operation,
+                "Failed to finalize permission fence after committed member write"
+            );
+        }
+    }
+
+    async fn abort_permission_write(&self, fence: &PermissionWriteFence) {
+        self.permission_service.abort_permission_write(fence).await;
+    }
+
+    async fn apply_permission_write<F, Fut>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        db_version: i64,
+        update: F,
+    ) -> Result<RoomMember>
+    where
+        F: FnOnce(i64) -> Fut,
+        Fut: Future<Output = Result<RoomMember>>,
+    {
+        let fence = self
+            .permission_service
+            .begin_permission_write(room_id, user_id, db_version)
+            .await?;
+        match update(fence.version()).await {
+            Ok(updated) => {
+                self.finalize_committed_permission_write_best_effort(
+                    &fence,
+                    room_id,
+                    user_id,
+                    updated.version,
+                    "apply_permission_write",
+                )
+                .await;
+                Ok(updated)
+            }
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                Err(error)
+            }
+        }
+    }
 
     /// Set member Allow/Deny permissions
     ///
@@ -333,35 +435,66 @@ impl MemberService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
-
-                if Self::uses_admin_overrides(member.role) {
-                    self.member_repo
-                        .update_admin_permissions(
-                            &room_id,
-                            &target_user_id,
-                            added_permissions,
-                            removed_permissions,
-                            member.version,
-                        )
-                        .await
-                } else {
-                    self.member_repo
-                        .update_permissions(
-                            &room_id,
-                            &target_user_id,
-                            added_permissions,
-                            removed_permissions,
-                            member.version,
-                        )
-                        .await
-                }
+                self.apply_permission_write(
+                    &room_id,
+                    &target_user_id,
+                    member.version,
+                    |reserved_version| async move {
+                        if Self::uses_admin_overrides(member.role) {
+                            if reserved_version > 0 {
+                                self.member_repo
+                                    .update_admin_permissions_with_exact_version(
+                                        &room_id,
+                                        &target_user_id,
+                                        added_permissions,
+                                        removed_permissions,
+                                        member.version,
+                                        reserved_version,
+                                    )
+                                    .await
+                            } else {
+                                self.member_repo
+                                    .update_admin_permissions(
+                                        &room_id,
+                                        &target_user_id,
+                                        added_permissions,
+                                        removed_permissions,
+                                        member.version,
+                                    )
+                                    .await
+                            }
+                        } else if reserved_version > 0 {
+                            self.member_repo
+                                .update_permissions_with_exact_version(
+                                    &room_id,
+                                    &target_user_id,
+                                    added_permissions,
+                                    removed_permissions,
+                                    member.version,
+                                    reserved_version,
+                                )
+                                .await
+                        } else {
+                            self.member_repo
+                                .update_permissions(
+                                    &room_id,
+                                    &target_user_id,
+                                    added_permissions,
+                                    removed_permissions,
+                                    member.version,
+                                )
+                                .await
+                        }
+                    },
+                )
+                .await
             },
         )
         .await?;
 
         // Invalidate permission cache for target user (local)
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         // Audit log
@@ -469,15 +602,40 @@ impl MemberService {
                         .ok_or_else(|| {
                             Error::NotFound("User is not a member of this room".to_string())
                         })?;
-                    self.member_repo
-                        .update_role(&room_id, &target_user_id, new_role, member.version)
-                        .await
+                    self.apply_permission_write(
+                        &room_id,
+                        &target_user_id,
+                        member.version,
+                        |reserved_version| async move {
+                            if reserved_version > 0 {
+                                self.member_repo
+                                    .update_role_with_exact_version(
+                                        &room_id,
+                                        &target_user_id,
+                                        new_role,
+                                        member.version,
+                                        reserved_version,
+                                    )
+                                    .await
+                            } else {
+                                self.member_repo
+                                    .update_role(
+                                        &room_id,
+                                        &target_user_id,
+                                        new_role,
+                                        member.version,
+                                    )
+                                    .await
+                            }
+                        },
+                    )
+                    .await
                 },
             )
             .await?;
 
             self.permission_service
-                .invalidate_cache(&room_id, &target_user_id)
+                .invalidate_committed_member_write_cache(&room_id, &target_user_id)
                 .await;
 
             if let Some(ref invalidation) = self.cache_invalidation {
@@ -528,34 +686,65 @@ impl MemberService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
-
-                if Self::uses_admin_overrides(member.role) {
-                    self.member_repo
-                        .update_admin_permissions(
-                            &room_id,
-                            &target_user_id,
-                            admin_added_permissions,
-                            admin_removed_permissions,
-                            member.version,
-                        )
-                        .await
-                } else {
-                    self.member_repo
-                        .update_permissions(
-                            &room_id,
-                            &target_user_id,
-                            added_permissions,
-                            removed_permissions,
-                            member.version,
-                        )
-                        .await
-                }
+                self.apply_permission_write(
+                    &room_id,
+                    &target_user_id,
+                    member.version,
+                    |reserved_version| async move {
+                        if Self::uses_admin_overrides(member.role) {
+                            if reserved_version > 0 {
+                                self.member_repo
+                                    .update_admin_permissions_with_exact_version(
+                                        &room_id,
+                                        &target_user_id,
+                                        admin_added_permissions,
+                                        admin_removed_permissions,
+                                        member.version,
+                                        reserved_version,
+                                    )
+                                    .await
+                            } else {
+                                self.member_repo
+                                    .update_admin_permissions(
+                                        &room_id,
+                                        &target_user_id,
+                                        admin_added_permissions,
+                                        admin_removed_permissions,
+                                        member.version,
+                                    )
+                                    .await
+                            }
+                        } else if reserved_version > 0 {
+                            self.member_repo
+                                .update_permissions_with_exact_version(
+                                    &room_id,
+                                    &target_user_id,
+                                    added_permissions,
+                                    removed_permissions,
+                                    member.version,
+                                    reserved_version,
+                                )
+                                .await
+                        } else {
+                            self.member_repo
+                                .update_permissions(
+                                    &room_id,
+                                    &target_user_id,
+                                    added_permissions,
+                                    removed_permissions,
+                                    member.version,
+                                )
+                                .await
+                        }
+                    },
+                )
+                .await
             },
         )
         .await?;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         self.audit_log(
@@ -601,34 +790,74 @@ impl MemberService {
             )
             .await?;
 
-        let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
-        let target_member = target_member
-            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
-
-        // Atomic grant in SQL against the override layer used by the target role.
-        let updated_member = if Self::uses_admin_overrides(target_member.role) {
-            self.member_repo
-                .grant_admin_permission_atomic_for_role(
+        let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::PERMISSION_UPDATE_MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Permission grant failed after maximum retry attempts",
+            || async {
+                let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
+                let target_member = target_member.ok_or_else(|| {
+                    Error::NotFound("User is not a member of this room".to_string())
+                })?;
+                // Atomic grant in SQL against the override layer used by the target role.
+                self.apply_permission_write(
                     &room_id,
                     &target_user_id,
-                    permission,
-                    target_member.role,
+                    target_member.version,
+                    |reserved_version| async move {
+                        if Self::uses_admin_overrides(target_member.role) {
+                            if reserved_version > 0 {
+                                self.member_repo
+                                    .grant_admin_permission_atomic_for_role_with_exact_version(
+                                        &room_id,
+                                        &target_user_id,
+                                        permission,
+                                        target_member.role,
+                                        target_member.version,
+                                        reserved_version,
+                                    )
+                                    .await
+                            } else {
+                                self.member_repo
+                                    .grant_admin_permission_atomic_for_role(
+                                        &room_id,
+                                        &target_user_id,
+                                        permission,
+                                        target_member.role,
+                                    )
+                                    .await
+                            }
+                        } else if reserved_version > 0 {
+                            self.member_repo
+                                .grant_permission_atomic_for_role_with_exact_version(
+                                    &room_id,
+                                    &target_user_id,
+                                    permission,
+                                    target_member.role,
+                                    target_member.version,
+                                    reserved_version,
+                                )
+                                .await
+                        } else {
+                            self.member_repo
+                                .grant_permission_atomic_for_role(
+                                    &room_id,
+                                    &target_user_id,
+                                    permission,
+                                    target_member.role,
+                                )
+                                .await
+                        }
+                    },
                 )
-                .await?
-        } else {
-            self.member_repo
-                .grant_permission_atomic_for_role(
-                    &room_id,
-                    &target_user_id,
-                    permission,
-                    target_member.role,
-                )
-                .await?
-        };
+                .await
+            },
+        )
+        .await?;
 
         // Invalidate permission cache for target user
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         // Audit log
@@ -670,34 +899,74 @@ impl MemberService {
             )
             .await?;
 
-        let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
-        let target_member = target_member
-            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
-
-        // Atomic revoke in SQL against the override layer used by the target role.
-        let updated_member = if Self::uses_admin_overrides(target_member.role) {
-            self.member_repo
-                .revoke_admin_permission_atomic_for_role(
+        let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::PERMISSION_UPDATE_MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Permission revoke failed after maximum retry attempts",
+            || async {
+                let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
+                let target_member = target_member.ok_or_else(|| {
+                    Error::NotFound("User is not a member of this room".to_string())
+                })?;
+                // Atomic revoke in SQL against the override layer used by the target role.
+                self.apply_permission_write(
                     &room_id,
                     &target_user_id,
-                    permission,
-                    target_member.role,
+                    target_member.version,
+                    |reserved_version| async move {
+                        if Self::uses_admin_overrides(target_member.role) {
+                            if reserved_version > 0 {
+                                self.member_repo
+                                    .revoke_admin_permission_atomic_for_role_with_exact_version(
+                                        &room_id,
+                                        &target_user_id,
+                                        permission,
+                                        target_member.role,
+                                        target_member.version,
+                                        reserved_version,
+                                    )
+                                    .await
+                            } else {
+                                self.member_repo
+                                    .revoke_admin_permission_atomic_for_role(
+                                        &room_id,
+                                        &target_user_id,
+                                        permission,
+                                        target_member.role,
+                                    )
+                                    .await
+                            }
+                        } else if reserved_version > 0 {
+                            self.member_repo
+                                .revoke_permission_atomic_for_role_with_exact_version(
+                                    &room_id,
+                                    &target_user_id,
+                                    permission,
+                                    target_member.role,
+                                    target_member.version,
+                                    reserved_version,
+                                )
+                                .await
+                        } else {
+                            self.member_repo
+                                .revoke_permission_atomic_for_role(
+                                    &room_id,
+                                    &target_user_id,
+                                    permission,
+                                    target_member.role,
+                                )
+                                .await
+                        }
+                    },
                 )
-                .await?
-        } else {
-            self.member_repo
-                .revoke_permission_atomic_for_role(
-                    &room_id,
-                    &target_user_id,
-                    permission,
-                    target_member.role,
-                )
-                .await?
-        };
+                .await
+            },
+        )
+        .await?;
 
         // Invalidate permission cache for target user
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         // Audit log
@@ -748,16 +1017,35 @@ impl MemberService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
-                self.member_repo
-                    .reset_permissions(&room_id, &target_user_id, member.version)
-                    .await
+                self.apply_permission_write(
+                    &room_id,
+                    &target_user_id,
+                    member.version,
+                    |reserved_version| async move {
+                        if reserved_version > 0 {
+                            self.member_repo
+                                .reset_permissions_with_exact_version(
+                                    &room_id,
+                                    &target_user_id,
+                                    member.version,
+                                    reserved_version,
+                                )
+                                .await
+                        } else {
+                            self.member_repo
+                                .reset_permissions(&room_id, &target_user_id, member.version)
+                                .await
+                        }
+                    },
+                )
+                .await
             },
         )
         .await?;
 
         // Invalidate permission cache for target user
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         Ok(updated_member)
@@ -915,8 +1203,28 @@ impl MemberService {
                 let old_role = member.role;
 
                 let updated = self
-                    .member_repo
-                    .update_role(&room_id, &target_user_id, role, member.version)
+                    .apply_permission_write(
+                        &room_id,
+                        &target_user_id,
+                        member.version,
+                        |reserved_version| async move {
+                            if reserved_version > 0 {
+                                self.member_repo
+                                    .update_role_with_exact_version(
+                                        &room_id,
+                                        &target_user_id,
+                                        role,
+                                        member.version,
+                                        reserved_version,
+                                    )
+                                    .await
+                            } else {
+                                self.member_repo
+                                    .update_role(&room_id, &target_user_id, role, member.version)
+                                    .await
+                            }
+                        },
+                    )
                     .await?;
                 Ok((updated, old_role))
             },
@@ -925,7 +1233,7 @@ impl MemberService {
 
         // Invalidate permission cache (local)
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         // Invalidate room settings cache to ensure fresh role default permissions

@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_playback_state\n\t                     SET playing_media_id = NULL,\n\t                         playing_playlist_id = NULL,\n\t                         target = ''::bytea,\n\t                         \"position\" = 0,\n\t                         speed = 1.0,\n\t                         is_playing = false,\n\t                         version = $2,\n\t                         updated_at = NOW()\n\t                     WHERE room_id = $1 AND version = $3\n\t                     RETURNING room_id as \"room_id: RoomId\",\n\t                               playing_media_id as \"playing_media_id: MediaId\",\n\t                               playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n\t                               target,\n\t                               \"position\",\n\t                               speed,\n\t                               is_playing,\n\t                               updated_at,\n\t                               version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_media_id: MediaId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "playing_playlist_id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "target",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "position",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 5,
+        "name": "speed",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_playing",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "14411611981e0c18e69a9e19e758224d38b17f517d6deb82a19335deeb4543cd"
+}

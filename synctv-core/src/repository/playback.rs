@@ -17,6 +17,11 @@ impl RoomPlaybackStateRepository {
         Self { pool }
     }
 
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Create or get playback state for room
     ///
     /// Uses `ON CONFLICT DO NOTHING` followed by a SELECT to avoid triggering
@@ -169,6 +174,70 @@ impl RoomPlaybackStateRepository {
         }
     }
 
+    /// Update playback state with optimistic locking and an externally allocated version.
+    ///
+    /// Strong-cache write paths reserve the next version from Redis first, then
+    /// store that exact version in Postgres so Redis cannot lag behind the DB.
+    pub async fn update_with_exact_version(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+    ) -> Result<RoomPlaybackState> {
+        self.update_with_exact_version_executor(state, new_version, &self.pool)
+            .await
+    }
+
+    pub async fn update_with_exact_version_executor<'e, E>(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+        executor: E,
+    ) -> Result<RoomPlaybackState>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if new_version <= state.version {
+            return Err(Error::InvalidInput(format!(
+                "new playback version {new_version} must be greater than expected version {}",
+                state.version
+            )));
+        }
+
+        let result = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"UPDATE room_playback_state
+             SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
+                 "position" = $5, speed = $6, is_playing = $7,
+                 updated_at = NOW(), version = $9
+             WHERE room_id = $1 AND version = $8
+             RETURNING room_id as "room_id: RoomId",
+                       playing_media_id as "playing_media_id: MediaId",
+                       playing_playlist_id as "playing_playlist_id: PlaylistId",
+                       target,
+                       "position",
+                       speed,
+                       is_playing,
+                       updated_at,
+                       version"#,
+            state.room_id as RoomId,
+            state.playing_media_id as Option<MediaId>,
+            state.playing_playlist_id as Option<PlaylistId>,
+            state.target.clone(),
+            state.position,
+            state.speed,
+            state.is_playing,
+            state.version,
+            new_version,
+        )
+        .fetch_optional(executor)
+        .await?;
+
+        match result {
+            Some(s) => Ok(s),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
     /// Reset playback state for every room currently playing media or playlists
     /// created by the specified user.
     pub async fn reset_playback_for_creator(
@@ -209,6 +278,54 @@ impl RoomPlaybackStateRepository {
             creator_id as &UserId,
         )
         .fetch_all(&self.pool)
+        .await?;
+
+        Ok(states)
+    }
+
+    /// List playback states impacted by media/playlists owned by a creator.
+    pub async fn find_playback_for_creator(
+        &self,
+        creator_id: &UserId,
+    ) -> Result<Vec<RoomPlaybackState>> {
+        self.find_playback_for_creator_with_executor(creator_id, &self.pool)
+            .await
+    }
+
+    pub async fn find_playback_for_creator_with_executor<'e, E>(
+        &self,
+        creator_id: &UserId,
+        executor: E,
+    ) -> Result<Vec<RoomPlaybackState>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let states = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"
+            WITH impacted_rooms AS (
+                SELECT DISTINCT rps.room_id
+                FROM room_playback_state rps
+                LEFT JOIN media m ON m.id = rps.playing_media_id
+                LEFT JOIN playlists p ON p.id = rps.playing_playlist_id
+                WHERE m.creator_id = $1 OR p.creator_id = $1
+            )
+            SELECT rps.room_id as "room_id: RoomId",
+                   rps.playing_media_id as "playing_media_id: MediaId",
+                   rps.playing_playlist_id as "playing_playlist_id: PlaylistId",
+                   rps.target,
+                   rps."position",
+                   rps.speed,
+                   rps.is_playing,
+                   rps.updated_at,
+                   rps.version
+            FROM room_playback_state rps
+            JOIN impacted_rooms impacted ON impacted.room_id = rps.room_id
+            FOR UPDATE OF rps
+            "#,
+            creator_id as &UserId,
+        )
+        .fetch_all(executor)
         .await?;
 
         Ok(states)

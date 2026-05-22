@@ -28,7 +28,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    cache::{CacheInvalidationRuntime, CloneableError, InvalidationMessage, SingleFlight},
+    cache::{
+        CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
+        InvalidationMessage, NoopCacheL2, RoomSettingsCache, RoomSettingsSnapshot, SingleFlight,
+        VersionFenceReservation, VersionFenceStore,
+    },
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
     service::notification::NotificationService,
@@ -53,21 +57,38 @@ impl RoomSettingsInvalidationRuntime {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoomSettingsSnapshot {
-    pub settings: RoomSettings,
-    pub version: i64,
-}
-
 pub struct RoomSettingsService {
     repo: RoomSettingsRepository,
-    cache: Arc<moka::future::Cache<RoomId, RoomSettingsSnapshot>>,
+    cache: RoomSettingsCache,
     invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+    version_fence: Arc<dyn VersionFenceStore>,
+    consistency: ConsistencyCoordinator,
     invalidation_runtime: Arc<RoomSettingsInvalidationRuntime>,
     notification_service: Arc<NotificationService>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
     /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
     single_flight: SingleFlight<String, RoomSettingsSnapshot, CloneableError>,
+}
+
+#[derive(Clone)]
+pub struct RoomSettingsRuntime {
+    pub cache_ttl_secs: Option<u64>,
+    pub cache_max_capacity: Option<u64>,
+    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
+    pub l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    pub cache_key_prefix: String,
+}
+
+impl Default for RoomSettingsRuntime {
+    fn default() -> Self {
+        Self {
+            cache_ttl_secs: None,
+            cache_max_capacity: None,
+            version_fence: None,
+            l2_cache: None,
+            cache_key_prefix: String::from("room_settings:"),
+        }
+    }
 }
 
 impl std::fmt::Debug for RoomSettingsService {
@@ -84,6 +105,8 @@ impl Clone for RoomSettingsService {
             repo: self.repo.clone(),
             cache: self.cache.clone(),
             invalidation_service: self.invalidation_service.clone(),
+            version_fence: self.version_fence.clone(),
+            consistency: self.consistency.clone(),
             invalidation_runtime: self.invalidation_runtime.clone(),
             notification_service: self.notification_service.clone(),
             single_flight: self.single_flight.clone(), // Arc-backed, shares state
@@ -110,19 +133,49 @@ impl RoomSettingsService {
         cache_ttl_secs: Option<u64>,
         cache_max_capacity: Option<u64>,
     ) -> Self {
-        let ttl = cache_ttl_secs.unwrap_or(Self::CACHE_TTL_SECS);
-        let capacity = cache_max_capacity.unwrap_or(Self::CACHE_MAX_CAPACITY);
+        Self::new_with_version_fence(
+            repo,
+            invalidation_service,
+            notification_service,
+            RoomSettingsRuntime {
+                cache_ttl_secs,
+                cache_max_capacity,
+                ..RoomSettingsRuntime::default()
+            },
+        )
+    }
 
-        let cache = Arc::new(
-            moka::future::CacheBuilder::new(capacity)
-                .time_to_live(Duration::from_secs(ttl))
-                .build(),
-        );
+    #[must_use]
+    pub fn new_with_version_fence(
+        repo: RoomSettingsRepository,
+        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+        notification_service: Arc<NotificationService>,
+        runtime: RoomSettingsRuntime,
+    ) -> Self {
+        let ttl = runtime.cache_ttl_secs.unwrap_or(Self::CACHE_TTL_SECS);
+        let capacity = runtime
+            .cache_max_capacity
+            .unwrap_or(Self::CACHE_MAX_CAPACITY);
+
+        let cache = RoomSettingsCache::new(
+            runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            capacity,
+            ttl,
+            ttl,
+            runtime.cache_key_prefix,
+        )
+        .expect("failed to create room settings cache");
+
+        let version_fence = runtime
+            .version_fence
+            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
 
         Self {
             repo,
             cache,
             invalidation_service,
+            version_fence: version_fence.clone(),
+            consistency: ConsistencyCoordinator::new(version_fence),
             invalidation_runtime: Arc::new(RoomSettingsInvalidationRuntime::new()),
             notification_service,
             single_flight: SingleFlight::new(),
@@ -190,14 +243,20 @@ impl RoomSettingsService {
                                         tracing::warn!(room_id = %room_id, "Invalid room settings invalidation room id");
                                         continue;
                                     };
-                                    cache_clone.invalidate(&room_id).await;
+                                    if let Err(error) = cache_clone.invalidate(&room_id).await {
+                                        tracing::warn!(
+                                            room_id = %room_id,
+                                            error = %error,
+                                            "Failed to invalidate room settings cache"
+                                        );
+                                    }
                                     tracing::debug!(
                                         room_id = %room_id,
                                         "Room settings cache invalidated (cross-replica)"
                                     );
                                 }
                                 Ok(InvalidationMessage::All) => {
-                                    cache_clone.invalidate_all();
+                                    cache_clone.clear().await;
                                     tracing::debug!("All room settings cache cleared (cross-replica)");
                                 }
                                 Ok(_) => {}
@@ -213,7 +272,7 @@ impl RoomSettingsService {
                                             lagged_messages = n,
                                             "Room settings invalidation listener lagged, flushing all cache (rate-limited)"
                                         );
-                                        cache_clone.invalidate_all();
+                                        cache_clone.clear().await;
                                         crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
                                             .with_label_values(&["room_settings"])
                                             .inc();
@@ -278,20 +337,101 @@ impl RoomSettingsService {
         }
     }
 
-    /// Get room settings with caching
+    /// Get room settings with strong-read semantics.
     ///
-    /// # Performance
-    /// - L1 cache hit: < 1ms
-    /// - Cache miss + DB query: ~10ms
-    /// - `SingleFlight`: Prevents thundering herd on cache miss
+    /// Settings affect room access, passwords, join policy, and role defaults,
+    /// so default service reads must not trust an L1 entry that might be
+    /// waiting for async invalidation. Read the database and refresh L1.
     pub async fn get(&self, room_id: &RoomId) -> Result<RoomSettings> {
         Ok(self.get_with_version(room_id).await?.settings)
     }
 
-    /// Get room settings with the current optimistic-lock version.
+    /// Get room settings with strong-read semantics.
+    pub async fn get_strong_with_version(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
+        self.get_with_version(room_id).await
+    }
+
+    /// Get room settings with the current optimistic-lock version using
+    /// strong-read semantics.
+    ///
+    /// Strong reads consult the authoritative version fence before trusting
+    /// either L1 or L2. If the fence is unavailable or not authoritative, the
+    /// read falls back to the database and refreshes cache with the database
+    /// version.
     pub async fn get_with_version(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
+        self.get_with_version_by_fence(room_id).await
+    }
+
+    async fn get_with_version_by_fence(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
+        if !self.consistency.is_authoritative() {
+            ConsistencyCoordinator::record_db_fallback(
+                &CacheDomain::RoomSettings { room_id: *room_id },
+                "non_authoritative_fence",
+            );
+            return self.get_refresh_with_version(room_id).await;
+        }
+
+        let domain = CacheDomain::RoomSettings { room_id: *room_id };
+        let fence_version = match self.consistency.current_committed_version(&domain).await {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                ConsistencyCoordinator::record_db_fallback(&domain, "missing_fence");
+                return self.get_refresh_with_version(room_id).await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Room settings version fence unavailable; bypassing cache"
+                );
+                ConsistencyCoordinator::record_db_fallback(&domain, "fence_unavailable");
+                return self.get_refresh_with_version(room_id).await;
+            }
+        };
+
+        if let Some(snapshot) = self.cache.get_l1(room_id).await {
+            if snapshot.version >= fence_version {
+                crate::metrics::cache::CACHE_HITS
+                    .with_label_values(&["room_settings", "l1"])
+                    .inc();
+                return Ok(snapshot);
+            }
+        }
+
+        match self.cache.get_l2(room_id).await {
+            Ok(Some(snapshot)) if snapshot.version >= fence_version => {
+                crate::metrics::cache::CACHE_HITS
+                    .with_label_values(&["room_settings", "l2"])
+                    .inc();
+                Ok(snapshot)
+            }
+            Ok(_) => {
+                ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+                self.get_refresh_with_version(room_id).await
+            }
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Room settings L2 read failed; bypassing cache"
+                );
+                ConsistencyCoordinator::record_db_fallback(&domain, "l2_error");
+                self.get_refresh_with_version(room_id).await
+            }
+        }
+    }
+
+    /// Get room settings with cache-first eventual consistency.
+    ///
+    /// This is reserved for diagnostics and tests that intentionally need to
+    /// demonstrate stale L1 behavior. User-facing and authorization-adjacent
+    /// paths should call [`get_with_version`](Self::get_with_version).
+    pub async fn get_eventually_consistent_with_version(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<RoomSettingsSnapshot> {
         // Try cache first
-        if let Some(snapshot) = self.cache.get(room_id).await {
+        if let Some(snapshot) = self.cache.get(room_id).await? {
             return Ok(snapshot);
         }
 
@@ -306,7 +446,11 @@ impl RoomSettingsService {
             .single_flight
             .do_work(sf_key, async move {
                 // Double-check cache (another task may have populated it)
-                if let Some(snapshot) = cache.get(&room_id_clone).await {
+                if let Some(snapshot) = cache
+                    .get(&room_id_clone)
+                    .await
+                    .map_err(CloneableError::from)?
+                {
                     return Ok(snapshot);
                 }
 
@@ -318,7 +462,10 @@ impl RoomSettingsService {
                 let snapshot = RoomSettingsSnapshot { settings, version };
 
                 // Store in cache
-                cache.insert(room_id_clone, snapshot.clone()).await;
+                cache
+                    .set_if_version_at_least(&room_id_clone, snapshot.clone())
+                    .await
+                    .map_err(CloneableError::from)?;
 
                 Ok(snapshot)
             })
@@ -347,8 +494,28 @@ impl RoomSettingsService {
         let (settings, version) = self.repo.get_with_version(room_id).await?;
         let snapshot = RoomSettingsSnapshot { settings, version };
 
+        self.consistency
+            .repair_after_db_read(
+                &CacheDomain::RoomSettings { room_id: *room_id },
+                snapshot.version,
+            )
+            .await;
+        self.seed_version_fence_after_refresh(room_id, snapshot.version)
+            .await;
+
         // Store in cache
-        let () = self.cache.insert(*room_id, snapshot.clone()).await;
+        if let Err(error) = self
+            .cache
+            .set_if_version_at_least(room_id, snapshot.clone())
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                version = snapshot.version,
+                error = %error,
+                "Failed to refresh room settings cache"
+            );
+        }
 
         Ok(snapshot)
     }
@@ -381,20 +548,44 @@ impl RoomSettingsService {
                 // unchanged. For partial (merge) updates, use `update_field` instead.
                 let (_current, version) = self.repo.get_with_version(room_id).await?;
 
-                let new_version = self
-                    .repo
-                    .set_settings_with_version(room_id, settings, version)
-                    .await?;
+                let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                let reservation = self.begin_write(room_id, version).await?;
+                let new_version = if let Some(reservation) = &reservation {
+                    match self
+                        .repo
+                        .set_settings_with_exact_version(
+                            room_id,
+                            settings,
+                            version,
+                            reservation.version,
+                        )
+                        .await
+                    {
+                        Ok(new_version) => {
+                            self.finalize_committed_write_best_effort(
+                                &domain,
+                                Some(reservation),
+                                new_version,
+                            )
+                            .await;
+                            new_version
+                        }
+                        Err(error) => {
+                            self.abort_write(&domain, Some(reservation)).await;
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    self.repo
+                        .set_settings_with_version(room_id, settings, version)
+                        .await?
+                };
 
-                self.cache
-                    .insert(
-                        *room_id,
-                        RoomSettingsSnapshot {
-                            settings: settings.clone(),
-                            version: new_version,
-                        },
-                    )
-                    .await;
+                let snapshot = RoomSettingsSnapshot {
+                    settings: settings.clone(),
+                    version: new_version,
+                };
+                self.refresh_cache_after_commit(room_id, snapshot).await;
                 self.publish_and_notify(room_id, settings, new_version)
                     .await;
                 Ok(())
@@ -423,20 +614,44 @@ impl RoomSettingsService {
 
                     updater(&mut settings);
 
-                    let new_version = self
-                        .repo
-                        .set_settings_with_version(room_id, &settings, version)
-                        .await?;
+                    let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                    let reservation = self.begin_write(room_id, version).await?;
+                    let new_version = if let Some(reservation) = &reservation {
+                        match self
+                            .repo
+                            .set_settings_with_exact_version(
+                                room_id,
+                                &settings,
+                                version,
+                                reservation.version,
+                            )
+                            .await
+                        {
+                            Ok(new_version) => {
+                                self.finalize_committed_write_best_effort(
+                                    &domain,
+                                    Some(reservation),
+                                    new_version,
+                                )
+                                .await;
+                                new_version
+                            }
+                            Err(error) => {
+                                self.abort_write(&domain, Some(reservation)).await;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        self.repo
+                            .set_settings_with_version(room_id, &settings, version)
+                            .await?
+                    };
 
-                    self.cache
-                        .insert(
-                            *room_id,
-                            RoomSettingsSnapshot {
-                                settings: settings.clone(),
-                                version: new_version,
-                            },
-                        )
-                        .await;
+                    let snapshot = RoomSettingsSnapshot {
+                        settings: settings.clone(),
+                        version: new_version,
+                    };
+                    self.refresh_cache_after_commit(room_id, snapshot).await;
                     self.publish_and_notify(room_id, &settings, new_version)
                         .await;
                     Ok(settings)
@@ -455,19 +670,165 @@ impl RoomSettingsService {
 
     /// Delete all settings for a room
     pub async fn delete(&self, room_id: &RoomId) -> Result<()> {
-        self.repo.delete_all(room_id).await?;
+        let default_settings = RoomSettings::default();
 
-        // Invalidate local cache
-        self.invalidate_local(room_id).await;
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
+            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
+            "Settings delete failed after maximum retry attempts",
+            || {
+                let default_settings = &default_settings;
+                async move {
+                    let (_current, version) = self.repo.get_with_version(room_id).await?;
+                    let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                    let reservation = self.begin_write(room_id, version).await?;
 
-        // Notify other replicas via Redis Streams
-        if let Some(ref inv_service) = self.invalidation_service {
-            if let Err(e) = inv_service.invalidate_room_settings(room_id).await {
-                tracing::error!("Failed to publish room settings invalidation: {}", e);
-            }
+                    let mut tx = match self.repo.pool().begin().await {
+                        Ok(tx) => tx,
+                        Err(error) => {
+                            self.abort_write(&domain, reservation.as_ref()).await;
+                            return Err(error.into());
+                        }
+                    };
+                    let new_version = if let Some(reservation) = &reservation {
+                        match self
+                            .repo
+                            .set_settings_with_exact_version_with_executor(
+                                room_id,
+                                default_settings,
+                                version,
+                                reservation.version,
+                                &mut *tx,
+                            )
+                            .await
+                        {
+                            Ok(new_version) => new_version,
+                            Err(error) => {
+                                self.abort_write(&domain, Some(reservation)).await;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        self.repo
+                            .set_settings_with_version_with_executor(
+                                room_id,
+                                default_settings,
+                                version,
+                                &mut *tx,
+                            )
+                            .await?
+                    };
+                    if let Err(error) = self
+                        .repo
+                        .delete_auxiliary_with_executor(room_id, &mut *tx)
+                        .await
+                    {
+                        self.abort_write(&domain, reservation.as_ref()).await;
+                        return Err(error);
+                    }
+                    if let Err(error) = tx.commit().await {
+                        self.abort_write(&domain, reservation.as_ref()).await;
+                        return Err(error.into());
+                    }
+                    self.finalize_committed_write_best_effort(
+                        &domain,
+                        reservation.as_ref(),
+                        new_version,
+                    )
+                    .await;
+
+                    let snapshot = RoomSettingsSnapshot {
+                        settings: default_settings.clone(),
+                        version: new_version,
+                    };
+                    self.refresh_cache_after_commit(room_id, snapshot).await;
+                    self.publish_and_notify(room_id, default_settings, new_version)
+                        .await;
+                    Ok(())
+                }
+            },
+        )
+        .await
+    }
+
+    async fn begin_write(
+        &self,
+        room_id: &RoomId,
+        observed_version: i64,
+    ) -> Result<Option<VersionFenceReservation>> {
+        let domain = CacheDomain::RoomSettings { room_id: *room_id };
+        self.consistency
+            .begin_observed_write(&domain, observed_version)
+            .await
+    }
+
+    async fn commit_write(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+    ) -> Result<()> {
+        self.consistency
+            .commit_reserved_write(domain, reservation, version)
+            .await?;
+        Ok(())
+    }
+
+    async fn finalize_committed_write_best_effort(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+    ) {
+        if let Err(error) = self.commit_write(domain, reservation, version).await {
+            tracing::warn!(
+                domain = %domain,
+                version,
+                error = %error,
+                "Failed to finalize room settings version fence after committed DB write"
+            );
+        }
+    }
+
+    async fn abort_write(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+    ) {
+        self.consistency
+            .abort_reserved_write(domain, reservation)
+            .await;
+    }
+
+    async fn seed_version_fence_after_refresh(&self, room_id: &RoomId, version: i64) {
+        if !self.consistency.is_authoritative() {
+            return;
         }
 
-        Ok(())
+        let domain = CacheDomain::RoomSettings { room_id: *room_id };
+        if let Err(error) = self
+            .consistency
+            .set_version_at_least(&domain, version)
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                version,
+                error = %error,
+                "Failed to seed room settings version fence after DB refresh"
+            );
+        }
+    }
+
+    async fn refresh_cache_after_commit(&self, room_id: &RoomId, snapshot: RoomSettingsSnapshot) {
+        if let Err(error) = self.cache.set_if_version_at_least(room_id, snapshot).await {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %error,
+                "Failed to refresh room settings cache after committed write"
+            );
+            self.invalidate_local(room_id).await;
+        }
     }
 
     /// Publish invalidation to other replicas and notify connected clients.
@@ -483,7 +844,13 @@ impl RoomSettingsService {
 
     /// Invalidate local cache for a room
     pub async fn invalidate_local(&self, room_id: &RoomId) {
-        let () = self.cache.invalidate(room_id).await;
+        if let Err(error) = self.cache.invalidate(room_id).await {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %error,
+                "Failed to invalidate local room settings cache"
+            );
+        }
     }
 
     /// Notify connected clients about settings change
@@ -528,7 +895,13 @@ impl RoomSettingsService {
                     version: *version,
                 },
             );
-            self.cache.insert(*room_id, snapshot).await;
+            if let Err(error) = self.cache.set_if_version_at_least(room_id, snapshot).await {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Failed to preload room settings cache"
+                );
+            }
         }
 
         Ok(())
@@ -544,8 +917,8 @@ impl RoomSettingsService {
     }
 
     /// Clear all cache
-    pub fn clear_cache(&self) {
-        self.cache.invalidate_all();
+    pub async fn clear_cache(&self) {
+        self.cache.clear().await;
     }
 }
 
@@ -559,7 +932,7 @@ pub struct CacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CacheInvalidationService;
+    use crate::cache::{CacheInvalidationService, CacheL2Backend};
     use crate::cache::{KeyBuilder, UsernameCache};
     use crate::config::PasswordComplexityConfig;
     use crate::models::{SignupMethod, User, UserId, UserRole, UserStatus};
@@ -571,6 +944,540 @@ mod tests {
     use chrono::Utc;
     use sqlx::PgPool;
     use synctv_core_testing::create_test_pool;
+
+    struct FailingRoomSettingsL2;
+
+    #[async_trait::async_trait]
+    impl CacheL2Backend for FailingRoomSettingsL2 {
+        async fn get(&self, _key: &str) -> Result<Option<String>> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        async fn set(&self, _key: &str, _json: &str, _ttl_secs: u64) -> Result<()> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        async fn delete(&self, _key: &str) -> Result<()> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        async fn delete_with_retry(
+            &self,
+            _key: &str,
+            _max_retries: u32,
+            _cache_type: &str,
+        ) -> Result<()> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
+            Ok(vec![None; keys.len()])
+        }
+
+        async fn set_if_newer(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _new_ts_millis: i64,
+        ) -> Result<bool> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        async fn set_if_version_at_least(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _version: i64,
+        ) -> Result<bool> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        async fn delete_by_prefix(&self, _prefix: &str) -> Result<()> {
+            Err(Error::Internal(
+                "simulated room settings L2 failure".to_string(),
+            ))
+        }
+
+        fn is_active(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_strong_read_uses_l1_when_version_satisfies_fence() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_fence_l1_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Fence L1".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let (_redis_container, redis_conn) = synctv_core_testing::start_redis().await;
+        let fence = Arc::new(crate::cache::RedisVersionFenceStore::new(
+            crate::direct_runtime(redis_conn),
+            "test:fence-l1:",
+        ));
+        let service = RoomSettingsService::new_with_version_fence(
+            RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:l1:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+
+        let cached_settings = RoomSettings {
+            allow_auto_join: crate::models::room_settings::AllowAutoJoin(false),
+            ..RoomSettings::default()
+        };
+        service
+            .cache
+            .set(
+                &room.id,
+                RoomSettingsSnapshot {
+                    settings: cached_settings,
+                    version: 7,
+                },
+            )
+            .await
+            .expect("cache write should succeed");
+        fence
+            .set_version_at_least(&CacheDomain::RoomSettings { room_id: room.id }, 7)
+            .await
+            .expect("fence should be written");
+
+        let snapshot = service
+            .get_with_version(&room.id)
+            .await
+            .expect("strong read should use cache that satisfies fence");
+        assert_eq!(snapshot.version, 7);
+        assert!(!snapshot.settings.allow_auto_join.0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_strong_read_uses_l1_with_local_version_fence() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_local_fence_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Local Fence".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
+        let service = RoomSettingsService::new_with_version_fence(
+            RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:local:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+
+        let cached_settings = RoomSettings {
+            allow_auto_join: crate::models::room_settings::AllowAutoJoin(false),
+            ..RoomSettings::default()
+        };
+        service
+            .cache
+            .set(
+                &room.id,
+                RoomSettingsSnapshot {
+                    settings: cached_settings,
+                    version: 3,
+                },
+            )
+            .await
+            .expect("cache write should succeed");
+        fence
+            .set_version_at_least(&CacheDomain::RoomSettings { room_id: room.id }, 3)
+            .await
+            .expect("local fence should be written");
+
+        let snapshot = service
+            .get_with_version(&room.id)
+            .await
+            .expect("strong read should use local-fenced L1");
+        assert_eq!(snapshot.version, 3);
+        assert!(!snapshot.settings.allow_auto_join.0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_settings_write_uses_redis_allocated_version() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_allocator_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Allocator".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let (_redis_container, redis_conn) = synctv_core_testing::start_redis().await;
+        let fence = Arc::new(crate::cache::RedisVersionFenceStore::new(
+            crate::direct_runtime(redis_conn),
+            "test:fence-allocator:",
+        ));
+        let service = RoomSettingsService::new_with_version_fence(
+            RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:allocator:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+
+        let settings = RoomSettings {
+            allow_auto_join: crate::models::room_settings::AllowAutoJoin(false),
+            ..RoomSettings::default()
+        };
+        service
+            .set(&room.id, &settings)
+            .await
+            .expect("settings write should use Redis allocated version");
+
+        let domain = CacheDomain::RoomSettings { room_id: room.id };
+        let fence_version = fence
+            .current_version(&domain)
+            .await
+            .expect("fence should be readable")
+            .expect("fence should exist");
+        let snapshot = service
+            .get_refresh_with_version(&room.id)
+            .await
+            .expect("DB settings should be readable");
+        assert_eq!(snapshot.version, fence_version);
+
+        let updated = RoomSettings {
+            chat_enabled: crate::models::room_settings::ChatEnabled(false),
+            ..settings
+        };
+        service
+            .set(&room.id, &updated)
+            .await
+            .expect("second settings write should use next Redis version");
+        let next_fence = fence
+            .current_version(&domain)
+            .await
+            .expect("fence should be readable")
+            .expect("fence should exist");
+        let next_snapshot = service
+            .get_refresh_with_version(&room.id)
+            .await
+            .expect("DB settings should be readable");
+        assert!(next_fence > fence_version);
+        assert_eq!(next_snapshot.version, next_fence);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_settings_reserve_rejects_stale_snapshot_without_advancing_fence() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_stale_reserve_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Stale Reserve".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
+        let service = RoomSettingsService::new_with_version_fence(
+            RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:stale-reserve:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+        let domain = CacheDomain::RoomSettings { room_id: room.id };
+
+        let stale_observed_version = 1;
+        fence
+            .set_version_at_least(&domain, stale_observed_version + 1)
+            .await
+            .expect("concurrent writer should advance fence");
+
+        let result = service.begin_write(&room.id, stale_observed_version).await;
+        assert!(
+            matches!(result, Err(Error::OptimisticLockConflict)),
+            "stale settings snapshots must retry before reserving a fence version; got {result:?}"
+        );
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("fence should be readable"),
+            Some(stale_observed_version + 1),
+            "failed reservations must not burn additional fence versions"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_settings_write_does_not_retry_committed_update_after_l2_failure() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_l2_failure_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings L2 Failure".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let service = RoomSettingsService::new_with_version_fence(
+            RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                l2_cache: Some(Arc::new(FailingRoomSettingsL2)),
+                cache_key_prefix: "test:room_settings:l2-failure:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+
+        let settings = RoomSettings {
+            chat_enabled: crate::models::room_settings::ChatEnabled(false),
+            ..RoomSettings::default()
+        };
+        service
+            .set(&room.id, &settings)
+            .await
+            .expect("committed settings write must not fail because cache refresh failed");
+
+        let snapshot = service
+            .get_refresh_with_version(&room.id)
+            .await
+            .expect("committed settings should remain readable");
+        assert_eq!(snapshot.version, 2);
+        assert!(!snapshot.settings.chat_enabled.0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_db_refresh_seeds_missing_local_version_fence() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_seed_fence_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Seed Fence".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let settings = RoomSettings {
+            allow_auto_join: crate::models::room_settings::AllowAutoJoin(false),
+            ..RoomSettings::default()
+        };
+        let repo = RoomSettingsRepository::new(pool.clone());
+        let (_current_settings, current_version) = repo
+            .get_with_version(&room.id)
+            .await
+            .expect("current settings should be readable");
+        let target_version = current_version + 3;
+        let db_version = repo
+            .set_settings_with_exact_version(&room.id, &settings, current_version, target_version)
+            .await
+            .expect("settings row should be written");
+
+        let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
+        let service = RoomSettingsService::new_with_version_fence(
+            repo,
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:seed-fence:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+        let domain = CacheDomain::RoomSettings { room_id: room.id };
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("local fence should be readable"),
+            None
+        );
+
+        let snapshot = service
+            .get_with_version(&room.id)
+            .await
+            .expect("strong read should fall back to DB");
+
+        assert_eq!(snapshot.version, db_version);
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("local fence should be readable"),
+            Some(db_version)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete_writes_versioned_default_settings() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let owner = user_repo
+            .create(&make_user("room_settings_delete_default_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Delete Default".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
+        let repo = RoomSettingsRepository::new(pool.clone());
+        let service = RoomSettingsService::new_with_version_fence(
+            repo.clone(),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:delete-default:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+
+        let changed = RoomSettings {
+            require_password: crate::models::room_settings::RequirePassword(true),
+            ..RoomSettings::default()
+        };
+        service
+            .set(&room.id, &changed)
+            .await
+            .expect("custom settings should be written");
+        repo.set(&room.id, "password", "stale-password-hash")
+            .await
+            .expect("password row should be written");
+        let before_delete = service
+            .get_refresh_with_version(&room.id)
+            .await
+            .expect("settings should be readable before delete");
+
+        service
+            .delete(&room.id)
+            .await
+            .expect("delete should write versioned default settings");
+
+        let after_delete = repo
+            .get_with_version(&room.id)
+            .await
+            .expect("default settings row should remain readable");
+        assert!(!after_delete.0.require_password.0);
+        assert!(
+            after_delete.1 > before_delete.version,
+            "delete must keep a monotonic DB version"
+        );
+        assert_eq!(
+            repo.get_password_hash(&room.id)
+                .await
+                .expect("password hash lookup should succeed"),
+            None,
+            "delete must remove auxiliary password settings rows"
+        );
+
+        let domain = CacheDomain::RoomSettings { room_id: room.id };
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("local fence should be readable"),
+            Some(after_delete.1)
+        );
+    }
 
     fn make_room_settings_service_for_lifecycle_tests(
     ) -> (RoomSettingsService, Arc<CacheInvalidationService>, RoomId) {
@@ -589,6 +1496,24 @@ mod tests {
             None,
         );
         (service, invalidation_service, room_id)
+    }
+
+    #[tokio::test]
+    async fn standalone_room_settings_service_uses_non_authoritative_fence_by_default() {
+        let pool = PgPool::connect_lazy("postgres://localhost/test")
+            .expect("lazy postgres pool for unit tests should build");
+        let service = RoomSettingsService::new(
+            RoomSettingsRepository::new(pool),
+            None,
+            Arc::new(NotificationService::default()),
+            None,
+            None,
+        );
+
+        assert!(
+            !service.consistency.is_authoritative(),
+            "standalone room settings constructors must not create private authoritative fences"
+        );
     }
 
     #[tokio::test]
@@ -672,14 +1597,15 @@ mod tests {
 
         service
             .cache
-            .insert(
-                room_id,
+            .set(
+                &room_id,
                 RoomSettingsSnapshot {
                     settings: RoomSettings::default(),
                     version: 0,
                 },
             )
-            .await;
+            .await
+            .expect("cache fixture write should succeed");
 
         service.shutdown().await;
 
@@ -692,7 +1618,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(
-            service.cache.get(&room_id).await.is_some(),
+            service.cache.get(&room_id).await.unwrap().is_some(),
             "room settings listener should have stopped once invalidation service shutdown begins"
         );
     }
@@ -710,14 +1636,15 @@ mod tests {
 
         service
             .cache
-            .insert(
-                room_id,
+            .set(
+                &room_id,
                 RoomSettingsSnapshot {
                     settings: RoomSettings::default(),
                     version: 0,
                 },
             )
-            .await;
+            .await
+            .expect("cache fixture write should succeed");
 
         service
             .start()
@@ -733,7 +1660,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(
-            service.cache.get(&room_id).await.is_none(),
+            service.cache.get(&room_id).await.unwrap().is_none(),
             "restarted room settings listener should invalidate cache entries again"
         );
 
@@ -785,7 +1712,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_get_with_version_returns_cached_snapshot_version() {
+    async fn test_get_with_version_returns_current_snapshot_version() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
         let user_service = make_user_service(&pool);
@@ -823,22 +1750,123 @@ mod tests {
             .expect("room settings should be persisted");
 
         let cached = service
-            .get(&room.id)
+            .get_eventually_consistent_with_version(&room.id)
             .await
             .expect("cached room settings should be readable");
         assert!(
-            !cached.chat_enabled.0,
+            !cached.settings.chat_enabled.0,
             "sanity check: cache should contain the updated settings value"
         );
 
         let snapshot = service
             .get_with_version(&room.id)
             .await
-            .expect("cached room settings snapshot should include version");
+            .expect("strong room settings snapshot should include version");
         assert_eq!(snapshot.version, 2);
         assert!(
             !snapshot.settings.chat_enabled.0,
-            "snapshot should reuse the cached settings value"
+            "snapshot should include the updated settings value"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_local_fence_rejects_stale_l1_after_service_settings_change() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let user_service = make_user_service(&pool);
+        let room_service = crate::service::RoomService::new(pool.clone(), user_service);
+        let owner = user_repo
+            .create(&make_user("room_settings_strong_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Strong".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
+        let repo = RoomSettingsRepository::new(pool.clone());
+        let service = RoomSettingsService::new_with_version_fence(
+            repo.clone(),
+            None,
+            Arc::new(NotificationService::default()),
+            RoomSettingsRuntime {
+                version_fence: Some(fence.clone()),
+                cache_key_prefix: "test:room_settings:stale-l1:".to_string(),
+                ..RoomSettingsRuntime::default()
+            },
+        );
+
+        let original = RoomSettings {
+            allow_auto_join: crate::models::room_settings::AllowAutoJoin(true),
+            ..RoomSettings::default()
+        };
+        service
+            .set(&room.id, &original)
+            .await
+            .expect("initial settings should be persisted");
+        let cached = service
+            .get_eventually_consistent_with_version(&room.id)
+            .await
+            .expect("cache should be populated");
+        assert!(cached.settings.allow_auto_join.0);
+
+        let changed = RoomSettings {
+            allow_auto_join: crate::models::room_settings::AllowAutoJoin(false),
+            ..RoomSettings::default()
+        };
+        let (_current, cached_version) = repo
+            .get_with_version(&room.id)
+            .await
+            .expect("settings version should be readable");
+        let newer_version = cached_version + 1;
+        repo.set_settings_with_exact_version(&room.id, &changed, cached_version, newer_version)
+            .await
+            .expect("DB settings update should succeed");
+        fence
+            .set_version_at_least(
+                &CacheDomain::RoomSettings { room_id: room.id },
+                newer_version,
+            )
+            .await
+            .expect("local fence should be advanced");
+
+        let stale_snapshot = service
+            .get_eventually_consistent_with_version(&room.id)
+            .await
+            .expect("eventual settings read should still expose stale cache fixture");
+        assert!(
+            stale_snapshot.settings.allow_auto_join.0,
+            "cache-first settings snapshot should demonstrate stale L1 is present"
+        );
+
+        let strong_settings = service
+            .get(&room.id)
+            .await
+            .expect("strong settings read should succeed");
+        assert!(
+            !strong_settings.allow_auto_join.0,
+            "default settings get must bypass stale L1 and read DB"
+        );
+
+        let strong_snapshot = service
+            .get_with_version(&room.id)
+            .await
+            .expect("strong versioned settings read should succeed");
+        assert!(
+            !strong_snapshot.settings.allow_auto_join.0,
+            "versioned settings get must bypass stale L1 and read DB"
+        );
+        assert!(
+            strong_snapshot.version >= newer_version,
+            "versioned settings get must return a snapshot satisfying the local fence"
         );
     }
 }

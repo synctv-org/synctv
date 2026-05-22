@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use synctv_common::ExecutionControl;
 
 use crate::{
-    cache::{CacheInvalidationRuntime, KeyBuilder, UsernameCache},
+    cache::{
+        CacheDomain, CacheInvalidationRuntime, ConsistencyCoordinator, KeyBuilder, UsernameCache,
+        VersionFenceReservation, VersionFenceStore,
+    },
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{
@@ -26,6 +29,7 @@ use crate::{
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     service::session_store::RedisJsonSessionStore,
+    service::{permission::PermissionWriteFence, PermissionService},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -755,6 +759,7 @@ pub struct UserDeletedRoomImpact {
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_reset: bool,
     pub playback_state: Option<RoomPlaybackState>,
+    playback_fence: Option<PendingPlaybackResetFence>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -780,6 +785,55 @@ struct UserDeletionCleanupStats {
     deleted_playlists: usize,
     deleted_media: usize,
     playback_resets: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UserDeletionCleanup {
+    stats: UserDeletionCleanupStats,
+    removed_members: Vec<crate::repository::room_member::RemovedRoomMember>,
+    pending_permission_fences: Vec<PendingRemovedMemberFence>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingRemovedMemberFence {
+    room_id: RoomId,
+    user_id: UserId,
+    fence: PermissionWriteFence,
+}
+
+#[derive(Debug, Default)]
+struct PendingRemovedMemberFences {
+    inner: Vec<PendingRemovedMemberFence>,
+}
+
+impl PendingRemovedMemberFences {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, fence: PendingRemovedMemberFence) {
+        self.inner.push(fence);
+    }
+
+    fn into_vec(self) -> Vec<PendingRemovedMemberFence> {
+        self.inner
+    }
+
+    async fn abort_all(&self, permission_service: &PermissionService) {
+        for pending in &self.inner {
+            permission_service
+                .abort_permission_write(&pending.fence)
+                .await;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPlaybackResetFence {
+    room_id: RoomId,
+    reservation: Option<VersionFenceReservation>,
 }
 
 #[derive(Debug, Default)]
@@ -823,6 +877,8 @@ pub struct UserService {
     opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
     mfa_session_store: Arc<dyn MfaSessionStore>,
+    permission_service: Option<PermissionService>,
+    consistency: ConsistencyCoordinator,
 }
 
 #[derive(Default)]
@@ -837,6 +893,8 @@ pub struct UserServiceRuntimeOptions {
     pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
     pub mfa_session_store: Option<Arc<dyn MfaSessionStore>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    pub permission_service: Option<PermissionService>,
+    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
 }
 
 pub struct UserServiceDependencies {
@@ -1357,33 +1415,37 @@ impl UserService {
             Self::collect_deleted_media_ids_in_tx(tx, room_id, &playlist_ids, &media_ids).await?;
 
         let playback_row = sqlx::query!(
-            r#"SELECT playing_media_id AS "playing_media_id?: MediaId",
-                      playing_playlist_id AS "playing_playlist_id?: PlaylistId"
+            r#"SELECT playing_media_id as "playing_media_id: MediaId",
+                      playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      version
              FROM room_playback_state
              WHERE room_id = $1
              FOR UPDATE"#,
-            room_id.as_i64(),
+            room_id as &RoomId,
         )
         .fetch_optional(&mut **tx)
         .await?;
 
         let mut playback_state = None;
+        let mut playback_fence = None;
         if let Some(row) = playback_row {
-            let deletes_playing_media = row.playing_media_id.as_ref().is_some_and(|current_id| {
+            let playing_media_id = row.playing_media_id;
+            let playing_playlist_id = row.playing_playlist_id;
+            let playback_version = row.version;
+            let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
                 deleted_media_ids
                     .iter()
                     .any(|media_id| media_id == current_id)
             });
 
-            let deletes_playing_playlist =
-                if let Some(playing_playlist_id) = row.playing_playlist_id {
-                    if playlist_ids.is_empty() {
-                        false
-                    } else {
-                        let playlist_id_strs: Vec<i64> =
-                            playlist_ids.iter().map(PlaylistId::as_i64).collect();
-                        sqlx::query_scalar!(
-                            r#"WITH RECURSIVE target_playlists AS (
+            let deletes_playing_playlist = if let Some(playing_playlist_id) = playing_playlist_id {
+                if playlist_ids.is_empty() {
+                    false
+                } else {
+                    let playlist_id_strs: Vec<i64> =
+                        playlist_ids.iter().map(PlaylistId::as_i64).collect();
+                    sqlx::query_scalar!(
+                        r#"WITH RECURSIVE target_playlists AS (
                             SELECT id
                             FROM playlists
                             WHERE id = ANY($1)
@@ -1397,62 +1459,95 @@ impl UserService {
                             FROM target_playlists
                             WHERE id = $2
                         ) AS "exists!""#,
-                            &playlist_id_strs,
-                            playing_playlist_id.as_i64(),
-                        )
-                        .fetch_one(&mut **tx)
-                        .await?
-                    }
-                } else {
-                    false
-                };
-
-            if deletes_playing_media || deletes_playing_playlist {
-                playback_state = Some(
-                    sqlx::query_as!(
-                        RoomPlaybackState,
-                        r#"UPDATE room_playback_state
-                     SET playing_media_id = NULL,
-                         playing_playlist_id = NULL,
-                         target = ''::bytea,
-                         "position" = 0,
-                         speed = 1.0,
-                         is_playing = false,
-                         version = version + 1,
-                         updated_at = NOW()
-                     WHERE room_id = $1
-                     RETURNING room_id AS "room_id: RoomId",
-                               playing_media_id AS "playing_media_id: MediaId",
-                               playing_playlist_id AS "playing_playlist_id: PlaylistId",
-                               target,
-                               "position",
-                               speed,
-                               is_playing,
-                               updated_at,
-                               version"#,
-                        room_id.as_i64(),
+                        &playlist_id_strs,
+                        &playing_playlist_id as &PlaylistId,
                     )
                     .fetch_one(&mut **tx)
-                    .await?,
-                );
+                    .await?
+                }
+            } else {
+                false
+            };
+
+            if deletes_playing_media || deletes_playing_playlist {
+                let reservation = self
+                    .begin_playback_reset_write(room_id, playback_version)
+                    .await?;
+                let reserved_version = reservation
+                    .as_ref()
+                    .map_or(playback_version + 1, |reservation| reservation.version);
+                let reset_result: Result<RoomPlaybackState> = match sqlx::query_as!(
+                    RoomPlaybackState,
+                    r#"UPDATE room_playback_state
+	                     SET playing_media_id = NULL,
+	                         playing_playlist_id = NULL,
+	                         target = ''::bytea,
+	                         "position" = 0,
+	                         speed = 1.0,
+	                         is_playing = false,
+	                         version = $2,
+	                         updated_at = NOW()
+	                     WHERE room_id = $1 AND version = $3
+	                     RETURNING room_id as "room_id: RoomId",
+	                               playing_media_id as "playing_media_id: MediaId",
+	                               playing_playlist_id as "playing_playlist_id: PlaylistId",
+	                               target,
+	                               "position",
+	                               speed,
+	                               is_playing,
+	                               updated_at,
+	                               version"#,
+                    room_id as &RoomId,
+                    reserved_version,
+                    playback_version,
+                )
+                .fetch_optional(&mut **tx)
+                .await
+                {
+                    Ok(Some(state)) => Ok(state),
+                    Ok(None) => Err(Error::OptimisticLockConflict),
+                    Err(error) => Err(error.into()),
+                };
+                playback_state = Some(match reset_result {
+                    Ok(state) => state,
+                    Err(error) => {
+                        self.abort_playback_reset_fence(room_id, reservation.as_ref())
+                            .await;
+                        return Err(error);
+                    }
+                });
+                playback_fence = Some(PendingPlaybackResetFence {
+                    room_id: *room_id,
+                    reservation,
+                });
             }
         }
 
         if !media_ids.is_empty() {
             let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
-            sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
+            if let Err(error) = sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
                 .execute(&mut **tx)
-                .await?;
+                .await
+            {
+                self.abort_playback_reset_fence_option(playback_fence.as_ref())
+                    .await;
+                return Err(error.into());
+            }
         }
 
         if !playlist_ids.is_empty() {
             let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query!(
+            if let Err(error) = sqlx::query!(
                 "DELETE FROM playlists WHERE id = ANY($1)",
                 &playlist_id_strs
             )
             .execute(&mut **tx)
-            .await?;
+            .await
+            {
+                self.abort_playback_reset_fence_option(playback_fence.as_ref())
+                    .await;
+                return Err(error.into());
+            }
         }
 
         Ok(UserDeletedRoomImpact {
@@ -1460,6 +1555,7 @@ impl UserService {
             deleted_media_ids,
             playback_reset: playback_state.is_some(),
             playback_state,
+            playback_fence,
         })
     }
 
@@ -1469,7 +1565,7 @@ impl UserService {
         deleted_room_outbox_events: &HashMap<RoomId, NewRealtimeOutboxEvent>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<(
-        UserDeletionCleanupStats,
+        UserDeletionCleanup,
         Vec<RoomId>,
         Vec<RoomId>,
         Vec<UserDeletedRoomImpact>,
@@ -1484,158 +1580,206 @@ impl UserService {
             .await?;
 
         let mut modified_rooms = Vec::new();
+        let mut pending_permission_fences = Vec::new();
         let mut deleted_playlists = 0usize;
         let mut deleted_media = 0usize;
         let mut playback_resets = 0usize;
 
-        let mut modified_room_ids: Vec<RoomId> = entries_by_room.keys().copied().collect();
-        modified_room_ids.sort_unstable();
-        for room_id in modified_room_ids {
-            let entries = entries_by_room
-                .get(&room_id)
-                .expect("room id collected from map keys must exist");
-            deleted_playlists += entries.playlist_ids.len();
-            let impact = self
-                .delete_owned_entries_in_room_in_tx(
-                    &room_id,
-                    entries.playlist_ids.clone(),
-                    entries.media_ids.clone(),
-                    tx,
-                )
+        let cleanup_result: Result<_> = async {
+            let mut memberships_removed = Vec::new();
+            let mut modified_room_ids: Vec<RoomId> = entries_by_room.keys().copied().collect();
+            modified_room_ids.sort_unstable();
+            for room_id in modified_room_ids {
+                let entries = entries_by_room
+                    .get(&room_id)
+                    .expect("room id collected from map keys must exist");
+                deleted_playlists += entries.playlist_ids.len();
+                let impact = self
+                    .delete_owned_entries_in_room_in_tx(
+                        &room_id,
+                        entries.playlist_ids.clone(),
+                        entries.media_ids.clone(),
+                        tx,
+                    )
+                    .await?;
+                deleted_media += impact.deleted_media_ids.len();
+                if impact.playback_reset {
+                    playback_resets += 1;
+                }
+                modified_rooms.push(impact);
+            }
+
+            let owned_room_permission_fences = self
+                .reserve_permission_fences_for_rooms(&owned_room_ids, tx)
                 .await?;
-            deleted_media += impact.deleted_media_ids.len();
-            if impact.playback_reset {
-                playback_resets += 1;
+            pending_permission_fences.extend(owned_room_permission_fences);
+
+            for room_id in &owned_room_ids {
+                let impact =
+                    crate::service::room::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
+                if let (Some(outbox), Some(event)) = (
+                    &self.realtime_outbox,
+                    deleted_room_outbox_events.get(room_id),
+                ) {
+                    outbox.insert_with_executor(event, &mut **tx).await?;
+                }
+                deleted_playlists += impact.deleted_playlist_ids.len();
+                deleted_media += impact.deleted_media_ids.len();
+                if impact.playback_rows_deleted > 0 {
+                    playback_resets += 1;
+                }
+                memberships_removed.extend(impact.removed_members);
             }
-            modified_rooms.push(impact);
-        }
 
-        for room_id in &owned_room_ids {
-            let impact =
-                crate::service::room::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
-            if let (Some(outbox), Some(event)) = (
-                &self.realtime_outbox,
-                deleted_room_outbox_events.get(room_id),
-            ) {
-                outbox.insert_with_executor(event, &mut **tx).await?;
-            }
-            deleted_playlists += impact.deleted_playlist_ids.len();
-            deleted_media += impact.deleted_media_ids.len();
-            if impact.playback_rows_deleted > 0 {
-                playback_resets += 1;
-            }
-        }
+            let oauth_mappings_deleted = sqlx::query!(
+                "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
 
-        let oauth_mappings_deleted = sqlx::query!(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+            let email_tokens_deleted = sqlx::query!(
+                "DELETE FROM auth_email_tokens WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
 
-        let email_tokens_deleted = sqlx::query!(
-            "DELETE FROM auth_email_tokens WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+            let email_identities_deleted = sqlx::query!(
+                "DELETE FROM auth_email_identities WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
 
-        let email_identities_deleted = sqlx::query!(
-            "DELETE FROM auth_email_identities WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-
-        sqlx::query!(
-            "DELETE FROM auth_password_credentials WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?;
-
-        sqlx::query!(
-            "DELETE FROM auth_webauthn_credentials WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?;
-
-        let provider_credentials_deleted = sqlx::query!(
-            "DELETE FROM user_media_provider_credentials WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-
-        let notifications_deleted = sqlx::query!(
-            "DELETE FROM notifications WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-
-        let mut ban_actor_references_cleared = sqlx::query!(
-            "UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        ban_actor_references_cleared += sqlx::query!(
-            "UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        ban_actor_references_cleared += sqlx::query!(
-            "UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        ban_actor_references_cleared += sqlx::query!(
-            "UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-
-        let chat_messages_anonymized = sqlx::query!(
-            "UPDATE chat_messages SET user_id = NULL WHERE user_id = $1",
-            user_id.as_i64(),
-        )
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-
-        let room_member_repo = RoomMemberRepository::new(self.repository.pool().clone());
-        let memberships_removed = room_member_repo
-            .remove_all_for_user_with_executor(user_id, &mut **tx)
+            sqlx::query!(
+                "DELETE FROM auth_password_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
             .await?;
 
-        Ok((
-            UserDeletionCleanupStats {
+            sqlx::query!(
+                "DELETE FROM auth_webauthn_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            let provider_credentials_deleted = sqlx::query!(
+                "DELETE FROM user_media_provider_credentials WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+
+            let notifications_deleted = sqlx::query!(
+                "DELETE FROM notifications WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+
+            let mut ban_actor_references_cleared = sqlx::query!(
+                "UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            ban_actor_references_cleared += sqlx::query!(
+                "UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            ban_actor_references_cleared += sqlx::query!(
+                "UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            ban_actor_references_cleared += sqlx::query!(
+                "UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+
+            let chat_messages_anonymized = sqlx::query!(
+                "UPDATE chat_messages SET user_id = NULL WHERE user_id = $1",
+                user_id.as_i64(),
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+
+            let room_member_repo = RoomMemberRepository::new(self.repository.pool().clone());
+            let (user_memberships_removed, permission_fences) = self
+                .remove_user_memberships_with_permission_fences(&room_member_repo, user_id, tx)
+                .await?;
+            pending_permission_fences.extend(permission_fences);
+            memberships_removed.extend(user_memberships_removed);
+
+            Ok((
                 oauth_mappings_deleted,
-                email_identities_deleted,
                 email_tokens_deleted,
+                email_identities_deleted,
                 provider_credentials_deleted,
                 notifications_deleted,
                 ban_actor_references_cleared,
                 chat_messages_anonymized,
                 memberships_removed,
-                deleted_rooms: owned_room_ids.len(),
-                deleted_playlists,
-                deleted_media,
-                playback_resets,
+            ))
+        }
+        .await;
+
+        let (
+            oauth_mappings_deleted,
+            email_tokens_deleted,
+            email_identities_deleted,
+            provider_credentials_deleted,
+            notifications_deleted,
+            ban_actor_references_cleared,
+            chat_messages_anonymized,
+            memberships_removed,
+        ) = match cleanup_result {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                self.abort_playback_reset_fences(&modified_rooms).await;
+                self.abort_removed_member_permission_fences(&pending_permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
+        let memberships_removed_count = memberships_removed.len() as u64;
+
+        Ok((
+            UserDeletionCleanup {
+                stats: UserDeletionCleanupStats {
+                    oauth_mappings_deleted,
+                    email_identities_deleted,
+                    email_tokens_deleted,
+                    provider_credentials_deleted,
+                    notifications_deleted,
+                    ban_actor_references_cleared,
+                    chat_messages_anonymized,
+                    memberships_removed: memberships_removed_count,
+                    deleted_rooms: owned_room_ids.len(),
+                    deleted_playlists,
+                    deleted_media,
+                    playback_resets,
+                },
+                removed_members: memberships_removed,
+                pending_permission_fences,
             },
             owned_room_ids,
             membership_room_ids,
@@ -1650,6 +1794,269 @@ impl UserService {
             operation,
             "Username cache update failed after primary user mutation; continuing with durable result"
         );
+    }
+
+    fn playback_domain(room_id: &RoomId) -> CacheDomain {
+        CacheDomain::Playback { room_id: *room_id }
+    }
+
+    async fn begin_playback_reset_write(
+        &self,
+        room_id: &RoomId,
+        db_version: i64,
+    ) -> Result<Option<VersionFenceReservation>> {
+        self.consistency
+            .begin_observed_write(&Self::playback_domain(room_id), db_version)
+            .await
+    }
+
+    async fn abort_playback_reset_fence(
+        &self,
+        room_id: &RoomId,
+        reservation: Option<&VersionFenceReservation>,
+    ) {
+        self.consistency
+            .abort_reserved_write(&Self::playback_domain(room_id), reservation)
+            .await;
+    }
+
+    async fn abort_playback_reset_fence_option(&self, fence: Option<&PendingPlaybackResetFence>) {
+        let Some(fence) = fence else {
+            return;
+        };
+        self.abort_playback_reset_fence(&fence.room_id, fence.reservation.as_ref())
+            .await;
+    }
+
+    async fn commit_playback_reset_fences(&self, impacts: &[UserDeletedRoomImpact]) -> Result<()> {
+        let mut first_error = None;
+        for impact in impacts {
+            let (Some(state), Some(fence)) = (&impact.playback_state, &impact.playback_fence)
+            else {
+                continue;
+            };
+
+            if let Err(error) = self
+                .consistency
+                .commit_reserved_write(
+                    &Self::playback_domain(&fence.room_id),
+                    fence.reservation.as_ref(),
+                    state.version,
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %fence.room_id,
+                    version = state.version,
+                    "Failed to finalize playback reset fence after committed user deletion"
+                );
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn abort_playback_reset_fences(&self, impacts: &[UserDeletedRoomImpact]) {
+        for impact in impacts {
+            self.abort_playback_reset_fence_option(impact.playback_fence.as_ref())
+                .await;
+        }
+    }
+
+    async fn remove_user_memberships_with_permission_fences(
+        &self,
+        room_member_repo: &RoomMemberRepository,
+        user_id: &UserId,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<(
+        Vec<crate::repository::room_member::RemovedRoomMember>,
+        Vec<PendingRemovedMemberFence>,
+    )> {
+        let pending_permission_fences = if let Some(permission_service) = &self.permission_service {
+            let members = sqlx::query!(
+                r#"SELECT room_id as "room_id: RoomId",
+                          user_id as "user_id: UserId",
+                          version
+                 FROM room_members
+                 WHERE user_id = $1
+                 FOR UPDATE"#,
+                user_id as &UserId,
+            )
+            .fetch_all(&mut **tx)
+            .await?
+            .into_iter()
+            .map(|row| (row.room_id, row.user_id, row.version))
+            .collect::<Vec<_>>();
+
+            let mut fences = PendingRemovedMemberFences::with_capacity(members.len());
+            for (room_id, member_user_id, version) in members {
+                let fence = match permission_service
+                    .begin_permission_write(&room_id, &member_user_id, version)
+                    .await
+                {
+                    Ok(fence) => fence,
+                    Err(error) => {
+                        fences.abort_all(permission_service).await;
+                        return Err(error);
+                    }
+                };
+                fences.push(PendingRemovedMemberFence {
+                    room_id,
+                    user_id: member_user_id,
+                    fence,
+                });
+            }
+            fences.into_vec()
+        } else {
+            Vec::new()
+        };
+
+        let removed = match room_member_repo
+            .remove_all_for_user_with_executor(user_id, tx)
+            .await
+        {
+            Ok(removed) => removed,
+            Err(error) => {
+                self.abort_removed_member_permission_fences(&pending_permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
+
+        Ok((removed, pending_permission_fences))
+    }
+
+    async fn reserve_permission_fences_for_rooms(
+        &self,
+        room_ids: &[RoomId],
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<Vec<PendingRemovedMemberFence>> {
+        let Some(permission_service) = &self.permission_service else {
+            return Ok(Vec::new());
+        };
+        if room_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let room_id_strs: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
+        let members = sqlx::query!(
+            r#"SELECT room_id as "room_id: RoomId",
+                      user_id as "user_id: UserId",
+                      version
+             FROM room_members
+             WHERE room_id = ANY($1)
+             FOR UPDATE"#,
+            &room_id_strs,
+        )
+        .fetch_all(&mut **tx)
+        .await?
+        .into_iter()
+        .map(|row| (row.room_id, row.user_id, row.version))
+        .collect::<Vec<_>>();
+
+        let mut fences = PendingRemovedMemberFences::with_capacity(members.len());
+        for (room_id, member_user_id, version) in members {
+            let fence = match permission_service
+                .begin_permission_write(&room_id, &member_user_id, version)
+                .await
+            {
+                Ok(fence) => fence,
+                Err(error) => {
+                    fences.abort_all(permission_service).await;
+                    return Err(error);
+                }
+            };
+            fences.push(PendingRemovedMemberFence {
+                room_id,
+                user_id: member_user_id,
+                fence,
+            });
+        }
+
+        Ok(fences.into_vec())
+    }
+
+    async fn commit_removed_member_permission_fences(
+        &self,
+        pending_fences: Vec<PendingRemovedMemberFence>,
+        removed_members: &[crate::repository::room_member::RemovedRoomMember],
+    ) -> Result<()> {
+        let Some(permission_service) = &self.permission_service else {
+            return Ok(());
+        };
+
+        let removed_versions = removed_members
+            .iter()
+            .map(|member| ((member.room_id, member.user_id), member.version))
+            .collect::<HashMap<_, _>>();
+
+        let mut first_error = None;
+        for pending in pending_fences {
+            let Some(version) = removed_versions.get(&(pending.room_id, pending.user_id)) else {
+                permission_service
+                    .abort_permission_write(&pending.fence)
+                    .await;
+                continue;
+            };
+            if let Err(error) = permission_service
+                .commit_permission_write(&pending.fence, *version)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %pending.room_id,
+                    user_id = %pending.user_id,
+                    "Failed to finalize removed member permission fence"
+                );
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn abort_removed_member_permission_fences(
+        &self,
+        pending_fences: &[PendingRemovedMemberFence],
+    ) {
+        let Some(permission_service) = &self.permission_service else {
+            return;
+        };
+
+        for pending in pending_fences {
+            permission_service
+                .abort_permission_write(&pending.fence)
+                .await;
+        }
+    }
+
+    async fn invalidate_removed_member_permission_caches(
+        &self,
+        removed_members: &[crate::repository::room_member::RemovedRoomMember],
+    ) {
+        let Some(permission_service) = &self.permission_service else {
+            return;
+        };
+
+        for member in removed_members {
+            permission_service
+                .invalidate_removed_member_cache(&member.room_id, &member.user_id)
+                .await;
+        }
     }
 
     pub(crate) async fn cache_username_best_effort(
@@ -1782,6 +2189,9 @@ impl UserService {
         let refresh_rate_limiter: Arc<dyn RequestRateLimiterService> = runtime
             .refresh_rate_limiter
             .unwrap_or_else(|| Arc::new(RateLimiter::local_only("synctv:".to_string())));
+        let version_fence = runtime
+            .version_fence
+            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
 
         Self {
             repository: UserRepository::new(pool.clone()),
@@ -1814,6 +2224,8 @@ impl UserService {
             mfa_session_store: runtime
                 .mfa_session_store
                 .unwrap_or_else(local_mfa_session_store),
+            permission_service: runtime.permission_service,
+            consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
 
@@ -1887,8 +2299,8 @@ impl UserService {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let exists = sqlx::query_scalar::<_, bool>(
-            r"
+        let exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM user_registration_requests
@@ -1897,11 +2309,11 @@ impl UserService {
                       LOWER(username) = LOWER($1)
                       OR ($2::TEXT IS NOT NULL AND LOWER(email) = LOWER($2))
                   )
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            username,
+            email,
         )
-        .bind(username)
-        .bind(email)
         .fetch_one(executor)
         .await?;
 
@@ -1919,8 +2331,8 @@ impl UserService {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let row = sqlx::query_as::<_, (Option<i64>, bool, bool)>(
-            r"
+        let row = sqlx::query!(
+            r#"
             SELECT
                 (
                     SELECT id
@@ -1931,7 +2343,7 @@ impl UserService {
                       AND oauth2_provider_user_id = $6
                     ORDER BY requested_at DESC, id DESC
                     LIMIT 1
-                ) AS oauth2_request_id,
+                ) AS "oauth2_request_id: UserId",
                 EXISTS (
                     SELECT 1
                     FROM user_registration_requests
@@ -1943,7 +2355,7 @@ impl UserService {
                           OR oauth2_provider_instance_name IS DISTINCT FROM $5
                           OR oauth2_provider_user_id IS DISTINCT FROM $6
                       )
-                ) AS username_exists,
+                ) AS "username_exists!",
                 EXISTS (
                     SELECT 1
                     FROM user_registration_requests
@@ -1956,28 +2368,27 @@ impl UserService {
                           OR oauth2_provider_instance_name IS DISTINCT FROM $5
                           OR oauth2_provider_user_id IS DISTINCT FROM $6
                       )
-                ) AS email_exists
-            ",
+                ) AS "email_exists!"
+            "#,
+            username,
+            email,
+            SignupMethod::OAuth2 as SignupMethod,
+            i16::from(ReviewStatus::Pending),
+            provider_instance_name,
+            provider_user_id,
         )
-        .bind(username)
-        .bind(email)
-        .bind(SignupMethod::OAuth2)
-        .bind(i16::from(ReviewStatus::Pending))
-        .bind(provider_instance_name)
-        .bind(provider_user_id)
         .fetch_one(executor)
         .await?;
 
-        let (oauth2_request_id, username_exists, email_exists) = row;
-        if let Some(request_id) = oauth2_request_id {
+        if let Some(request_id) = row.oauth2_request_id {
             return Ok(Some(PendingRegistrationConflict::OAuth2Identity(
-                UserId::try_from(request_id).internal_with_err("Invalid pending request ID")?,
+                request_id,
             )));
         }
-        if email_exists {
+        if row.email_exists {
             return Ok(Some(PendingRegistrationConflict::Email));
         }
-        if username_exists {
+        if row.username_exists {
             return Ok(Some(PendingRegistrationConflict::Username));
         }
 
@@ -1991,18 +2402,22 @@ impl UserService {
     ) -> Result<()> {
         let normalized_username = username.to_ascii_lowercase();
         let normalized_email = email.map(str::to_ascii_lowercase);
-        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
-            .bind(USER_REGISTRATION_PENDING_LOCK_NS)
-            .bind(normalized_username)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            USER_REGISTRATION_PENDING_LOCK_NS,
+            normalized_username,
+        )
+        .execute(&mut **tx)
+        .await?;
 
         if let Some(email) = normalized_email {
-            sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
-                .bind(USER_REGISTRATION_PENDING_LOCK_NS)
-                .bind(email)
-                .execute(&mut **tx)
-                .await?;
+            sqlx::query!(
+                "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+                USER_REGISTRATION_PENDING_LOCK_NS,
+                email,
+            )
+            .execute(&mut **tx)
+            .await?;
         }
 
         Ok(())
@@ -2016,11 +2431,13 @@ impl UserService {
         provider_user_id: &str,
     ) -> Result<()> {
         Self::lock_pending_registration_identity(tx, username, email).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
-            .bind(OAUTH2_PENDING_REGISTRATION_LOCK_NS)
-            .bind(format!("{provider_instance_name}:{provider_user_id}"))
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            OAUTH2_PENDING_REGISTRATION_LOCK_NS,
+            format!("{provider_instance_name}:{provider_user_id}"),
+        )
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -4343,15 +4760,55 @@ impl UserService {
             .cleanup_transactional_user_resources(user_id, &deleted_room_outbox_events, &mut tx)
             .await?;
 
-        let deleted = self
+        let deleted = match self
             .repository
             .delete_with_executor(user_id, &mut *tx)
-            .await?;
+            .await
+        {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                self.abort_playback_reset_fences(&modified_rooms).await;
+                self.abort_removed_member_permission_fences(&cleanup.pending_permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
         if !deleted {
+            self.abort_playback_reset_fences(&modified_rooms).await;
+            self.abort_removed_member_permission_fences(&cleanup.pending_permission_fences)
+                .await;
             return Err(Error::InvalidInput("User is already deleted".to_string()));
         }
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_playback_reset_fences(&modified_rooms).await;
+            self.abort_removed_member_permission_fences(&cleanup.pending_permission_fences)
+                .await;
+            return Err(error.into());
+        }
+        let cleanup_stats = cleanup.stats;
+        if let Err(error) = self.commit_playback_reset_fences(&modified_rooms).await {
+            tracing::warn!(
+                error = %error,
+                user_id = %user_id,
+                "Failed to finalize playback fences after committed user deletion; continuing post-commit cleanup"
+            );
+        }
+        if let Err(error) = self
+            .commit_removed_member_permission_fences(
+                cleanup.pending_permission_fences,
+                &cleanup.removed_members,
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                user_id = %user_id,
+                "Failed to finalize removed member permission fences after committed user deletion; continuing post-commit cleanup"
+            );
+        }
+        self.invalidate_removed_member_permission_caches(&cleanup.removed_members)
+            .await;
 
         // 2. Reset username/user-scoped auth and rate-limit state (best-effort).
         if let Err(e) = self.brute_force.reset(&user.username).await {
@@ -4390,18 +4847,18 @@ impl UserService {
         tracing::info!(
             user_id = %user_id,
             username = %user.username,
-            oauth_mappings_deleted = cleanup.oauth_mappings_deleted,
-            email_identities_deleted = cleanup.email_identities_deleted,
-            email_tokens_deleted = cleanup.email_tokens_deleted,
-            provider_credentials_deleted = cleanup.provider_credentials_deleted,
-            notifications_deleted = cleanup.notifications_deleted,
-            ban_actor_references_cleared = cleanup.ban_actor_references_cleared,
-            chat_messages_anonymized = cleanup.chat_messages_anonymized,
-            memberships_removed = cleanup.memberships_removed,
-            deleted_rooms = cleanup.deleted_rooms,
-            deleted_playlists = cleanup.deleted_playlists,
-            deleted_media = cleanup.deleted_media,
-            playback_resets = cleanup.playback_resets,
+            oauth_mappings_deleted = cleanup_stats.oauth_mappings_deleted,
+            email_identities_deleted = cleanup_stats.email_identities_deleted,
+            email_tokens_deleted = cleanup_stats.email_tokens_deleted,
+            provider_credentials_deleted = cleanup_stats.provider_credentials_deleted,
+            notifications_deleted = cleanup_stats.notifications_deleted,
+            ban_actor_references_cleared = cleanup_stats.ban_actor_references_cleared,
+            chat_messages_anonymized = cleanup_stats.chat_messages_anonymized,
+            memberships_removed = cleanup_stats.memberships_removed,
+            deleted_rooms = cleanup_stats.deleted_rooms,
+            deleted_playlists = cleanup_stats.deleted_playlists,
+            deleted_media = cleanup_stats.deleted_media,
+            playback_resets = cleanup_stats.playback_resets,
             "User soft-deleted with transactional resource cleanup"
         );
 
@@ -4459,14 +4916,51 @@ impl UserService {
 
         let room_member_repo = RoomMemberRepository::new(pool.clone());
         let owned_room_ids = self.query_owned_room_ids_in_tx(user_id, &mut tx).await?;
-        room_member_repo
-            .remove_all_for_user_with_executor(user_id, &mut *tx)
+        let mut pending_permission_fences = self
+            .reserve_permission_fences_for_rooms(&owned_room_ids, &mut tx)
             .await?;
-        room_member_repo
-            .remove_all_for_rooms_with_executor(&owned_room_ids, &mut *tx)
-            .await?;
+        let mut removed_members = match room_member_repo
+            .remove_all_for_rooms_with_executor(&owned_room_ids, &mut tx)
+            .await
+        {
+            Ok(removed) => removed,
+            Err(error) => {
+                self.abort_removed_member_permission_fences(&pending_permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
+        let (mut banned_user_removed_members, banned_user_permission_fences) = match self
+            .remove_user_memberships_with_permission_fences(&room_member_repo, user_id, &mut tx)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.abort_removed_member_permission_fences(&pending_permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
+        pending_permission_fences.extend(banned_user_permission_fences);
+        removed_members.append(&mut banned_user_removed_members);
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_removed_member_permission_fences(&pending_permission_fences)
+                .await;
+            return Err(error.into());
+        }
+        if let Err(error) = self
+            .commit_removed_member_permission_fences(pending_permission_fences, &removed_members)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                user_id = %user_id,
+                "Failed to finalize removed member permission fences after committed user ban cleanup; continuing post-commit cleanup"
+            );
+        }
+        self.invalidate_removed_member_permission_caches(&removed_members)
+            .await;
         let updated = self
             .repository
             .get_by_id(user_id)

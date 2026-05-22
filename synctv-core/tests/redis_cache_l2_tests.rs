@@ -191,6 +191,75 @@ async fn test_set_if_newer_concurrent() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_if_version_uses_domain_version_when_cache_version_missing() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+
+    let key = "test:siv:domain_version_fallback";
+    let mut raw_conn = conn;
+    raw_conn
+        .set_ex::<_, _, ()>(key, r#"{"name":"existing","version":5}"#, 300)
+        .await
+        .unwrap();
+
+    let stale = l2
+        .set_if_version_at_least(key, r#"{"name":"stale","version":4}"#, 300, 4)
+        .await
+        .unwrap();
+    assert!(
+        !stale,
+        "write older than the existing domain version should be rejected"
+    );
+    let stored = l2.get(key).await.unwrap().unwrap();
+    assert!(
+        stored.contains("existing"),
+        "existing version-5 value should remain after stale write; got {stored}"
+    );
+
+    let fresh = l2
+        .set_if_version_at_least(key, r#"{"name":"fresh","version":6}"#, 300, 6)
+        .await
+        .unwrap();
+    assert!(
+        fresh,
+        "write newer than the existing domain version should be accepted"
+    );
+    let value: serde_json::Value = serde_json::from_str(&l2.get(key).await.unwrap().unwrap())
+        .expect("stored value should be JSON");
+    assert_eq!(value["name"], "fresh");
+    assert_eq!(value["cache_version"], 6);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_if_version_overwrites_unversioned_json() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+
+    let key = "test:siv:unversioned_json";
+    let mut raw_conn = conn;
+    raw_conn
+        .set_ex::<_, _, ()>(key, r#"{"name":"unversioned"}"#, 300)
+        .await
+        .unwrap();
+
+    let was_set = l2
+        .set_if_version_at_least(key, r#"{"name":"versioned","version":1}"#, 300, 1)
+        .await
+        .unwrap();
+    assert!(
+        was_set,
+        "unversioned JSON must not permanently block versioned cache writes"
+    );
+
+    let value: serde_json::Value = serde_json::from_str(&l2.get(key).await.unwrap().unwrap())
+        .expect("stored value should be JSON");
+    assert_eq!(value["name"], "versioned");
+    assert_eq!(value["cache_version"], 1);
+}
+
 // delete_by_prefix tests
 
 #[tokio::test]

@@ -591,7 +591,7 @@ async fn test_grant_permission_atomic_removed_member_returns_not_found() {
         .unwrap();
 
     // Remove the member
-    member_repo.remove(&room.id, &user.id).await.unwrap();
+    assert!(member_repo.remove(&room.id, &user.id).await.unwrap());
 
     // Attempting to grant on removed member should return NotFound
     let err = member_repo
@@ -1054,6 +1054,93 @@ async fn test_add_member_rejects_active_kick_cooldown() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_failed_add_in_caller_transaction_does_not_advance_lifecycle_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_failed_add_lifecycle"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Failed Add Lifecycle", &owner.id))
+        .await
+        .unwrap();
+    let user = user_repo
+        .create(&make_user("user_failed_add_lifecycle"))
+        .await
+        .unwrap();
+
+    let member = member_repo
+        .add(&make_member(room.id, user.id, RoomRole::Member))
+        .await
+        .unwrap();
+    let before = member_repo
+        .lifecycle_version(&room.id, &user.id)
+        .await
+        .unwrap();
+    assert_eq!(before, member.version);
+
+    let mut tx = pool.begin().await.unwrap();
+    let duplicate = member_repo
+        .add_with_executor(&make_member(room.id, user.id, RoomRole::Member), &mut tx)
+        .await;
+    assert!(matches!(duplicate, Err(Error::AlreadyExists(_))));
+    tx.commit().await.unwrap();
+
+    let after = member_repo
+        .lifecycle_version(&room.id, &user.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "failed add inside a caller-owned transaction must not burn a lifecycle version"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_add_with_executor_diagnoses_uncommitted_duplicate_in_same_transaction() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_tx_duplicate_diag"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Tx Duplicate Diagnostic", &owner.id))
+        .await
+        .unwrap();
+    let user = user_repo
+        .create(&make_user("user_tx_duplicate_diag"))
+        .await
+        .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    member_repo
+        .add_with_executor(&make_member(room.id, user.id, RoomRole::Member), &mut tx)
+        .await
+        .unwrap();
+
+    let duplicate = member_repo
+        .add_with_executor(&make_member(room.id, user.id, RoomRole::Member), &mut tx)
+        .await;
+
+    assert!(
+        matches!(duplicate, Err(Error::AlreadyExists(_))),
+        "diagnostic query must see membership inserted earlier in the same transaction: {duplicate:?}"
+    );
+
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_after_remove_creates_fresh_membership() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1073,6 +1160,10 @@ async fn test_add_after_remove_creates_fresh_membership() {
         .await
         .unwrap();
     member_repo.remove(&room.id, &user.id).await.unwrap();
+    let tombstone_version = member_repo
+        .lifecycle_version(&room.id, &user.id)
+        .await
+        .unwrap();
 
     let member = make_member(room.id, user.id, RoomRole::Member);
     let result = member_repo.add(&member).await;
@@ -1084,6 +1175,18 @@ async fn test_add_after_remove_creates_fresh_membership() {
     assert_eq!(rejoined.removed_permissions, 0);
     assert_eq!(rejoined.admin_added_permissions, 0);
     assert_eq!(rejoined.admin_removed_permissions, 0);
+    assert!(
+        rejoined.version > tombstone_version,
+        "rejoined member row version must be strictly newer than the removal fence"
+    );
+    let active_lifecycle_version = member_repo
+        .lifecycle_version(&room.id, &user.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        rejoined.version, active_lifecycle_version,
+        "rejoined member row must publish the lifecycle version allocated in the insert transaction"
+    );
 }
 
 #[tokio::test]
@@ -1187,4 +1290,92 @@ async fn test_update_permissions_for_active_member_should_succeed() {
     let updated_member = updated.unwrap();
     assert_eq!(updated_member.added_permissions, 0b0000_0001);
     assert_eq!(updated_member.version, member.version + 1);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_bulk_remove_for_user_returns_post_delete_lifecycle_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_bulk_user_lifecycle"))
+        .await
+        .unwrap();
+    let member_user = user_repo
+        .create(&make_user("member_bulk_user_lifecycle"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Bulk User Lifecycle Room", &owner.id))
+        .await
+        .unwrap();
+    let member = member_repo
+        .add(&make_member(room.id, member_user.id, RoomRole::Member))
+        .await
+        .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let removed = member_repo
+        .remove_all_for_user_with_executor(&member_user.id, &mut tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(removed.len(), 1);
+    let lifecycle_version = member_repo
+        .lifecycle_version(&room.id, &member_user.id)
+        .await
+        .unwrap();
+    assert_eq!(removed[0].version, lifecycle_version);
+    assert!(
+        removed[0].version > member.version,
+        "bulk user removal must return the post-delete tombstone version, not the stale member row version"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_bulk_remove_for_rooms_returns_post_delete_lifecycle_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_bulk_room_lifecycle"))
+        .await
+        .unwrap();
+    let member_user = user_repo
+        .create(&make_user("member_bulk_room_lifecycle"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Bulk Room Lifecycle Room", &owner.id))
+        .await
+        .unwrap();
+    let member = member_repo
+        .add(&make_member(room.id, member_user.id, RoomRole::Member))
+        .await
+        .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let removed = member_repo
+        .remove_all_for_rooms_with_executor(&[room.id], &mut tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(removed.len(), 1);
+    let lifecycle_version = member_repo
+        .lifecycle_version(&room.id, &member_user.id)
+        .await
+        .unwrap();
+    assert_eq!(removed[0].version, lifecycle_version);
+    assert!(
+        removed[0].version > member.version,
+        "bulk room removal must return the post-delete tombstone version, not the stale member row version"
+    );
 }

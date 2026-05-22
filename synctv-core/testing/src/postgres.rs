@@ -1,9 +1,6 @@
 //! `PostgreSQL` test container helpers
 
-use std::fs::{File, OpenOptions};
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -19,6 +16,15 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 use url::Url;
+
+use crate::docker::{
+    acquire_run_lock, candidate_endpoints_for_host, cleanup_orphaned_run_lock_files,
+    cleanup_orphaned_testcontainers, current_test_run_id as docker_current_test_run_id,
+    current_test_run_id_from as docker_current_test_run_id_from,
+    docker_named_container_belongs_to_current_run, docker_port_candidates, host_address_family,
+    sanitize_container_name, startup_error_is_named_container_conflict, startup_error_is_retriable,
+    ProcessLock, TEST_RUN_LABEL,
+};
 
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "18";
@@ -37,7 +43,6 @@ const TEMPLATE_CLONE_PARALLELISM_ENV: &str = "SYNCTV_TEST_PG_TEMPLATE_CLONE_PARA
 const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 32;
 const MIN_TEST_POOL_MAX_CONNECTIONS: u32 = 1;
 const TEST_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_POOL_MAX_CONNECTIONS";
-const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 const ADMIN_DATABASE: &str = "postgres";
 const TEMPLATE_DATABASE_PREFIX: &str = "synctv_template";
 const TEST_DATABASE_PREFIX: &str = "synctv_test";
@@ -106,14 +111,16 @@ static SHARED_POSTGRES: OnceCell<Arc<SharedPostgresServer>> = OnceCell::const_ne
 static TEST_DATABASE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static TEMPLATE_CLONE_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
-struct ProcessLock(File);
-
 struct SharedPostgresServer {
     // Intentionally held but never dropped: the shared container survives
     // until the next test run's orphan cleanup removes it.  Using
     // ManuallyDrop prevents the Drop impl from calling `docker rm` when
     // any single nextest worker process exits while others are still running.
-    _container: std::mem::ManuallyDrop<ContainerAsync<Postgres>>,
+    //
+    // Workers after the first one may attach to the already-created named
+    // Docker container via `docker port`, so they do not have a testcontainers
+    // handle.
+    _container: Option<std::mem::ManuallyDrop<ContainerAsync<Postgres>>>,
     // Dedicated runtime for the admin pool.  Individual `#[tokio::test]`
     // runtimes are created and destroyed per-test; if the pool is created
     // on one of those, its IO driver dies when the test finishes, causing
@@ -152,51 +159,6 @@ impl TestDatabase {
         self.pool.close().await;
         self.container.cleanup().await;
     }
-}
-
-impl ProcessLock {
-    fn try_acquire(name: &str) -> Option<Self> {
-        let path = lock_file_path(name);
-        Self::try_acquire_path(&path)
-    }
-
-    fn try_acquire_path(path: &Path) -> Option<Self> {
-        let file = Self::open_lock_file(path);
-        match file.try_lock() {
-            Ok(()) => Some(Self(file)),
-            Err(_) => None,
-        }
-    }
-
-    fn open_lock_file(path: &Path) -> File {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                panic!(
-                    "failed to create lock file directory {}: {e}",
-                    parent.display()
-                )
-            });
-        }
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()))
-    }
-}
-
-impl Drop for ProcessLock {
-    fn drop(&mut self) {
-        self.0
-            .unlock()
-            .expect("failed to release process lock for postgres test startup");
-    }
-}
-
-fn lock_file_path(name: &str) -> PathBuf {
-    crate::test_temp_dir().join(format!("synctv-{name}.lock"))
 }
 
 impl SharedPostgresServer {
@@ -386,28 +348,6 @@ fn default_test_pool_max_connections_from(value: Option<&str>) -> u32 {
         })
 }
 
-fn sanitize_container_name(raw: &str) -> String {
-    let mut name: String = raw
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    name.truncate(48);
-    while name.ends_with('-') {
-        name.pop();
-    }
-    if name.is_empty() {
-        "postgres-test".to_string()
-    } else {
-        name
-    }
-}
-
 fn sanitize_database_component(raw: &str) -> String {
     let mut name: String = raw
         .chars()
@@ -438,188 +378,16 @@ fn current_test_label() -> String {
         .or_else(|| std::thread::current().name().map(str::to_owned))
         .map_or_else(
             || "unknown-test".to_string(),
-            |value| sanitize_container_name(&value),
+            |value| sanitize_container_name(&value, "postgres-test"),
         )
 }
 
-fn current_process_id() -> u32 {
-    std::process::id()
-}
-
 fn current_test_run_id() -> String {
-    current_test_run_id_from(std::env::var("NEXTEST_RUN_ID").ok().as_deref())
+    docker_current_test_run_id("postgres-test")
 }
 
 fn current_test_run_id_from(run_id: Option<&str>) -> String {
-    run_id.filter(|value| !value.trim().is_empty()).map_or_else(
-        || format!("pid-{}", current_process_id()),
-        sanitize_container_name,
-    )
-}
-
-fn startup_lock_name(run_id: &str) -> String {
-    format!("postgres-startup-{run_id}")
-}
-
-fn run_lock_file_prefix(run_id: &str) -> String {
-    format!("synctv-postgres-run-{run_id}-")
-}
-
-fn acquire_run_lock(run_id: &str) -> ProcessLock {
-    let path = crate::test_temp_dir().join(format!(
-        "{}{}.lock",
-        run_lock_file_prefix(run_id),
-        current_process_id()
-    ));
-    ProcessLock::try_acquire_path(&path)
-        .unwrap_or_else(|| panic!("failed to acquire postgres run lock for {run_id}"))
-}
-
-fn run_has_active_lock(run_id: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
-        return false;
-    };
-
-    let prefix = run_lock_file_prefix(run_id);
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(&prefix) || !file_name.ends_with(".lock") {
-            continue;
-        }
-        if ProcessLock::try_acquire_path(&path).is_none() {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn docker_rm_force(container_ref: &str) -> Result<(), String> {
-    docker_rm_force_with_program("docker", container_ref)
-}
-
-fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
-    let args = ["rm", "-v", "-f", container_ref];
-    let output = Command::new(program).args(args).output().map_err(|err| {
-        format!("failed to spawn `{program}` for `{container_ref}` cleanup: {err}")
-    })?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format_command_failure(program, &args, &output))
-}
-
-fn startup_error_is_retriable(err: &str) -> bool {
-    let err = err.to_ascii_lowercase();
-    err.contains("marked for removal") || err.contains("no such container")
-}
-
-fn format_command_failure(program: &str, args: &[&str], output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let mut details = Vec::new();
-    if !stdout.is_empty() {
-        details.push(format!("stdout={stdout}"));
-    }
-    if !stderr.is_empty() {
-        details.push(format!("stderr={stderr}"));
-    }
-    let details = if details.is_empty() {
-        "no command output".to_string()
-    } else {
-        details.join(" ")
-    };
-
-    format!(
-        "command `{}` exited with status {}: {details}",
-        std::iter::once(program)
-            .chain(args.iter().copied())
-            .collect::<Vec<_>>()
-            .join(" "),
-        output.status
-    )
-}
-
-fn cleanup_orphaned_testcontainers(prefix: &str) {
-    let current_run_id = current_test_run_id();
-    let output = Command::new("docker")
-        .args([
-            "ps",
-            "-aq",
-            "--filter",
-            &format!("name=^{prefix}"),
-            "--filter",
-            "label=org.testcontainers.managed-by=testcontainers",
-        ])
-        .output();
-
-    let Ok(output) = output else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-
-    let ids = String::from_utf8_lossy(&output.stdout);
-    for container_id in ids.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let inspect = Command::new("docker")
-            .args([
-                "inspect",
-                container_id,
-                "--format",
-                &format!("{{{{index .Config.Labels \"{TEST_RUN_LABEL}\"}}}}"),
-            ])
-            .output();
-
-        let Ok(inspect) = inspect else {
-            continue;
-        };
-        if !inspect.status.success() {
-            continue;
-        }
-
-        let run_id = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
-        if run_id == current_run_id {
-            continue;
-        }
-        if run_has_active_lock(&run_id) {
-            continue;
-        }
-
-        if let Err(err) = docker_rm_force(container_id) {
-            eprintln!(
-                "warning: failed to remove orphaned postgres test container {container_id}: {err}"
-            );
-        }
-    }
-}
-
-fn cleanup_orphaned_run_lock_files(prefix: &str) {
-    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(prefix) || !file_name.ends_with(".lock") {
-            continue;
-        }
-
-        let Some(lock) = ProcessLock::try_acquire_path(&path) else {
-            continue;
-        };
-        drop(lock);
-
-        let _ = std::fs::remove_file(path);
-    }
+    docker_current_test_run_id_from(run_id, "postgres-test")
 }
 
 fn postgres_ready_conditions() -> Vec<WaitFor> {
@@ -738,7 +506,7 @@ async fn resolve_host_port(
 
             match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
                 Ok(mut conn) => {
-                    sqlx::query_scalar::<_, i32>("SELECT 1")
+                    sqlx::query_scalar!("SELECT 1 AS \"one!\"")
                         .fetch_one(&mut conn)
                         .await
                         .expect("PostgreSQL readiness probe should succeed once connected");
@@ -761,59 +529,52 @@ async fn resolve_host_port(
     );
 }
 
-fn host_address_family(host: &str) -> Option<IpAddr> {
-    let normalized = host
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(host);
-    normalized.parse::<IpAddr>().ok()
-}
-
-fn candidate_endpoints_for_host(
-    host: &str,
-    ipv4_port: Option<u16>,
-    ipv6_port: Option<u16>,
-) -> Vec<(String, u16)> {
-    let mut candidates = Vec::new();
-
-    match host_address_family(host) {
-        Some(IpAddr::V4(_)) => {
-            if let Some(port) = ipv4_port {
-                candidates.push((host.to_string(), port));
-            }
-            if let Some(port) = ipv6_port.filter(|port| Some(*port) != ipv4_port) {
-                candidates.push(("::1".to_string(), port));
-            }
-        }
-        Some(IpAddr::V6(_)) => {
-            if let Some(port) = ipv6_port {
-                candidates.push((host.to_string(), port));
-            }
-            if let Some(port) = ipv4_port.filter(|port| Some(*port) != ipv6_port) {
-                candidates.push(("127.0.0.1".to_string(), port));
-            }
-        }
-        None => {
-            if let Some(port) = ipv6_port.filter(|_| host == "localhost") {
-                candidates.push(("::1".to_string(), port));
-            }
-            if let Some(port) = ipv4_port {
-                let ipv4_host = if host == "localhost" {
-                    "127.0.0.1".to_string()
-                } else {
-                    host.to_string()
-                };
-                candidates.push((ipv4_host, port));
-            }
-            if let Some(port) =
-                ipv6_port.filter(|port| Some(*port) != ipv4_port && host != "localhost")
-            {
-                candidates.push((host.to_string(), port));
-            }
-        }
+async fn resolve_existing_named_postgres_endpoint(
+    container_name: &str,
+    db_name: &str,
+) -> Option<(String, u16)> {
+    if !docker_named_container_belongs_to_current_run(container_name, &current_test_run_id()) {
+        return None;
     }
 
-    candidates
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("docker port has not returned a Postgres endpoint yet");
+
+    while std::time::Instant::now() < deadline {
+        if let Some(candidates) = docker_port_candidates(container_name, 5432) {
+            for (host, port) in &candidates {
+                let connect_options = PgConnectOptions::new()
+                    .host(host)
+                    .port(*port)
+                    .username("synctv")
+                    .password("synctv_test")
+                    .database(db_name)
+                    .ssl_mode(PgSslMode::Disable);
+
+                match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
+                    Ok(mut conn) => {
+                        let probe = sqlx::query_scalar!("SELECT 1 AS \"one!\"")
+                            .fetch_one(&mut conn)
+                            .await;
+                        if probe.is_ok() {
+                            return Some((host.clone(), *port));
+                        }
+                        last_error = format!("readiness probe failed: {probe:?}");
+                    }
+                    Err(err) => {
+                        last_error = format!("connect failed for {host}:{port}: {err}");
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    panic!(
+        "Existing Postgres container {container_name} did not become reachable within {:?}: {last_error}",
+        docker_startup_timeout()
+    );
 }
 
 fn quote_identifier(identifier: &str) -> String {
@@ -878,11 +639,13 @@ fn build_test_database_name(requested_db_name: &str, label: &str) -> String {
 
 #[cfg(test)]
 async fn database_exists(admin_pool: &PgPool, database_name: &str) -> bool {
-    sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-        .bind(database_name)
-        .fetch_one(admin_pool)
-        .await
-        .expect("database existence query should succeed")
+    sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS \"exists!\"",
+        database_name,
+    )
+    .fetch_one(admin_pool)
+    .await
+    .expect("database existence query should succeed")
 }
 
 async fn recreate_template_database(
@@ -970,14 +733,14 @@ async fn recreate_template_database(
 
 async fn init_shared_postgres_server() -> SharedPostgresServer {
     let run_id = current_test_run_id();
-    let run_lock = acquire_run_lock(&run_id);
-    cleanup_orphaned_testcontainers("synctv-pg-");
+    let run_lock = acquire_run_lock("postgres", &run_id);
+    cleanup_orphaned_testcontainers("synctv-pg-", "postgres", &run_id);
     cleanup_orphaned_run_lock_files("synctv-postgres-run-");
     cleanup_orphaned_run_lock_files("synctv-postgres-startup-");
 
     // Serialize first creation per nextest run so concurrent worker processes
     // observe the same reusable container instead of each creating their own.
-    let lock_name = startup_lock_name(&run_id);
+    let lock_name = format!("postgres-startup-{run_id}");
     let _startup_lock = tokio::task::spawn_blocking(move || loop {
         if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
             return lock;
@@ -988,38 +751,55 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     .expect("postgres startup lock task should not panic");
 
     let container_name = shared_container_name();
-    let start_deadline = std::time::Instant::now() + docker_startup_timeout();
-    let postgres = loop {
-        match tokio::time::timeout(
-            docker_startup_timeout(),
-            named_postgres_request(ADMIN_DATABASE, &container_name).start(),
-        )
-        .await
-        {
-            Ok(Ok(container)) => break container,
-            Ok(Err(err)) => {
-                let err_string = err.to_string();
-                if startup_error_is_retriable(&err_string)
-                    && std::time::Instant::now() < start_deadline
-                {
-                    eprintln!(
-                        "warning: transient Postgres container startup error for {container_name}, retrying: {err_string}"
-                    );
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue;
+    let (postgres, host, port) = if let Some((host, port)) =
+        resolve_existing_named_postgres_endpoint(&container_name, ADMIN_DATABASE).await
+    {
+        (None, host, port)
+    } else {
+        let start_deadline = std::time::Instant::now() + docker_startup_timeout();
+        loop {
+            match tokio::time::timeout(
+                docker_startup_timeout(),
+                named_postgres_request(ADMIN_DATABASE, &container_name).start(),
+            )
+            .await
+            {
+                Ok(Ok(container)) => {
+                    let (host, port) = resolve_host_port(&container, 5432, ADMIN_DATABASE).await;
+                    break (Some(container), host, port);
                 }
-                panic!("Failed to start Postgres container: {err}");
-            }
-            Err(elapsed) => {
-                panic!(
-                    "Docker container startup timed out after {:?}: {elapsed} (is Docker running?)",
-                    docker_startup_timeout(),
-                );
+                Ok(Err(err)) => {
+                    let err_string = err.to_string();
+                    if startup_error_is_named_container_conflict(&err_string) {
+                        if let Some((host, port)) = resolve_existing_named_postgres_endpoint(
+                            &container_name,
+                            ADMIN_DATABASE,
+                        )
+                        .await
+                        {
+                            break (None, host, port);
+                        }
+                    }
+                    if startup_error_is_retriable(&err_string)
+                        && std::time::Instant::now() < start_deadline
+                    {
+                        eprintln!(
+                            "warning: transient Postgres container startup error for {container_name}, retrying: {err_string}"
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    panic!("Failed to start Postgres container: {err}");
+                }
+                Err(elapsed) => {
+                    panic!(
+                        "Docker container startup timed out after {:?}: {elapsed} (is Docker running?)",
+                        docker_startup_timeout(),
+                    );
+                }
             }
         }
     };
-
-    let (host, port) = resolve_host_port(&postgres, 5432, ADMIN_DATABASE).await;
     let admin_connect_options = PgConnectOptions::new()
         .host(&host)
         .port(port)
@@ -1060,7 +840,7 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     .expect("pool initialization thread should not panic");
 
     SharedPostgresServer {
-        _container: std::mem::ManuallyDrop::new(postgres),
+        _container: postgres.map(std::mem::ManuallyDrop::new),
         _pool_runtime: pool_runtime,
         host,
         port,
@@ -1240,6 +1020,11 @@ pub async fn create_test_database_url_with_label(
 
 #[cfg(test)]
 mod tests {
+    use crate::docker::{
+        docker_port_line_candidates, docker_rm_force_with_program, lock_file_path,
+        run_has_active_lock,
+    };
+
     use super::*;
 
     #[test]
@@ -1461,17 +1246,17 @@ mod tests {
     #[test]
     fn run_has_active_lock_detects_live_run_lock() {
         let run_id = format!("test-run-{}", synctv_common::snanoid!(8).to_lowercase());
-        let lock = acquire_run_lock(&run_id);
+        let lock = acquire_run_lock("postgres", &run_id);
 
         assert!(
-            run_has_active_lock(&run_id),
+            run_has_active_lock("postgres", &run_id),
             "active run lock must prevent orphan cleanup from treating the run as dead"
         );
 
         drop(lock);
 
         assert!(
-            !run_has_active_lock(&run_id),
+            !run_has_active_lock("postgres", &run_id),
             "released run lock must no longer mark the run as active"
         );
     }
@@ -1546,6 +1331,38 @@ mod tests {
         ));
         assert!(!startup_error_is_retriable("409 conflict during start"));
         assert!(!startup_error_is_retriable("authentication failed"));
+    }
+
+    #[test]
+    fn startup_error_detects_named_container_conflicts_only() {
+        assert!(startup_error_is_named_container_conflict(
+            "Docker responded with status code 409: Conflict. The container name \"/synctv-pg-shared-run\" is already in use by container \"abc123\""
+        ));
+        assert!(startup_error_is_named_container_conflict(
+            "Conflict. The container name is already in use"
+        ));
+        assert!(!startup_error_is_named_container_conflict(
+            "409 conflict during start"
+        ));
+        assert!(!startup_error_is_named_container_conflict(
+            "authentication failed"
+        ));
+    }
+
+    #[test]
+    fn docker_port_line_candidates_handles_wildcard_bindings() {
+        let ipv4_candidates = docker_port_line_candidates("0.0.0.0:33811");
+        assert!(
+            ipv4_candidates.contains(&("127.0.0.1".to_string(), 33811)),
+            "wildcard IPv4 binding should include loopback: {ipv4_candidates:?}"
+        );
+        let ipv6_candidates = docker_port_line_candidates("[::]:33811");
+        assert!(
+            ipv6_candidates.contains(&("::1".to_string(), 33811))
+                && ipv6_candidates.contains(&("127.0.0.1".to_string(), 33811)),
+            "wildcard IPv6 binding should include IPv6 and IPv4 loopback: {ipv6_candidates:?}"
+        );
+        assert_eq!(docker_port_line_candidates("invalid"), Vec::new());
     }
 
     #[test]
@@ -1626,12 +1443,15 @@ mod tests {
 
     #[test]
     fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
-        assert_eq!(
-            candidate_endpoints_for_host("[::1]", Some(5432), Some(15433)),
-            vec![
-                ("[::1]".to_string(), 15433),
-                ("127.0.0.1".to_string(), 5432)
-            ]
+        let candidates = candidate_endpoints_for_host("[::1]", Some(5432), Some(15433));
+
+        assert!(
+            candidates.contains(&("[::1]".to_string(), 15433)),
+            "IPv6 host candidates should preserve IPv6 endpoint: {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&("127.0.0.1".to_string(), 5432)),
+            "IPv6 host candidates should include IPv4 loopback fallback: {candidates:?}"
         );
     }
 
@@ -1645,9 +1465,12 @@ mod tests {
 
     #[test]
     fn resolve_host_port_rewrites_localhost_to_ipv6_literal_when_needed() {
-        assert_eq!(
-            candidate_endpoints_for_host("localhost", Some(5432), Some(15433)),
-            vec![("::1".to_string(), 15433), ("127.0.0.1".to_string(), 5432)]
+        let candidates = candidate_endpoints_for_host("localhost", Some(5432), Some(15433));
+
+        assert!(
+            candidates.contains(&("::1".to_string(), 15433))
+                && candidates.contains(&("127.0.0.1".to_string(), 5432)),
+            "localhost candidates should include IPv6 and IPv4 loopback: {candidates:?}"
         );
     }
 

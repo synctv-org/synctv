@@ -1,8 +1,4 @@
-use std::fs::{File, OpenOptions};
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::UdpSocket;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -12,8 +8,18 @@ use testcontainers::core::{ImageExt, IntoContainerPort, ReuseDirective, WaitFor}
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
-use tokio::sync::{OnceCell, RwLock, Semaphore, SemaphorePermit};
+use tokio::sync::{OnceCell, RwLock, Semaphore};
 
+use crate::docker::{
+    acquire_docker_slot, acquire_run_lock, candidate_endpoints_for_host,
+    cleanup_error_indicates_missing_container, cleanup_orphaned_run_lock_files,
+    cleanup_orphaned_testcontainers, current_process_id as docker_current_process_id,
+    current_test_run_id as docker_current_test_run_id,
+    current_test_run_id_from as docker_current_test_run_id_from,
+    docker_named_container_belongs_to_current_run, docker_port_candidates, docker_rm_force,
+    host_address_family, sanitize_container_name, startup_error_is_named_container_conflict,
+    startup_error_is_retriable, DockerSlotGuard, ProcessLock, TEST_RUN_LABEL,
+};
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
 pub type RedisConnectionManager = redis::aio::ConnectionManager;
@@ -25,7 +31,6 @@ const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
 const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
 static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(redis_active_parallelism()));
-const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 pub const REDIS_VERSION: &str = "8";
 const REDIS_EPHEMERAL_TUNING_ARGS: &[&str] = &[
     "--save",
@@ -63,12 +68,7 @@ fn redis_ephemeral_tuning_args() -> impl Iterator<Item = &'static str> {
 }
 
 static SHARED_REDIS: OnceCell<Arc<SharedRedisServer>> = OnceCell::const_new();
-
-struct ProcessLock(File);
-struct DockerSlotGuard {
-    _local_permit: SemaphorePermit<'static>,
-    _process_lock: ProcessLock,
-}
+static REDIS_RUN_LOCK: OnceCell<Arc<ProcessLock>> = OnceCell::const_new();
 
 struct SharedRedisServer {
     // Intentionally held but never dropped: the shared container survives
@@ -82,56 +82,12 @@ struct SharedRedisServer {
     name: String,
     host: String,
     port: u16,
+    _run_lock: Arc<ProcessLock>,
 }
 
 pub struct RedisContainer {
     shared: Arc<SharedRedisServer>,
     cleaned_up: bool,
-}
-
-impl ProcessLock {
-    fn try_acquire(name: &str) -> Option<Self> {
-        let path = lock_file_path(name);
-        Self::try_acquire_path(&path)
-    }
-
-    fn try_acquire_path(path: &Path) -> Option<Self> {
-        let file = Self::open_lock_file(path);
-        match file.try_lock() {
-            Ok(()) => Some(Self(file)),
-            Err(_) => None,
-        }
-    }
-
-    fn open_lock_file(path: &Path) -> File {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                panic!(
-                    "failed to create lock file directory {}: {e}",
-                    parent.display()
-                )
-            });
-        }
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()))
-    }
-}
-
-impl Drop for ProcessLock {
-    fn drop(&mut self) {
-        self.0
-            .unlock()
-            .expect("failed to release process lock for redis test startup");
-    }
-}
-
-fn lock_file_path(name: &str) -> PathBuf {
-    crate::test_temp_dir().join(format!("synctv-{name}.lock"))
 }
 
 fn redis_active_parallelism() -> usize {
@@ -144,28 +100,6 @@ fn redis_active_parallelism_from(value: Option<&str>) -> usize {
         .map_or(DEFAULT_REDIS_ACTIVE_PARALLELISM, |slots| {
             slots.max(MIN_REDIS_ACTIVE_PARALLELISM)
         })
-}
-
-fn sanitize_container_name(raw: &str) -> String {
-    let mut name: String = raw
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    name.truncate(48);
-    while name.ends_with('-') {
-        name.pop();
-    }
-    if name.is_empty() {
-        "redis-test".to_string()
-    } else {
-        name
-    }
 }
 
 fn sanitize_key_prefix_component(raw: &str) -> String {
@@ -201,18 +135,15 @@ fn current_test_key_namespace() -> String {
 }
 
 fn current_process_id() -> u32 {
-    std::process::id()
+    docker_current_process_id()
 }
 
 fn current_test_run_id() -> String {
-    current_test_run_id_from(std::env::var("NEXTEST_RUN_ID").ok().as_deref())
+    docker_current_test_run_id("redis-test")
 }
 
 fn current_test_run_id_from(run_id: Option<&str>) -> String {
-    run_id.filter(|value| !value.trim().is_empty()).map_or_else(
-        || format!("pid-{}", current_process_id()),
-        sanitize_container_name,
-    )
+    docker_current_test_run_id_from(run_id, "redis-test")
 }
 
 fn shared_container_name() -> String {
@@ -336,103 +267,6 @@ async fn resolve_host_port(container: &ContainerAsync<Redis>, internal_port: u16
     );
 }
 
-fn host_address_family(host: &str) -> Option<IpAddr> {
-    let normalized = host
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(host);
-    normalized.parse::<IpAddr>().ok()
-}
-
-fn detect_primary_ipv4_address() -> Option<String> {
-    let socket = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
-    socket.connect(("192.0.2.1", 80)).ok()?;
-    match socket.local_addr().ok()?.ip() {
-        IpAddr::V4(ip) if is_viable_host_ipv4(ip) => Some(ip.to_string()),
-        _ => None,
-    }
-}
-
-const fn is_viable_host_ipv4(ip: Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    !(ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        // RFC 2544 benchmarking / many local proxy virtual interfaces.
-        || (a == 198 && matches!(b, 18 | 19)))
-}
-
-fn push_candidate(candidates: &mut Vec<(String, u16)>, host: String, port: u16) {
-    if !candidates
-        .iter()
-        .any(|(existing_host, existing_port)| existing_host == &host && *existing_port == port)
-    {
-        candidates.push((host, port));
-    }
-}
-
-fn candidate_endpoints_for_host(
-    host: &str,
-    ipv4_port: Option<u16>,
-    ipv6_port: Option<u16>,
-) -> Vec<(String, u16)> {
-    let mut candidates = Vec::new();
-    let local_ipv4 = detect_primary_ipv4_address();
-
-    match host_address_family(host) {
-        Some(IpAddr::V4(_)) => {
-            if let Some(port) = ipv4_port {
-                push_candidate(&mut candidates, host.to_string(), port);
-                if host.starts_with("127.") {
-                    if let Some(local_ipv4) = local_ipv4.as_ref() {
-                        push_candidate(&mut candidates, local_ipv4.clone(), port);
-                    }
-                }
-            }
-            if let Some(port) = ipv6_port.filter(|port| Some(*port) != ipv4_port) {
-                push_candidate(&mut candidates, "::1".to_string(), port);
-            }
-        }
-        Some(IpAddr::V6(_)) => {
-            if let Some(port) = ipv6_port {
-                push_candidate(&mut candidates, host.to_string(), port);
-            }
-            if let Some(port) = ipv4_port.filter(|port| Some(*port) != ipv6_port) {
-                push_candidate(&mut candidates, "127.0.0.1".to_string(), port);
-                if let Some(local_ipv4) = local_ipv4.as_ref() {
-                    push_candidate(&mut candidates, local_ipv4.clone(), port);
-                }
-            }
-        }
-        None => {
-            if let Some(port) = ipv6_port.filter(|_| host == "localhost") {
-                push_candidate(&mut candidates, "::1".to_string(), port);
-            }
-            if let Some(port) = ipv4_port {
-                let ipv4_host = if host == "localhost" {
-                    "127.0.0.1".to_string()
-                } else {
-                    host.to_string()
-                };
-                push_candidate(&mut candidates, ipv4_host, port);
-                if host == "localhost" {
-                    if let Some(local_ipv4) = local_ipv4.as_ref() {
-                        push_candidate(&mut candidates, local_ipv4.clone(), port);
-                    }
-                }
-            }
-            if let Some(port) =
-                ipv6_port.filter(|port| Some(*port) != ipv4_port && host != "localhost")
-            {
-                push_candidate(&mut candidates, host.to_string(), port);
-            }
-        }
-    }
-
-    candidates
-}
-
 fn handle_cleanup_result<F>(
     cleaned_up: &mut bool,
     container_name: &str,
@@ -480,219 +314,8 @@ fn log_cleanup_warning_if_needed(warning: Option<String>) {
     }
 }
 
-fn cleanup_error_indicates_missing_container(err: &str) -> bool {
-    let err = err.to_ascii_lowercase();
-    err.contains("no such container") || err.contains("not found")
-}
-
-fn docker_rm_force(container_ref: &str) -> Result<(), String> {
-    docker_rm_force_with_program("docker", container_ref)
-}
-
-fn startup_error_is_retriable(err: &str) -> bool {
-    let err = err.to_ascii_lowercase();
-    err.contains("marked for removal") || err.contains("no such container")
-}
-
-fn startup_error_is_named_container_conflict(err: &str) -> bool {
-    let err = err.to_ascii_lowercase();
-    err.contains("already in use by container") || err.contains("conflict")
-}
-
-fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
-    let args = ["rm", "-v", "-f", container_ref];
-    let output = Command::new(program).args(args).output().map_err(|err| {
-        format!("failed to spawn `{program}` for `{container_ref}` cleanup: {err}")
-    })?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format_command_failure(program, &args, &output))
-}
-
-fn format_command_failure(program: &str, args: &[&str], output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let mut details = Vec::new();
-    if !stdout.is_empty() {
-        details.push(format!("stdout={stdout}"));
-    }
-    if !stderr.is_empty() {
-        details.push(format!("stderr={stderr}"));
-    }
-    let details = if details.is_empty() {
-        "no command output".to_string()
-    } else {
-        details.join(" ")
-    };
-
-    format!(
-        "command `{}` exited with status {}: {details}",
-        std::iter::once(program)
-            .chain(args.iter().copied())
-            .collect::<Vec<_>>()
-            .join(" "),
-        output.status
-    )
-}
-
-fn cleanup_orphaned_testcontainers(prefix: &str) {
-    let current_run_id = current_test_run_id();
-    let output = Command::new("docker")
-        .args([
-            "ps",
-            "-aq",
-            "--filter",
-            &format!("name=^{prefix}"),
-            "--filter",
-            "label=org.testcontainers.managed-by=testcontainers",
-        ])
-        .output();
-
-    let Ok(output) = output else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-
-    let ids = String::from_utf8_lossy(&output.stdout);
-    for container_id in ids.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let inspect = Command::new("docker")
-            .args([
-                "inspect",
-                container_id,
-                "--format",
-                &format!("{{{{index .Config.Labels \"{TEST_RUN_LABEL}\"}}}}"),
-            ])
-            .output();
-
-        let Ok(inspect) = inspect else {
-            continue;
-        };
-        if !inspect.status.success() {
-            continue;
-        }
-
-        let run_id = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
-        if run_id == current_run_id {
-            continue;
-        }
-
-        if let Err(err) = docker_rm_force(container_id) {
-            eprintln!(
-                "warning: failed to remove orphaned redis test container {container_id}: {err}"
-            );
-        }
-    }
-}
-
-fn cleanup_orphaned_run_lock_files(prefix: &str) {
-    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(prefix) || !file_name.ends_with(".lock") {
-            continue;
-        }
-
-        let Some(lock) = ProcessLock::try_acquire_path(&path) else {
-            continue;
-        };
-        drop(lock);
-
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-fn docker_named_container_belongs_to_current_run(container_name: &str) -> bool {
-    let output = Command::new("docker")
-        .args([
-            "inspect",
-            container_name,
-            "--format",
-            &format!("{{{{index .Config.Labels \"{TEST_RUN_LABEL}\"}}}}"),
-        ])
-        .output();
-
-    let Ok(output) = output else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-
-    String::from_utf8_lossy(&output.stdout).trim() == current_test_run_id()
-}
-
-fn docker_port_line_candidates(line: &str) -> Vec<(String, u16)> {
-    let Some((raw_host, raw_port)) = line.trim().rsplit_once(':') else {
-        return Vec::new();
-    };
-    let Ok(port) = raw_port.parse::<u16>() else {
-        return Vec::new();
-    };
-    let host = raw_host
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(raw_host);
-
-    let mut candidates = Vec::new();
-    match host {
-        "0.0.0.0" => {
-            push_candidate(&mut candidates, "127.0.0.1".to_string(), port);
-            if let Some(local_ipv4) = detect_primary_ipv4_address() {
-                push_candidate(&mut candidates, local_ipv4, port);
-            }
-        }
-        "::" => {
-            push_candidate(&mut candidates, "::1".to_string(), port);
-            push_candidate(&mut candidates, "127.0.0.1".to_string(), port);
-            if let Some(local_ipv4) = detect_primary_ipv4_address() {
-                push_candidate(&mut candidates, local_ipv4, port);
-            }
-        }
-        "" => {}
-        _ => push_candidate(&mut candidates, host.to_string(), port),
-    }
-    candidates
-}
-
-fn docker_port_candidates(container_name: &str, internal_port: u16) -> Option<Vec<(String, u16)>> {
-    let output = Command::new("docker")
-        .args(["port", container_name, &format!("{internal_port}/tcp")])
-        .output();
-
-    let Ok(output) = output else {
-        return None;
-    };
-    if !output.status.success() {
-        return None;
-    }
-
-    let mut candidates = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        for (host, port) in docker_port_line_candidates(line) {
-            push_candidate(&mut candidates, host, port);
-        }
-    }
-
-    if candidates.is_empty() {
-        None
-    } else {
-        Some(candidates)
-    }
-}
-
 async fn resolve_existing_named_redis_endpoint(container_name: &str) -> Option<(String, u16)> {
-    if !docker_named_container_belongs_to_current_run(container_name) {
+    if !docker_named_container_belongs_to_current_run(container_name, &current_test_run_id()) {
         return None;
     }
 
@@ -797,37 +420,18 @@ impl RedisContainer {
     }
 }
 
+async fn redis_run_lock(run_id: &str) -> Arc<ProcessLock> {
+    let run_id = run_id.to_string();
+    Arc::clone(
+        REDIS_RUN_LOCK
+            .get_or_init(|| async move { Arc::new(acquire_run_lock("redis", &run_id)) })
+            .await,
+    )
+}
+
 impl Drop for RedisContainer {
     fn drop(&mut self) {
         self.cleaned_up = true;
-    }
-}
-
-async fn acquire_docker_slot(
-    serializer: &'static LazyLock<Semaphore>,
-    slots: usize,
-    name: &str,
-    closed_message: &'static str,
-    panic_message: &'static str,
-) -> DockerSlotGuard {
-    let local_permit = serializer.acquire().await.expect(closed_message);
-    let prefix = name.to_string();
-
-    let process_lock = tokio::task::spawn_blocking(move || loop {
-        for slot in 0..slots {
-            let slot_name = format!("{prefix}-slot-{slot}");
-            if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
-                return lock;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    })
-    .await
-    .expect(panic_message);
-
-    DockerSlotGuard {
-        _local_permit: local_permit,
-        _process_lock: process_lock,
     }
 }
 
@@ -854,9 +458,10 @@ async fn acquire_docker_active_slot(name: &str) -> DockerSlotGuard {
 }
 
 async fn init_shared_redis_server() -> SharedRedisServer {
-    cleanup_orphaned_testcontainers("synctv-redis-");
-    cleanup_orphaned_run_lock_files("synctv-redis-run-");
     let run_id = current_test_run_id();
+    let run_lock = redis_run_lock(&run_id).await;
+    cleanup_orphaned_testcontainers("synctv-redis-", "redis", &run_id);
+    cleanup_orphaned_run_lock_files("synctv-redis-run-");
 
     let lock_name = format!("redis-run-{run_id}");
     let _startup_lock = tokio::task::spawn_blocking(move || loop {
@@ -936,6 +541,7 @@ async fn init_shared_redis_server() -> SharedRedisServer {
         name: container_name,
         host,
         port,
+        _run_lock: run_lock,
     }
 }
 
@@ -1002,6 +608,7 @@ pub async fn start_redis_url_with_label(label: &str) -> (RedisContainer, String)
 /// instance (e.g. fail-closed tests).  The shared container must never be
 /// terminated because other concurrent test processes depend on it.
 pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager) {
+    let run_lock = redis_run_lock(&current_test_run_id()).await;
     let container_name = format!(
         "synctv-redis-dedicated-{}-{}",
         current_process_id(),
@@ -1009,7 +616,8 @@ pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager)
             &std::env::var("NEXTEST_TEST_NAME")
                 .ok()
                 .or_else(|| std::thread::current().name().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            "redis-test"
         )
     );
     let container = tokio::time::timeout(
@@ -1033,6 +641,7 @@ pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager)
         name: container_name,
         host,
         port,
+        _run_lock: run_lock,
     });
 
     (RedisContainer::new(shared), manager)
@@ -1172,6 +781,13 @@ pub async fn wait_for_redis_ready(client: &redis::Client) {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
+    use crate::docker::{
+        detect_primary_ipv4_address, docker_rm_force_with_program, is_viable_host_ipv4,
+        lock_file_path, run_has_active_lock,
+    };
+
     use super::*;
 
     #[test]
@@ -1201,6 +817,19 @@ mod tests {
         let name = shared_container_name_from(Some("Run.Id/42"));
 
         assert_eq!(name, "synctv-redis-shared-run-id-42");
+    }
+
+    #[tokio::test]
+    async fn redis_run_lock_marks_current_run_active() {
+        let run_id = current_test_run_id();
+        let lock = redis_run_lock(&run_id).await;
+
+        assert!(
+            run_has_active_lock("redis", &run_id),
+            "held redis run lock must prevent orphan cleanup from treating the run as dead"
+        );
+
+        drop(lock);
     }
 
     #[test]

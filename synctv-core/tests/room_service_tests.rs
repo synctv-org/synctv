@@ -2236,7 +2236,7 @@ async fn test_kick_member_invalidates_permission_cache() {
     // Verify target is a member with permissions
     let perm_service = room_service.permission_service();
     let initial_perms = perm_service
-        .get_user_permissions(&room.id, &target.id)
+        .get_user_permissions_eventually_consistent(&room.id, &target.id)
         .await
         .unwrap();
     assert!(initial_perms.0 > 0, "Member should have some permissions");
@@ -2308,7 +2308,7 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
     // Cache permissions
     let perm_service = room_service.permission_service();
     let _cached = perm_service
-        .get_user_permissions(&room.id, &target.id)
+        .get_user_permissions_eventually_consistent(&room.id, &target.id)
         .await
         .unwrap();
 
@@ -2592,7 +2592,7 @@ async fn test_room_deletion_invalidates_caches() {
     // Cache permissions
     let perm_service = room_service.permission_service();
     let _cached = perm_service
-        .get_user_permissions(&room.id, &member.id)
+        .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
         .unwrap();
 

@@ -236,6 +236,7 @@ pub mod cache {
         register_counter_vec_with_registry, register_histogram_vec_with_registry, CounterVec,
         HistogramVec, REGISTRY,
     };
+    use prometheus::{register_gauge_vec_with_registry, GaugeVec};
 
     /// Cache hit counter
     pub static CACHE_HITS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
@@ -354,6 +355,78 @@ pub mod cache {
                 REGISTRY.clone()
             )
             .expect("Failed to register CACHE_LAG_FLUSH_TOTAL")
+        });
+
+    /// Version-fence coordinator operations.
+    pub static CACHE_FENCE_OPERATIONS_TOTAL: std::sync::LazyLock<CounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_counter_vec_with_registry!(
+                "cache_fence_operations_total",
+                "Total number of cache version-fence operations",
+                &["domain", "operation", "result"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register CACHE_FENCE_OPERATIONS_TOTAL")
+        });
+
+    /// Strong reads that bypassed cache and used PostgreSQL.
+    pub static CACHE_DB_FALLBACK_TOTAL: std::sync::LazyLock<CounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_counter_vec_with_registry!(
+                "cache_db_fallback_total",
+                "Total number of strong cache reads that fell back to PostgreSQL",
+                &["domain", "reason"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register CACHE_DB_FALLBACK_TOTAL")
+        });
+
+    /// Version-aware cache writes rejected because a newer value already exists.
+    pub static CACHE_STALE_WRITE_REJECT_TOTAL: std::sync::LazyLock<CounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_counter_vec_with_registry!(
+                "cache_stale_write_reject_total",
+                "Total number of stale version-aware cache writes rejected",
+                &["cache_type", "level"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register CACHE_STALE_WRITE_REJECT_TOTAL")
+        });
+
+    /// Pending version-fence writes by logical domain.
+    pub static CACHE_FENCE_PENDING: std::sync::LazyLock<GaugeVec> =
+        std::sync::LazyLock::new(|| {
+            register_gauge_vec_with_registry!(
+                "cache_fence_pending",
+                "Whether a cache version fence domain currently has a pending write",
+                &["domain"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register CACHE_FENCE_PENDING")
+        });
+
+    /// Read-time fence repair and DB/fence comparison outcomes.
+    pub static CACHE_FENCE_REPAIR_TOTAL: std::sync::LazyLock<CounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_counter_vec_with_registry!(
+                "cache_fence_repair_total",
+                "Total number of read-time cache fence repair outcomes",
+                &["domain", "result"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register CACHE_FENCE_REPAIR_TOTAL")
+        });
+
+    /// Latest DB-vs-fence patrol comparison by logical domain.
+    pub static CACHE_FENCE_DB_COMPARE: std::sync::LazyLock<GaugeVec> =
+        std::sync::LazyLock::new(|| {
+            register_gauge_vec_with_registry!(
+                "cache_fence_db_compare",
+                "Latest cache fence patrol comparison with PostgreSQL version (1 when observed)",
+                &["domain", "relation"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register CACHE_FENCE_DB_COMPARE")
         });
 }
 

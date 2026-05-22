@@ -416,6 +416,67 @@ async fn test_playback_state_cache_invalidation_on_update() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
+    let (_container, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("strong_playback_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Strong Playback Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playback_service = room_service.playback_service();
+
+    let cached_state = playback_service
+        .get_state_eventually_consistent(&room.id)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        r#"UPDATE room_playback_state
+           SET "position" = $2, version = version + 1, updated_at = NOW()
+           WHERE room_id = $1"#,
+    )
+    .bind(room.id)
+    .bind(77.0_f64)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let eventual_state = playback_service
+        .get_state_eventually_consistent(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        eventual_state.version, cached_state.version,
+        "eventual path should demonstrate the stale L1 fixture is still present"
+    );
+
+    let strong_state = playback_service.get_state(&room.id).await.unwrap();
+    assert!(
+        strong_state.version > cached_state.version,
+        "strong get_state must bypass stale L1"
+    );
+    assert!(
+        (strong_state.position - 77.0).abs() < f64::EPSILON,
+        "strong get_state must read the DB-updated playback position"
+    );
+}
+
 // Test 6: L2 TTL Enforcement
 
 /// Test that L2 cache entries have proper TTL.

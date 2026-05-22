@@ -258,7 +258,7 @@ async fn test_switch_media_resets_position() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
     // First seek to a non-zero position
     let playback_service = room_service.playback_service();
@@ -324,7 +324,7 @@ async fn test_switch_media_rejects_target() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
     let result = room_service
         .playback_service()
@@ -383,7 +383,7 @@ async fn test_switch_media_rejects_inactive_creator() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
     user_repo
         .ban(
@@ -448,7 +448,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
     let playback_service = room_service.playback_service();
     playback_service
@@ -658,7 +658,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             updated_at: Utc::now(),
             version: 0,
         };
-        media_repo.create(&media).await.unwrap();
+        let media = media_repo.create(&media).await.unwrap();
         media_ids.push(media.id);
     }
 
@@ -736,7 +736,7 @@ async fn test_play_next_at_end_of_playlist() {
             updated_at: Utc::now(),
             version: 0,
         };
-        media_repo.create(&media).await.unwrap();
+        let media = media_repo.create(&media).await.unwrap();
         media_ids.push(media.id);
     }
 
@@ -807,7 +807,7 @@ async fn test_play_next_with_loop_enabled() {
             updated_at: Utc::now(),
             version: 0,
         };
-        media_repo.create(&media).await.unwrap();
+        let media = media_repo.create(&media).await.unwrap();
         media_ids.push(media.id);
     }
 
@@ -999,7 +999,7 @@ async fn test_state_consistency_after_mixed_operations() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
     let playback_service = room_service.playback_service();
 

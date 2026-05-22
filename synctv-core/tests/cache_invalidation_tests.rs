@@ -730,7 +730,7 @@ async fn test_cache_invalidation_after_commit() {
     let room_repo = RoomRepository::new(pool.clone());
 
     let user_id = UserId::new();
-    let _user = user_repo
+    let user = user_repo
         .create(&User {
             id: user_id,
             username: "test_user".to_string(),
@@ -753,9 +753,10 @@ async fn test_cache_invalidation_after_commit() {
         })
         .await
         .expect("Failed to create user");
+    let user_id = user.id;
 
     let room_id = RoomId::new();
-    let _room = room_repo
+    let room = room_repo
         .create(&Room {
             id: room_id,
             name: "Test Room".to_string(),
@@ -772,6 +773,7 @@ async fn test_cache_invalidation_after_commit() {
         })
         .await
         .expect("Failed to create room");
+    let room_id = room.id;
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let _member = member_repo
@@ -891,7 +893,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let room_repo = RoomRepository::new(pool.clone());
 
     let user_id = UserId::new();
-    let _user = user_repo
+    let user = user_repo
         .create(&User {
             id: user_id,
             username: "test_user_rollback".to_string(),
@@ -914,9 +916,10 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
         })
         .await
         .expect("Failed to create user");
+    let user_id = user.id;
 
     let room_id = RoomId::new();
-    let _room = room_repo
+    let room = room_repo
         .create(&Room {
             id: room_id,
             name: "Test Room Rollback".to_string(),
@@ -933,6 +936,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
         })
         .await
         .expect("Failed to create room");
+    let room_id = room.id;
 
     // Populate cache by reading the room
     let room_before = room_service

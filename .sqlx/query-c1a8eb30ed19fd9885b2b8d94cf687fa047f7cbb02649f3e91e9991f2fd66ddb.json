@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM room_members AS target\n             WHERE target.room_id = $1\n               AND target.user_id = $3\n               AND EXISTS (\n                   SELECT 1 FROM room_members AS actor\n                   WHERE actor.room_id = $1\n                     AND actor.user_id = $2\n                     AND actor.role < target.role\n             )\n             RETURNING target.room_id as \"room_id: RoomId\",\n                       target.user_id as \"user_id: UserId\",\n                       target.version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c1a8eb30ed19fd9885b2b8d94cf687fa047f7cbb02649f3e91e9991f2fd66ddb"
+}

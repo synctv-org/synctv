@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE room_settings\n                SET value = $2, version = $4, updated_at = NOW()\n                WHERE room_id = $1 AND key = '_settings' AND version = $3\n                RETURNING version\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "205de9557f28da9be726690b8905b45bbe5948683a10d1fdfa29c25b411c1d36"
+}

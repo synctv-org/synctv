@@ -28,7 +28,7 @@ async fn create_test_pool() -> TestDatabase {
 }
 
 /// Create a test user in the database (required for FK constraints)
-async fn create_test_user(pool: &PgPool, user_id: &UserId) {
+async fn create_test_user(pool: &PgPool, user_id: &UserId) -> UserId {
     let username = format!("test_user_{user_id}");
     let user = User {
         id: *user_id,
@@ -54,7 +54,8 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     user_repo
         .create(&user)
         .await
-        .expect("Failed to create test user");
+        .expect("Failed to create test user")
+        .id
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -98,18 +99,15 @@ async fn test_deadlock_detection_opposite_lock_order() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(pool, &creator_id).await;
+    let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user1 = UserId::new();
-    let user2 = UserId::new();
-    create_test_user(pool, &user1).await;
-    create_test_user(pool, &user2).await;
+    let user1 = create_test_user(pool, &UserId::new()).await;
+    let user2 = create_test_user(pool, &UserId::new()).await;
 
     let member1 = make_member(room.id, user1);
     let member2 = make_member(room.id, user2);
@@ -244,16 +242,14 @@ async fn test_deadlock_with_for_update_nowait() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(pool, &creator_id).await;
+    let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user_id = UserId::new();
-    create_test_user(pool, &user_id).await;
+    let user_id = create_test_user(pool, &UserId::new()).await;
     let member = make_member(room.id, user_id);
     member_repo
         .add(&member)
@@ -356,18 +352,15 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(pool, &creator_id).await;
+    let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user1 = UserId::new();
-    let user2 = UserId::new();
-    create_test_user(pool, &user1).await;
-    create_test_user(pool, &user2).await;
+    let user1 = create_test_user(pool, &UserId::new()).await;
+    let user2 = create_test_user(pool, &UserId::new()).await;
 
     // Ensure consistent ordering
     let (first_user, second_user) = if user1 < user2 {
@@ -492,16 +485,14 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(pool, &creator_id).await;
+    let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user_id = UserId::new();
-    create_test_user(pool, &user_id).await;
+    let user_id = create_test_user(pool, &UserId::new()).await;
     let member = make_member(room.id, user_id);
     member_repo
         .add(&member)

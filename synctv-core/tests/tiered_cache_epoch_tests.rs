@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::sync::Arc;
-use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped};
+use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped, Versioned};
 use synctv_core::Result;
 
 // Test types
@@ -46,6 +46,18 @@ struct TestValue {
 impl Timestamped for TestValue {
     fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.updated_at
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct VersionedTestValue {
+    name: String,
+    version: i64,
+}
+
+impl Versioned for VersionedTestValue {
+    fn cache_version(&self) -> i64 {
+        self.version
     }
 }
 
@@ -122,6 +134,17 @@ impl CacheL2Backend for DelayedL2 {
         Ok(true)
     }
 
+    async fn set_if_version_at_least(
+        &self,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        _version: i64,
+    ) -> Result<bool> {
+        self.set(key, json, ttl_secs).await?;
+        Ok(true)
+    }
+
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
         self.store
             .write()
@@ -189,4 +212,52 @@ async fn test_epoch_prevents_stale_l1_write() {
         l1_result.is_none(),
         "Stale value should NOT have been written to L1 due to epoch guard"
     );
+}
+
+#[tokio::test]
+async fn test_l2_versioned_write_does_not_downgrade_newer_l1() {
+    let l2 = Arc::new(DelayedL2::new(std::time::Duration::ZERO));
+    let cache: TieredCache<TestId, VersionedTestValue> = TieredCache::new(
+        l2,
+        100,
+        5,
+        300,
+        "test:versioned:".to_string(),
+        "test_versioned".to_string(),
+    )
+    .unwrap();
+    let key = TestId("k1".to_string());
+
+    cache
+        .set_if_version_at_least(
+            &key,
+            VersionedTestValue {
+                name: "newer-local".to_string(),
+                version: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+    let updated = cache
+        .set_if_version_at_least(
+            &key,
+            VersionedTestValue {
+                name: "older-reload".to_string(),
+                version: 9,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !updated,
+        "L1 should reject an older version even when L2 accepts the write"
+    );
+    let cached = cache
+        .get_l1(&key)
+        .await
+        .expect("newer L1 entry should remain cached");
+    assert_eq!(cached.version, 10);
+    assert_eq!(cached.name, "newer-local");
 }

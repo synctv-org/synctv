@@ -27,6 +27,14 @@ pub trait Timestamped {
     fn updated_at(&self) -> chrono::DateTime<chrono::Utc>;
 }
 
+/// Trait for cache values that carry a domain-level consistency version.
+///
+/// This version is the token compared against version fences. It should
+/// usually be the database optimistic-lock version for the cached resource.
+pub trait Versioned {
+    fn cache_version(&self) -> i64;
+}
+
 /// Trait for cache keys that can be converted to/from string representations.
 ///
 /// This is needed for L2 key construction and for cross-replica
@@ -272,6 +280,53 @@ where
             .observe(start.elapsed().as_secs_f64());
         tracing::debug!(key = %key, cache_type = %self.cache_type, "Cache miss");
         Ok(None)
+    }
+
+    /// Get a value from local L1 only.
+    pub async fn get_l1(&self, key: &K) -> Option<V> {
+        self.l1_cache.get(key).await
+    }
+
+    /// Get a value from L2 only and backfill L1 if the fetch was not racing
+    /// with an invalidation.
+    pub async fn get_l2(&self, key: &K) -> Result<Option<V>> {
+        if !self.l2.is_active() {
+            return Ok(None);
+        }
+
+        let l2 = self.l2.clone();
+        let l2_prefix = self.key_prefix.clone();
+        let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
+        let cache_type = self.cache_type.clone();
+        let key_epoch_before = self.key_epochs.get(key).map_or(0, |v| *v);
+        let global_epoch_before = self.global_epoch.load(Ordering::Acquire);
+
+        let json = l2.get_scoped(&l2_prefix, &redis_key).await?;
+        let Some(json) = json else {
+            return Ok(None);
+        };
+
+        let value: V = serde_json::from_str(&json).map_err(|e| {
+            Error::Internal(format!("Failed to deserialize cached {cache_type}: {e}"))
+        })?;
+
+        let key_epoch_after = self.key_epochs.get(key).map_or(0, |v| *v);
+        let global_epoch_after = self.global_epoch.load(Ordering::Acquire);
+        if key_epoch_after == key_epoch_before && global_epoch_after == global_epoch_before {
+            self.l1_cache.insert(key.clone(), value.clone()).await;
+        } else {
+            tracing::debug!(
+                key = %key,
+                cache_type = %self.cache_type,
+                key_epoch_before,
+                key_epoch_after,
+                global_epoch_before,
+                global_epoch_after,
+                "Skipping L1 write after L2-only fetch: invalidation arrived mid-flight"
+            );
+        }
+
+        Ok(Some(value))
     }
 
     /// Set a value in cache.
@@ -537,6 +592,16 @@ where
         tracing::debug!(cache_type = %self.cache_type, "L1 cache cleared");
     }
 
+    #[must_use]
+    pub fn entry_count(&self) -> u64 {
+        self.l1_cache.entry_count()
+    }
+
+    #[must_use]
+    pub fn weighted_size(&self) -> u64 {
+        self.l1_cache.weighted_size()
+    }
+
     /// Prevent unbounded growth of the per-key epoch map.
     ///
     /// When the map exceeds `max_epoch_entries`, we clear the entire map.
@@ -660,6 +725,105 @@ where
                     new_ts = new_ts,
                     cache_type = %self.cache_type,
                     "Skipping cache update - L1 data is not newer"
+                );
+                return Ok(false);
+            }
+        }
+
+        self.l1_cache.insert(key.clone(), value).await;
+        Ok(true)
+    }
+}
+
+/// Additional methods for `TieredCache` when the value type supports
+/// domain-version comparison.
+impl<K, V> TieredCache<K, V>
+where
+    K: CacheKey,
+    V: Clone + Serialize + DeserializeOwned + Versioned + Send + Sync + 'static,
+{
+    /// Set a value in cache only if its version is not older than existing data.
+    ///
+    /// This method uses Redis as the cross-replica arbitration point. It is the
+    /// companion write path for version-fence reads.
+    pub async fn set_if_version_at_least(&self, key: &K, value: V) -> Result<bool> {
+        let version = value.cache_version();
+
+        if self.l2.is_active() {
+            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
+            let mut l2_value = serde_json::to_value(&value).map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to serialize {} for caching: {e}",
+                    self.cache_type
+                ))
+            })?;
+            if let Some(object) = l2_value.as_object_mut() {
+                object.insert("cache_version".to_string(), serde_json::json!(version));
+            }
+            let new_json = serde_json::to_string(&l2_value).map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to serialize {} for caching: {e}",
+                    self.cache_type
+                ))
+            })?;
+
+            let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
+
+            let was_set = self
+                .l2
+                .set_if_version_at_least_scoped(
+                    &self.key_prefix,
+                    &redis_key,
+                    &new_json,
+                    ttl_seconds,
+                    version,
+                )
+                .await?;
+
+            if !was_set {
+                crate::metrics::cache::CACHE_STALE_WRITE_REJECT_TOTAL
+                    .with_label_values(&[&self.cache_type, "l2"])
+                    .inc();
+                tracing::debug!(
+                    key = %key,
+                    version,
+                    cache_type = %self.cache_type,
+                    "Skipping cache update - L2 data has newer version"
+                );
+                return Ok(false);
+            }
+
+            if let Some(existing) = self.l1_cache.get(key).await {
+                if version < existing.cache_version() {
+                    crate::metrics::cache::CACHE_STALE_WRITE_REJECT_TOTAL
+                        .with_label_values(&[&self.cache_type, "l1"])
+                        .inc();
+                    tracing::debug!(
+                        key = %key,
+                        existing_version = existing.cache_version(),
+                        version,
+                        cache_type = %self.cache_type,
+                        "Skipping L1 cache update after L2 write - L1 data has newer version"
+                    );
+                    return Ok(false);
+                }
+            }
+
+            self.l1_cache.insert(key.clone(), value).await;
+            return Ok(true);
+        }
+
+        if let Some(existing) = self.l1_cache.get(key).await {
+            if version < existing.cache_version() {
+                crate::metrics::cache::CACHE_STALE_WRITE_REJECT_TOTAL
+                    .with_label_values(&[&self.cache_type, "l1"])
+                    .inc();
+                tracing::debug!(
+                    key = %key,
+                    existing_version = existing.cache_version(),
+                    version,
+                    cache_type = %self.cache_type,
+                    "Skipping cache update - L1 data has newer version"
                 );
                 return Ok(false);
             }

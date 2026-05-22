@@ -1,0 +1,75 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n             SET admin_removed_permissions = admin_removed_permissions | $3,\n                 version = $6\n             WHERE room_id = $1 AND user_id = $2 AND role = $4 AND version = $5\n             RETURNING room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       role as \"role: RoomRole\",\n                       added_permissions,\n                       removed_permissions,\n                       admin_added_permissions,\n                       admin_removed_permissions,\n                       joined_at,\n                       version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "role: RoomRole",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "added_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "removed_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "admin_added_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "joined_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1d2880a08e70b681423c9bdad9d3340db6622e3ec2f6ead86d1028a444b1b4d2"
+}

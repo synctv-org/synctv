@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(\n                 (SELECT version FROM room_members WHERE room_id = $1 AND user_id = $2),\n                 (SELECT version FROM room_member_versions\n                  WHERE room_id = $1 AND user_id = $2 AND is_member = FALSE),\n                 0\n             ) as \"version!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "805b30e13d011263e24a6c49943395bea04d035537e74ebdb7dfe5db10a6d271"
+}

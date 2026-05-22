@@ -189,7 +189,7 @@ async fn test_admin_cannot_delete_room() {
     );
 
     let admin_perms = permission_service
-        .get_user_permissions(&room.id, &admin_user.id)
+        .get_user_permissions_eventually_consistent(&room.id, &admin_user.id)
         .await
         .expect("Failed to get permissions");
 
@@ -355,7 +355,7 @@ async fn test_member_cannot_change_settings() {
     );
 
     let member_perms = permission_service
-        .get_user_permissions(&room.id, &member_user.id)
+        .get_user_permissions_eventually_consistent(&room.id, &member_user.id)
         .await
         .expect("Failed to get permissions");
 
@@ -549,12 +549,12 @@ async fn test_creator_role_not_global() {
     );
 
     let perms_a = permission_service
-        .get_user_permissions(&room_a.id, &creator_user.id)
+        .get_user_permissions_eventually_consistent(&room_a.id, &creator_user.id)
         .await
         .expect("Failed to get Room A permissions");
 
     let perms_b = permission_service
-        .get_user_permissions(&room_b.id, &creator_user.id)
+        .get_user_permissions_eventually_consistent(&room_b.id, &creator_user.id)
         .await
         .expect("Failed to get Room B permissions");
 
@@ -886,7 +886,7 @@ async fn test_member_without_send_chat_cannot_send() {
     );
 
     let perms = permission_service
-        .get_user_permissions(&room.id, &muted_user.id)
+        .get_user_permissions_eventually_consistent(&room.id, &muted_user.id)
         .await
         .expect("Failed to get permissions");
 

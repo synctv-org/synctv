@@ -520,6 +520,15 @@ async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
         member_repo.is_member(&room.id, &member.id).await.unwrap(),
         "Member should be active again after rejoin"
     );
+    let rejoined_member = member_repo
+        .get(&room.id, &member.id)
+        .await
+        .unwrap()
+        .expect("rejoined member should be readable");
+    assert!(
+        rejoined_member.version >= 1,
+        "rejoined member version must satisfy the permission fence advanced by the kick"
+    );
 }
 
 /// Test that `delete_active_membership` handles the case atomically where a membership is deleted

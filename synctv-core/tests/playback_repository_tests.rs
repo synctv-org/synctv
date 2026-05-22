@@ -196,6 +196,88 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_find_playback_for_creator_locks_rows_until_transaction_commit() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_pb_creator_lock"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room PB Creator Lock", &owner.id))
+        .await
+        .unwrap();
+    let playlist = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Creator Lock Playlist".to_string(),
+            parent_id: None,
+            position: 0.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Creator Lock Media".to_string(),
+            position: 0.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/creator-lock.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    let state = playback_repo.update(&state).await.unwrap();
+
+    let mut tx = playback_repo.pool().begin().await.unwrap();
+    let locked = playback_repo
+        .find_playback_for_creator_with_executor(&owner.id, &mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(locked.len(), 1);
+    assert_eq!(locked[0].room_id, room.id);
+
+    let repo_clone = playback_repo.clone();
+    let mut concurrent = state.clone();
+    concurrent.position = 99.0;
+    let update_handle = tokio::spawn(async move { repo_clone.update(&concurrent).await });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !update_handle.is_finished(),
+        "FOR UPDATE lock should block concurrent playback updates until commit"
+    );
+
+    tx.commit().await.unwrap();
+    let updated = update_handle.await.unwrap().unwrap();
+    assert_f64_eq(updated.position, 99.0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_playback_state_rejects_cross_room_media_and_playlist_references() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

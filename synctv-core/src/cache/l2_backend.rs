@@ -70,6 +70,54 @@ static SET_IF_NEWER_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     )
 });
 
+static SET_IF_VERSION_AT_LEAST_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local existing = redis.call('GET', KEYS[1])
+        if existing then
+            local ok, obj = pcall(cjson.decode, existing)
+            if ok and obj then
+                local existing_version = tonumber(obj.cache_version or obj.version)
+                local new_version = tonumber(ARGV[3])
+                if not new_version then
+                    return 0
+                end
+                if existing_version and new_version < existing_version then
+                    return 0
+                end
+            end
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+        return 1
+        ",
+    )
+});
+
+static SET_IF_VERSION_AT_LEAST_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local existing = redis.call('GET', KEYS[1])
+        if existing then
+            local ok, obj = pcall(cjson.decode, existing)
+            if ok and obj then
+                local existing_version = tonumber(obj.cache_version or obj.version)
+                local new_version = tonumber(ARGV[3])
+                if not new_version then
+                    return 0
+                end
+                if existing_version and new_version < existing_version then
+                    return 0
+                end
+            end
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+        redis.call('ZADD', KEYS[2], ARGV[4], KEYS[1])
+        redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[5])
+        return 1
+        ",
+    )
+});
+
 fn json_with_updated_at_ms(json: &str, updated_at_ms: i64) -> Result<String> {
     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
         Error::Internal(format!(
@@ -85,6 +133,25 @@ fn json_with_updated_at_ms(json: &str, updated_at_ms: i64) -> Result<String> {
     serde_json::to_string(&value).map_err(|error| {
         Error::Internal(format!(
             "Failed to serialize L2 set-if-newer JSON payload: {error}"
+        ))
+    })
+}
+
+fn json_with_cache_version(json: &str, version: i64) -> Result<String> {
+    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
+        Error::Internal(format!(
+            "Failed to parse L2 set-if-version JSON payload: {error}"
+        ))
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "cache_version".to_string(),
+            serde_json::Value::Number(version.into()),
+        );
+    }
+    serde_json::to_string(&value).map_err(|error| {
+        Error::Internal(format!(
+            "Failed to serialize L2 set-if-version JSON payload: {error}"
         ))
     })
 }
@@ -246,6 +313,32 @@ pub trait CacheL2Backend: Send + Sync {
         new_ts_millis: i64,
     ) -> Result<bool> {
         self.set_if_newer(key, json, ttl_secs, new_ts_millis).await
+    }
+
+    /// Atomically set a value only if its domain version is at least the
+    /// existing cached value's version.
+    ///
+    /// Unlike timestamp freshness, this is intended for optimistic-lock versions
+    /// and version-fence reads where the version is the consistency token.
+    async fn set_if_version_at_least(
+        &self,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        version: i64,
+    ) -> Result<bool>;
+
+    /// Atomically set a versioned value within a logical namespace.
+    async fn set_if_version_at_least_scoped(
+        &self,
+        _prefix: &str,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        version: i64,
+    ) -> Result<bool> {
+        self.set_if_version_at_least(key, json, ttl_secs, version)
+            .await
     }
 
     /// Delete all keys matching the given prefix.
@@ -744,6 +837,67 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(result == 1)
     }
 
+    async fn set_if_version_at_least(
+        &self,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        version: i64,
+    ) -> Result<bool> {
+        let mut conn = self
+            .conn("get L2 cache connection for set_if_version_at_least")
+            .await?;
+        let json = json_with_cache_version(json, version)?;
+
+        let result: i64 = run_l2_redis_op(
+            self.operation_timeout(),
+            "run set_if_version_at_least Lua script",
+            SET_IF_VERSION_AT_LEAST_SCRIPT
+                .key(key)
+                .arg(&json)
+                .arg(ttl_secs.cast_signed())
+                .arg(version)
+                .invoke_async(&mut conn),
+        )
+        .await?;
+
+        Ok(result == 1)
+    }
+
+    async fn set_if_version_at_least_scoped(
+        &self,
+        prefix: &str,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        version: i64,
+    ) -> Result<bool> {
+        let mut conn = self
+            .conn("get scoped L2 cache connection for set_if_version_at_least")
+            .await?;
+        let index_key = Self::namespace_index_key(prefix);
+        let expires_at = Self::expiry_timestamp(ttl_secs);
+        let now = Self::now_unix_seconds();
+        let json = json_with_cache_version(json, version)?;
+
+        let result: i64 = run_l2_redis_op(
+            self.operation_timeout(),
+            "run scoped set_if_version_at_least Lua script",
+            SET_IF_VERSION_AT_LEAST_SCOPED_SCRIPT
+                .key(key)
+                .key(&index_key)
+                .arg(&json)
+                .arg(ttl_secs.cast_signed())
+                .arg(version)
+                .arg(expires_at)
+                .arg(now)
+                .invoke_async(&mut conn),
+        )
+        .await?;
+
+        Ok(result == 1)
+    }
+
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
         let mut conn = self
             .conn("get L2 cache connection for prefix delete")
@@ -835,6 +989,16 @@ impl CacheL2Backend for NoopCacheL2 {
         _new_ts_millis: i64,
     ) -> Result<bool> {
         // No L2 — always allow the caller to proceed with L1 update
+        Ok(true)
+    }
+
+    async fn set_if_version_at_least(
+        &self,
+        _key: &str,
+        _json: &str,
+        _ttl_secs: u64,
+        _version: i64,
+    ) -> Result<bool> {
         Ok(true)
     }
 
@@ -940,6 +1104,17 @@ mod tests {
             _json: &str,
             _ttl_secs: u64,
             _new_ts_millis: i64,
+        ) -> Result<bool> {
+            tokio::time::sleep(self.delay).await;
+            Ok(true)
+        }
+
+        async fn set_if_version_at_least(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _version: i64,
         ) -> Result<bool> {
             tokio::time::sleep(self.delay).await;
             Ok(true)

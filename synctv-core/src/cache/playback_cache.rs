@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use crate::cache::l2_backend::CacheL2Backend;
-use crate::cache::tiered::{TieredCache, Timestamped};
+use crate::cache::tiered::{TieredCache, Timestamped, Versioned};
 use crate::models::{RoomId, RoomPlaybackState};
 use crate::Result;
 
@@ -24,6 +24,12 @@ use crate::Result;
 impl Timestamped for RoomPlaybackState {
     fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.updated_at
+    }
+}
+
+impl Versioned for RoomPlaybackState {
+    fn cache_version(&self) -> i64 {
+        self.version
     }
 }
 
@@ -67,6 +73,14 @@ impl PlaybackStateCache {
         self.inner.get(room_id).await
     }
 
+    pub async fn get_l1(&self, room_id: &RoomId) -> Option<RoomPlaybackState> {
+        self.inner.get_l1(room_id).await
+    }
+
+    pub async fn get_l2(&self, room_id: &RoomId) -> Result<Option<RoomPlaybackState>> {
+        self.inner.get_l2(room_id).await
+    }
+
     /// Set playback state in cache
     ///
     /// Updates both L1 and L2 caches.
@@ -80,6 +94,16 @@ impl PlaybackStateCache {
     /// This prevents race conditions where stale data overwrites fresh data.
     pub async fn set_if_newer(&self, room_id: &RoomId, state: RoomPlaybackState) -> Result<bool> {
         self.inner.set_if_newer(room_id, state).await
+    }
+
+    /// Set playback state using the optimistic-lock version as the freshness
+    /// token. This is the strong-consistency write path used with version fences.
+    pub async fn set_if_version_at_least(
+        &self,
+        room_id: &RoomId,
+        state: RoomPlaybackState,
+    ) -> Result<bool> {
+        self.inner.set_if_version_at_least(room_id, state).await
     }
 
     /// Invalidate playback state from cache
@@ -204,6 +228,39 @@ mod tests {
         assert!(was_set, "Newer state should be accepted");
 
         // Verify cache has the newer state
+        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        assert_eq!(retrieved.version, 10);
+    }
+
+    #[tokio::test]
+    async fn test_set_if_version_at_least_rejects_lower_version() {
+        let cache = PlaybackStateCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
+
+        let room_id = create_test_room_id("room1");
+        let mut state1 = create_test_state("room1");
+        state1.version = 10;
+        cache
+            .set_if_version_at_least(&room_id, state1.clone())
+            .await
+            .unwrap();
+
+        let mut older_state = state1.clone();
+        older_state.version = 9;
+        older_state.updated_at = chrono::Utc::now() + chrono::Duration::seconds(60);
+
+        let was_set = cache
+            .set_if_version_at_least(&room_id, older_state)
+            .await
+            .unwrap();
+        assert!(!was_set, "lower version must be rejected");
+
         let retrieved = cache.get(&room_id).await.unwrap().unwrap();
         assert_eq!(retrieved.version, 10);
     }

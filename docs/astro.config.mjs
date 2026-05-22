@@ -391,6 +391,11 @@ export default defineConfig({
               slug: 'develop/realtime-resource-observation',
             },
             {
+              label: '缓存一致性开发指南',
+              translations: { en: 'Cache Consistency Development Guide' },
+              slug: 'develop/cache-consistency',
+            },
+            {
               label: 'OpenAPI 文档入口',
               translations: { en: 'OpenAPI Access' },
               slug: 'reference/openapi',

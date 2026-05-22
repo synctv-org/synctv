@@ -12,7 +12,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    cache::{CacheInvalidationRuntime, InvalidationMessage},
+    cache::{
+        CacheDomain, CacheInvalidationRuntime, ConsistencyCoordinator, InvalidationMessage,
+        VersionFenceReservation, VersionFenceStore,
+    },
     models::{
         PermissionBits, RoomId, RoomMember, RoomMemberWithUser, RoomRole, RoomSettings, UserId,
     },
@@ -20,6 +23,42 @@ use crate::{
     service::SettingsRegistry,
     Error, Result,
 };
+
+#[derive(Debug, Clone, Copy)]
+struct CachedPermissions {
+    bits: PermissionBits,
+    user_version: i64,
+    room_settings_version: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PermissionCacheFence {
+    user_version: i64,
+    room_settings_version: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PermissionWriteFence {
+    domain: CacheDomain,
+    reservation: Option<VersionFenceReservation>,
+    version: i64,
+}
+
+impl PermissionWriteFence {
+    #[must_use]
+    pub(crate) const fn version(&self) -> i64 {
+        self.version
+    }
+}
+
+#[cfg(test)]
+fn cached_permissions_for_test(bits: PermissionBits) -> CachedPermissions {
+    CachedPermissions {
+        bits,
+        user_version: 0,
+        room_settings_version: 0,
+    }
+}
 
 /// Runtime permission defaults captured at the composition boundary of a check.
 ///
@@ -163,12 +202,12 @@ pub struct PermissionService {
     member_repo: RoomMemberRepository,
     room_repo: RoomRepository,
     room_settings_repo: Option<RoomSettingsRepository>,
-    cache: Arc<moka::future::Cache<String, PermissionBits>>,
+    cache: Arc<moka::future::Cache<String, CachedPermissions>>,
     /// Short-term fallback cache used during degraded mode (Pub/Sub lag).
     /// Has a much shorter TTL (30s) than the main cache to balance:
     /// - Reducing database load during degraded periods
     /// - Not serving stale data for too long when invalidation is unreliable
-    degraded_cache: Arc<moka::future::Cache<String, PermissionBits>>,
+    degraded_cache: Arc<moka::future::Cache<String, CachedPermissions>>,
     settings_registry: Option<Arc<SettingsRegistry>>,
     /// Optional invalidation service for cross-replica cache sync
     invalidation_service: Arc<SharedInvalidationService>,
@@ -181,6 +220,31 @@ pub struct PermissionService {
     degradation_started: Arc<parking_lot::Mutex<Option<Instant>>>,
     /// Shared lifecycle state for invalidation listener tasks.
     invalidation_runtime: Arc<PermissionInvalidationRuntime>,
+    version_fence: Arc<dyn VersionFenceStore>,
+    consistency: ConsistencyCoordinator,
+}
+
+#[derive(Clone)]
+pub struct PermissionServiceRuntime {
+    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub cache_size: u64,
+    pub cache_ttl_secs: u64,
+    pub room_settings_repo: Option<RoomSettingsRepository>,
+    pub invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
+}
+
+impl Default for PermissionServiceRuntime {
+    fn default() -> Self {
+        Self {
+            settings_registry: None,
+            cache_size: PermissionService::DEFAULT_CACHE_SIZE,
+            cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
+            room_settings_repo: None,
+            invalidation_service: None,
+            version_fence: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for PermissionService {
@@ -216,6 +280,8 @@ impl PermissionService {
         cache_size: u64,
         cache_ttl_secs: u64,
     ) -> Self {
+        let version_fence = Arc::new(crate::cache::NoopVersionFenceStore);
+
         Self {
             member_repo,
             room_repo,
@@ -240,6 +306,8 @@ impl PermissionService {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
+            version_fence: version_fence.clone(),
+            consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
 
@@ -249,29 +317,29 @@ impl PermissionService {
     pub fn new_with_runtime(
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
-        settings_registry: Option<Arc<SettingsRegistry>>,
-        cache_size: u64,
-        cache_ttl_secs: u64,
-        room_settings_repo: Option<RoomSettingsRepository>,
-        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+        runtime: PermissionServiceRuntime,
     ) -> Self {
+        let version_fence = runtime
+            .version_fence
+            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
+
         Self {
             member_repo,
             room_repo,
-            room_settings_repo,
+            room_settings_repo: runtime.room_settings_repo,
             cache: Arc::new(
-                moka::future::CacheBuilder::new(cache_size)
-                    .time_to_live(Duration::from_secs(cache_ttl_secs))
+                moka::future::CacheBuilder::new(runtime.cache_size)
+                    .time_to_live(Duration::from_secs(runtime.cache_ttl_secs))
                     .build(),
             ),
             degraded_cache: Arc::new(
-                moka::future::CacheBuilder::new(cache_size)
+                moka::future::CacheBuilder::new(runtime.cache_size)
                     .time_to_live(Duration::from_secs(Self::DEGRADED_CACHE_TTL_SECS))
                     .build(),
             ),
-            settings_registry,
+            settings_registry: runtime.settings_registry,
             invalidation_service: Arc::new(SharedInvalidationService {
-                service: parking_lot::RwLock::new(invalidation_service),
+                service: parking_lot::RwLock::new(runtime.invalidation_service),
             }),
             cache_degraded: Arc::new(AtomicBool::new(false)),
             last_flush_time: Arc::new(parking_lot::Mutex::new(
@@ -281,6 +349,8 @@ impl PermissionService {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
+            version_fence: version_fence.clone(),
+            consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
 
@@ -304,11 +374,13 @@ impl PermissionService {
         Self::new_with_runtime(
             member_repo,
             room_repo,
-            settings_registry,
-            cache_size,
-            cache_ttl_secs,
-            None,
-            Some(invalidation_service),
+            PermissionServiceRuntime {
+                settings_registry,
+                cache_size,
+                cache_ttl_secs,
+                invalidation_service: Some(invalidation_service),
+                ..PermissionServiceRuntime::default()
+            },
         )
     }
 
@@ -319,6 +391,8 @@ impl PermissionService {
         room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
     ) -> Self {
+        let version_fence = Arc::new(crate::cache::NoopVersionFenceStore);
+
         Self {
             member_repo,
             room_repo,
@@ -343,6 +417,8 @@ impl PermissionService {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
+            version_fence: version_fence.clone(),
+            consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
 
@@ -374,6 +450,145 @@ impl PermissionService {
 
     pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         *self.invalidation_service.service.write() = Some(service);
+    }
+
+    pub fn set_version_fence_store(&mut self, store: Arc<dyn VersionFenceStore>) {
+        self.version_fence = store.clone();
+        self.consistency = ConsistencyCoordinator::new(store);
+    }
+
+    fn permission_domain(room_id: &RoomId, user_id: &UserId) -> CacheDomain {
+        CacheDomain::Permission {
+            room_id: *room_id,
+            user_id: *user_id,
+        }
+    }
+
+    fn room_settings_domain(room_id: &RoomId) -> CacheDomain {
+        CacheDomain::RoomSettings { room_id: *room_id }
+    }
+
+    async fn current_permission_cache_fence(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<Option<PermissionCacheFence>> {
+        if !self.consistency.is_authoritative() {
+            return Ok(None);
+        }
+
+        let versions = self
+            .consistency
+            .current_versions(&[
+                Self::permission_domain(room_id, user_id),
+                Self::room_settings_domain(room_id),
+            ])
+            .await?;
+        let Some(user_version) = versions.first().and_then(|version| *version) else {
+            return Ok(None);
+        };
+        let Some(room_settings_version) = versions.get(1).and_then(|version| *version) else {
+            return Ok(None);
+        };
+
+        Ok(Some(PermissionCacheFence {
+            user_version,
+            room_settings_version,
+        }))
+    }
+
+    pub(crate) async fn begin_permission_write(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        db_version: i64,
+    ) -> Result<PermissionWriteFence> {
+        let domain = Self::permission_domain(room_id, user_id);
+        let reservation = self
+            .consistency
+            .begin_observed_write(&domain, db_version)
+            .await?;
+        let version = reservation
+            .as_ref()
+            .map_or(0, |reservation| reservation.version);
+        Ok(PermissionWriteFence {
+            domain,
+            reservation,
+            version,
+        })
+    }
+
+    pub(crate) async fn commit_permission_write(
+        &self,
+        fence: &PermissionWriteFence,
+        version: i64,
+    ) -> Result<()> {
+        self.consistency
+            .commit_reserved_write(&fence.domain, fence.reservation.as_ref(), version)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn abort_permission_write(&self, fence: &PermissionWriteFence) {
+        self.consistency
+            .abort_reserved_write(&fence.domain, fence.reservation.as_ref())
+            .await;
+    }
+
+    async fn advance_permission_fence_to_current_member_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<i64> {
+        if !self.consistency.is_authoritative() {
+            return Ok(0);
+        }
+
+        if let Some(member) = self.member_repo.get(room_id, user_id).await? {
+            self.consistency
+                .set_version_at_least(&Self::permission_domain(room_id, user_id), member.version)
+                .await
+        } else {
+            let version = self.member_repo.lifecycle_version(room_id, user_id).await?;
+            self.consistency
+                .set_version_at_least(&Self::permission_domain(room_id, user_id), version)
+                .await
+        }
+    }
+
+    pub(crate) async fn seed_permission_fence_to_member_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        member_version: i64,
+    ) -> Result<i64> {
+        if !self.consistency.is_authoritative() {
+            return Ok(0);
+        }
+
+        self.consistency
+            .set_version_at_least(&Self::permission_domain(room_id, user_id), member_version)
+            .await
+    }
+
+    async fn seed_permission_fences_after_strong_read(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        member_version: i64,
+        settings_version: i64,
+    ) -> Result<()> {
+        if !self.consistency.is_authoritative() {
+            return Ok(());
+        }
+
+        self.consistency
+            .set_version_at_least(&Self::permission_domain(room_id, user_id), member_version)
+            .await?;
+        self.consistency
+            .set_version_at_least(&Self::room_settings_domain(room_id), settings_version)
+            .await?;
+        Ok(())
     }
 
     pub fn has_invalidation_service(&self) -> bool {
@@ -815,12 +1030,7 @@ impl PermissionService {
     ) -> Result<()> {
         self.ensure_room_accepts_member_actions(room_id).await?;
 
-        let permissions = if self.cache_degraded.load(Ordering::Acquire) {
-            // Use degraded cache with short TTL instead of no cache at all
-            self.get_user_permissions_degraded(room_id, user_id).await?
-        } else {
-            self.get_user_permissions(room_id, user_id).await?
-        };
+        let permissions = self.get_user_permissions_strong(room_id, user_id).await?;
 
         if !permissions.has_all(permission) {
             return Err(Error::Authorization(
@@ -867,6 +1077,17 @@ impl PermissionService {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<PermissionBits> {
+        Ok(self
+            .get_user_permissions_no_cache_with_versions(room_id, user_id)
+            .await?
+            .0)
+    }
+
+    async fn get_user_permissions_no_cache_with_versions(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<(PermissionBits, i64, i64)> {
         // Fetch from database directly, bypassing cache
         let member = self
             .member_repo
@@ -877,26 +1098,33 @@ impl PermissionService {
             })?;
 
         // Get room settings for role defaults
-        let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
-            settings_repo.get(room_id).await?
-        } else {
-            tracing::warn!(
-                room_id = %room_id,
-                user_id = %user_id,
-                "room_settings_repo not configured, using default RoomSettings; \
-                 room-specific permission settings will be ignored"
-            );
-            RoomSettings::default()
-        };
+        let (room_settings, settings_version) =
+            if let Some(ref settings_repo) = self.room_settings_repo {
+                settings_repo.get_with_version(room_id).await?
+            } else {
+                tracing::warn!(
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "room_settings_repo not configured, using default RoomSettings; \
+                     room-specific permission settings will be ignored"
+                );
+                (RoomSettings::default(), 0)
+            };
 
-        Ok(self.effective_member_permissions(&member, &room_settings))
+        Ok((
+            self.effective_member_permissions(&member, &room_settings),
+            member.version,
+            settings_version,
+        ))
     }
 
-    /// Get user's effective permissions in a room (with caching)
+    /// Get user's effective permissions in a room with cache-first eventual consistency.
     ///
-    /// This implements the Allow/Deny permission pattern:
-    /// `effective_permissions` = (`role_default` | added) & ~removed
-    pub async fn get_user_permissions(
+    /// This is reserved for non-authorization reads and tests that intentionally
+    /// need cache-first behavior. Authorization paths must use
+    /// [`get_user_permissions_strong`](Self::get_user_permissions_strong) or
+    /// [`check_permission`](Self::check_permission).
+    pub async fn get_user_permissions_eventually_consistent(
         &self,
         room_id: &RoomId,
         user_id: &UserId,
@@ -904,8 +1132,8 @@ impl PermissionService {
         let cache_key = Self::cache_key(room_id, user_id);
 
         // Check cache first
-        if let Some(permissions) = self.cache.get(&cache_key).await {
-            return Ok(permissions);
+        if let Some(cached) = self.cache.get(&cache_key).await {
+            return Ok(cached.bits);
         }
 
         // Fetch from database
@@ -918,23 +1146,107 @@ impl PermissionService {
             })?;
 
         // Get room settings for role defaults
-        let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
-            settings_repo.get(room_id).await?
-        } else {
-            tracing::warn!(
-                room_id = %room_id,
-                user_id = %user_id,
-                "room_settings_repo not configured, using default RoomSettings; \
-                 room-specific permission settings will be ignored"
-            );
-            RoomSettings::default()
-        };
+        let (room_settings, settings_version) =
+            if let Some(ref settings_repo) = self.room_settings_repo {
+                settings_repo.get_with_version(room_id).await?
+            } else {
+                tracing::warn!(
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "room_settings_repo not configured, using default RoomSettings; \
+                     room-specific permission settings will be ignored"
+                );
+                (RoomSettings::default(), 0)
+            };
 
         let permissions = self.effective_member_permissions(&member, &room_settings);
 
         // Update cache
-        self.cache.insert(cache_key, permissions).await;
+        self.cache
+            .insert(
+                cache_key,
+                CachedPermissions {
+                    bits: permissions,
+                    user_version: member.version,
+                    room_settings_version: settings_version,
+                },
+            )
+            .await;
 
+        Ok(permissions)
+    }
+
+    /// Get user's effective permissions with strong-read semantics.
+    ///
+    /// Authorization must not depend on async invalidation delivery. For now,
+    /// the strong path uses the database as the authoritative source and then
+    /// refreshes local cache for eventually-consistent callers.
+    pub async fn get_user_permissions_strong(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<PermissionBits> {
+        let cache_key = Self::cache_key(room_id, user_id);
+        match self.current_permission_cache_fence(room_id, user_id).await {
+            Ok(Some(fence)) => {
+                if let Some(cached) = self.cache.get(&cache_key).await {
+                    if cached.user_version >= fence.user_version
+                        && cached.room_settings_version >= fence.room_settings_version
+                    {
+                        return Ok(cached.bits);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    error = %error,
+                    "Permission version fence unavailable; bypassing cache"
+                );
+            }
+        }
+
+        ConsistencyCoordinator::record_db_fallback(
+            &Self::permission_domain(room_id, user_id),
+            "stale_or_missing_fence",
+        );
+        let (permissions, member_version, settings_version) = self
+            .get_user_permissions_no_cache_with_versions(room_id, user_id)
+            .await?;
+        self.consistency
+            .repair_after_db_read(&Self::permission_domain(room_id, user_id), member_version)
+            .await;
+        self.consistency
+            .repair_after_db_read(&Self::room_settings_domain(room_id), settings_version)
+            .await;
+        if let Err(error) = self
+            .seed_permission_fences_after_strong_read(
+                room_id,
+                user_id,
+                member_version,
+                settings_version,
+            )
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                error = %error,
+                "Failed to seed permission version fences after DB strong read"
+            );
+        }
+        self.cache
+            .insert(
+                cache_key,
+                CachedPermissions {
+                    bits: permissions,
+                    user_version: member_version,
+                    room_settings_version: settings_version,
+                },
+            )
+            .await;
         Ok(permissions)
     }
 
@@ -955,8 +1267,8 @@ impl PermissionService {
         let cache_key = Self::cache_key(room_id, user_id);
 
         // Check degraded cache first
-        if let Some(permissions) = self.degraded_cache.get(&cache_key).await {
-            return Ok(permissions);
+        if let Some(cached) = self.degraded_cache.get(&cache_key).await {
+            return Ok(cached.bits);
         }
 
         // Fetch from database
@@ -978,7 +1290,16 @@ impl PermissionService {
         let permissions = self.effective_member_permissions(&member, &room_settings);
 
         // Update degraded cache with short TTL
-        self.degraded_cache.insert(cache_key, permissions).await;
+        self.degraded_cache
+            .insert(
+                cache_key,
+                CachedPermissions {
+                    bits: permissions,
+                    user_version: member.version,
+                    room_settings_version: 0,
+                },
+            )
+            .await;
 
         Ok(permissions)
     }
@@ -998,8 +1319,79 @@ impl PermissionService {
     /// By invalidating locally first, we ensure this node never serves stale
     /// data after the mutation completes, even if the broadcast fails.
     pub async fn invalidate_cache(&self, room_id: &RoomId, user_id: &UserId) {
+        if let Err(error) = self
+            .advance_permission_fence_to_current_member_version(room_id, user_id)
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                error = %error,
+                "Failed to advance permission version fence"
+            );
+        }
         self.invalidate_cache_local_only(room_id, user_id).await;
+        self.broadcast_permission_invalidation(room_id, user_id)
+            .await;
+    }
 
+    /// Invalidate permission cache after a membership row has been removed.
+    ///
+    /// Removal paths reserve the deletion fence before committing the DB delete.
+    /// Advancing it again after commit would create a fence version that no
+    /// member-row snapshot can satisfy, because non-members are not cached as
+    /// permission tombstones.
+    pub async fn invalidate_removed_member_cache(&self, room_id: &RoomId, user_id: &UserId) {
+        self.invalidate_cache_local_only(room_id, user_id).await;
+        self.broadcast_permission_invalidation(room_id, user_id)
+            .await;
+    }
+
+    /// Invalidate caches after a version-fenced member mutation has committed.
+    ///
+    /// The caller has already reserved and committed the exact permission fence
+    /// version. Advancing the fence again here would make the cache require a
+    /// version that no committed row/cache entry can satisfy.
+    pub async fn invalidate_committed_member_write_cache(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) {
+        self.invalidate_cache_local_only(room_id, user_id).await;
+        self.broadcast_permission_invalidation(room_id, user_id)
+            .await;
+    }
+
+    /// Invalidate permission cache after inserting a membership row.
+    ///
+    /// Inserted members already have a concrete row version. Seeding the fence to
+    /// that version lets strong permission reads converge on cache immediately;
+    /// bumping here would require a future member mutation before any cached
+    /// snapshot could satisfy the fence.
+    pub async fn seed_added_member_cache(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        member_version: i64,
+    ) {
+        if let Err(error) = self
+            .seed_permission_fence_to_member_version(room_id, user_id, member_version)
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                member_version,
+                error = %error,
+                "Failed to seed permission version fence after member insert"
+            );
+        }
+        self.invalidate_cache_local_only(room_id, user_id).await;
+        self.broadcast_permission_invalidation(room_id, user_id)
+            .await;
+    }
+
+    async fn broadcast_permission_invalidation(&self, room_id: &RoomId, user_id: &UserId) {
         // Broadcast to other replicas (best effort)
         // Use invalidate_and_broadcast_user_permission which broadcasts both locally
         // (for other local subscribers) AND to Redis (for remote replicas).
@@ -1026,6 +1418,8 @@ impl PermissionService {
     /// Invalidate permission cache for all users in a room.
     /// Called when room-level permission settings change (e.g., admin/member/guest
     /// added/removed permissions), since these affect all members' effective permissions.
+    /// Correctness comes from the room settings version fence, which strong
+    /// reads validate alongside the user-specific permission fence.
     ///
     /// If cache invalidation service is configured, this also broadcasts the
     /// invalidation to other replicas via Redis Pub/Sub.
@@ -1077,7 +1471,7 @@ impl PermissionService {
         user_id: &UserId,
         permissions: &[u64],
     ) -> Result<()> {
-        let user_permissions = self.get_user_permissions(room_id, user_id).await?;
+        let user_permissions = self.get_user_permissions_strong(room_id, user_id).await?;
 
         for &permission in permissions {
             if !user_permissions.has(permission) {
@@ -1138,6 +1532,63 @@ mod tests {
     use super::*;
     use crate::models::permission::Role as RoomRole;
     use crate::models::{room_settings::*, RoomMember};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct RecordingVersionFenceStore {
+        versions: parking_lot::Mutex<HashMap<CacheDomain, i64>>,
+    }
+
+    #[async_trait]
+    impl VersionFenceStore for RecordingVersionFenceStore {
+        async fn current_version(&self, domain: &CacheDomain) -> Result<Option<i64>> {
+            Ok(self.versions.lock().get(domain).copied())
+        }
+
+        async fn current_versions(&self, domains: &[CacheDomain]) -> Result<Vec<Option<i64>>> {
+            let versions = self.versions.lock();
+            Ok(domains
+                .iter()
+                .map(|domain| versions.get(domain).copied())
+                .collect())
+        }
+
+        async fn bump_version(&self, domain: &CacheDomain) -> Result<i64> {
+            let mut versions = self.versions.lock();
+            let version = versions.entry(domain.clone()).or_insert(0);
+            *version += 1;
+            Ok(*version)
+        }
+
+        async fn set_version_at_least(&self, domain: &CacheDomain, version: i64) -> Result<i64> {
+            let mut versions = self.versions.lock();
+            let current = versions.entry(domain.clone()).or_insert(0);
+            if version > *current {
+                *current = version;
+            }
+            Ok(*current)
+        }
+
+        async fn reserve_next_after_observed_version(
+            &self,
+            domain: &CacheDomain,
+            observed_version: i64,
+        ) -> Result<i64> {
+            let mut versions = self.versions.lock();
+            let current = versions.entry(domain.clone()).or_insert(0);
+            if *current > observed_version {
+                return Err(Error::OptimisticLockConflict);
+            }
+
+            *current = observed_version + 1;
+            Ok(*current)
+        }
+
+        fn is_authoritative(&self) -> bool {
+            true
+        }
+    }
 
     // Helper to create a PermissionService using tokio runtime for PgPool
     // Note: This function should NOT be called from within an async context
@@ -1176,6 +1627,8 @@ mod tests {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            consistency: ConsistencyCoordinator::new(Arc::new(crate::cache::NoopVersionFenceStore)),
         }
     }
 
@@ -1213,6 +1666,8 @@ mod tests {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            consistency: ConsistencyCoordinator::new(Arc::new(crate::cache::NoopVersionFenceStore)),
         }
     }
 
@@ -1228,6 +1683,34 @@ mod tests {
         assert_eq!(key, "perm:room:123:user:456");
     }
 
+    #[tokio::test]
+    async fn standalone_permission_constructors_use_non_authoritative_fences_by_default() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused")
+            .expect("lazy postgres pool for unit tests should build");
+
+        let service = PermissionService::new(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool.clone()),
+            None,
+            PermissionService::DEFAULT_CACHE_SIZE,
+            PermissionService::DEFAULT_CACHE_TTL_SECS,
+        );
+        assert!(
+            !service.consistency.is_authoritative(),
+            "standalone PermissionService::new must not create a private authoritative fence"
+        );
+
+        let service = PermissionService::new_with_runtime(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool),
+            PermissionServiceRuntime::default(),
+        );
+        assert!(
+            !service.consistency.is_authoritative(),
+            "new_with_runtime without an explicit shared fence must remain non-authoritative"
+        );
+    }
+
     #[test]
     fn test_cache_key_different_for_different_users() {
         let room = RoomId::expect_positive(1);
@@ -1236,6 +1719,54 @@ mod tests {
         assert_ne!(
             PermissionService::cache_key(&room, &u1),
             PermissionService::cache_key(&room, &u2),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_removed_member_seed_uses_lifecycle_version_and_invalidation_does_not_advance() {
+        let mut service = make_service_async();
+        let fence = Arc::new(RecordingVersionFenceStore::default());
+        service.set_version_fence_store(fence.clone());
+        let room_id = RoomId::expect_positive(1);
+        let user_id = UserId::expect_positive(2);
+        let domain = PermissionService::permission_domain(&room_id, &user_id);
+
+        service
+            .seed_permission_fence_to_member_version(&room_id, &user_id, 7)
+            .await
+            .expect("membership removal fence should seed to lifecycle version");
+        service
+            .invalidate_removed_member_cache(&room_id, &user_id)
+            .await;
+
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("fence should be readable"),
+            Some(7),
+            "post-delete invalidation must not advance beyond the DB lifecycle version"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_added_member_seed_does_not_advance_permission_fence() {
+        let mut service = make_service_async();
+        let fence = Arc::new(RecordingVersionFenceStore::default());
+        service.set_version_fence_store(fence.clone());
+        let room_id = RoomId::expect_positive(1);
+        let user_id = UserId::expect_positive(2);
+        let domain = PermissionService::permission_domain(&room_id, &user_id);
+
+        service.seed_added_member_cache(&room_id, &user_id, 0).await;
+
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("fence should be readable"),
+            Some(0),
+            "newly inserted version-0 members must not get an unsatisfiable version-1 fence"
         );
     }
 
@@ -1781,11 +2312,17 @@ mod tests {
 
         service
             .cache
-            .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+            .insert(
+                cache_key.clone(),
+                cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
+            )
             .await;
         service
             .degraded_cache
-            .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+            .insert(
+                cache_key.clone(),
+                cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
+            )
             .await;
 
         service.cache_degraded.store(true, Ordering::Release);
@@ -1933,7 +2470,10 @@ mod tests {
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
-                .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+                .insert(
+                    cache_key.clone(),
+                    cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
+                )
                 .await;
 
             // Verify the cache has the value
@@ -1970,14 +2510,14 @@ mod tests {
                 .cache
                 .insert(
                     PermissionService::cache_key(&room_id, &user1_id),
-                    PermissionBits(PermissionBits::ALL),
+                    cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
                 )
                 .await;
             service
                 .cache
                 .insert(
                     PermissionService::cache_key(&room_id, &user2_id),
-                    PermissionBits(PermissionBits::ALL),
+                    cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
                 )
                 .await;
 
@@ -2032,7 +2572,7 @@ mod tests {
                 .cache
                 .insert(
                     PermissionService::cache_key(&room_id, &user_id),
-                    PermissionBits(PermissionBits::ALL),
+                    cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
                 )
                 .await;
 
@@ -2069,7 +2609,10 @@ mod tests {
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
-                .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+                .insert(
+                    cache_key.clone(),
+                    cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
+                )
                 .await;
 
             // Verify the cache has the value
@@ -2121,7 +2664,10 @@ mod tests {
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
-                .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+                .insert(
+                    cache_key.clone(),
+                    cached_permissions_for_test(PermissionBits(PermissionBits::ALL)),
+                )
                 .await;
 
             // Invalidate the cache - this should broadcast via invalidation_service

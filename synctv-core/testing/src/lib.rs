@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 pub mod assertions;
 pub mod constants;
+pub(crate) mod docker;
 pub mod postgres;
 pub mod redis;
 pub mod services;

@@ -55,7 +55,7 @@ use crate::realtime_bridge::{
 use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook,
+    AuditFlushHook, CacheFenceRepairHook, CacheInvalidationStopHook, HealthMonitorShutdownHook,
     PermissionServiceShutdownHook, PlaybackServiceShutdownHook, ProviderInvalidationHook,
     RealtimeManagerShutdownHook, RoomSettingsServiceShutdownHook, SettingsListenHook,
     ShutdownCoordinator,
@@ -949,6 +949,10 @@ impl Application {
         });
         shutdown.register_hook(SettingsListenHook {
             task: synctv_services.settings_listen_task.clone(),
+        });
+        shutdown.register_hook(CacheFenceRepairHook {
+            cancel: synctv_services.cache_fence_repair_cancel.clone(),
+            task: synctv_services.cache_fence_repair_task.clone(),
         });
         shutdown.register_hook(ProviderInvalidationHook {
             cancel: synctv_services.provider_invalidation_cancel.clone(),

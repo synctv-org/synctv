@@ -262,6 +262,18 @@ impl CacheL2Backend for FailingCacheL2 {
         ))
     }
 
+    async fn set_if_version_at_least(
+        &self,
+        _key: &str,
+        _json: &str,
+        _ttl_secs: u64,
+        _version: i64,
+    ) -> synctv_core::Result<bool> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
     async fn delete_by_prefix(&self, _prefix: &str) -> synctv_core::Result<()> {
         Err(Error::Internal(
             "simulated username cache backend failure".to_string(),

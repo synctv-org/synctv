@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE room_playback_state\n                     SET playing_media_id = NULL,\n                         playing_playlist_id = NULL,\n                         target = ''::bytea,\n                         \"position\" = 0,\n                         speed = 1.0,\n                         is_playing = false,\n                         version = version + 1,\n                         updated_at = NOW()\n                     WHERE room_id = $1\n                     RETURNING room_id AS \"room_id: RoomId\",\n                               playing_media_id AS \"playing_media_id: MediaId\",\n                               playing_playlist_id AS \"playing_playlist_id: PlaylistId\",\n                               target,\n                               \"position\",\n                               speed,\n                               is_playing,\n                               updated_at,\n                               version",
+  "query": "\n            WITH impacted_rooms AS (\n                SELECT DISTINCT rps.room_id\n                FROM room_playback_state rps\n                LEFT JOIN media m ON m.id = rps.playing_media_id\n                LEFT JOIN playlists p ON p.id = rps.playing_playlist_id\n                WHERE m.creator_id = $1 OR p.creator_id = $1\n            )\n            SELECT rps.room_id as \"room_id: RoomId\",\n                   rps.playing_media_id as \"playing_media_id: MediaId\",\n                   rps.playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n                   rps.target,\n                   rps.\"position\",\n                   rps.speed,\n                   rps.is_playing,\n                   rps.updated_at,\n                   rps.version\n            FROM room_playback_state rps\n            JOIN impacted_rooms impacted ON impacted.room_id = rps.room_id\n            FOR UPDATE OF rps\n            ",
   "describe": {
     "columns": [
       {
@@ -66,5 +66,5 @@
       false
     ]
   },
-  "hash": "ef5fb32dd3641d898c69b442f759450575fdf2a4aa3482b6851bd39b832dfa44"
+  "hash": "c71c1f262b70ad8e943e86c2e0e4b335feaa2b44ea68b0c36194654034d6c030"
 }

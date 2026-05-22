@@ -17,7 +17,7 @@ use synctv_core::{
 use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 /// Create a test user in the database (required for FK constraints)
-async fn create_test_user(pool: &PgPool, user_id: &UserId) {
+async fn create_test_user(pool: &PgPool, user_id: &UserId) -> UserId {
     let username = format!("test_user_{user_id}");
     let user = User {
         id: *user_id,
@@ -43,7 +43,8 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     user_repo
         .create(&user)
         .await
-        .expect("Failed to create test user");
+        .expect("Failed to create test user")
+        .id
 }
 
 fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
@@ -93,16 +94,14 @@ async fn test_permission_check_with_database_member() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(&pool, &creator_id).await;
+    let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user_id = UserId::new();
-    create_test_user(&pool, &user_id).await;
+    let user_id = create_test_user(&pool, &UserId::new()).await;
     let mut member = make_member(room.id, user_id, RoomRole::Member);
     member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE;
     member_repo
@@ -140,24 +139,21 @@ async fn test_permission_allow_deny_pattern() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(&pool, &creator_id).await;
+    let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let admin_id = UserId::new();
-    create_test_user(&pool, &admin_id).await;
+    let admin_id = create_test_user(&pool, &UserId::new()).await;
     let admin_member = make_member(room.id, admin_id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
         .expect("Failed to create admin");
 
-    let guest_id = UserId::new();
-    create_test_user(&pool, &guest_id).await;
+    let guest_id = create_test_user(&pool, &UserId::new()).await;
     let guest_member = make_member(room.id, guest_id, RoomRole::Guest);
     member_repo
         .add(&guest_member)
@@ -188,16 +184,14 @@ async fn test_permission_removed_member_denied() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(&pool, &creator_id).await;
+    let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user_id = UserId::new();
-    create_test_user(&pool, &user_id).await;
+    let user_id = create_test_user(&pool, &UserId::new()).await;
     let member = make_member(room.id, user_id, RoomRole::Member);
     member_repo
         .add(&member)
@@ -227,10 +221,9 @@ async fn test_permission_non_member_denied() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(&pool, &creator_id).await;
+    let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
@@ -276,16 +269,14 @@ async fn test_concurrent_permission_checks() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator_id = UserId::new();
-    create_test_user(&pool, &creator_id).await;
+    let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
 
-    let user_id = UserId::new();
-    create_test_user(&pool, &user_id).await;
+    let user_id = create_test_user(&pool, &UserId::new()).await;
     let member = make_member(room.id, user_id, RoomRole::Member);
     member_repo
         .add(&member)

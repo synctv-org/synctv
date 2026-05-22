@@ -116,6 +116,36 @@ async fn test_set_settings_with_version_concurrent_insert_race() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_settings_with_exact_version_updates_existing_zero_version_row() {
+    let (_container, pool) = create_test_pool().await;
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let (_user, room) = setup_room(&pool, "exact_zero_user", "exact_zero_room").await;
+
+    sqlx::query!(
+        "INSERT INTO room_settings (room_id, key, value, version)
+         VALUES ($1, '_settings', $2, 0)",
+        room.id as RoomId,
+        serde_json::to_string(&RoomSettings::default()).unwrap(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut changed = RoomSettings::default();
+    changed.chat_enabled = synctv_core::models::room_settings::ChatEnabled(false);
+    let version = settings_repo
+        .set_settings_with_exact_version(&room.id, &changed, 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(version, 1);
+
+    let (stored, stored_version) = settings_repo.get_with_version(&room.id).await.unwrap();
+    assert_eq!(stored_version, 1);
+    assert!(!stored.chat_enabled.0);
+}
+
 // ─── CAS: stale version update ──────────────────────────────────────
 
 #[tokio::test]

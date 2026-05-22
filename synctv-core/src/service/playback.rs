@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use crate::{
     cache::{
-        CacheInvalidationRuntime, CloneableError, InvalidationMessage, PlaybackStateCache,
-        SingleFlight,
+        CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
+        InvalidationMessage, PlaybackStateCache, SingleFlight, VersionFenceReservation,
+        VersionFenceStore,
     },
     models::{
         MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
@@ -224,6 +225,7 @@ pub struct PlaybackService {
     l2_cache: Arc<parking_lot::RwLock<Option<PlaybackStateCache>>>,
     /// Optional cache invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+    consistency: ConsistencyCoordinator,
     /// Shared lifecycle state for the background invalidation listener.
     invalidation_runtime: Arc<PlaybackInvalidationRuntime>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
@@ -260,6 +262,7 @@ impl PlaybackService {
             user_service,
             None,
             None,
+            None,
         )
     }
 
@@ -273,7 +276,11 @@ impl PlaybackService {
         user_service: UserService,
         invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
         l2_cache: Option<PlaybackStateCache>,
+        version_fence: Option<Arc<dyn VersionFenceStore>>,
     ) -> Self {
+        let version_fence =
+            version_fence.unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
+
         Self {
             playback_repo,
             permission_service,
@@ -287,6 +294,7 @@ impl PlaybackService {
             ),
             l2_cache: Arc::new(parking_lot::RwLock::new(l2_cache)),
             invalidation_service,
+            consistency: ConsistencyCoordinator::new(version_fence),
             invalidation_runtime: Arc::new(PlaybackInvalidationRuntime::new()),
             single_flight: SingleFlight::new(),
         }
@@ -334,6 +342,165 @@ impl PlaybackService {
 
     fn playback_l2_cache(&self) -> Option<PlaybackStateCache> {
         self.l2_cache.read().clone()
+    }
+
+    fn playback_domain(room_id: &RoomId) -> CacheDomain {
+        CacheDomain::Playback { room_id: *room_id }
+    }
+
+    async fn advance_playback_version_fence(&self, room_id: &RoomId, version: i64) -> Result<()> {
+        if !self.consistency.is_authoritative() {
+            return Ok(());
+        }
+
+        self.consistency
+            .set_version_at_least(&Self::playback_domain(room_id), version)
+            .await?;
+        Ok(())
+    }
+
+    async fn seed_playback_version_fence_after_reload(&self, room_id: &RoomId, version: i64) {
+        if let Err(error) = self.advance_playback_version_fence(room_id, version).await {
+            tracing::warn!(
+                room_id = %room_id,
+                version,
+                error = %error,
+                "Failed to seed playback version fence after DB reload"
+            );
+        }
+    }
+
+    async fn begin_playback_write_from_db_version(
+        &self,
+        room_id: &RoomId,
+        db_version: i64,
+    ) -> Result<Option<VersionFenceReservation>> {
+        let domain = Self::playback_domain(room_id);
+        self.consistency
+            .begin_observed_write(&domain, db_version)
+            .await
+    }
+
+    async fn commit_playback_write(
+        &self,
+        room_id: &RoomId,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+    ) -> Result<()> {
+        self.consistency
+            .commit_reserved_write(&Self::playback_domain(room_id), reservation, version)
+            .await?;
+        Ok(())
+    }
+
+    async fn finalize_committed_playback_write_best_effort(
+        &self,
+        room_id: &RoomId,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+        operation: &'static str,
+    ) {
+        if let Err(error) = self
+            .commit_playback_write(room_id, reservation, version)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                version,
+                operation,
+                "Failed to finalize playback fence after committed DB write"
+            );
+        }
+    }
+
+    async fn abort_playback_write(
+        &self,
+        room_id: &RoomId,
+        reservation: Option<&VersionFenceReservation>,
+    ) {
+        self.consistency
+            .abort_reserved_write(&Self::playback_domain(room_id), reservation)
+            .await;
+    }
+
+    async fn persist_playback_update(
+        &self,
+        state: &RoomPlaybackState,
+        observed_version: i64,
+    ) -> Result<RoomPlaybackState> {
+        let reservation = self
+            .begin_playback_write_from_db_version(&state.room_id, observed_version)
+            .await?;
+        if let Some(reservation) = &reservation {
+            match self
+                .playback_repo
+                .update_with_exact_version(state, reservation.version)
+                .await
+            {
+                Ok(updated_state) => {
+                    self.finalize_committed_playback_write_best_effort(
+                        &state.room_id,
+                        Some(reservation),
+                        updated_state.version,
+                        "persist_playback_update",
+                    )
+                    .await;
+                    Ok(updated_state)
+                }
+                Err(error) => {
+                    self.abort_playback_write(&state.room_id, Some(reservation))
+                        .await;
+                    Err(error)
+                }
+            }
+        } else {
+            let updated_state = self.playback_repo.update(state).await?;
+            self.finalize_committed_playback_write_best_effort(
+                &state.room_id,
+                None,
+                updated_state.version,
+                "persist_playback_update",
+            )
+            .await;
+            Ok(updated_state)
+        }
+    }
+
+    async fn write_playback_cache(&self, state: &RoomPlaybackState) {
+        let cache_key = state.room_id.to_string();
+        let new_state = state.clone();
+        self.playback_cache
+            .entry(cache_key)
+            .and_upsert_with(|maybe_entry| {
+                let result = match maybe_entry {
+                    Some(entry) => {
+                        let current = entry.into_value();
+                        if new_state.version >= current.version {
+                            new_state.clone()
+                        } else {
+                            current
+                        }
+                    }
+                    None => new_state.clone(),
+                };
+                std::future::ready(result)
+            })
+            .await;
+
+        let l2_cache = self.playback_l2_cache();
+        if let Some(l2_cache) = l2_cache {
+            if let Err(e) = l2_cache
+                .set_if_version_at_least(&state.room_id, state.clone())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %state.room_id,
+                    "Failed to update playback state in L2 cache"
+                );
+            }
+        }
     }
 
     #[cfg(test)]
@@ -659,12 +826,84 @@ impl PlaybackService {
         }
     }
 
-    /// Get playback state for a room.
+    /// Get playback state for a room with strong cache semantics.
     ///
-    /// Checks the L1 in-memory cache first; on miss, checks L2 (Redis) if configured;
-    /// on L2 miss, uses `SingleFlight` to ensure only one concurrent DB fetch per
-    /// `room_id`, then populates both L1 and L2 caches.
+    /// L1/L2 values are used only when their optimistic-lock version is at
+    /// least the authoritative playback version fence. If the fence cannot be
+    /// read, this falls back to the database.
     pub async fn get_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
+        self.get_state_by_fence(room_id).await
+    }
+
+    async fn get_state_by_fence(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
+        let domain = Self::playback_domain(room_id);
+        if !self.consistency.is_authoritative() {
+            ConsistencyCoordinator::record_db_fallback(&domain, "non_authoritative_fence");
+            return self.reload_state_from_store(room_id).await;
+        }
+
+        let fence_version = match self.consistency.current_committed_version(&domain).await {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                ConsistencyCoordinator::record_db_fallback(&domain, "missing_fence");
+                return self.reload_state_from_store(room_id).await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Playback version fence unavailable; bypassing cache"
+                );
+                ConsistencyCoordinator::record_db_fallback(&domain, "fence_unavailable");
+                return self.reload_state_from_store(room_id).await;
+            }
+        };
+
+        let cache_key = room_id.to_string();
+        if let Some(state) = self.playback_cache.get(&cache_key).await {
+            if state.version >= fence_version {
+                crate::metrics::cache::CACHE_HITS
+                    .with_label_values(&["playback", "l1"])
+                    .inc();
+                return Ok(state);
+            }
+        }
+
+        if let Some(l2_cache) = self.playback_l2_cache() {
+            match l2_cache.get_l2(room_id).await {
+                Ok(Some(state)) if state.version >= fence_version => {
+                    self.playback_cache
+                        .insert(cache_key.clone(), state.clone())
+                        .await;
+                    crate::metrics::cache::CACHE_HITS
+                        .with_label_values(&["playback", "l2"])
+                        .inc();
+                    return Ok(state);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %error,
+                        "Playback L2 read failed; bypassing cache"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(&domain, "l2_error");
+                }
+            }
+        }
+
+        ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+        self.reload_state_from_store(room_id).await
+    }
+
+    /// Get playback state from cache with eventual consistency.
+    ///
+    /// This is kept for non-authoritative preloading or diagnostics. User-facing
+    /// and permission-adjacent paths should call [`get_state`](Self::get_state).
+    pub async fn get_state_eventually_consistent(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<RoomPlaybackState> {
         let cache_key = room_id.to_string();
 
         // L1 cache hit
@@ -718,7 +957,10 @@ impl PlaybackService {
 
                 // Populate L2 cache (if configured)
                 if let Some(ref l2) = l2_cache {
-                    if let Err(e) = l2.set(&state.room_id, state.clone()).await {
+                    if let Err(e) = l2
+                        .set_if_version_at_least(&state.room_id, state.clone())
+                        .await
+                    {
                         tracing::warn!(
                             room_id = %state.room_id,
                             error = %e,
@@ -768,15 +1010,37 @@ impl PlaybackService {
             None => self.playback_repo.create_or_get(room_id).await?,
         };
 
-        self.playback_cache.insert(cache_key, state.clone()).await;
+        self.consistency
+            .repair_after_db_read(&Self::playback_domain(room_id), state.version)
+            .await;
+        self.seed_playback_version_fence_after_reload(room_id, state.version)
+            .await;
+
         if let Some(l2_cache) = self.playback_l2_cache() {
-            if let Err(e) = l2_cache.set(room_id, state.clone()).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    "Failed to update playback state in L2 cache after DB reload"
-                );
+            match l2_cache
+                .set_if_version_at_least(room_id, state.clone())
+                .await
+            {
+                Ok(true) => {
+                    self.playback_cache.insert(cache_key, state.clone()).await;
+                }
+                Ok(false) => {
+                    tracing::debug!(
+                        room_id = %room_id,
+                        version = state.version,
+                        "Skipped playback cache update after DB reload because L2 has newer state"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id,
+                        "Failed to update playback state in L2 cache after DB reload"
+                    );
+                }
             }
+        } else {
+            self.playback_cache.insert(cache_key, state.clone()).await;
         }
 
         Ok(state)
@@ -1191,15 +1455,15 @@ impl PlaybackService {
                         updated_state.target = target.clone();
                     }
                 }
+                let observed_version = updated_state.version;
                 updated_state.position = 0.0;
                 updated_state.is_playing = true;
                 updated_state.updated_at = chrono::Utc::now();
 
-                let saved_state = self.playback_repo.update(&updated_state).await?;
-
-                // Invalidate local cache
-                let cache_key = room_id.to_string();
-                self.playback_cache.invalidate(&cache_key).await;
+                let saved_state = self
+                    .persist_playback_update(&updated_state, observed_version)
+                    .await?;
+                self.write_playback_cache(&saved_state).await;
 
                 // Broadcast to other replicas with retry
                 self.broadcast_invalidation_with_retry(room_id, &saved_state, "play_next")
@@ -1308,31 +1572,14 @@ impl PlaybackService {
                         None => self.playback_repo.create_or_get(&room_id).await?,
                     };
 
+                    let observed_version = state.version;
                     // Apply update
                     update_fn(&mut state);
 
-                    let updated_state = self.playback_repo.update(&state).await?;
-
-                    // Invalidate local L1 cache so the next read fetches fresh data.
-                    // This avoids write-through which would self-invalidate when the
-                    // Redis Pub/Sub bounce-back arrives.
-                    let cache_key = room_id.to_string();
-                    self.playback_cache.invalidate(&cache_key).await;
-
-                    // Update L2 cache with the new state (if configured).
-                    // Uses set_if_newer to prevent stale data from overwriting fresh data.
-                    // This provides a fallback when PubSub messages are lost.
-                    let l2_cache = self.playback_l2_cache();
-                    if let Some(l2_cache) = l2_cache {
-                        if let Err(e) = l2_cache.set_if_newer(&room_id, updated_state.clone()).await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                room_id = %room_id,
-                                "Failed to update playback state in L2 cache"
-                            );
-                        }
-                    }
+                    let updated_state = self
+                        .persist_playback_update(&state, observed_version)
+                        .await?;
+                    self.write_playback_cache(&updated_state).await;
 
                     // Broadcast updated state to other replicas with retry
                     self.broadcast_invalidation_with_retry(
@@ -1367,22 +1614,12 @@ impl PlaybackService {
             return Err(Error::OptimisticLockConflict);
         }
 
+        let observed_version = state.version;
         update_fn(&mut state);
-        let updated_state = self.playback_repo.update(&state).await?;
-
-        let cache_key = room_id.to_string();
-        self.playback_cache.invalidate(&cache_key).await;
-
-        let l2_cache = self.playback_l2_cache();
-        if let Some(l2_cache) = l2_cache {
-            if let Err(e) = l2_cache.set_if_newer(&room_id, updated_state.clone()).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    "Failed to update playback state in L2 cache"
-                );
-            }
-        }
+        let updated_state = self
+            .persist_playback_update(&state, observed_version)
+            .await?;
+        self.write_playback_cache(&updated_state).await;
 
         self.broadcast_invalidation_with_retry(&room_id, &updated_state, "update_state")
             .await;
@@ -1424,13 +1661,77 @@ impl PlaybackService {
         &self,
         creator_id: &UserId,
     ) -> Result<Vec<RoomPlaybackState>> {
-        let states = self
-            .playback_repo
-            .reset_playback_for_creator(creator_id)
-            .await?;
+        let states = if self.consistency.is_authoritative() {
+            let mut tx = self.playback_repo.pool().begin().await?;
+            let impacted_states = self
+                .playback_repo
+                .find_playback_for_creator_with_executor(creator_id, &mut *tx)
+                .await?;
+            let mut reset_states = Vec::with_capacity(impacted_states.len());
+            let mut reservations = Vec::with_capacity(impacted_states.len());
+
+            let reset_result: Result<()> = async {
+                for mut state in impacted_states {
+                    let reservation = self
+                        .begin_playback_write_from_db_version(&state.room_id, state.version)
+                        .await?;
+                    let reserved_version = reservation
+                        .as_ref()
+                        .map_or(state.version + 1, |reservation| reservation.version);
+                    let room_id = state.room_id;
+                    reservations.push((room_id, reservation));
+
+                    state.playing_media_id = None;
+                    state.playing_playlist_id = None;
+                    state.target.clear();
+                    state.position = 0.0;
+                    state.speed = 1.0;
+                    state.is_playing = false;
+                    state.updated_at = chrono::Utc::now();
+
+                    let updated = self
+                        .playback_repo
+                        .update_with_exact_version_executor(&state, reserved_version, &mut *tx)
+                        .await?;
+                    reset_states.push(updated);
+                }
+                Ok(())
+            }
+            .await;
+
+            if let Err(error) = reset_result {
+                for (room_id, reservation) in &reservations {
+                    self.abort_playback_write(room_id, reservation.as_ref())
+                        .await;
+                }
+                return Err(error);
+            }
+
+            if let Err(error) = tx.commit().await {
+                for (room_id, reservation) in &reservations {
+                    self.abort_playback_write(room_id, reservation.as_ref())
+                        .await;
+                }
+                return Err(error.into());
+            }
+            for (state, (_, reservation)) in reset_states.iter().zip(reservations.iter()) {
+                self.finalize_committed_playback_write_best_effort(
+                    &state.room_id,
+                    reservation.as_ref(),
+                    state.version,
+                    "reset_playback_for_creator",
+                )
+                .await;
+            }
+            reset_states
+        } else {
+            self.playback_repo
+                .reset_playback_for_creator(creator_id)
+                .await?
+        };
 
         for state in &states {
-            self.invalidate_playback_cache(&state.room_id).await;
+            self.write_playback_cache(state).await;
             self.broadcast_invalidation_with_retry(
                 &state.room_id,
                 state,
@@ -1765,7 +2066,7 @@ mod tests {
     use super::*;
     use crate::cache::{CacheInvalidationService, CacheL2Backend, KeyBuilder, UsernameCache};
     use crate::config::PasswordComplexityConfig;
-    use crate::models::RoomId;
+    use crate::models::{RoomId, SignupMethod, User, UserRole, UserStatus};
     use crate::repository::{
         MediaRepository, PlaylistRepository, ProviderInstanceRepository,
         RoomPlaybackStateRepository, RoomRepository,
@@ -1825,6 +2126,16 @@ mod tests {
             Ok(true)
         }
 
+        async fn set_if_version_at_least(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _version: i64,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
         async fn delete_by_prefix(&self, _prefix: &str) -> Result<()> {
             Ok(())
         }
@@ -1853,6 +2164,30 @@ mod tests {
         );
         user_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         user_service
+    }
+
+    fn make_user(username: &str) -> User {
+        let now = chrono::Utc::now();
+        User {
+            id: UserId::new(),
+            username: username.to_string(),
+            email: Some(format!("{username}@test.com")),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            email_verified: true,
+            signup_method: SignupMethod::Email,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+        }
     }
 
     fn make_playback_service_for_lifecycle_tests(
@@ -1887,6 +2222,117 @@ mod tests {
             "synctv:test:cache:invalidate".to_string(),
         ));
         (playback_service, invalidation_service)
+    }
+
+    #[tokio::test]
+    async fn standalone_playback_service_uses_non_authoritative_fence_by_default() {
+        let pool = PgPool::connect_lazy("postgres://localhost/test")
+            .expect("lazy postgres pool for unit tests should build");
+        let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let media_service = MediaService::new(
+            MediaRepository::new(pool.clone()),
+            PlaylistRepository::new(pool.clone()),
+            permission_service.clone(),
+            providers_manager,
+            NotificationService::default(),
+        );
+        let service = PlaybackService::new(
+            RoomPlaybackStateRepository::new(pool.clone()),
+            permission_service,
+            media_service,
+            make_user_service(&pool),
+        );
+
+        assert!(
+            !service.consistency.is_authoritative(),
+            "standalone playback constructors must not create private authoritative fences"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
+        let pool = PgPool::connect_lazy("postgres://localhost/test")
+            .expect("lazy postgres pool for unit tests should build");
+        let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let media_service = MediaService::new(
+            MediaRepository::new(pool.clone()),
+            PlaylistRepository::new(pool.clone()),
+            permission_service.clone(),
+            providers_manager,
+            NotificationService::default(),
+        );
+        let mut service = PlaybackService::new(
+            RoomPlaybackStateRepository::new(pool.clone()),
+            permission_service,
+            media_service,
+            make_user_service(&pool),
+        );
+        let l2_backend = Arc::new(CountingL2Backend::default());
+        let l2_cache = PlaybackStateCache::new(
+            l2_backend,
+            100,
+            PlaybackService::DEFAULT_CACHE_TTL_SECS,
+            60,
+            "test:playback:l1-refresh:".to_string(),
+        )
+        .expect("playback L2 cache should build");
+        service.set_l2_cache(l2_cache);
+
+        let room_id = RoomId::expect_positive(10_004);
+        let cache_key = room_id.to_string();
+        let stale_state = RoomPlaybackState {
+            room_id,
+            playing_media_id: None,
+            playing_playlist_id: None,
+            target: Vec::new(),
+            position: 10.0,
+            speed: 1.0,
+            is_playing: false,
+            updated_at: chrono::Utc::now(),
+            version: 3,
+        };
+        service
+            .playback_cache
+            .insert(cache_key.clone(), stale_state)
+            .await;
+
+        let fresh_state = RoomPlaybackState {
+            room_id,
+            playing_media_id: None,
+            playing_playlist_id: None,
+            target: Vec::new(),
+            position: 42.0,
+            speed: 1.0,
+            is_playing: true,
+            updated_at: chrono::Utc::now(),
+            version: 4,
+        };
+        service.write_playback_cache(&fresh_state).await;
+
+        let cached = service
+            .playback_cache
+            .get(&cache_key)
+            .await
+            .expect("local L1 cache should be refreshed by local write");
+        assert_eq!(cached.version, fresh_state.version);
+        assert!((cached.position - fresh_state.position).abs() < f64::EPSILON);
+        assert!(cached.is_playing);
     }
 
     #[test]
@@ -2144,6 +2590,83 @@ mod tests {
         .expect("listener should invalidate L2 even when L2 is wired after explicit start");
 
         playback_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_db_reload_seeds_missing_local_playback_fence() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let user_repo = crate::repository::UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let owner = user_repo
+            .create(&make_user("playback_seed_fence_owner"))
+            .await
+            .expect("owner should be created");
+        let room = room_repo
+            .create(&crate::models::Room::new(
+                "Playback Seed Fence".to_string(),
+                owner.id,
+            ))
+            .await
+            .expect("room should be created");
+        let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+        let mut state = playback_repo
+            .create_or_get(&room.id)
+            .await
+            .expect("playback state should exist");
+        state.position = 42.0;
+        let state = playback_repo
+            .update_with_exact_version(&state, 5)
+            .await
+            .expect("playback state should have a nonzero version");
+
+        let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
+        let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let media_service = MediaService::new(
+            MediaRepository::new(pool.clone()),
+            PlaylistRepository::new(pool.clone()),
+            permission_service.clone(),
+            providers_manager,
+            NotificationService::default(),
+        );
+        let playback_service = PlaybackService::new_with_runtime(
+            playback_repo,
+            permission_service,
+            media_service,
+            make_user_service(&pool),
+            None,
+            None,
+            Some(fence.clone()),
+        );
+        let domain = CacheDomain::Playback { room_id: room.id };
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("local fence should be readable"),
+            None
+        );
+
+        let loaded = playback_service
+            .get_state(&room.id)
+            .await
+            .expect("strong playback read should fall back to DB");
+
+        assert_eq!(loaded.version, state.version);
+        assert_eq!(
+            fence
+                .current_version(&domain)
+                .await
+                .expect("local fence should be readable"),
+            Some(state.version)
+        );
     }
 
     /// Tests for optimistic lock retry mechanism

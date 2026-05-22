@@ -65,12 +65,14 @@
 //! The `invalidate_room_caches()` method handles all three types appropriately.
 
 use chrono::{DateTime, Duration, Utc};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::{
-    cache::CacheInvalidationRuntime,
+    cache::{
+        CacheDomain, CacheInvalidationRuntime, ConsistencyCoordinator, VersionFenceReservation,
+    },
     models::{
         AddMemberOptions, AuditAction, AuditTargetType, ChatMessage, ChatMessageType, Media,
         MediaId, MemberStatus, PageParams, PermissionBits, Playlist, PlaylistId, ReviewRequestId,
@@ -81,7 +83,10 @@ use crate::{
         media::MediaListItem,
         playlist::PlaylistListItem,
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
-        room_member::KickCooldownInsert,
+        room_member::{
+            KickCooldownInsert, MemberPermissionExactVersionUpdate,
+            MemberRolePermissionExactVersionUpdate, RemovedRoomMember,
+        },
         ChatRepository, MediaRepository, PlaylistRepository, ReviewRepository,
         RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
         UserProviderCredentialRepository,
@@ -91,10 +96,10 @@ use crate::{
         media::MediaService,
         member::{AdminMemberUpdate, MemberService},
         notification::NotificationService,
-        permission::PermissionService,
+        permission::{PermissionService, PermissionServiceRuntime, PermissionWriteFence},
         playback::PlaybackService,
         playlist::PlaylistService,
-        room_settings::RoomSettingsService,
+        room_settings::{RoomSettingsRuntime, RoomSettingsService},
         user::UserService,
         ProvidersManager,
     },
@@ -271,7 +276,10 @@ impl AuthorizedAdminActor {
 pub struct RoomServiceOptions {
     pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+    pub version_fence: Option<Arc<dyn crate::cache::VersionFenceStore>>,
     pub playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
+    pub room_settings_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    pub room_settings_cache_key_prefix: Option<String>,
     pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     pub audit_service: Option<Arc<AuditService>>,
@@ -315,6 +323,8 @@ pub struct RoomService {
 
     /// Optional cache invalidation service for cross-replica room cache sync
     cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+
+    consistency: ConsistencyCoordinator,
 
     /// Optional audit service for logging security-sensitive operations
     audit_service: Option<Arc<AuditService>>,
@@ -379,9 +389,17 @@ pub(crate) struct RoomCleanupImpact {
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
     pub members_deleted: u64,
+    pub removed_members: Vec<RemovedRoomMember>,
     pub settings_deleted: u64,
     pub playback_rows_deleted: u64,
     pub chat_deleted: u64,
+}
+
+#[derive(Debug)]
+struct PendingRoomMemberPermissionFence {
+    room_id: RoomId,
+    user_id: UserId,
+    fence: PermissionWriteFence,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -561,7 +579,7 @@ impl RoomService {
         room_id: &RoomId,
         target_user_id: &UserId,
     ) -> Result<()> {
-        let room_state = sqlx::query(
+        let room_state = sqlx::query!(
             r"
             SELECT closed_at,
                    EXISTS (
@@ -583,24 +601,20 @@ impl RoomService {
               AND deleted_at IS NULL
             FOR UPDATE
             ",
+            room_id as &RoomId,
+            target_user_id as &UserId,
         )
-        .bind(room_id.as_i64())
-        .bind(target_user_id.as_i64())
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        let closed_at: Option<DateTime<Utc>> = room_state.try_get("closed_at")?;
-        let is_banned: bool = room_state.try_get("is_banned")?;
-        let is_target_in_kick_cooldown: bool = room_state.try_get("is_target_in_kick_cooldown")?;
-
-        if closed_at.is_some() {
+        if room_state.closed_at.is_some() {
             return Err(Error::InvalidInput("Room is closed".to_string()));
         }
-        if is_banned {
+        if room_state.is_banned.unwrap_or(false) {
             return Err(Error::Authorization("Room is banned".to_string()));
         }
-        if is_target_in_kick_cooldown {
+        if room_state.is_target_in_kick_cooldown.unwrap_or(false) {
             return Err(Error::Authorization(
                 crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
             ));
@@ -653,11 +667,13 @@ impl RoomService {
         creator_id: &UserId,
         name: &str,
     ) -> Result<()> {
-        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
-            .bind(ROOM_NAME_POLICY_LOCK_NS)
-            .bind(format!("{creator_id}:{name}"))
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            ROOM_NAME_POLICY_LOCK_NS,
+            format!("{creator_id}:{name}"),
+        )
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -666,10 +682,12 @@ impl RoomService {
         owner_id: &UserId,
     ) -> Result<()> {
         let lock_key = format!("room-owner-policy:{ROOM_OWNER_POLICY_LOCK_NS}:{owner_id}");
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(lock_key)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            lock_key,
+        )
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -695,8 +713,8 @@ impl RoomService {
             creator_id, name, &mut **tx,
         )
         .await?;
-        let pending_exists = sqlx::query_scalar::<_, bool>(
-            r"
+        let pending_exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS(
                 SELECT 1
                 FROM room_creation_requests
@@ -705,13 +723,13 @@ impl RoomService {
                   AND reviewed_at IS NULL
                   AND status = $3
                   AND ($4::BIGINT IS NULL OR id != $4)
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            creator_id as &UserId,
+            name,
+            i16::from(ReviewStatus::Pending),
+            excluding_pending_request_id.map(|id| id.as_i64()),
         )
-        .bind(creator_id.as_i64())
-        .bind(name)
-        .bind(i16::from(ReviewStatus::Pending))
-        .bind(excluding_pending_request_id.map(|id| id.as_i64()))
         .fetch_one(&mut **tx)
         .await?;
         if exists || pending_exists {
@@ -737,17 +755,17 @@ impl RoomService {
 
         Self::lock_room_owner_policy(tx, owner_id).await?;
 
-        let owned_room_count = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT COUNT(*)
+        let owned_room_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) as "count!"
             FROM rooms
             WHERE created_by = $1
               AND deleted_at IS NULL
               AND ($2::BIGINT IS NULL OR id != $2)
-            ",
+            "#,
+            owner_id as &UserId,
+            excluding_room_id.map(RoomId::as_i64),
         )
-        .bind(owner_id.as_i64())
-        .bind(excluding_room_id.map(RoomId::as_i64))
         .fetch_one(&mut **tx)
         .await?;
 
@@ -1142,11 +1160,13 @@ impl RoomService {
         let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
-            options.settings_registry.clone(),
-            PermissionService::DEFAULT_CACHE_SIZE,
-            PermissionService::DEFAULT_CACHE_TTL_SECS,
-            Some(RoomSettingsRepository::new(pool.clone())),
-            options.cache_invalidation.clone(),
+            PermissionServiceRuntime {
+                settings_registry: options.settings_registry.clone(),
+                room_settings_repo: Some(RoomSettingsRepository::new(pool.clone())),
+                invalidation_service: options.cache_invalidation.clone(),
+                version_fence: options.version_fence.clone(),
+                ..PermissionServiceRuntime::default()
+            },
         );
         Self::new_with_providers_permission_service_and_options(
             pool,
@@ -1228,14 +1248,25 @@ impl RoomService {
             user_service.clone(),
             options.cache_invalidation.clone(),
             options.playback_l2_cache.clone(),
+            options.version_fence.clone(),
         );
-        let room_settings_service = RoomSettingsService::new(
+        let room_settings_service = RoomSettingsService::new_with_version_fence(
             room_settings_repo.clone(),
             options.cache_invalidation.clone(),
             Arc::new(notification_service.clone()),
-            None,
-            None,
+            RoomSettingsRuntime {
+                version_fence: options.version_fence.clone(),
+                l2_cache: options.room_settings_l2_cache.clone(),
+                cache_key_prefix: options
+                    .room_settings_cache_key_prefix
+                    .unwrap_or_else(|| "room_settings:".to_string()),
+                ..RoomSettingsRuntime::default()
+            },
         );
+
+        let version_fence = options
+            .version_fence
+            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
 
         Self {
             pool,
@@ -1264,6 +1295,7 @@ impl RoomService {
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
             realtime_outbox: options.realtime_outbox,
+            consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
 
@@ -1382,10 +1414,10 @@ impl RoomService {
             return Ok("local-management".to_string());
         }
 
-        Ok(sqlx::query_scalar::<_, String>(
+        Ok(sqlx::query_scalar!(
             "SELECT username FROM users WHERE id = $1 AND deleted_at IS NULL",
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_optional(&mut **tx)
         .await?
         .unwrap_or_else(|| user_id.to_string()))
@@ -1797,7 +1829,7 @@ impl RoomService {
 
         // Invalidate permission cache outside transaction
         self.permission_service
-            .invalidate_cache(&created_room.id, &created_by)
+            .seed_added_member_cache(&created_room.id, &created_by, created_member.version)
             .await;
 
         Ok((created_room, created_member))
@@ -1881,32 +1913,114 @@ impl RoomService {
         self.ensure_room_name_available_for_creator_tx(&mut tx, &new_owner_id, &room.name)
             .await?;
 
+        let current_owner_fence = self
+            .begin_permission_write(&room_id, &current_owner_id, current_owner_member.version)
+            .await?;
+        let new_owner_fence = match self
+            .begin_permission_write(&room_id, &new_owner_id, new_owner_member.version)
+            .await
+        {
+            Ok(fence) => fence,
+            Err(error) => {
+                self.abort_permission_write(&current_owner_fence).await;
+                return Err(error);
+            }
+        };
+
         let updated_room = self
             .room_repo
             .transfer_ownership_with_executor(&room_id, &new_owner_id, &mut *tx)
-            .await?;
+            .await;
+        let updated_room = match updated_room {
+            Ok(room) => room,
+            Err(error) => {
+                self.abort_permission_write(&current_owner_fence).await;
+                self.abort_permission_write(&new_owner_fence).await;
+                return Err(error);
+            }
+        };
 
-        let updated_current_owner = self
-            .member_repo
-            .update_role_with_version_executor(
-                &room_id,
-                &current_owner_id,
-                RoomRole::Admin,
-                current_owner_member.version,
-                &mut *tx,
-            )
-            .await?;
-        let updated_new_owner = self
-            .member_repo
-            .update_role_with_version_executor(
-                &room_id,
-                &new_owner_id,
-                RoomRole::Creator,
-                new_owner_member.version,
-                &mut *tx,
-            )
-            .await?;
-        let current_owner_snapshot = self
+        let updated_current_owner = if current_owner_fence.version() > 0 {
+            match self
+                .member_repo
+                .update_role_with_exact_version_executor(
+                    &room_id,
+                    &current_owner_id,
+                    RoomRole::Admin,
+                    current_owner_member.version,
+                    current_owner_fence.version(),
+                    &mut *tx,
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    self.abort_permission_write(&current_owner_fence).await;
+                    self.abort_permission_write(&new_owner_fence).await;
+                    return Err(error);
+                }
+            }
+        } else {
+            match self
+                .member_repo
+                .update_role_with_version_executor(
+                    &room_id,
+                    &current_owner_id,
+                    RoomRole::Admin,
+                    current_owner_member.version,
+                    &mut *tx,
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    self.abort_permission_write(&current_owner_fence).await;
+                    self.abort_permission_write(&new_owner_fence).await;
+                    return Err(error);
+                }
+            }
+        };
+        let updated_new_owner = if new_owner_fence.version() > 0 {
+            match self
+                .member_repo
+                .update_role_with_exact_version_executor(
+                    &room_id,
+                    &new_owner_id,
+                    RoomRole::Creator,
+                    new_owner_member.version,
+                    new_owner_fence.version(),
+                    &mut *tx,
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    self.abort_permission_write(&current_owner_fence).await;
+                    self.abort_permission_write(&new_owner_fence).await;
+                    return Err(error);
+                }
+            }
+        } else {
+            match self
+                .member_repo
+                .update_role_with_version_executor(
+                    &room_id,
+                    &new_owner_id,
+                    RoomRole::Creator,
+                    new_owner_member.version,
+                    &mut *tx,
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    self.abort_permission_write(&current_owner_fence).await;
+                    self.abort_permission_write(&new_owner_fence).await;
+                    return Err(error);
+                }
+            }
+        };
+        let current_owner_snapshot = match self
             .permission_changed_snapshot_tx(
                 &mut tx,
                 room_id,
@@ -1914,14 +2028,28 @@ impl RoomService {
                 current_owner_id,
                 Some(&updated_current_owner),
             )
-            .await?;
-        self.insert_permission_changed_outbox_tx(
-            &mut tx,
-            &current_owner_snapshot,
-            outbox_event_factory.as_ref(),
-        )
-        .await?;
-        let new_owner_snapshot = self
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.abort_permission_write(&current_owner_fence).await;
+                self.abort_permission_write(&new_owner_fence).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(
+                &mut tx,
+                &current_owner_snapshot,
+                outbox_event_factory.as_ref(),
+            )
+            .await
+        {
+            self.abort_permission_write(&current_owner_fence).await;
+            self.abort_permission_write(&new_owner_fence).await;
+            return Err(error);
+        }
+        let new_owner_snapshot = match self
             .permission_changed_snapshot_tx(
                 &mut tx,
                 room_id,
@@ -1929,15 +2057,56 @@ impl RoomService {
                 current_owner_id,
                 Some(&updated_new_owner),
             )
-            .await?;
-        self.insert_permission_changed_outbox_tx(
-            &mut tx,
-            &new_owner_snapshot,
-            outbox_event_factory.as_ref(),
-        )
-        .await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.abort_permission_write(&current_owner_fence).await;
+                self.abort_permission_write(&new_owner_fence).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(
+                &mut tx,
+                &new_owner_snapshot,
+                outbox_event_factory.as_ref(),
+            )
+            .await
+        {
+            self.abort_permission_write(&current_owner_fence).await;
+            self.abort_permission_write(&new_owner_fence).await;
+            return Err(error);
+        }
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_permission_write(&current_owner_fence).await;
+            self.abort_permission_write(&new_owner_fence).await;
+            return Err(error.into());
+        }
+
+        self.finalize_committed_permission_write_best_effort(
+            &current_owner_fence,
+            &room_id,
+            &current_owner_id,
+            updated_current_owner.version,
+            "transfer_room_ownership_with_outbox:current_owner",
+        )
+        .await;
+        self.finalize_committed_permission_write_best_effort(
+            &new_owner_fence,
+            &room_id,
+            &new_owner_id,
+            updated_new_owner.version,
+            "transfer_room_ownership_with_outbox:new_owner",
+        )
+        .await;
+        self.permission_service
+            .invalidate_committed_member_write_cache(&room_id, &current_owner_id)
+            .await;
+        self.permission_service
+            .invalidate_committed_member_write_cache(&room_id, &new_owner_id)
+            .await;
 
         self.invalidate_room_caches(&room_id).await;
         self.notify_room_settings_invalidation(&room_id).await;
@@ -2254,7 +2423,7 @@ impl RoomService {
         tx.commit().await?;
 
         self.permission_service
-            .invalidate_cache(&room_id, &user_id)
+            .seed_added_member_cache(&room_id, &user_id, created_member.version)
             .await;
 
         // Get all members
@@ -2291,11 +2460,13 @@ impl RoomService {
         role: RoomRole,
     ) -> Result<RoomMember> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
-            .bind(ROOM_JOIN_PENDING_LOCK_NS)
-            .bind(format!("{room_id}:{user_id}"))
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            ROOM_JOIN_PENDING_LOCK_NS,
+            format!("{room_id}:{user_id}"),
+        )
+        .execute(&mut *tx)
+        .await?;
 
         let existing_request_id = sqlx::query_scalar!(
             r#"
@@ -2631,7 +2802,7 @@ impl RoomService {
             .await?;
         tx.commit().await?;
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .seed_added_member_cache(&room_id, &target_user_id, created.version)
             .await;
 
         let actor_username = self
@@ -2720,7 +2891,7 @@ impl RoomService {
         tx.commit().await?;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .seed_added_member_cache(&room_id, &target_user_id, updated.version)
             .await;
 
         self.notify_membership_event_best_effort(
@@ -2901,7 +3072,7 @@ impl RoomService {
             .await?;
         tx.commit().await?;
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .seed_added_member_cache(&room_id, &target_user_id, created.version)
             .await;
 
         self.audit_log(
@@ -2980,7 +3151,7 @@ impl RoomService {
         tx.commit().await?;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .seed_added_member_cache(&room_id, &target_user_id, updated.version)
             .await;
 
         self.audit_log(
@@ -3156,27 +3327,77 @@ impl RoomService {
 
         let snapshot = self.user_left_snapshot(room_id, user_id).await?;
         let mut tx = self.pool.begin().await?;
-        let removed = self
+        let Some(observed_version) = (match self
             .member_repo
-            .remove_with_executor(&room_id, &user_id, &mut *tx)
-            .await?;
-        if !removed {
+            .active_member_version_for_update_with_executor(&room_id, &user_id, &mut tx)
+            .await
+        {
+            Ok(version) => version,
+            Err(error) => return Err(error),
+        }) else {
             return Err(Error::NotFound(
                 synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
             ));
-        }
-        let cleanup = cleanup_member_resources_in_tx(&mut tx, &room_id, &user_id).await?;
+        };
+        let fence = self
+            .begin_permission_write(&room_id, &user_id, observed_version)
+            .await?;
+        let removed_version = match self
+            .member_repo
+            .remove_with_version_executor(&room_id, &user_id, &mut tx)
+            .await
+        {
+            Ok(version) => version,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        let Some(removed_version) = removed_version else {
+            self.abort_permission_write(&fence).await;
+            return Err(Error::NotFound(
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
+            ));
+        };
+        let cleanup = match cleanup_member_resources_in_tx(&mut tx, &room_id, &user_id).await {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
         let cleanup_outbox_events = cleanup_outbox_event_factory
             .as_ref()
             .map_or_else(Vec::new, |factory| factory(&cleanup));
-        self.insert_user_left_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        self.insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
-            .await?;
-        tx.commit().await?;
+        if let Err(error) = self
+            .insert_user_left_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = tx.commit().await {
+            self.abort_permission_write(&fence).await;
+            return Err(error.into());
+        }
+        self.finalize_committed_permission_write_best_effort(
+            &fence,
+            &room_id,
+            &user_id,
+            removed_version,
+            "leave_room_with_outbox",
+        )
+        .await;
 
         self.permission_service
-            .invalidate_cache(&room_id, &user_id)
+            .invalidate_removed_member_cache(&room_id, &user_id)
             .await;
         self.finalize_member_resource_cleanup_after_commit(&room_id, &user_id, &cleanup)
             .await;
@@ -3329,15 +3550,49 @@ impl RoomService {
         }
 
         let mut tx = self.pool.begin().await?;
-        let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await?;
+        let permission_fences = self
+            .reserve_room_member_permission_fences(&room_id, &mut tx)
+            .await?;
+        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await {
+            Ok(impact) => impact,
+            Err(error) => {
+                self.abort_room_member_permission_fences(&permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-            outbox.insert_with_executor(event, &mut *tx).await?;
+            if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
+                self.abort_room_member_permission_fences(&permission_fences)
+                    .await;
+                return Err(error);
+            }
         }
 
         // Commit transaction - all or nothing
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_room_member_permission_fences(&permission_fences)
+                .await;
+            return Err(error.into());
+        }
+
+        if let Err(error) = self
+            .commit_removed_room_member_permission_fences(
+                permission_fences,
+                &impact.removed_members,
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                "Failed to finalize one or more room deletion permission fences after DB commit"
+            );
+        }
 
         self.invalidate_room_caches(&room_id).await;
+        self.invalidate_removed_room_member_permission_caches(&impact.removed_members)
+            .await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self.notification_service.notify_room_deleted(&room_id);
@@ -3647,7 +3902,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         settings: RoomSettings,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         // Check permission
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
@@ -3678,12 +3933,58 @@ impl RoomService {
                     let room_id = room_id_clone;
                     let settings = settings_clone.clone();
                     let room_settings_repo = room_settings_repo.clone();
+                    let consistency = self.consistency.clone();
                     async move {
                         let (current, version) =
                             room_settings_repo.get_with_version(&room_id).await?;
-                        let new_version = room_settings_repo
-                            .set_settings_with_version(&room_id, &settings, version)
-                            .await?;
+                        let domain = CacheDomain::RoomSettings { room_id };
+                        let reservation =
+                            Self::begin_room_settings_write_with(&consistency, &room_id, version)
+                                .await?;
+                        let new_version = if let Some(reservation) = &reservation {
+                            match room_settings_repo
+                                .set_settings_with_exact_version(
+                                    &room_id,
+                                    &settings,
+                                    version,
+                                    reservation.version,
+                                )
+                                .await
+                            {
+                                Ok(new_version) => {
+                                    if let Err(error) = Self::commit_room_settings_write_with(
+                                        &consistency,
+                                        &domain,
+                                        Some(reservation),
+                                        new_version,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            error = %error,
+                                            domain = %domain,
+                                            version = new_version,
+                                            operation = "set_settings",
+                                            "Failed to finalize room settings fence after committed DB write"
+                                        );
+                                    }
+                                    new_version
+                                }
+                                Err(error) => {
+                                    Self::abort_room_settings_write_with(
+                                        &consistency,
+                                        &domain,
+                                        Some(reservation),
+                                    )
+                                    .await;
+                                    return Err(error);
+                                }
+                            }
+                        } else {
+                            room_settings_repo
+                                .set_settings_with_version(&room_id, &settings, version)
+                                .await?
+                        };
                         Ok((current, settings, new_version))
                     }
                 },
@@ -3719,6 +4020,225 @@ impl RoomService {
         }
 
         Ok(snapshot)
+    }
+
+    async fn begin_room_settings_write_with(
+        consistency: &ConsistencyCoordinator,
+        room_id: &RoomId,
+        db_version: i64,
+    ) -> Result<Option<VersionFenceReservation>> {
+        let domain = CacheDomain::RoomSettings { room_id: *room_id };
+        consistency.begin_observed_write(&domain, db_version).await
+    }
+
+    async fn commit_room_settings_write_with(
+        consistency: &ConsistencyCoordinator,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+    ) -> Result<()> {
+        consistency
+            .commit_reserved_write(domain, reservation, version)
+            .await?;
+        Ok(())
+    }
+
+    async fn abort_room_settings_write_with(
+        consistency: &ConsistencyCoordinator,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+    ) {
+        consistency.abort_reserved_write(domain, reservation).await;
+    }
+
+    async fn begin_room_settings_write(
+        &self,
+        room_id: &RoomId,
+        db_version: i64,
+    ) -> Result<Option<VersionFenceReservation>> {
+        Self::begin_room_settings_write_with(&self.consistency, room_id, db_version).await
+    }
+
+    async fn commit_room_settings_write(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+    ) -> Result<()> {
+        Self::commit_room_settings_write_with(&self.consistency, domain, reservation, version).await
+    }
+
+    async fn finalize_committed_room_settings_write_best_effort(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+        version: i64,
+        operation: &'static str,
+    ) {
+        if let Err(error) = self
+            .commit_room_settings_write(domain, reservation, version)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                domain = %domain,
+                version,
+                operation,
+                "Failed to finalize room settings fence after committed DB write"
+            );
+        }
+    }
+
+    async fn finalize_committed_permission_write_best_effort(
+        &self,
+        fence: &PermissionWriteFence,
+        room_id: &RoomId,
+        user_id: &UserId,
+        version: i64,
+        operation: &'static str,
+    ) {
+        if let Err(error) = self.commit_permission_write(fence, version).await {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                user_id = %user_id,
+                version,
+                operation,
+                "Failed to finalize permission fence after committed room/member write"
+            );
+        }
+    }
+
+    async fn abort_room_settings_write(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&VersionFenceReservation>,
+    ) {
+        Self::abort_room_settings_write_with(&self.consistency, domain, reservation).await;
+    }
+
+    async fn begin_permission_write(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        db_version: i64,
+    ) -> Result<PermissionWriteFence> {
+        self.permission_service
+            .begin_permission_write(room_id, user_id, db_version)
+            .await
+    }
+
+    async fn commit_permission_write(
+        &self,
+        fence: &PermissionWriteFence,
+        version: i64,
+    ) -> Result<()> {
+        self.permission_service
+            .commit_permission_write(fence, version)
+            .await
+    }
+
+    async fn abort_permission_write(&self, fence: &PermissionWriteFence) {
+        self.permission_service.abort_permission_write(fence).await;
+    }
+
+    async fn reserve_room_member_permission_fences(
+        &self,
+        room_id: &RoomId,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<Vec<PendingRoomMemberPermissionFence>> {
+        let members = sqlx::query!(
+            r#"SELECT room_id as "room_id: RoomId",
+                      user_id as "user_id: UserId",
+                      version
+             FROM room_members
+             WHERE room_id = $1
+             FOR UPDATE"#,
+            room_id as &RoomId,
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+
+        let mut fences = Vec::with_capacity(members.len());
+        for member in members {
+            let fence = match self
+                .begin_permission_write(&member.room_id, &member.user_id, member.version)
+                .await
+            {
+                Ok(fence) => fence,
+                Err(error) => {
+                    self.abort_room_member_permission_fences(&fences).await;
+                    return Err(error);
+                }
+            };
+            fences.push(PendingRoomMemberPermissionFence {
+                room_id: member.room_id,
+                user_id: member.user_id,
+                fence,
+            });
+        }
+
+        Ok(fences)
+    }
+
+    async fn abort_room_member_permission_fences(
+        &self,
+        fences: &[PendingRoomMemberPermissionFence],
+    ) {
+        for pending in fences {
+            self.abort_permission_write(&pending.fence).await;
+        }
+    }
+
+    async fn commit_removed_room_member_permission_fences(
+        &self,
+        fences: Vec<PendingRoomMemberPermissionFence>,
+        removed_members: &[RemovedRoomMember],
+    ) -> Result<()> {
+        let removed_versions = removed_members
+            .iter()
+            .map(|member| ((member.room_id, member.user_id), member.version))
+            .collect::<HashMap<_, _>>();
+
+        let mut first_error = None;
+        for pending in fences {
+            let Some(version) = removed_versions.get(&(pending.room_id, pending.user_id)) else {
+                self.abort_permission_write(&pending.fence).await;
+                continue;
+            };
+            if let Err(error) = self
+                .permission_service
+                .commit_permission_write(&pending.fence, *version)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %pending.room_id,
+                    user_id = %pending.user_id,
+                    "Failed to finalize removed room member permission fence"
+                );
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn invalidate_removed_room_member_permission_caches(
+        &self,
+        removed_members: &[RemovedRoomMember],
+    ) {
+        for member in removed_members {
+            self.permission_service
+                .invalidate_removed_member_cache(&member.room_id, &member.user_id)
+                .await;
+        }
     }
 
     /// Check if a room exists (lightweight existence check, no full row fetch).
@@ -3797,7 +4317,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.set_room_settings_with_outbox(room_id, settings, None)
             .await
     }
@@ -3807,7 +4327,7 @@ impl RoomService {
         room_id: &RoomId,
         settings: &RoomSettings,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         settings.validate()?;
 
         let (previous_settings, updated_settings, updated_version) =
@@ -3819,20 +4339,64 @@ impl RoomService {
                     let outbox_event_factory = outbox_event_factory.clone();
                     let (current, version) =
                         self.room_settings_repo.get_with_version(room_id).await?;
-                    let mut tx = self.pool.begin().await?;
-                    let new_version = self
-                        .room_settings_repo
-                        .set_settings_with_version_with_executor(
-                            room_id, settings, version, &mut *tx,
-                        )
-                        .await?;
+                    let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                    let reservation = self.begin_room_settings_write(room_id, version).await?;
+                    let mut tx = match self.pool.begin().await {
+                        Ok(tx) => tx,
+                        Err(error) => {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error.into());
+                        }
+                    };
+                    let new_version = if let Some(reservation) = &reservation {
+                        match self
+                            .room_settings_repo
+                            .set_settings_with_exact_version_with_executor(
+                                room_id,
+                                settings,
+                                version,
+                                reservation.version,
+                                &mut *tx,
+                            )
+                            .await
+                        {
+                            Ok(new_version) => new_version,
+                            Err(error) => {
+                                self.abort_room_settings_write(&domain, Some(reservation))
+                                    .await;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        self.room_settings_repo
+                            .set_settings_with_version_with_executor(
+                                room_id, settings, version, &mut *tx,
+                            )
+                            .await?
+                    };
                     let outbox_event = outbox_event_factory
                         .as_ref()
                         .and_then(|factory| factory(settings, new_version));
                     if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        outbox.insert_with_executor(event, &mut *tx).await?;
+                        if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error);
+                        }
                     }
-                    tx.commit().await?;
+                    if let Err(error) = tx.commit().await {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error.into());
+                    }
+                    self.finalize_committed_room_settings_write_best_effort(
+                        &domain,
+                        reservation.as_ref(),
+                        new_version,
+                        "set_room_settings_with_outbox",
+                    )
+                    .await;
                     Ok((current, settings.clone(), new_version))
                 },
             )
@@ -3858,7 +4422,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         patch: serde_json::Value,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.patch_settings_with_outbox(room_id, user_id, patch, None)
             .await
     }
@@ -3869,7 +4433,7 @@ impl RoomService {
         user_id: UserId,
         patch: serde_json::Value,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
@@ -3910,23 +4474,60 @@ impl RoomService {
                             PermissionBits::SET_ROOM_SETTINGS,
                         )
                         .await?;
-                        let new_version = self
-                            .room_settings_repo
-                            .set_settings_with_version_with_executor(
-                                &room_id,
-                                &merged_settings,
-                                version,
-                                &mut *tx,
-                            )
-                            .await?;
+                        let domain = CacheDomain::RoomSettings { room_id };
+                        let reservation = self.begin_room_settings_write(&room_id, version).await?;
+                        let new_version = if let Some(reservation) = &reservation {
+                            match self
+                                .room_settings_repo
+                                .set_settings_with_exact_version_with_executor(
+                                    &room_id,
+                                    &merged_settings,
+                                    version,
+                                    reservation.version,
+                                    &mut *tx,
+                                )
+                                .await
+                            {
+                                Ok(new_version) => new_version,
+                                Err(error) => {
+                                    self.abort_room_settings_write(&domain, Some(reservation))
+                                        .await;
+                                    return Err(error);
+                                }
+                            }
+                        } else {
+                            self.room_settings_repo
+                                .set_settings_with_version_with_executor(
+                                    &room_id,
+                                    &merged_settings,
+                                    version,
+                                    &mut *tx,
+                                )
+                                .await?
+                        };
                         let outbox_event = outbox_event_factory
                             .as_ref()
                             .and_then(|factory| factory(&merged_settings, new_version));
                         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
                         {
-                            outbox.insert_with_executor(event, &mut *tx).await?;
+                            if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
+                                self.abort_room_settings_write(&domain, reservation.as_ref())
+                                    .await;
+                                return Err(error);
+                            }
                         }
-                        tx.commit().await?;
+                        if let Err(error) = tx.commit().await {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error.into());
+                        }
+                        self.finalize_committed_room_settings_write_best_effort(
+                            &domain,
+                            reservation.as_ref(),
+                            new_version,
+                            "patch_settings_with_outbox",
+                        )
+                        .await;
                         Ok((current, merged_settings, new_version))
                     }
                 },
@@ -4001,10 +4602,40 @@ impl RoomService {
                     settings.set_by_key(key, value)?;
                     settings.validate()?;
 
-                    let new_version = self
-                        .room_settings_repo
-                        .set_settings_with_version(room_id, &settings, version)
-                        .await?;
+                    let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                    let reservation = self.begin_room_settings_write(room_id, version).await?;
+                    let new_version = if let Some(reservation) = &reservation {
+                        match self
+                            .room_settings_repo
+                            .set_settings_with_exact_version(
+                                room_id,
+                                &settings,
+                                version,
+                                reservation.version,
+                            )
+                            .await
+                        {
+                            Ok(new_version) => {
+                                self.finalize_committed_room_settings_write_best_effort(
+                                    &domain,
+                                    Some(reservation),
+                                    new_version,
+                                    "update_room_setting",
+                                )
+                                .await;
+                                new_version
+                            }
+                            Err(error) => {
+                                self.abort_room_settings_write(&domain, Some(reservation))
+                                    .await;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        self.room_settings_repo
+                            .set_settings_with_version(room_id, &settings, version)
+                            .await?
+                    };
                     Ok((current, settings, new_version))
                 },
             )
@@ -4032,7 +4663,7 @@ impl RoomService {
         version: i64,
         actor_user_id: Option<&UserId>,
         actor_username: &str,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.run_post_apply_hooks_for_settings_update(room_id, previous_settings, updated_settings)
             .await;
         self.room_settings_service.invalidate_local(room_id).await;
@@ -4050,7 +4681,7 @@ impl RoomService {
             version,
         );
 
-        Ok(crate::service::room_settings::RoomSettingsSnapshot {
+        Ok(crate::cache::RoomSettingsSnapshot {
             settings: updated_settings.clone(),
             version,
         })
@@ -4089,7 +4720,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.reset_room_settings_with_outbox(room_id, user_id, None)
             .await
     }
@@ -4099,7 +4730,7 @@ impl RoomService {
         room_id: &RoomId,
         user_id: &UserId,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.permission_service
             .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
@@ -4124,22 +4755,59 @@ impl RoomService {
                         PermissionBits::SET_ROOM_SETTINGS,
                     )
                     .await?;
-                    let new_version = self
-                        .room_settings_repo
-                        .set_settings_with_version_with_executor(
-                            room_id,
-                            &default_settings,
-                            version,
-                            &mut *tx,
-                        )
-                        .await?;
+                    let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                    let reservation = self.begin_room_settings_write(room_id, version).await?;
+                    let new_version = if let Some(reservation) = &reservation {
+                        match self
+                            .room_settings_repo
+                            .set_settings_with_exact_version_with_executor(
+                                room_id,
+                                &default_settings,
+                                version,
+                                reservation.version,
+                                &mut *tx,
+                            )
+                            .await
+                        {
+                            Ok(new_version) => new_version,
+                            Err(error) => {
+                                self.abort_room_settings_write(&domain, Some(reservation))
+                                    .await;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        self.room_settings_repo
+                            .set_settings_with_version_with_executor(
+                                room_id,
+                                &default_settings,
+                                version,
+                                &mut *tx,
+                            )
+                            .await?
+                    };
                     let outbox_event = outbox_event_factory
                         .as_ref()
                         .and_then(|factory| factory(&default_settings, new_version));
                     if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        outbox.insert_with_executor(event, &mut *tx).await?;
+                        if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error);
+                        }
                     }
-                    tx.commit().await?;
+                    if let Err(error) = tx.commit().await {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error.into());
+                    }
+                    self.finalize_committed_room_settings_write_best_effort(
+                        &domain,
+                        reservation.as_ref(),
+                        new_version,
+                        "reset_room_settings_with_outbox",
+                    )
+                    .await;
                     Ok((current, default_settings.clone(), new_version))
                 },
             )
@@ -4325,7 +4993,7 @@ impl RoomService {
         actor_user_id: Option<&UserId>,
         actor_username: &str,
         password_hash: Option<String>,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.update_room_password_as_with_outbox(
             room_id,
             actor_user_id,
@@ -4343,7 +5011,7 @@ impl RoomService {
         actor_username: &str,
         password_hash: Option<String>,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         let password_was_set = password_hash.is_some();
         self.do_set_password_hash(room_id, password_hash, outbox_event_factory)
             .await?;
@@ -4395,71 +5063,95 @@ impl RoomService {
                 // Read current settings and version
                 let (mut settings, version) =
                     self.room_settings_repo.get_with_version(room_id).await?;
+                let domain = CacheDomain::RoomSettings { room_id: *room_id };
+                let reservation = self.begin_room_settings_write(room_id, version).await?;
 
                 // Update password hash in a transaction (separate key row, not version-checked)
-                let mut tx = self.pool.begin().await?;
+                let mut tx = match self.pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error.into());
+                    }
+                };
                 if let Some(ref pwd_hash) = password_hash {
-                    self.room_settings_repo
+                    if let Err(error) = self
+                        .room_settings_repo
                         .set_with_executor(room_id, "password", pwd_hash, &mut *tx)
-                        .await?;
+                        .await
+                    {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error);
+                    }
                     settings.require_password = crate::models::room_settings::RequirePassword(true);
                 } else {
-                    self.room_settings_repo
+                    if let Err(error) = self
+                        .room_settings_repo
                         .delete_with_executor(room_id, "password", &mut *tx)
-                        .await?;
+                        .await
+                    {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error);
+                    }
                     settings.require_password =
                         crate::models::room_settings::RequirePassword(false);
                 }
 
-                // CAS update for the _settings row within the same transaction
-                let json_value = serde_json::to_string(&settings)
-                    .internal_with_err("Failed to serialize room settings")?;
-
-                let cas_result = if version == 0 {
-                    sqlx::query_scalar!(
-                        r#"
-                    INSERT INTO room_settings (room_id, key, value, version)
-                    VALUES ($1, '_settings', $2, 1)
-                    ON CONFLICT (room_id, key) DO NOTHING
-                    RETURNING version AS "version!"
-                    "#,
-                        room_id.as_i64(),
-                        &json_value,
-                    )
-                    .fetch_optional(&mut *tx)
-                    .await?
+                let new_version = if let Some(reservation) = &reservation {
+                    match self
+                        .room_settings_repo
+                        .set_settings_with_exact_version_with_executor(
+                            room_id,
+                            &settings,
+                            version,
+                            reservation.version,
+                            &mut *tx,
+                        )
+                        .await
+                    {
+                        Ok(new_version) => new_version,
+                        Err(error) => {
+                            self.abort_room_settings_write(&domain, Some(reservation))
+                                .await;
+                            return Err(error);
+                        }
+                    }
                 } else {
-                    sqlx::query_scalar!(
-                        r#"
-                    UPDATE room_settings
-                    SET value = $2, version = version + 1, updated_at = NOW()
-                    WHERE room_id = $1 AND key = '_settings' AND version = $3
-                    RETURNING version AS "version!"
-                    "#,
-                        room_id.as_i64(),
-                        &json_value,
-                        version,
-                    )
-                    .fetch_optional(&mut *tx)
-                    .await?
+                    self.room_settings_repo
+                        .set_settings_with_version_with_executor(
+                            room_id, &settings, version, &mut *tx,
+                        )
+                        .await?
                 };
 
-                if let Some(new_version) = cas_result {
+                {
                     let outbox_event = outbox_event_factory
                         .as_ref()
                         .and_then(|factory| factory(&settings, new_version));
                     if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        outbox.insert_with_executor(event, &mut *tx).await?;
+                        if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error);
+                        }
                     }
-                    tx.commit().await?;
-                    return Ok(());
+                    if let Err(error) = tx.commit().await {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error.into());
+                    }
+                    self.finalize_committed_room_settings_write_best_effort(
+                        &domain,
+                        reservation.as_ref(),
+                        new_version,
+                        "update_room_setting_with_outbox",
+                    )
+                    .await;
+                    Ok(())
                 }
-
-                // Version mismatch -- explicit rollback before retry.
-                // This is necessary to release locks immediately and allow the next
-                // iteration to acquire a fresh snapshot.
-                tx.rollback().await?;
-                Err(Error::OptimisticLockConflict)
             },
         )
         .await
@@ -4679,17 +5371,67 @@ impl RoomService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
+                let fence = self
+                    .begin_permission_write(&room_id, &target_user_id, member.version)
+                    .await?;
+                let reserved_version = fence.version();
                 let updated = if matches!(member.role, RoomRole::Admin) {
-                    self.member_repo
-                        .update_admin_permissions_with_executor(
-                            &room_id,
-                            &target_user_id,
-                            added_permissions,
-                            removed_permissions,
-                            member.version,
+                    if reserved_version > 0 {
+                        match self
+                            .member_repo
+                            .update_admin_permissions_with_exact_version_executor(
+                                MemberPermissionExactVersionUpdate {
+                                    room_id: &room_id,
+                                    user_id: &target_user_id,
+                                    added_permissions,
+                                    removed_permissions,
+                                    current_version: member.version,
+                                    new_version: reserved_version,
+                                },
+                                &mut *tx,
+                            )
+                            .await
+                        {
+                            Ok(updated) => updated,
+                            Err(error) => {
+                                self.abort_permission_write(&fence).await;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        self.member_repo
+                            .update_admin_permissions_with_executor(
+                                &room_id,
+                                &target_user_id,
+                                added_permissions,
+                                removed_permissions,
+                                member.version,
+                                &mut *tx,
+                            )
+                            .await?
+                    }
+                } else if reserved_version > 0 {
+                    match self
+                        .member_repo
+                        .update_permissions_with_exact_version_executor(
+                            MemberPermissionExactVersionUpdate {
+                                room_id: &room_id,
+                                user_id: &target_user_id,
+                                added_permissions,
+                                removed_permissions,
+                                current_version: member.version,
+                                new_version: reserved_version,
+                            },
                             &mut *tx,
                         )
-                        .await?
+                        .await
+                    {
+                        Ok(updated) => updated,
+                        Err(error) => {
+                            self.abort_permission_write(&fence).await;
+                            return Err(error);
+                        }
+                    }
                 } else {
                     self.member_repo
                         .update_permissions_with_executor(
@@ -4702,7 +5444,7 @@ impl RoomService {
                         )
                         .await?
                 };
-                let snapshot = self
+                let snapshot = match self
                     .permission_changed_snapshot_tx(
                         &mut tx,
                         room_id,
@@ -4710,21 +5452,44 @@ impl RoomService {
                         granter_id,
                         Some(&updated),
                     )
-                    .await?;
-                self.insert_permission_changed_outbox_tx(
-                    &mut tx,
-                    &snapshot,
-                    outbox_event_factory.as_ref(),
+                    .await
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        self.abort_permission_write(&fence).await;
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = self
+                    .insert_permission_changed_outbox_tx(
+                        &mut tx,
+                        &snapshot,
+                        outbox_event_factory.as_ref(),
+                    )
+                    .await
+                {
+                    self.abort_permission_write(&fence).await;
+                    return Err(error);
+                }
+                if let Err(error) = tx.commit().await {
+                    self.abort_permission_write(&fence).await;
+                    return Err(error.into());
+                }
+                self.finalize_committed_permission_write_best_effort(
+                    &fence,
+                    &room_id,
+                    &target_user_id,
+                    updated.version,
+                    "grant_member_permissions_with_outbox",
                 )
-                .await?;
-                tx.commit().await?;
+                .await;
                 Ok(updated)
             },
         )
         .await?;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
 
         Ok(updated_member)
@@ -4769,17 +5534,40 @@ impl RoomService {
             .get(&room_id, &target_user_id)
             .await?
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
-        let updated_member = self
-            .member_repo
-            .update_role_with_version_executor(
-                &room_id,
-                &target_user_id,
-                role,
-                member.version,
-                &mut *tx,
-            )
+        let fence = self
+            .begin_permission_write(&room_id, &target_user_id, member.version)
             .await?;
-        let snapshot = self
+        let updated_member = if fence.version() > 0 {
+            match self
+                .member_repo
+                .update_role_with_exact_version_executor(
+                    &room_id,
+                    &target_user_id,
+                    role,
+                    member.version,
+                    fence.version(),
+                    &mut *tx,
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    self.abort_permission_write(&fence).await;
+                    return Err(error);
+                }
+            }
+        } else {
+            self.member_repo
+                .update_role_with_version_executor(
+                    &room_id,
+                    &target_user_id,
+                    role,
+                    member.version,
+                    &mut *tx,
+                )
+                .await?
+        };
+        let snapshot = match self
             .permission_changed_snapshot_tx(
                 &mut tx,
                 room_id,
@@ -4787,13 +5575,36 @@ impl RoomService {
                 creator_id,
                 Some(&updated_member),
             )
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        tx.commit().await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = tx.commit().await {
+            self.abort_permission_write(&fence).await;
+            return Err(error.into());
+        }
+        self.finalize_committed_permission_write_best_effort(
+            &fence,
+            &room_id,
+            &target_user_id,
+            updated_member.version,
+            "set_member_role_with_outbox",
+        )
+        .await;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
         self.notify_room_settings_invalidation(&room_id).await;
 
@@ -4840,18 +5651,40 @@ impl RoomService {
             PermissionBits::KICK_MEMBER,
         )
         .await?;
-        let removed = self
+        let Some(observed_version) = self
             .member_repo
-            .kick_with_role_check_with_executor(&room_id, &kicker_id, &target_user_id, &mut *tx)
-            .await?;
-        if !removed {
+            .active_member_version_for_update_with_executor(&room_id, &target_user_id, &mut tx)
+            .await?
+        else {
             return Err(Error::Authorization(
                 "User is not a member or cannot kick a member with equal or higher role"
                     .to_string(),
             ));
-        }
+        };
+        let fence = self
+            .begin_permission_write(&room_id, &target_user_id, observed_version)
+            .await?;
+        let removed_version = match self
+            .member_repo
+            .kick_with_role_check_with_executor(&room_id, &kicker_id, &target_user_id, &mut tx)
+            .await
+        {
+            Ok(version) => version,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        let Some(removed_version) = removed_version else {
+            self.abort_permission_write(&fence).await;
+            return Err(Error::Authorization(
+                "User is not a member or cannot kick a member with equal or higher role"
+                    .to_string(),
+            ));
+        };
         let now = Utc::now();
-        self.member_repo
+        if let Err(error) = self
+            .member_repo
             .add_kick_cooldown_with_executor(
                 KickCooldownInsert {
                     room_id: &room_id,
@@ -4863,29 +5696,73 @@ impl RoomService {
                 },
                 &mut *tx,
             )
-            .await?;
-        let cleanup = cleanup_member_resources_in_tx(&mut tx, &room_id, &target_user_id).await?;
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        let cleanup = match cleanup_member_resources_in_tx(&mut tx, &room_id, &target_user_id).await
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
         let cleanup_outbox_events = outbox
             .cleanup
             .as_ref()
             .map_or_else(Vec::new, |factory| factory(&cleanup));
-        let snapshot = self
+        let snapshot = match self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, kicker_id, None)
-            .await?;
-        self.insert_permission_changed_outbox_tx(
-            &mut tx,
-            &snapshot,
-            outbox.permission_changed.as_ref(),
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(
+                &mut tx,
+                &snapshot,
+                outbox.permission_changed.as_ref(),
+            )
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .insert_realtime_outbox_tx(&mut tx, outbox.lifecycle.as_ref())
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = tx.commit().await {
+            self.abort_permission_write(&fence).await;
+            return Err(error.into());
+        }
+        self.finalize_committed_permission_write_best_effort(
+            &fence,
+            &room_id,
+            &target_user_id,
+            removed_version,
+            "kick_member_with_outbox",
         )
-        .await?;
-        self.insert_realtime_outbox_tx(&mut tx, outbox.lifecycle.as_ref())
-            .await?;
-        self.insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
-            .await?;
-        tx.commit().await?;
+        .await;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_removed_member_cache(&room_id, &target_user_id)
             .await;
         self.finalize_member_resource_cleanup_after_commit(&room_id, &target_user_id, &cleanup)
             .await;
@@ -4972,35 +5849,193 @@ impl RoomService {
 
         let mut tx = self.pool.begin().await?;
         let mut updated = current;
-        if let Some(new_role) = role {
-            updated = self
-                .member_repo
-                .update_role_with_version_executor(
-                    &room_id,
-                    &target_user_id,
-                    new_role,
-                    updated.version,
-                    &mut *tx,
-                )
-                .await?;
-        }
-
+        let mut fence: Option<PermissionWriteFence> = None;
         let has_permission_changes = added_permissions > 0
             || removed_permissions > 0
             || admin_added_permissions > 0
             || admin_removed_permissions > 0;
-        if has_permission_changes || role.is_none() {
-            updated = if effective_is_admin {
-                self.member_repo
-                    .update_admin_permissions_with_executor(
+        let combine_role_and_permissions = role.is_some() && has_permission_changes;
+
+        if let Some(new_role) = role.filter(|_| combine_role_and_permissions) {
+            let write_fence = self
+                .begin_permission_write(&room_id, &target_user_id, updated.version)
+                .await?;
+            updated = if write_fence.version() > 0 {
+                match self
+                    .member_repo
+                    .update_role_and_permissions_with_exact_version_executor(
+                        MemberRolePermissionExactVersionUpdate {
+                            room_id: &room_id,
+                            user_id: &target_user_id,
+                            role: new_role,
+                            added_permissions: if effective_is_admin {
+                                admin_added_permissions
+                            } else {
+                                added_permissions
+                            },
+                            removed_permissions: if effective_is_admin {
+                                admin_removed_permissions
+                            } else {
+                                removed_permissions
+                            },
+                            use_admin_permissions: effective_is_admin,
+                            current_version: updated.version,
+                            new_version: write_fence.version(),
+                        },
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        self.abort_permission_write(&write_fence).await;
+                        return Err(error);
+                    }
+                }
+            } else {
+                let updated_role = self
+                    .member_repo
+                    .update_role_with_version_executor(
                         &room_id,
                         &target_user_id,
-                        admin_added_permissions,
-                        admin_removed_permissions,
+                        new_role,
+                        updated.version,
+                        &mut *tx,
+                    )
+                    .await?;
+                if effective_is_admin {
+                    self.member_repo
+                        .update_admin_permissions_with_executor(
+                            &room_id,
+                            &target_user_id,
+                            admin_added_permissions,
+                            admin_removed_permissions,
+                            updated_role.version,
+                            &mut *tx,
+                        )
+                        .await?
+                } else {
+                    self.member_repo
+                        .update_permissions_with_executor(
+                            &room_id,
+                            &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            updated_role.version,
+                            &mut *tx,
+                        )
+                        .await?
+                }
+            };
+            fence = Some(write_fence);
+        } else if let Some(new_role) = role {
+            let write_fence = self
+                .begin_permission_write(&room_id, &target_user_id, updated.version)
+                .await?;
+            updated = if write_fence.version() > 0 {
+                match self
+                    .member_repo
+                    .update_role_with_exact_version_executor(
+                        &room_id,
+                        &target_user_id,
+                        new_role,
+                        updated.version,
+                        write_fence.version(),
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        self.abort_permission_write(&write_fence).await;
+                        return Err(error);
+                    }
+                }
+            } else {
+                self.member_repo
+                    .update_role_with_version_executor(
+                        &room_id,
+                        &target_user_id,
+                        new_role,
                         updated.version,
                         &mut *tx,
                     )
                     .await?
+            };
+            fence = Some(write_fence);
+        }
+
+        if !combine_role_and_permissions && (has_permission_changes || role.is_none()) {
+            if fence.is_none() {
+                fence = Some(
+                    self.begin_permission_write(&room_id, &target_user_id, updated.version)
+                        .await?,
+                );
+            }
+            let write_fence = fence
+                .as_ref()
+                .expect("permission update must have a permission write fence");
+            updated = if effective_is_admin {
+                if write_fence.version() > 0 {
+                    match self
+                        .member_repo
+                        .update_admin_permissions_with_exact_version_executor(
+                            MemberPermissionExactVersionUpdate {
+                                room_id: &room_id,
+                                user_id: &target_user_id,
+                                added_permissions: admin_added_permissions,
+                                removed_permissions: admin_removed_permissions,
+                                current_version: updated.version,
+                                new_version: write_fence.version(),
+                            },
+                            &mut *tx,
+                        )
+                        .await
+                    {
+                        Ok(updated) => updated,
+                        Err(error) => {
+                            if let Some(fence) = &fence {
+                                self.abort_permission_write(fence).await;
+                            }
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    self.member_repo
+                        .update_admin_permissions_with_executor(
+                            &room_id,
+                            &target_user_id,
+                            admin_added_permissions,
+                            admin_removed_permissions,
+                            updated.version,
+                            &mut *tx,
+                        )
+                        .await?
+                }
+            } else if write_fence.version() > 0 {
+                match self
+                    .member_repo
+                    .update_permissions_with_exact_version_executor(
+                        MemberPermissionExactVersionUpdate {
+                            room_id: &room_id,
+                            user_id: &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            current_version: updated.version,
+                            new_version: write_fence.version(),
+                        },
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        if let Some(fence) = &fence {
+                            self.abort_permission_write(fence).await;
+                        }
+                        return Err(error);
+                    }
+                }
             } else {
                 self.member_repo
                     .update_permissions_with_executor(
@@ -5015,7 +6050,7 @@ impl RoomService {
             };
         }
 
-        let snapshot = self
+        let snapshot = match self
             .permission_changed_snapshot_tx(
                 &mut tx,
                 room_id,
@@ -5023,13 +6058,44 @@ impl RoomService {
                 actor_id,
                 Some(&updated),
             )
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        tx.commit().await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if let Some(fence) = &fence {
+                    self.abort_permission_write(fence).await;
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await
+        {
+            if let Some(fence) = &fence {
+                self.abort_permission_write(fence).await;
+            }
+            return Err(error);
+        }
+        if let Err(error) = tx.commit().await {
+            if let Some(fence) = &fence {
+                self.abort_permission_write(fence).await;
+            }
+            return Err(error.into());
+        }
+        if let Some(fence) = &fence {
+            self.finalize_committed_permission_write_best_effort(
+                fence,
+                &room_id,
+                &target_user_id,
+                updated.version,
+                "admin_update_member_with_outbox",
+            )
+            .await;
+        }
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
         if role.is_some() {
             self.notify_room_settings_invalidation(&room_id).await;
@@ -5124,31 +6190,189 @@ impl RoomService {
             .await?;
         }
         let mut updated = current;
-        if let Some(new_role) = role {
-            updated = self
-                .member_repo
-                .update_role_with_version_executor(
-                    &room_id,
-                    &target_user_id,
-                    new_role,
-                    updated.version,
-                    &mut *tx,
-                )
-                .await?;
-        }
+        let mut fence: Option<PermissionWriteFence> = None;
+        let combine_role_and_permissions = role.is_some() && apply_permission_update;
 
-        if apply_permission_update {
-            updated = if effective_is_admin {
-                self.member_repo
-                    .update_admin_permissions_with_executor(
+        if let Some(new_role) = role.filter(|_| combine_role_and_permissions) {
+            let write_fence = self
+                .begin_permission_write(&room_id, &target_user_id, updated.version)
+                .await?;
+            updated = if write_fence.version() > 0 {
+                match self
+                    .member_repo
+                    .update_role_and_permissions_with_exact_version_executor(
+                        MemberRolePermissionExactVersionUpdate {
+                            room_id: &room_id,
+                            user_id: &target_user_id,
+                            role: new_role,
+                            added_permissions: if effective_is_admin {
+                                admin_added_permissions
+                            } else {
+                                added_permissions
+                            },
+                            removed_permissions: if effective_is_admin {
+                                admin_removed_permissions
+                            } else {
+                                removed_permissions
+                            },
+                            use_admin_permissions: effective_is_admin,
+                            current_version: updated.version,
+                            new_version: write_fence.version(),
+                        },
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        self.abort_permission_write(&write_fence).await;
+                        return Err(error);
+                    }
+                }
+            } else {
+                let updated_role = self
+                    .member_repo
+                    .update_role_with_version_executor(
                         &room_id,
                         &target_user_id,
-                        admin_added_permissions,
-                        admin_removed_permissions,
+                        new_role,
+                        updated.version,
+                        &mut *tx,
+                    )
+                    .await?;
+                if effective_is_admin {
+                    self.member_repo
+                        .update_admin_permissions_with_executor(
+                            &room_id,
+                            &target_user_id,
+                            admin_added_permissions,
+                            admin_removed_permissions,
+                            updated_role.version,
+                            &mut *tx,
+                        )
+                        .await?
+                } else {
+                    self.member_repo
+                        .update_permissions_with_executor(
+                            &room_id,
+                            &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            updated_role.version,
+                            &mut *tx,
+                        )
+                        .await?
+                }
+            };
+            fence = Some(write_fence);
+        } else if let Some(new_role) = role {
+            let write_fence = self
+                .begin_permission_write(&room_id, &target_user_id, updated.version)
+                .await?;
+            updated = if write_fence.version() > 0 {
+                match self
+                    .member_repo
+                    .update_role_with_exact_version_executor(
+                        &room_id,
+                        &target_user_id,
+                        new_role,
+                        updated.version,
+                        write_fence.version(),
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        self.abort_permission_write(&write_fence).await;
+                        return Err(error);
+                    }
+                }
+            } else {
+                self.member_repo
+                    .update_role_with_version_executor(
+                        &room_id,
+                        &target_user_id,
+                        new_role,
                         updated.version,
                         &mut *tx,
                     )
                     .await?
+            };
+            fence = Some(write_fence);
+        }
+
+        if apply_permission_update && !combine_role_and_permissions {
+            if fence.is_none() {
+                fence = Some(
+                    self.begin_permission_write(&room_id, &target_user_id, updated.version)
+                        .await?,
+                );
+            }
+            let write_fence = fence
+                .as_ref()
+                .expect("permission update must have a permission write fence");
+            updated = if effective_is_admin {
+                if write_fence.version() > 0 {
+                    match self
+                        .member_repo
+                        .update_admin_permissions_with_exact_version_executor(
+                            MemberPermissionExactVersionUpdate {
+                                room_id: &room_id,
+                                user_id: &target_user_id,
+                                added_permissions: admin_added_permissions,
+                                removed_permissions: admin_removed_permissions,
+                                current_version: updated.version,
+                                new_version: write_fence.version(),
+                            },
+                            &mut *tx,
+                        )
+                        .await
+                    {
+                        Ok(updated) => updated,
+                        Err(error) => {
+                            if let Some(fence) = &fence {
+                                self.abort_permission_write(fence).await;
+                            }
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    self.member_repo
+                        .update_admin_permissions_with_executor(
+                            &room_id,
+                            &target_user_id,
+                            admin_added_permissions,
+                            admin_removed_permissions,
+                            updated.version,
+                            &mut *tx,
+                        )
+                        .await?
+                }
+            } else if write_fence.version() > 0 {
+                match self
+                    .member_repo
+                    .update_permissions_with_exact_version_executor(
+                        MemberPermissionExactVersionUpdate {
+                            room_id: &room_id,
+                            user_id: &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            current_version: updated.version,
+                            new_version: write_fence.version(),
+                        },
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        if let Some(fence) = &fence {
+                            self.abort_permission_write(fence).await;
+                        }
+                        return Err(error);
+                    }
+                }
             } else {
                 self.member_repo
                     .update_permissions_with_executor(
@@ -5163,7 +6387,7 @@ impl RoomService {
             };
         }
 
-        let snapshot = self
+        let snapshot = match self
             .permission_changed_snapshot_tx(
                 &mut tx,
                 room_id,
@@ -5171,13 +6395,44 @@ impl RoomService {
                 actor_id,
                 Some(&updated),
             )
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        tx.commit().await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if let Some(fence) = &fence {
+                    self.abort_permission_write(fence).await;
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await
+        {
+            if let Some(fence) = &fence {
+                self.abort_permission_write(fence).await;
+            }
+            return Err(error);
+        }
+        if let Err(error) = tx.commit().await {
+            if let Some(fence) = &fence {
+                self.abort_permission_write(fence).await;
+            }
+            return Err(error.into());
+        }
+        if let Some(fence) = &fence {
+            self.finalize_committed_permission_write_best_effort(
+                fence,
+                &room_id,
+                &target_user_id,
+                updated.version,
+                "admin_set_member_role_with_outbox",
+            )
+            .await;
+        }
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
             .await;
         if role.is_some() {
             self.notify_room_settings_invalidation(&room_id).await;
@@ -5200,17 +6455,38 @@ impl RoomService {
         }
 
         let mut tx = self.pool.begin().await?;
-        let removed = self
+        let Some(observed_version) = self
             .member_repo
-            .remove_with_executor(&room_id, &target_user_id, &mut *tx)
-            .await?;
-        if !removed {
+            .active_member_version_for_update_with_executor(&room_id, &target_user_id, &mut tx)
+            .await?
+        else {
             return Err(Error::NotFound(
                 "User is not an active member of this room".to_string(),
             ));
-        }
+        };
+        let fence = self
+            .begin_permission_write(&room_id, &target_user_id, observed_version)
+            .await?;
+        let removed_version = match self
+            .member_repo
+            .remove_with_version_executor(&room_id, &target_user_id, &mut tx)
+            .await
+        {
+            Ok(version) => version,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        let Some(removed_version) = removed_version else {
+            self.abort_permission_write(&fence).await;
+            return Err(Error::NotFound(
+                "User is not an active member of this room".to_string(),
+            ));
+        };
         let now = Utc::now();
-        self.member_repo
+        if let Err(error) = self
+            .member_repo
             .add_kick_cooldown_with_executor(
                 KickCooldownInsert {
                     room_id: &room_id,
@@ -5222,29 +6498,73 @@ impl RoomService {
                 },
                 &mut *tx,
             )
-            .await?;
-        let cleanup = cleanup_member_resources_in_tx(&mut tx, &room_id, &target_user_id).await?;
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        let cleanup = match cleanup_member_resources_in_tx(&mut tx, &room_id, &target_user_id).await
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
         let cleanup_outbox_events = outbox
             .cleanup
             .as_ref()
             .map_or_else(Vec::new, |factory| factory(&cleanup));
-        let snapshot = self
+        let snapshot = match self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
-            .await?;
-        self.insert_permission_changed_outbox_tx(
-            &mut tx,
-            &snapshot,
-            outbox.permission_changed.as_ref(),
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.abort_permission_write(&fence).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .insert_permission_changed_outbox_tx(
+                &mut tx,
+                &snapshot,
+                outbox.permission_changed.as_ref(),
+            )
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .insert_realtime_outbox_tx(&mut tx, outbox.lifecycle.as_ref())
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
+            .await
+        {
+            self.abort_permission_write(&fence).await;
+            return Err(error);
+        }
+        if let Err(error) = tx.commit().await {
+            self.abort_permission_write(&fence).await;
+            return Err(error.into());
+        }
+        self.finalize_committed_permission_write_best_effort(
+            &fence,
+            &room_id,
+            &target_user_id,
+            removed_version,
+            "admin_kick_member_with_outbox",
         )
-        .await?;
-        self.insert_realtime_outbox_tx(&mut tx, outbox.lifecycle.as_ref())
-            .await?;
-        self.insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
-            .await?;
-        tx.commit().await?;
+        .await;
 
         self.permission_service
-            .invalidate_cache(&room_id, &target_user_id)
+            .invalidate_removed_member_cache(&room_id, &target_user_id)
             .await;
         self.finalize_member_resource_cleanup_after_commit(&room_id, &target_user_id, &cleanup)
             .await;
@@ -6224,14 +7544,48 @@ impl RoomService {
         outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
+        let permission_fences = self
+            .reserve_room_member_permission_fences(room_id, &mut tx)
+            .await?;
+        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await {
+            Ok(impact) => impact,
+            Err(error) => {
+                self.abort_room_member_permission_fences(&permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-            outbox.insert_with_executor(event, &mut *tx).await?;
+            if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
+                self.abort_room_member_permission_fences(&permission_fences)
+                    .await;
+                return Err(error);
+            }
         }
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_room_member_permission_fences(&permission_fences)
+                .await;
+            return Err(error.into());
+        }
+
+        if let Err(error) = self
+            .commit_removed_room_member_permission_fences(
+                permission_fences,
+                &impact.removed_members,
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                "Failed to finalize one or more admin room deletion permission fences after DB commit"
+            );
+        }
 
         self.invalidate_room_caches(room_id).await;
+        self.invalidate_removed_room_member_permission_caches(&impact.removed_members)
+            .await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self.notification_service.notify_room_deleted(room_id);
@@ -6319,7 +7673,7 @@ impl RoomService {
         }
 
         // Check if the creator is deleted or banned
-        let creator_orphaned = sqlx::query_scalar::<_, bool>(
+        let creator_orphaned = sqlx::query_scalar!(
             "SELECT NOT EXISTS (
                 SELECT 1
                 FROM users u
@@ -6331,9 +7685,9 @@ impl RoomService {
                         AND ub.revoked_at IS NULL
                         AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
                   )
-            )",
+            ) AS \"orphaned!\"",
+            room.created_by as UserId,
         )
-        .bind(room.created_by)
         .fetch_one(&self.pool)
         .await?;
 
@@ -6350,11 +7704,41 @@ impl RoomService {
         );
 
         let mut tx = self.pool.begin().await?;
-        let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
+        let permission_fences = self
+            .reserve_room_member_permission_fences(room_id, &mut tx)
+            .await?;
+        let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await {
+            Ok(impact) => impact,
+            Err(error) => {
+                self.abort_room_member_permission_fences(&permission_fences)
+                    .await;
+                return Err(error);
+            }
+        };
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_room_member_permission_fences(&permission_fences)
+                .await;
+            return Err(error.into());
+        }
+
+        if let Err(error) = self
+            .commit_removed_room_member_permission_fences(
+                permission_fences,
+                &impact.removed_members,
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                "Failed to finalize one or more orphaned room deletion permission fences after DB commit"
+            );
+        }
 
         self.invalidate_room_caches(room_id).await;
+        self.invalidate_removed_room_member_permission_caches(&impact.removed_members)
+            .await;
 
         // Notify after commit
         let _ = self.notification_service.notify_room_deleted(room_id);
@@ -6485,7 +7869,7 @@ impl RoomService {
         new_password: Option<&str>,
         actor_user_id: Option<&UserId>,
         actor_username: &str,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.admin_set_room_password_as_with_outbox(
             room_id,
             new_password,
@@ -6503,7 +7887,7 @@ impl RoomService {
         actor_user_id: Option<&UserId>,
         actor_username: &str,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         // Verify room exists
         let _room = self
             .room_repo
@@ -6547,7 +7931,7 @@ impl RoomService {
         room_id: &RoomId,
         actor_user_id: Option<&UserId>,
         actor_username: &str,
-    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+    ) -> Result<crate::cache::RoomSettingsSnapshot> {
         let snapshot = self
             .room_settings_service
             .get_refresh_with_version(room_id)
@@ -7101,7 +8485,7 @@ async fn ensure_actor_has_room_permission_now_tx(
     actor_id: &UserId,
     permission: u64,
 ) -> Result<()> {
-    let room_state = sqlx::query(
+    let room_state = sqlx::query!(
         r"
         SELECT closed_at,
                EXISTS (
@@ -7116,18 +8500,16 @@ async fn ensure_actor_has_room_permission_now_tx(
           AND deleted_at IS NULL
         FOR UPDATE
         ",
+        room_id as &RoomId,
     )
-    .bind(room_id.as_i64())
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-    let closed_at: Option<DateTime<Utc>> = room_state.try_get("closed_at")?;
-    let is_banned: bool = room_state.try_get("is_banned")?;
-    if is_banned {
+    if room_state.is_banned.unwrap_or(false) {
         return Err(Error::Authorization("Room is banned".to_string()));
     }
-    if closed_at.is_some() {
+    if room_state.closed_at.is_some() {
         return Err(Error::Authorization("Room is not active".to_string()));
     }
 
@@ -7604,13 +8986,40 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
 
     delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
 
-    let members_deleted = sqlx::query!(
-        "DELETE FROM room_members WHERE room_id = $1",
-        room_id.as_i64(),
+    let mut removed_members: Vec<RemovedRoomMember> = sqlx::query!(
+        r#"DELETE FROM room_members
+         WHERE room_id = $1
+         RETURNING room_id as "room_id: RoomId",
+                   user_id as "user_id: UserId",
+                   version"#,
+        room_id as &RoomId,
     )
-    .execute(&mut **tx)
+    .fetch_all(&mut **tx)
     .await?
-    .rows_affected();
+    .into_iter()
+    .map(|row| RemovedRoomMember {
+        room_id: row.room_id,
+        user_id: row.user_id,
+        version: row.version,
+    })
+    .collect();
+    for member in &mut removed_members {
+        member.version = sqlx::query_scalar!(
+            "INSERT INTO room_member_versions (room_id, user_id, version, is_member, updated_at)
+             VALUES ($1, $2, $3::BIGINT + 1, FALSE, CURRENT_TIMESTAMP)
+             ON CONFLICT (room_id, user_id) DO UPDATE
+             SET version = GREATEST(room_member_versions.version + 1, EXCLUDED.version),
+                 is_member = FALSE,
+                 updated_at = CURRENT_TIMESTAMP
+             RETURNING version",
+            &member.room_id as &RoomId,
+            &member.user_id as &UserId,
+            member.version,
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+    }
+    let members_deleted = removed_members.len() as u64;
 
     let settings_deleted = sqlx::query!(
         "DELETE FROM room_settings WHERE room_id = $1",
@@ -7632,6 +9041,7 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
         deleted_playlist_ids,
         deleted_media_ids,
         members_deleted,
+        removed_members,
         settings_deleted,
         playback_rows_deleted,
         chat_deleted,
@@ -7800,6 +9210,18 @@ mod tests {
             KeyBuilder::new("room-service-test"),
             brute_force,
         )
+    }
+
+    #[tokio::test]
+    async fn standalone_room_service_uses_non_authoritative_fence_by_default() {
+        let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
+        let user_service = make_user_service(&pool);
+        let room_service = RoomService::new(pool, user_service);
+
+        assert!(
+            !room_service.consistency.is_authoritative(),
+            "standalone RoomService constructors must not create private authoritative fences"
+        );
     }
 
     #[tokio::test]

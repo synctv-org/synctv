@@ -312,6 +312,92 @@ impl RoomSettingsRepository {
         .await
     }
 
+    /// Set settings with optimistic locking and an externally allocated version.
+    ///
+    /// This is used by strong-cache write paths where Redis is the version
+    /// fence allocator. The database stores the exact allocated version instead
+    /// of deriving a new version with `version + 1`.
+    pub async fn set_settings_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+        expected_version: i64,
+        new_version: i64,
+    ) -> Result<i64> {
+        self.set_settings_with_exact_version_with_executor(
+            room_id,
+            settings,
+            expected_version,
+            new_version,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn set_settings_with_exact_version_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+        expected_version: i64,
+        new_version: i64,
+        executor: E,
+    ) -> Result<i64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if new_version <= expected_version {
+            return Err(Error::InvalidInput(format!(
+                "new settings version {new_version} must be greater than expected version {expected_version}"
+            )));
+        }
+
+        let json_value = serde_json::to_string(settings)
+            .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
+
+        if expected_version == 0 {
+            let row = sqlx::query_scalar!(
+                r"
+                INSERT INTO room_settings (room_id, key, value, version)
+                VALUES ($1, '_settings', $2, $3)
+                ON CONFLICT (room_id, key) DO UPDATE
+                SET value = EXCLUDED.value, version = EXCLUDED.version, updated_at = NOW()
+                WHERE room_settings.version = 0
+                RETURNING version
+                ",
+                room_id as &RoomId,
+                json_value,
+                new_version,
+            )
+            .fetch_optional(executor)
+            .await?;
+
+            match row {
+                Some(version) => Ok(version),
+                None => Err(Error::OptimisticLockConflict),
+            }
+        } else {
+            let row = sqlx::query_scalar!(
+                r"
+                UPDATE room_settings
+                SET value = $2, version = $4, updated_at = NOW()
+                WHERE room_id = $1 AND key = '_settings' AND version = $3
+                RETURNING version
+                ",
+                room_id as &RoomId,
+                json_value,
+                expected_version,
+                new_version,
+            )
+            .fetch_optional(executor)
+            .await?;
+
+            match row {
+                Some(version) => Ok(version),
+                None => Err(Error::OptimisticLockConflict),
+            }
+        }
+    }
+
     pub async fn set_settings_with_version_with_executor<'e, E>(
         &self,
         room_id: &RoomId,
@@ -395,6 +481,25 @@ impl RoomSettingsRepository {
             "DELETE FROM room_settings WHERE room_id = $1 AND key = $2",
             room_id as &RoomId,
             key,
+        )
+        .execute(executor)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Delete auxiliary setting rows while keeping the versioned `_settings` snapshot.
+    pub async fn delete_auxiliary_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        sqlx::query!(
+            "DELETE FROM room_settings WHERE room_id = $1 AND key <> '_settings'",
+            room_id as &RoomId,
         )
         .execute(executor)
         .await?;

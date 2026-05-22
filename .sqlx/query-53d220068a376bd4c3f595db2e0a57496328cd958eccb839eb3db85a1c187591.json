@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) as \"count!\"\n            FROM rooms\n            WHERE created_by = $1\n              AND deleted_at IS NULL\n              AND ($2::BIGINT IS NULL OR id != $2)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "53d220068a376bd4c3f595db2e0a57496328cd958eccb839eb3db85a1c187591"
+}

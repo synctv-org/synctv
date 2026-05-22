@@ -428,7 +428,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
         updated_at: Utc::now(),
         version: 0,
     };
-    synctv_core::repository::PlaylistRepository::new(pool.clone())
+    let playlist = synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
         .unwrap();

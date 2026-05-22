@@ -15,8 +15,26 @@ use crate::models::{validate_provider_instance_name, ProviderInstance, ProviderI
 use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
 use crate::repository::ProviderInstanceRepository;
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
 use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use std::collections::HashMap;
 use std::future::Future;
@@ -31,9 +49,21 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
 /// A certificate verifier that accepts any server certificate.
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
 #[derive(Debug)]
 struct NoVerifier;
 
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
 impl ServerCertVerifier for NoVerifier {
     fn verify_server_cert(
         &self,
@@ -1000,6 +1030,15 @@ impl RemoteProviderManager {
     /// Create a gRPC channel for the given provider instance
     ///
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
+    #[cfg_attr(
+        not(any(
+            feature = "tls-aws-lc",
+            feature = "tls-ring",
+            feature = "tls-webpki-roots",
+            feature = "tls-native-roots"
+        )),
+        allow(clippy::unused_async)
+    )]
     async fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
         // Apply the configured SSRF policy to the endpoint before connecting.
         Self::validate_endpoint_ssrf(&config.endpoint, &self.ssrf_guard)?;
@@ -1037,20 +1076,41 @@ impl RemoteProviderManager {
                 // tonic's ClientTlsConfig doesn't expose this, so we build a raw
                 // rustls ClientConfig with a no-op verifier and wrap it in a
                 // tower::Service<Uri> that tonic can use.
-                let channel = self.connect_insecure_tls(endpoint).await.map_err(|error| {
-                    Self::provider_connection_setup_error(
-                        "Remote provider TLS connection setup failed.",
-                        error,
-                    )
-                })?;
+                #[cfg(not(any(
+                    feature = "tls-aws-lc",
+                    feature = "tls-ring",
+                    feature = "tls-webpki-roots",
+                    feature = "tls-native-roots"
+                )))]
+                {
+                    let _ = endpoint;
+                    return Err(crate::Error::InvalidInput(
+                        "Remote provider insecure TLS requires a TLS provider feature".to_string(),
+                    ));
+                }
 
-                tracing::info!(
-                    "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
-                    config.endpoint,
-                    timeout,
-                );
+                #[cfg(any(
+                    feature = "tls-aws-lc",
+                    feature = "tls-ring",
+                    feature = "tls-webpki-roots",
+                    feature = "tls-native-roots"
+                ))]
+                {
+                    let channel = self.connect_insecure_tls(endpoint).await.map_err(|error| {
+                        Self::provider_connection_setup_error(
+                            "Remote provider TLS connection setup failed.",
+                            error,
+                        )
+                    })?;
 
-                return Ok(channel);
+                    tracing::info!(
+                        "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
+                        config.endpoint,
+                        timeout,
+                    );
+
+                    return Ok(channel);
+                }
             }
 
             #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
@@ -1113,6 +1173,12 @@ impl RemoteProviderManager {
     ///
     /// This builds a custom `tower::Service<Uri>` connector that uses a rustls
     /// `ClientConfig` with a no-op certificate verifier. Only for dev/testing.
+    #[cfg(any(
+        feature = "tls-aws-lc",
+        feature = "tls-ring",
+        feature = "tls-webpki-roots",
+        feature = "tls-native-roots"
+    ))]
     async fn connect_insecure_tls(
         &self,
         endpoint: Endpoint,

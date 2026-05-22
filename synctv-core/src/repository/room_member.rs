@@ -43,6 +43,19 @@ struct RoomMemberWithUserRow {
     is_active: bool,
 }
 
+#[derive(Debug)]
+struct RoomMemberRow {
+    room_id: RoomId,
+    user_id: UserId,
+    role: RoomRole,
+    added_permissions: i64,
+    removed_permissions: i64,
+    admin_added_permissions: i64,
+    admin_removed_permissions: i64,
+    joined_at: chrono::DateTime<chrono::Utc>,
+    version: i64,
+}
+
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
     "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL
         AND NOT EXISTS (
@@ -51,9 +64,6 @@ const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
               AND ub.revoked_at IS NULL
               AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
         ))";
-const ROOM_MEMBER_RETURNING_COLUMNS: &str = "room_id, user_id, role,
-    added_permissions, removed_permissions, admin_added_permissions, admin_removed_permissions,
-    joined_at, version";
 const ROOM_MEMBER_SELECT_COLUMNS: &str = "rm.room_id, rm.user_id, rm.role,
     rm.added_permissions, rm.removed_permissions, rm.admin_added_permissions, rm.admin_removed_permissions,
     rm.joined_at, rm.version";
@@ -63,6 +73,33 @@ const ACTIVE_ROOM_BAN_EXISTS_SQL: &str = "EXISTS (
       AND rb.revoked_at IS NULL
       AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
 )";
+
+pub struct MemberPermissionExactVersionUpdate<'a> {
+    pub room_id: &'a RoomId,
+    pub user_id: &'a UserId,
+    pub added_permissions: u64,
+    pub removed_permissions: u64,
+    pub current_version: i64,
+    pub new_version: i64,
+}
+
+pub struct MemberRolePermissionExactVersionUpdate<'a> {
+    pub room_id: &'a RoomId,
+    pub user_id: &'a UserId,
+    pub role: RoomRole,
+    pub added_permissions: u64,
+    pub removed_permissions: u64,
+    pub use_admin_permissions: bool,
+    pub current_version: i64,
+    pub new_version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct RemovedRoomMember {
+    pub room_id: RoomId,
+    pub user_id: UserId,
+    pub version: i64,
+}
 const ACTIVE_ROOM_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
     SELECT 1 FROM room_bans rb
     WHERE rb.room_id = r.id
@@ -75,7 +112,6 @@ const ACTIVE_KICK_COOLDOWN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
       AND rmkc.user_id = rm.user_id
       AND rmkc.ends_at > CURRENT_TIMESTAMP
 )";
-
 fn permission_bits_to_i64(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| {
         Error::InvalidInput(format!(
@@ -109,6 +145,100 @@ impl RoomMemberRepository {
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    pub async fn lifecycle_version(&self, room_id: &RoomId, user_id: &UserId) -> Result<i64> {
+        self.lifecycle_version_with_executor(room_id, user_id, &self.pool)
+            .await
+    }
+
+    pub async fn lifecycle_version_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<i64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let version = sqlx::query_scalar!(
+            "SELECT version FROM room_member_versions WHERE room_id = $1 AND user_id = $2",
+            room_id as &RoomId,
+            user_id as &UserId,
+        )
+        .fetch_optional(executor)
+        .await?;
+        Ok(version.unwrap_or(0))
+    }
+
+    pub async fn active_member_version_for_update_with_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<Option<i64>> {
+        let version = sqlx::query_scalar!(
+            "SELECT version
+             FROM room_members
+             WHERE room_id = $1 AND user_id = $2
+             FOR UPDATE",
+            room_id as &RoomId,
+            user_id as &UserId,
+        )
+        .fetch_optional(executor)
+        .await?;
+        Ok(version)
+    }
+
+    pub async fn next_lifecycle_version_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<i64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let version = sqlx::query_scalar!(
+            "INSERT INTO room_member_versions (room_id, user_id, version, is_member, updated_at)
+             VALUES ($1, $2, 1, FALSE, CURRENT_TIMESTAMP)
+             ON CONFLICT (room_id, user_id) DO UPDATE
+             SET version = room_member_versions.version + 1,
+                 is_member = FALSE,
+                 updated_at = CURRENT_TIMESTAMP
+             RETURNING version",
+            room_id as &RoomId,
+            user_id as &UserId,
+        )
+        .fetch_one(executor)
+        .await?;
+        Ok(version)
+    }
+
+    pub async fn mark_active_lifecycle_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        version: i64,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        sqlx::query!(
+            "INSERT INTO room_member_versions (room_id, user_id, version, is_member, updated_at)
+             VALUES ($1, $2, $3, TRUE, CURRENT_TIMESTAMP)
+             ON CONFLICT (room_id, user_id) DO UPDATE
+             SET version = GREATEST(room_member_versions.version, EXCLUDED.version),
+                 is_member = TRUE,
+                 updated_at = CURRENT_TIMESTAMP",
+            room_id as &RoomId,
+            user_id as &UserId,
+            version,
+        )
+        .execute(executor)
+        .await?;
+        Ok(())
     }
 
     fn build_room_member_order_by(query: &RoomMemberListQuery) -> String {
@@ -188,60 +318,35 @@ impl RoomMemberRepository {
     /// Add user to room with role.
     ///
     pub async fn add(&self, member: &RoomMember) -> Result<RoomMember> {
-        let sql = format!(
-            "INSERT INTO room_members (
-                room_id, user_id, role,
-                added_permissions, removed_permissions,
-                joined_at, version
-             )
-             SELECT $1, $2, $3, $4, $5, $6, $7
-             WHERE NOT EXISTS (
-                SELECT 1 FROM room_member_kick_cooldowns rmkc
-                WHERE rmkc.room_id = $1
-                  AND rmkc.user_id = $2
-                  AND rmkc.ends_at > CURRENT_TIMESTAMP
-             )
-             ON CONFLICT (room_id, user_id) DO NOTHING
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let result = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(member.room_id)
-            .bind(member.user_id)
-            .bind(member.role)
-            .bind(permission_bits_to_i64(member.added_permissions)?)
-            .bind(permission_bits_to_i64(member.removed_permissions)?)
-            .bind(member.joined_at)
-            .bind(member.version)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        match result {
-            Some(m) => Ok(m),
-            None => {
-                self.diagnose_add_conflict(&member.room_id, &member.user_id, &self.pool)
-                    .await
-            }
-        }
+        let mut tx = self.pool.begin().await?;
+        let added = self.add_with_executor(member, &mut tx).await?;
+        tx.commit().await?;
+        Ok(added)
     }
 
-    /// Add user to room using a provided connection (pool or transaction)
+    /// Add user to room using a provided transaction connection.
     ///
-    /// Accepts `&mut PgConnection` so the caller can decide which connection
-    /// context owns the insert and fallback diagnostics.
-    ///
-    /// See [`add`] for conflict and access-rule semantics.
+    /// Accepts `&mut PgConnection` so callers can keep room lifecycle mutations
+    /// in the same transaction as adjacent room/user writes.
     pub async fn add_with_executor(
         &self,
         member: &RoomMember,
         conn: &mut sqlx::PgConnection,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "INSERT INTO room_members (
+        let result = sqlx::query_as!(
+            RoomMemberRow,
+            r#"INSERT INTO room_members (
                 room_id, user_id, role,
                 added_permissions, removed_permissions,
                 joined_at, version
              )
-             SELECT $1, $2, $3, $4, $5, $6, $7
+             SELECT $1, $2, $3, $4, $5, $6,
+                    COALESCE((
+                        SELECT version + 1
+                        FROM room_member_versions
+                        WHERE room_id = $1 AND user_id = $2
+                        FOR UPDATE
+                    ), 1)
              WHERE NOT EXISTS (
                 SELECT 1 FROM room_member_kick_cooldowns rmkc
                 WHERE rmkc.room_id = $1
@@ -249,21 +354,35 @@ impl RoomMemberRepository {
                   AND rmkc.ends_at > CURRENT_TIMESTAMP
              )
              ON CONFLICT (room_id, user_id) DO NOTHING
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let result = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(member.room_id)
-            .bind(member.user_id)
-            .bind(member.role)
-            .bind(permission_bits_to_i64(member.added_permissions)?)
-            .bind(permission_bits_to_i64(member.removed_permissions)?)
-            .bind(member.joined_at)
-            .bind(member.version)
-            .fetch_optional(&mut *conn)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            member.room_id as RoomId,
+            member.user_id as UserId,
+            member.role as RoomRole,
+            permission_bits_to_i64(member.added_permissions)?,
+            permission_bits_to_i64(member.removed_permissions)?,
+            member.joined_at,
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match result {
-            Some(m) => Ok(m),
+            Some(m) => {
+                self.mark_active_lifecycle_with_executor(
+                    &m.room_id, &m.user_id, m.version, &mut *conn,
+                )
+                .await?;
+                Ok(m)
+            }
             None => {
                 self.diagnose_add_conflict(&member.room_id, &member.user_id, &mut *conn)
                     .await
@@ -389,14 +508,23 @@ impl RoomMemberRepository {
             // max_members == 0 means unlimited — no check needed
         }
 
-        // 5. Insert the new member
-        let sql = format!(
-            "INSERT INTO room_members (
+        // 5. Insert the new member. The lifecycle row is locked/read inside the
+        // INSERT and only advanced after the insert succeeds, so failed adds do
+        // not burn permission-fence versions in a caller-owned transaction.
+        let result = sqlx::query_as!(
+            RoomMemberRow,
+            r#"INSERT INTO room_members (
                 room_id, user_id, role,
                 added_permissions, removed_permissions,
                 joined_at, version
              )
-             SELECT $1, $2, $3, $4, $5, $6, $7
+             SELECT $1, $2, $3, $4, $5, $6,
+                    COALESCE((
+                        SELECT version + 1
+                        FROM room_member_versions
+                        WHERE room_id = $1 AND user_id = $2
+                        FOR UPDATE
+                    ), 1)
              WHERE NOT EXISTS (
                 SELECT 1 FROM room_member_kick_cooldowns rmkc
                 WHERE rmkc.room_id = $1
@@ -404,21 +532,35 @@ impl RoomMemberRepository {
                   AND rmkc.ends_at > CURRENT_TIMESTAMP
              )
              ON CONFLICT (room_id, user_id) DO NOTHING
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let result = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(member.room_id)
-            .bind(member.user_id)
-            .bind(member.role)
-            .bind(permission_bits_to_i64(member.added_permissions)?)
-            .bind(permission_bits_to_i64(member.removed_permissions)?)
-            .bind(member.joined_at)
-            .bind(member.version)
-            .fetch_optional(&mut **tx)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            member.room_id as RoomId,
+            member.user_id as UserId,
+            member.role as RoomRole,
+            permission_bits_to_i64(member.added_permissions)?,
+            permission_bits_to_i64(member.removed_permissions)?,
+            member.joined_at,
+        )
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match result {
-            Some(m) => Ok(m),
+            Some(m) => {
+                self.mark_active_lifecycle_with_executor(
+                    &m.room_id, &m.user_id, m.version, &mut **tx,
+                )
+                .await?;
+                Ok(m)
+            }
             None => {
                 self.diagnose_add_conflict(&member.room_id, &member.user_id, &mut **tx)
                     .await
@@ -431,85 +573,166 @@ impl RoomMemberRepository {
     /// Used during user deletion/ban to clean up room memberships.
     /// Returns the number of memberships removed.
     pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
-        self.remove_all_for_user_with_executor(user_id, &self.pool)
-            .await
+        let mut tx = self.pool.begin().await?;
+        let removed = self
+            .remove_all_for_user_with_executor(user_id, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(removed.len() as u64)
     }
 
     /// Remove a user from all rooms using a provided executor (pool or transaction).
     ///
     /// Used to keep user lifecycle mutations and membership cleanup in the same
     /// database transaction.
-    pub async fn remove_all_for_user_with_executor<'e, E>(
+    pub async fn remove_all_for_user_with_executor(
         &self,
         user_id: &UserId,
-        executor: E,
-    ) -> Result<u64>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let result = sqlx::query!(
-            "DELETE FROM room_members
-             WHERE user_id = $1",
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<Vec<RemovedRoomMember>> {
+        let mut removed: Vec<RemovedRoomMember> = sqlx::query!(
+            r#"DELETE FROM room_members
+             WHERE user_id = $1
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       version"#,
             user_id as &UserId,
         )
-        .execute(executor)
-        .await?;
-
-        Ok(result.rows_affected())
+        .fetch_all(&mut *executor)
+        .await?
+        .into_iter()
+        .map(|row| RemovedRoomMember {
+            room_id: row.room_id,
+            user_id: row.user_id,
+            version: row.version,
+        })
+        .collect();
+        for member in &mut removed {
+            member.version = self
+                .mark_removed_lifecycle_with_executor(
+                    &member.room_id,
+                    &member.user_id,
+                    member.version,
+                    &mut *executor,
+                )
+                .await?;
+        }
+        Ok(removed)
     }
 
     /// Remove all active members from the provided rooms.
     ///
-    /// Returns the number of memberships removed.
-    pub async fn remove_all_for_rooms_with_executor<'e, E>(
+    /// Returns the memberships removed with their post-delete lifecycle versions.
+    pub async fn remove_all_for_rooms_with_executor(
         &self,
         room_ids: &[RoomId],
-        executor: E,
-    ) -> Result<u64>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<Vec<RemovedRoomMember>> {
         if room_ids.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
         let room_id_strs: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
-        let result = sqlx::query!(
-            "DELETE FROM room_members
-             WHERE room_id = ANY($1)",
+        let mut removed: Vec<RemovedRoomMember> = sqlx::query!(
+            r#"DELETE FROM room_members
+             WHERE room_id = ANY($1)
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       version"#,
             &room_id_strs,
         )
-        .execute(executor)
-        .await?;
+        .fetch_all(&mut *executor)
+        .await?
+        .into_iter()
+        .map(|row| RemovedRoomMember {
+            room_id: row.room_id,
+            user_id: row.user_id,
+            version: row.version,
+        })
+        .collect();
+        for member in &mut removed {
+            member.version = self
+                .mark_removed_lifecycle_with_executor(
+                    &member.room_id,
+                    &member.user_id,
+                    member.version,
+                    &mut *executor,
+                )
+                .await?;
+        }
+        Ok(removed)
+    }
 
-        Ok(result.rows_affected())
+    pub async fn mark_removed_lifecycle_with_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        removed_member_version: i64,
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<i64> {
+        let version = sqlx::query_scalar!(
+            "INSERT INTO room_member_versions (room_id, user_id, version, is_member, updated_at)
+             VALUES ($1, $2, $3::BIGINT + 1, FALSE, CURRENT_TIMESTAMP)
+             ON CONFLICT (room_id, user_id) DO UPDATE
+             SET version = GREATEST(room_member_versions.version + 1, EXCLUDED.version),
+                 is_member = FALSE,
+                 updated_at = CURRENT_TIMESTAMP
+             RETURNING version",
+            room_id as &RoomId,
+            user_id as &UserId,
+            removed_member_version,
+        )
+        .fetch_one(executor)
+        .await?;
+        Ok(version)
+    }
+
+    pub async fn remove_with_version_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<Option<i64>> {
+        let Some(row) = sqlx::query!(
+            r#"DELETE FROM room_members
+             WHERE room_id = $1 AND user_id = $2
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+        )
+        .fetch_optional(&mut *executor)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let removed = RemovedRoomMember {
+            room_id: row.room_id,
+            user_id: row.user_id,
+            version: row.version,
+        };
+
+        let version = self
+            .mark_removed_lifecycle_with_executor(
+                &removed.room_id,
+                &removed.user_id,
+                removed.version,
+                executor,
+            )
+            .await?;
+        Ok(Some(version))
     }
 
     /// Delete a user's current room membership.
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        self.remove_with_executor(room_id, user_id, &self.pool)
-            .await
-    }
-
-    pub async fn remove_with_executor<'e, E>(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        executor: E,
-    ) -> Result<bool>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let result = sqlx::query!(
-            "DELETE FROM room_members
-             WHERE room_id = $1 AND user_id = $2",
-            room_id as &RoomId,
-            user_id as &UserId,
-        )
-        .execute(executor)
-        .await?;
-
-        Ok(result.rows_affected() > 0)
+        let mut tx = self.pool.begin().await?;
+        let removed = self
+            .remove_with_version_executor(room_id, user_id, &mut tx)
+            .await?
+            .is_some();
+        tx.commit().await?;
+        Ok(removed)
     }
 
     /// Get member by room and user
@@ -752,26 +975,54 @@ impl RoomMemberRepository {
         role: RoomRole,
         current_version: i64,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                role = $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET role = $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND version = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(role)
-            .bind(current_version)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            role as RoomRole,
+            current_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
             None => Err(Error::OptimisticLockConflict),
         }
+    }
+
+    pub async fn update_role_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        role: RoomRole,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        self.update_role_with_exact_version_executor(
+            room_id,
+            user_id,
+            role,
+            current_version,
+            new_version,
+            &self.pool,
+        )
+        .await
     }
 
     /// Update member role inside an existing transaction with optimistic locking.
@@ -783,21 +1034,154 @@ impl RoomMemberRepository {
         current_version: i64,
         executor: impl sqlx::PgExecutor<'_>,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET role = $3,
+                 version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND version = $4
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            role as RoomRole,
+            current_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn update_role_with_exact_version_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        role: RoomRole,
+        current_version: i64,
+        new_version: i64,
+        executor: impl sqlx::PgExecutor<'_>,
+    ) -> Result<RoomMember> {
+        if new_version <= current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {new_version} must be greater than current version {current_version}"
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET role = $3,
+                 version = $5
+             WHERE room_id = $1 AND user_id = $2 AND version = $4
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            role as RoomRole,
+            current_version,
+            new_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn update_role_and_permissions_with_exact_version_executor<'e, E>(
+        &self,
+        update: MemberRolePermissionExactVersionUpdate<'_>,
+        executor: E,
+    ) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if update.new_version <= update.current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {} must be greater than current version {}",
+                update.new_version, update.current_version
+            )));
+        }
+
+        let (
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        ) = if update.use_admin_permissions {
+            (
+                0,
+                0,
+                permission_bits_to_i64(update.added_permissions)?,
+                permission_bits_to_i64(update.removed_permissions)?,
+            )
+        } else {
+            (
+                permission_bits_to_i64(update.added_permissions)?,
+                permission_bits_to_i64(update.removed_permissions)?,
+                0,
+                0,
+            )
+        };
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
              SET
                 role = $3,
-                version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(role)
-            .bind(current_version)
-            .fetch_optional(executor)
-            .await?;
+                added_permissions = $4,
+                removed_permissions = $5,
+                admin_added_permissions = $6,
+                admin_removed_permissions = $7,
+                version = $9
+             WHERE room_id = $1 AND user_id = $2 AND version = $8
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            update.room_id as &RoomId,
+            update.user_id as &UserId,
+            update.role as RoomRole,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+            update.current_version,
+            update.new_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -825,6 +1209,29 @@ impl RoomMemberRepository {
         .await
     }
 
+    pub async fn update_permissions_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        added_permissions: u64,
+        removed_permissions: u64,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        self.update_permissions_with_exact_version_executor(
+            MemberPermissionExactVersionUpdate {
+                room_id,
+                user_id,
+                added_permissions,
+                removed_permissions,
+                current_version,
+                new_version,
+            },
+            &self.pool,
+        )
+        .await
+    }
+
     pub async fn update_permissions_with_executor<'e, E>(
         &self,
         room_id: &RoomId,
@@ -837,23 +1244,81 @@ impl RoomMemberRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                added_permissions = $3,
-                removed_permissions = $4,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = $3,
+                 removed_permissions = $4,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND version = $5
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(added_permissions)?)
-            .bind(permission_bits_to_i64(removed_permissions)?)
-            .bind(current_version)
-            .fetch_optional(executor)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(added_permissions)?,
+            permission_bits_to_i64(removed_permissions)?,
+            current_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn update_permissions_with_exact_version_executor<'e, E>(
+        &self,
+        update: MemberPermissionExactVersionUpdate<'_>,
+        executor: E,
+    ) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if update.new_version <= update.current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {} must be greater than current version {}",
+                update.new_version, update.current_version
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = $3,
+                 removed_permissions = $4,
+                 version = $6
+             WHERE room_id = $1 AND user_id = $2 AND version = $5
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            update.room_id as &RoomId,
+            update.user_id as &UserId,
+            permission_bits_to_i64(update.added_permissions)?,
+            permission_bits_to_i64(update.removed_permissions)?,
+            update.current_version,
+            update.new_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -881,6 +1346,29 @@ impl RoomMemberRepository {
         .await
     }
 
+    pub async fn update_admin_permissions_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        added_permissions: u64,
+        removed_permissions: u64,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        self.update_admin_permissions_with_exact_version_executor(
+            MemberPermissionExactVersionUpdate {
+                room_id,
+                user_id,
+                added_permissions,
+                removed_permissions,
+                current_version,
+                new_version,
+            },
+            &self.pool,
+        )
+        .await
+    }
+
     pub async fn update_admin_permissions_with_executor<'e, E>(
         &self,
         room_id: &RoomId,
@@ -893,23 +1381,81 @@ impl RoomMemberRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                admin_added_permissions = $3,
-                admin_removed_permissions = $4,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_added_permissions = $3,
+                 admin_removed_permissions = $4,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND version = $5
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(added_permissions)?)
-            .bind(permission_bits_to_i64(removed_permissions)?)
-            .bind(current_version)
-            .fetch_optional(executor)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(added_permissions)?,
+            permission_bits_to_i64(removed_permissions)?,
+            current_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn update_admin_permissions_with_exact_version_executor<'e, E>(
+        &self,
+        update: MemberPermissionExactVersionUpdate<'_>,
+        executor: E,
+    ) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if update.new_version <= update.current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {} must be greater than current version {}",
+                update.new_version, update.current_version
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_added_permissions = $3,
+                 admin_removed_permissions = $4,
+                 version = $6
+             WHERE room_id = $1 AND user_id = $2 AND version = $5
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            update.room_id as &RoomId,
+            update.user_id as &UserId,
+            permission_bits_to_i64(update.added_permissions)?,
+            permission_bits_to_i64(update.removed_permissions)?,
+            update.current_version,
+            update.new_version,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -926,20 +1472,29 @@ impl RoomMemberRepository {
         user_id: &UserId,
         permission: u64,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                added_permissions = added_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = added_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -955,21 +1510,78 @@ impl RoomMemberRepository {
         permission: u64,
         role: RoomRole,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                added_permissions = added_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = added_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND role = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .bind(role)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn grant_permission_atomic_for_role_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        if new_version <= current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {new_version} must be greater than current version {current_version}"
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = added_permissions | $3,
+                 version = $6
+             WHERE room_id = $1 AND user_id = $2 AND role = $4 AND version = $5
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+            current_version,
+            new_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -986,20 +1598,29 @@ impl RoomMemberRepository {
         user_id: &UserId,
         permission: u64,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                admin_added_permissions = admin_added_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_added_permissions = admin_added_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1015,21 +1636,78 @@ impl RoomMemberRepository {
         permission: u64,
         role: RoomRole,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                admin_added_permissions = admin_added_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_added_permissions = admin_added_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND role = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .bind(role)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn grant_admin_permission_atomic_for_role_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        if new_version <= current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {new_version} must be greater than current version {current_version}"
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_added_permissions = admin_added_permissions | $3,
+                 version = $6
+             WHERE room_id = $1 AND user_id = $2 AND role = $4 AND version = $5
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+            current_version,
+            new_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1046,20 +1724,29 @@ impl RoomMemberRepository {
         user_id: &UserId,
         permission: u64,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                removed_permissions = removed_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET removed_permissions = removed_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1075,21 +1762,78 @@ impl RoomMemberRepository {
         permission: u64,
         role: RoomRole,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                removed_permissions = removed_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET removed_permissions = removed_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND role = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .bind(role)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn revoke_permission_atomic_for_role_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        if new_version <= current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {new_version} must be greater than current version {current_version}"
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET removed_permissions = removed_permissions | $3,
+                 version = $6
+             WHERE room_id = $1 AND user_id = $2 AND role = $4 AND version = $5
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+            current_version,
+            new_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1106,20 +1850,29 @@ impl RoomMemberRepository {
         user_id: &UserId,
         permission: u64,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                admin_removed_permissions = admin_removed_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_removed_permissions = admin_removed_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1135,21 +1888,78 @@ impl RoomMemberRepository {
         permission: u64,
         role: RoomRole,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                admin_removed_permissions = admin_removed_permissions | $3,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_removed_permissions = admin_removed_permissions | $3,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND role = $4
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(permission_bits_to_i64(permission)?)
-            .bind(role)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn revoke_admin_permission_atomic_for_role_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        if new_version <= current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {new_version} must be greater than current version {current_version}"
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET admin_removed_permissions = admin_removed_permissions | $3,
+                 version = $6
+             WHERE room_id = $1 AND user_id = $2 AND role = $4 AND version = $5
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            permission_bits_to_i64(permission)?,
+            role as RoomRole,
+            current_version,
+            new_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1164,23 +1974,79 @@ impl RoomMemberRepository {
         user_id: &UserId,
         current_version: i64,
     ) -> Result<RoomMember> {
-        let sql = format!(
-            "UPDATE room_members
-             SET
-                added_permissions = 0,
-                removed_permissions = 0,
-                admin_added_permissions = 0,
-                admin_removed_permissions = 0,
-                version = version + 1
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = 0,
+                 removed_permissions = 0,
+                 admin_added_permissions = 0,
+                 admin_removed_permissions = 0,
+                 version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND version = $3
-             RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
-        );
-        let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id)
-            .bind(user_id)
-            .bind(current_version)
-            .fetch_optional(&self.pool)
-            .await?;
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            current_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    pub async fn reset_permissions_with_exact_version(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        current_version: i64,
+        new_version: i64,
+    ) -> Result<RoomMember> {
+        if new_version <= current_version {
+            return Err(Error::InvalidInput(format!(
+                "new member version {new_version} must be greater than current version {current_version}"
+            )));
+        }
+
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET added_permissions = 0,
+                 removed_permissions = 0,
+                 admin_added_permissions = 0,
+                 admin_removed_permissions = 0,
+                 version = $4
+             WHERE room_id = $1 AND user_id = $2 AND version = $3
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            current_version,
+            new_version,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
 
         match member {
             Some(m) => Ok(m),
@@ -1623,22 +2489,23 @@ impl RoomMemberRepository {
         actor_id: &UserId,
         target_id: &UserId,
     ) -> Result<bool> {
-        self.kick_with_role_check_with_executor(room_id, actor_id, target_id, &self.pool)
-            .await
+        let mut tx = self.pool.begin().await?;
+        let removed = self
+            .kick_with_role_check_with_executor(room_id, actor_id, target_id, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(removed.is_some())
     }
 
-    pub async fn kick_with_role_check_with_executor<'e, E>(
+    pub async fn kick_with_role_check_with_executor(
         &self,
         room_id: &RoomId,
         actor_id: &UserId,
         target_id: &UserId,
-        executor: E,
-    ) -> Result<bool>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let result = sqlx::query!(
-            "DELETE FROM room_members AS target
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<Option<i64>> {
+        let Some(row) = sqlx::query!(
+            r#"DELETE FROM room_members AS target
              WHERE target.room_id = $1
                AND target.user_id = $3
                AND EXISTS (
@@ -1646,15 +2513,33 @@ impl RoomMemberRepository {
                    WHERE actor.room_id = $1
                      AND actor.user_id = $2
                      AND actor.role < target.role
-               )",
+             )
+             RETURNING target.room_id as "room_id: RoomId",
+                       target.user_id as "user_id: UserId",
+                       target.version"#,
             room_id as &RoomId,
             actor_id as &UserId,
             target_id as &UserId,
         )
-        .execute(executor)
-        .await?;
+        .fetch_optional(&mut *executor)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let removed = RemovedRoomMember {
+            room_id: row.room_id,
+            user_id: row.user_id,
+            version: row.version,
+        };
 
-        Ok(result.rows_affected() > 0)
+        self.mark_removed_lifecycle_with_executor(
+            &removed.room_id,
+            &removed.user_id,
+            removed.version,
+            executor,
+        )
+        .await
+        .map(Some)
     }
 
     /// Diagnose why a guarded insert did not return a membership row.
@@ -1667,31 +2552,31 @@ impl RoomMemberRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query!(
+            r#"
             SELECT
                 EXISTS (
                     SELECT 1 FROM room_members
                     WHERE room_id = $1 AND user_id = $2
-                ) AS is_member,
+                ) AS "is_member!",
                 EXISTS (
                     SELECT 1 FROM room_member_kick_cooldowns
                     WHERE room_id = $1 AND user_id = $2
                       AND ends_at > CURRENT_TIMESTAMP
-                ) AS is_in_kick_cooldown
-            ",
+                ) AS "is_in_kick_cooldown!"
+            "#,
+            room_id as &RoomId,
+            user_id as &UserId,
         )
-        .bind(room_id)
-        .bind(user_id)
         .fetch_one(executor)
         .await?;
 
-        if row.try_get::<bool, _>("is_in_kick_cooldown")? {
+        if row.is_in_kick_cooldown {
             return Err(Error::Authorization(
                 KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
             ));
         }
-        if row.try_get::<bool, _>("is_member")? {
+        if row.is_member {
             return Err(Error::AlreadyExists(
                 "Already a member of this room".to_string(),
             ));
@@ -1729,6 +2614,33 @@ impl RoomMemberRepository {
             joined_at: row.joined_at,
             is_online: false,
             is_active: row.is_active,
+        })
+    }
+
+    fn typed_row_to_member(row: RoomMemberRow) -> Result<RoomMember> {
+        Ok(RoomMember {
+            room_id: row.room_id,
+            user_id: row.user_id,
+            role: row.role,
+            status: MemberStatus::Active,
+            added_permissions: db_permission_i64_to_u64(
+                row.added_permissions,
+                "added_permissions",
+            )?,
+            removed_permissions: db_permission_i64_to_u64(
+                row.removed_permissions,
+                "removed_permissions",
+            )?,
+            admin_added_permissions: db_permission_i64_to_u64(
+                row.admin_added_permissions,
+                "admin_added_permissions",
+            )?,
+            admin_removed_permissions: db_permission_i64_to_u64(
+                row.admin_removed_permissions,
+                "admin_removed_permissions",
+            )?,
+            joined_at: row.joined_at,
+            version: row.version,
         })
     }
 }

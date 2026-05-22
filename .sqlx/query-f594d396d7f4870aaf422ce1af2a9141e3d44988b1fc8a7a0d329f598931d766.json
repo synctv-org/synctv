@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_member_versions (room_id, user_id, version, is_member, updated_at)\n             VALUES ($1, $2, $3::BIGINT + 1, FALSE, CURRENT_TIMESTAMP)\n             ON CONFLICT (room_id, user_id) DO UPDATE\n             SET version = GREATEST(room_member_versions.version + 1, EXCLUDED.version),\n                 is_member = FALSE,\n                 updated_at = CURRENT_TIMESTAMP\n             RETURNING version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f594d396d7f4870aaf422ce1af2a9141e3d44988b1fc8a7a0d329f598931d766"
+}

@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n             SET\n                role = $3,\n                added_permissions = $4,\n                removed_permissions = $5,\n                admin_added_permissions = $6,\n                admin_removed_permissions = $7,\n                version = $9\n             WHERE room_id = $1 AND user_id = $2 AND version = $8\n             RETURNING room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       role as \"role: RoomRole\",\n                       added_permissions,\n                       removed_permissions,\n                       admin_added_permissions,\n                       admin_removed_permissions,\n                       joined_at,\n                       version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "role: RoomRole",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "added_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "removed_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "admin_added_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "joined_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3e7ebc6913e05e5fc44c39623afd66eed3c717955977dc860d50edd4637a8b3a"
+}

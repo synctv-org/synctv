@@ -7,8 +7,9 @@ use tracing::{error, info, warn};
 
 use crate::{
     cache::{
-        build_l2_cache_backend_from_profile, CacheInvalidationRuntime, CacheL2Backend,
-        CacheManager, RoomCache, UserCache, UsernameCache,
+        build_l2_cache_backend_from_profile, version_fence_store_from_shared_state_profile,
+        CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, RoomCache,
+        UserCache, UsernameCache, VersionFenceStore,
     },
     repository::{
         realtime_outbox::RealtimeOutboxRepository, ChatRepository, NotificationRepository,
@@ -105,6 +106,10 @@ pub struct Services {
     /// Cache invalidation listener task handle (joined on shutdown).
     pub cache_invalidation_listener_task:
         Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Cancellation token for pending cache-fence repair.
+    pub cache_fence_repair_cancel: tokio_util::sync::CancellationToken,
+    /// Pending cache-fence repair task handle (joined on shutdown).
+    pub cache_fence_repair_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Audit flush handle for graceful shutdown of audit logging
     pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<AuditFlushHandle>>>,
     /// Cancellation token for the provider invalidation listener.
@@ -340,6 +345,8 @@ pub async fn init_services_with_options(
         &config.redis.key_prefix,
         cluster_mode,
     );
+    let version_fence = version_fence_store_from_shared_state_profile(&shared_state_profile)?;
+    let consistency = ConsistencyCoordinator::new(version_fence.clone());
 
     // Extract a plain ConnectionManager snapshot for passing to individual services.
     // IMPORTANT (Sentinel mode): This snapshot is taken once at init time. In Sentinel
@@ -516,6 +523,7 @@ pub async fn init_services_with_options(
         &config.redis.deployment_mode,
         config.cache.l2_ttl_seconds,
     )?;
+    let room_settings_l2_cache_for_chat = room_runtime.room_settings_l2_cache.clone();
 
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
@@ -524,6 +532,16 @@ pub async fn init_services_with_options(
         cache_manager.start_invalidation_listener(&cache_invalidation);
     *cache_invalidation_listener_task.lock().await = Some(cache_invalidation_listener_task_handle);
     info!("CacheManager initialized with invalidation listener");
+
+    let cache_fence_repair_cancel = tokio_util::sync::CancellationToken::new();
+    let cache_fence_repair_task = Arc::new(tokio::sync::Mutex::new(Some(
+        consistency.clone().spawn_repair_worker(
+            pool.clone(),
+            std::time::Duration::from_secs(30),
+            cache_fence_repair_cancel.clone(),
+        ),
+    )));
+    info!("Cache fence repair worker started");
 
     // Initialize Settings service
     info!("Initializing Settings service...");
@@ -641,6 +659,18 @@ pub async fn init_services_with_options(
                     &shared_state_profile,
                 )?,
             ),
+            version_fence: Some(version_fence.clone()),
+            permission_service: Some(PermissionService::new_with_runtime(
+                RoomMemberRepository::new(pool.clone()),
+                RoomRepository::new(pool.clone()),
+                crate::service::permission::PermissionServiceRuntime {
+                    settings_registry: Some(Arc::clone(&settings_registry)),
+                    room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
+                    invalidation_service: Some(cache_invalidation.clone()),
+                    version_fence: Some(version_fence.clone()),
+                    ..crate::service::permission::PermissionServiceRuntime::default()
+                },
+            )),
         },
     ));
     info!("UserService initialized with construction-time dependencies");
@@ -677,6 +707,7 @@ pub async fn init_services_with_options(
         password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
         realtime_outbox: options.realtime_outbox.clone(),
         runtime: room_runtime,
+        version_fence: version_fence.clone(),
     });
     info!("RoomService initialized with construction-time dependencies");
 
@@ -687,12 +718,16 @@ pub async fn init_services_with_options(
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let room_settings_repo_for_chat = RoomSettingsRepo::new(pool.clone());
     let room_notification_service = Arc::new(room_service.notification_service().clone());
-    let room_settings_service_for_chat = RoomSettingsService::new(
+    let room_settings_service_for_chat = RoomSettingsService::new_with_version_fence(
         room_settings_repo_for_chat,
         Some(cache_invalidation.clone()),
         room_notification_service.clone(),
-        None,
-        None,
+        crate::service::room_settings::RoomSettingsRuntime {
+            version_fence: Some(version_fence),
+            l2_cache: room_settings_l2_cache_for_chat,
+            cache_key_prefix: format!("{}room_settings:", shared_state_profile.key_prefix()),
+            ..crate::service::room_settings::RoomSettingsRuntime::default()
+        },
     );
     let permission_service_for_chat = room_service.permission_service().clone();
     let chat_service = ChatService::new(
@@ -744,6 +779,8 @@ pub async fn init_services_with_options(
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
         cache_invalidation_listener_task,
+        cache_fence_repair_cancel,
+        cache_fence_repair_task,
         audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),
         provider_invalidation_cancel,
         provider_invalidation_task,
@@ -828,11 +865,14 @@ struct RoomServiceBuildArgs {
     password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     runtime: RoomServiceRuntime,
+    version_fence: Arc<dyn VersionFenceStore>,
 }
 
 struct RoomServiceRuntime {
     distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
     playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
+    room_settings_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    room_settings_cache_key_prefix: String,
 }
 
 fn build_room_service_runtime(
@@ -871,9 +911,16 @@ fn build_room_service_runtime(
         .transpose()
         .map_err(anyhow::Error::from)?;
 
+    let room_settings_l2_cache = profile.shared_runtime().map(|redis_runtime| {
+        Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime))
+            as Arc<dyn crate::cache::CacheL2Backend>
+    });
+
     Ok(RoomServiceRuntime {
         distributed_lock,
         playback_l2_cache,
+        room_settings_l2_cache,
+        room_settings_cache_key_prefix: format!("{}room_settings:", profile.key_prefix()),
     })
 }
 
@@ -892,15 +939,18 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         password_hasher,
         realtime_outbox,
         runtime,
+        version_fence,
     } = args;
     let permission_service = PermissionService::new_with_runtime(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
-        settings_registry.clone(),
-        PermissionService::DEFAULT_CACHE_SIZE,
-        PermissionService::DEFAULT_CACHE_TTL_SECS,
-        Some(RoomSettingsRepo::new(pool.clone())),
-        Some(cache_invalidation.clone()),
+        crate::service::permission::PermissionServiceRuntime {
+            settings_registry: settings_registry.clone(),
+            room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
+            invalidation_service: Some(cache_invalidation.clone()),
+            version_fence: Some(version_fence.clone()),
+            ..crate::service::permission::PermissionServiceRuntime::default()
+        },
     );
     RoomService::new_with_providers_permission_service_and_options(
         pool,
@@ -910,7 +960,10 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         crate::service::room::RoomServiceOptions {
             distributed_lock: runtime.distributed_lock,
             cache_invalidation: Some(cache_invalidation),
+            version_fence: Some(version_fence),
             playback_l2_cache: runtime.playback_l2_cache,
+            room_settings_l2_cache: runtime.room_settings_l2_cache,
+            room_settings_cache_key_prefix: Some(runtime.room_settings_cache_key_prefix),
             credential_encryption,
             credential_repo: Some(credential_repo),
             audit_service,
@@ -1303,6 +1356,7 @@ mod tests {
                 Config::default().cache.l2_ttl_seconds,
             )
             .expect("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
         });
 
         assert!(room_service.has_brute_force_service());
@@ -1382,6 +1436,7 @@ mod tests {
                 Config::default().cache.l2_ttl_seconds,
             )
             .expect("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
         });
         assert!(
             !standalone_room_service.has_distributed_lock(),
@@ -1413,6 +1468,7 @@ mod tests {
                 Config::default().cache.l2_ttl_seconds,
             )
             .expect("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
         });
         assert!(
             cluster_room_service.has_distributed_lock(),
@@ -1485,6 +1541,7 @@ mod tests {
                 Config::default().cache.l2_ttl_seconds,
             )
             .expect("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
         });
 
         assert!(room_service.has_settings_registry());
@@ -1545,6 +1602,7 @@ mod tests {
                 Config::default().cache.l2_ttl_seconds,
             )
             .expect("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
         });
 
         assert!(
@@ -1605,6 +1663,7 @@ mod tests {
                 Config::default().cache.l2_ttl_seconds,
             )
             .expect("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
         });
 
         assert!(

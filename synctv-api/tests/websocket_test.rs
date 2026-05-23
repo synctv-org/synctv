@@ -2687,7 +2687,7 @@ mod websocket_e2e {
             "PlaylistDeleted event should be forwarded"
         );
 
-        let permission_bits = synctv_core::models::PermissionBits::START_LIVE
+        let permission_bits = synctv_core::models::PermissionBits::LIVE_CONTROL
             | synctv_core::models::PermissionBits::PLAY_CONTROL;
         server1.realtime_manager.broadcast(
             synctv_realtime::sync::RealtimeEvent::PermissionChanged {

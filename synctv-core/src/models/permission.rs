@@ -40,8 +40,8 @@ impl PermissionBits {
     /// Clear media resource queues.
     pub const CLEAR_MEDIA_RESOURCES: u64 = 1 << 4;
 
-    /// Start live stream (RTMP push)
-    pub const START_LIVE: u64 = 1 << 5;
+    /// Manage live streams and issue RTMP publish keys for room media.
+    pub const LIVE_CONTROL: u64 = 1 << 5;
 
     /// Play control (play/pause/seek)
     pub const PLAY_CONTROL: u64 = 1 << 6;
@@ -97,7 +97,7 @@ impl PermissionBits {
         | Self::DELETE_MEDIA_RESOURCE_ANY
         | Self::REORDER_MEDIA_RESOURCES
         | Self::CLEAR_MEDIA_RESOURCES
-        | Self::START_LIVE
+        | Self::LIVE_CONTROL
         | Self::PLAY_CONTROL
         | Self::CHANGE_CURRENT_MEDIA
         | Self::CHANGE_PLAYBACK_RATE
@@ -137,7 +137,7 @@ impl PermissionBits {
         | Self::DELETE_MEDIA_RESOURCE_ANY
         | Self::REORDER_MEDIA_RESOURCES
         | Self::CLEAR_MEDIA_RESOURCES
-        | Self::START_LIVE
+        | Self::LIVE_CONTROL
         | Self::PLAY_CONTROL
         | Self::CHANGE_CURRENT_MEDIA
         | Self::CHANGE_PLAYBACK_RATE

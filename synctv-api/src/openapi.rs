@@ -110,6 +110,8 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         room::leave_room,
         room::get_room_members,
         room::list_room_streams,
+        room::get_room_stream_info,
+        room::kick_room_stream,
         room::get_playback,
         room::get_room_settings,
         room::update_room_settings,
@@ -372,6 +374,10 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
             crate::proto::providers::bilibili::QrLoginStatus,
             crate::proto::providers::rtmp::GetStreamInfoResponse,
             crate::proto::providers::rtmp::StreamPublisherInfo,
+            crate::proto::client::GetRoomStreamInfoResponse,
+            crate::proto::client::RoomStreamPublisherInfo,
+            crate::http::room::KickRoomStreamBody,
+            crate::proto::client::KickRoomStreamResponse,
             crate::proto::admin::GetSystemStatsResponse,
             crate::proto::admin::GetSettingsResponse,
             crate::proto::admin::GetSettingsGroupResponse,
@@ -656,6 +662,116 @@ mod tests {
                 responses.keys().collect::<Vec<_>>()
             );
         }
+    }
+
+    fn assert_parameter_location(
+        doc: &Value,
+        path: &str,
+        method: &str,
+        name: &str,
+        expected_location: &str,
+    ) {
+        let params = doc["paths"][path][method]["parameters"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{method} {path} should document parameters"));
+        let locations = params
+            .iter()
+            .filter(|param| param["name"] == name)
+            .map(|param| param["in"].as_str().unwrap_or("<missing>"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            locations,
+            vec![expected_location],
+            "{method} {path} should document {name} only as {expected_location}; got {locations:?}"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_query_struct_params_as_query() {
+        let doc = openapi_json();
+
+        for name in [
+            "page",
+            "page_size",
+            "search",
+            "role",
+            "sort_by",
+            "sort_direction",
+        ] {
+            assert_parameter_location(&doc, "/api/rooms/{room_id}/members", "get", name, "query");
+        }
+        assert_parameter_location(
+            &doc,
+            "/api/rooms/{room_id}/members",
+            "get",
+            "room_id",
+            "path",
+        );
+
+        for name in [
+            "page",
+            "page_size",
+            "status",
+            "search",
+            "is_banned",
+            "sort_by",
+            "sort_direction",
+        ] {
+            assert_parameter_location(
+                &doc,
+                "/api/admin/users/{user_id}/rooms",
+                "get",
+                name,
+                "query",
+            );
+        }
+        assert_parameter_location(
+            &doc,
+            "/api/admin/users/{user_id}/rooms",
+            "get",
+            "user_id",
+            "path",
+        );
+
+        for name in [
+            "page",
+            "page_size",
+            "search",
+            "role",
+            "sort_by",
+            "sort_direction",
+        ] {
+            assert_parameter_location(
+                &doc,
+                "/api/admin/rooms/{room_id}/members",
+                "get",
+                name,
+                "query",
+            );
+        }
+        assert_parameter_location(
+            &doc,
+            "/api/admin/rooms/{room_id}/members",
+            "get",
+            "room_id",
+            "path",
+        );
+
+        assert_parameter_location(
+            &doc,
+            "/api/providers/alist/list",
+            "post",
+            "instance_name",
+            "query",
+        );
+        assert_parameter_location(
+            &doc,
+            "/api/rooms/{room_id}/playback",
+            "get",
+            "delivery_preference",
+            "query",
+        );
     }
 
     #[test]

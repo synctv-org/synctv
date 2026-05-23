@@ -1,8 +1,10 @@
-use synctv_core::models::{MediaId, UserId};
+use synctv_core::models::{MediaId, PermissionBits, UserId};
 
 use crate::impls::{ApiError, ClientApiImpl};
 use crate::proto::client::{
-    ListRoomStreamsRequest, ListRoomStreamsResponse, SortDirection, StreamEntry,
+    GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, KickRoomStreamRequest,
+    ListRoomStreamsRequest, ListRoomStreamsResponse, RoomStreamPublisherInfo, SortDirection,
+    StreamEntry,
 };
 
 const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on this server.";
@@ -81,6 +83,41 @@ pub(crate) fn live_streaming_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable(LIVESTREAM_UNAVAILABLE_MESSAGE.to_string())
 }
 
+pub(crate) async fn fetch_stream_info(
+    infrastructure: &synctv_livestream::api::LiveStreamingInfrastructure,
+    public_id_codec: &crate::PublicIdCodec,
+    room_id: &str,
+    media_id: &str,
+) -> Result<GetRoomStreamInfoResponse, ApiError> {
+    match infrastructure
+        .registry()
+        .get_publisher(room_id, media_id)
+        .await
+    {
+        Ok(Some(pub_info)) => {
+            let user_id = public_id_codec
+                .encode_user_id(pub_info.user_id.parse::<UserId>().map_err(|error| {
+                    ApiError::Internal(format!("Invalid active publisher user id: {error}"))
+                })?)
+                .map_err(ApiError::Internal)?;
+            Ok(GetRoomStreamInfoResponse {
+                active: true,
+                publisher: Some(RoomStreamPublisherInfo {
+                    user_id,
+                    started_at: pub_info.started_at.timestamp(),
+                }),
+            })
+        }
+        Ok(None) => Ok(GetRoomStreamInfoResponse {
+            active: false,
+            publisher: None,
+        }),
+        Err(error) => Err(ApiError::Internal(format!(
+            "Failed to get stream info: {error}"
+        ))),
+    }
+}
+
 impl ClientApiImpl {
     pub async fn list_room_streams(
         &self,
@@ -119,6 +156,79 @@ impl ClientApiImpl {
             &req,
             &self.public_id_codec,
         ))
+    }
+
+    pub async fn get_room_stream_info(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: GetRoomStreamInfoRequest,
+    ) -> Result<GetRoomStreamInfoResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id = self
+            .public_id_codec
+            .decode_media_id(&req.media_id)
+            .map_err(ApiError::InvalidInput)?;
+
+        self.room_service
+            .check_membership(&rid, &uid)
+            .await
+            .map_err(Self::map_room_access_error)?;
+
+        let infrastructure = self
+            .live_streaming_infrastructure
+            .as_ref()
+            .ok_or_else(live_streaming_unavailable_error)?;
+
+        fetch_stream_info(
+            infrastructure,
+            &self.public_id_codec,
+            &rid.to_string(),
+            &media_id.to_string(),
+        )
+        .await
+    }
+
+    pub async fn kick_room_stream(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: KickRoomStreamRequest,
+    ) -> Result<(), ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id = self
+            .public_id_codec
+            .decode_media_id(&req.media_id)
+            .map_err(ApiError::InvalidInput)?;
+
+        self.room_service
+            .check_permission(&rid, &uid, PermissionBits::LIVE_CONTROL)
+            .await
+            .map_err(Self::map_room_access_error)?;
+
+        let infrastructure = self
+            .live_streaming_infrastructure
+            .as_ref()
+            .ok_or_else(live_streaming_unavailable_error)?;
+        if !infrastructure
+            .registry()
+            .is_stream_active(&rid.to_string(), &media_id.to_string())
+            .await
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to check active stream: {error}"))
+            })?
+        {
+            return Err(ApiError::NotFound("Active stream not found".to_string()));
+        }
+
+        self.realtime_lifecycle
+            .kick_stream(&rid, &media_id, &req.reason)
+            .await
+            .map_err(|error| crate::impls::map_livestream_stream_error(&error))
     }
 }
 #[cfg(test)]

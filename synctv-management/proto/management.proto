@@ -57,6 +57,7 @@ service ManagementService {
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
     rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
+    rpc KickRoomStream(KickRoomStreamRequest) returns (synctv.client.KickRoomStreamResponse);
     rpc AlistLogin(AlistLoginRequest) returns (synctv.provider.alist.LoginResponse);
     rpc AlistList(AlistListRequest) returns (synctv.provider.alist.ListResponse);
     rpc AlistSearch(AlistSearchRequest) returns (synctv.provider.alist.SearchResponse);
@@ -532,6 +533,12 @@ message ListRoomStreamsRequest {
     string search = 4;
     RoomStreamListSortBy sort_by = 5;
     SortDirection sort_direction = 6;
+}
+
+message KickRoomStreamRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string reason = 3;
 }
 
 message ListPlaylistsRequest {

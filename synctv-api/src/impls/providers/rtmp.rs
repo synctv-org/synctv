@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use synctv_core::models::{MediaId, UserId};
+use synctv_core::models::{MediaId, Room, UserId};
 
 use crate::impls::{AdminApiImpl, ApiError, ClientApiImpl};
 use crate::proto::providers::rtmp::{
@@ -69,14 +69,26 @@ fn encode_public_stream_ids(
     Ok((room_id, media_id))
 }
 
+fn ensure_room_accepts_live_publish(room: &Room) -> Result<(), ApiError> {
+    if room.is_banned {
+        return Err(ApiError::Authorization("Room is banned".to_string()));
+    }
+
+    if !room.status.is_active() {
+        return Err(ApiError::Authorization("Room is not active".to_string()));
+    }
+
+    Ok(())
+}
+
 pub async fn fetch_stream_info(
-    infrastructure: &Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    infrastructure: &synctv_livestream::api::LiveStreamingInfrastructure,
     public_id_codec: &crate::PublicIdCodec,
     room_id: &str,
     media_id: &str,
 ) -> Result<GetStreamInfoResponse, ApiError> {
     match infrastructure
-        .registry
+        .registry()
         .get_publisher(room_id, media_id)
         .await
     {
@@ -114,7 +126,7 @@ impl ClientApiImpl {
         let (room_id, media_id) = build_create_publish_key_request(req, &self.public_id_codec)?;
         let rid = parse_room_id(&room_id, &self.public_id_codec)?;
 
-        let _media = self
+        let media = self
             .room_service
             .media_service()
             .get_room_media(&rid, &media_id)
@@ -122,16 +134,28 @@ impl ClientApiImpl {
             .map_err(|e| Self::map_media_lookup_error(e, "Media not found"))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
-        let _room = self
+        let room = self
             .room_service
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
+        ensure_room_accepts_live_publish(&room)?;
 
         self.room_service
-            .check_permission(&rid, &uid, synctv_core::models::PermissionBits::START_LIVE)
+            .check_membership(&rid, &uid)
             .await
             .map_err(Self::map_room_access_error)?;
+
+        if media.creator_id != Some(uid) {
+            self.room_service
+                .check_permission(
+                    &rid,
+                    &uid,
+                    synctv_core::models::PermissionBits::LIVE_CONTROL,
+                )
+                .await
+                .map_err(Self::map_room_access_error)?;
+        }
 
         let publish_key_service = self
             .publish_key_service
@@ -249,6 +273,13 @@ impl AdminApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to load media: {e}")))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
+        let room = self
+            .room_service
+            .get_room(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        ensure_room_accepts_live_publish(&room)?;
+
         let publish_key_service = self
             .publish_key_service
             .as_ref()
@@ -342,5 +373,37 @@ mod tests {
 
         assert_eq!(room_id, expected_room_id);
         assert_eq!(media_id, expected_media_id);
+    }
+
+    #[test]
+    fn ensure_room_accepts_live_publish_rejects_banned_room() {
+        let mut room = Room::new("Banned live room".to_string(), UserId::expect_positive(1));
+        room.ban();
+
+        let err = ensure_room_accepts_live_publish(&room)
+            .expect_err("banned rooms must not issue publish keys");
+
+        assert!(
+            matches!(&err, ApiError::Authorization(message) if message == "Room is banned"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_room_accepts_live_publish_rejects_closed_room() {
+        let room = Room::new_with_status(
+            "Closed live room".to_string(),
+            String::new(),
+            UserId::expect_positive(1),
+            synctv_core::models::RoomStatus::Closed,
+        );
+
+        let err = ensure_room_accepts_live_publish(&room)
+            .expect_err("closed rooms must not issue publish keys");
+
+        assert!(
+            matches!(&err, ApiError::Authorization(message) if message == "Room is not active"),
+            "unexpected error: {err:?}"
+        );
     }
 }

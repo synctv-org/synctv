@@ -117,7 +117,7 @@ const NAMED_PERMISSIONS: &[(&str, u64)] = &[
         "clear_media_resources",
         PermissionBits::CLEAR_MEDIA_RESOURCES,
     ),
-    ("start_live", PermissionBits::START_LIVE),
+    ("live_control", PermissionBits::LIVE_CONTROL),
     ("play_control", PermissionBits::PLAY_CONTROL),
     ("change_current_media", PermissionBits::CHANGE_CURRENT_MEDIA),
     ("change_playback_rate", PermissionBits::CHANGE_PLAYBACK_RATE),
@@ -1044,6 +1044,23 @@ mod tests {
         assert!(error.to_string().contains("view_media_resources"));
         assert!(error.to_string().contains("send_chat"));
         assert!(error.to_string().contains("create_media_resource"));
+    }
+
+    #[test]
+    fn test_permission_set_uses_live_control_name_only() {
+        let parsed: PermissionSet = r#"["live_control"]"#.parse().unwrap();
+        assert!(parsed.bits().has(PermissionBits::LIVE_CONTROL));
+        assert_eq!(parsed.to_string(), r#"["live_control"]"#);
+
+        let error = r#"["start_live"]"#
+            .parse::<PermissionSet>()
+            .expect_err("start_live is not a supported permission setting name");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown permission name 'start_live'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

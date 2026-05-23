@@ -35,28 +35,29 @@ use crate::proto::client::{
     GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse,
     GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse,
     GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
-    GetRoomSettingsRequest, GetRoomSettingsResponse, GetUserPreferencesRequest,
-    GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
-    KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
-    ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse, ListPlaylistItemsRequest,
-    ListPlaylistItemsResponse, ListPlaylistsRequest, ListPlaylistsResponse,
-    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomStreamsRequest,
-    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse,
-    LogoutRequest, LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
-    MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
-    RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
-    SendVerificationEmailResponse, ServerMessage, SetRoomPasswordRequest, SetRoomPasswordResponse,
-    SetUsernameRequest, SetUsernameResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
-    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
-    StartOpaquePasswordResetResponse, StartOpaquePasswordUpdateRequest,
-    StartOpaquePasswordUpdateResponse, StartOpaqueRegistrationRequest,
-    StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
-    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
-    StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    GetRoomSettingsRequest, GetRoomSettingsResponse, GetRoomStreamInfoRequest,
+    GetRoomStreamInfoResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
+    JoinRoomRequest, JoinRoomResponse, KickMemberRequest, KickMemberResponse,
+    KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomRequest, LeaveRoomResponse,
+    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
+    ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
+    ListPlaylistsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
+    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MoveMediaRequest,
+    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, PasskeyCredentialResponse,
+    RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RejectRoomJoinReviewRequest,
+    RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
+    RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse, RequestPasswordResetRequest,
+    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
+    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage,
+    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
+    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
+    StartOpaqueLoginResponse, StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse,
+    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
+    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
     UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
     UpdateRoomSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
@@ -1364,6 +1365,53 @@ impl RoomService for ClientServiceImpl {
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
+    }
+
+    async fn get_room_stream_info(
+        &self,
+        request: Request<GetRoomStreamInfoRequest>,
+    ) -> Result<Response<GetRoomStreamInfoResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api
+                        .get_room_stream_info(&authenticated.user_id, room_id.as_str(), req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn kick_room_stream(
+        &self,
+        request: Request<KickRoomStreamRequest>,
+    ) -> Result<Response<KickRoomStreamResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Media,
+                move |authenticated| async move {
+                    client_api
+                        .kick_room_stream(&authenticated.user_id, room_id.as_str(), req)
+                        .await
+                        .map(|()| KickRoomStreamResponse {})
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
     }
 
     async fn add_member(

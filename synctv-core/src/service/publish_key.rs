@@ -58,8 +58,8 @@ pub struct PublishClaims {
     pub media_id: String,
     /// User ID
     pub user_id: String,
-    /// Permission to start live stream
-    pub perm_start_live: bool,
+    /// Permission to control live streams
+    pub perm_live_control: bool,
     /// Issued at timestamp
     pub iat: i64,
     /// Expiration timestamp
@@ -423,9 +423,9 @@ impl PublishKeyService {
             return Err(Error::Authentication("Token has expired".to_string()));
         }
 
-        if !claims.perm_start_live {
+        if !claims.perm_live_control {
             return Err(Error::Authorization(
-                "Token does not have START_LIVE permission".to_string(),
+                "Token does not have LIVE_CONTROL permission".to_string(),
             ));
         }
 
@@ -567,7 +567,7 @@ impl PublishKeyService {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
             user_id: user_id.to_string(),
-            perm_start_live: true,
+            perm_live_control: true,
             iat: now,
             exp,
             jti: synctv_common::snanoid!(32),
@@ -897,7 +897,7 @@ mod tests {
         assert_eq!(claims.room_id, room_id.to_string());
         assert_eq!(claims.media_id, media_id.to_string());
         assert_eq!(claims.user_id, user_id.to_string());
-        assert!(claims.perm_start_live);
+        assert!(claims.perm_live_control);
     }
 
     #[tokio::test]
@@ -1059,7 +1059,7 @@ mod tests {
             room_id: "room123".to_string(),
             media_id: "media456".to_string(),
             user_id: "user789".to_string(),
-            perm_start_live: true,
+            perm_live_control: true,
             iat: 1000,
             exp: 2000,
             jti: "unique-id".to_string(),
@@ -1071,10 +1071,30 @@ mod tests {
         assert_eq!(back.room_id, "room123");
         assert_eq!(back.media_id, "media456");
         assert_eq!(back.user_id, "user789");
-        assert!(back.perm_start_live);
+        assert!(back.perm_live_control);
         assert_eq!(back.iat, 1000);
         assert_eq!(back.exp, 2000);
         assert_eq!(back.jti, "unique-id");
+    }
+
+    #[test]
+    fn test_publish_claims_require_live_control_claim_name() {
+        let old_claim = serde_json::json!({
+            "room_id": "room123",
+            "media_id": "media456",
+            "user_id": "user789",
+            "perm_start_live": true,
+            "iat": 1000,
+            "exp": 2000,
+            "jti": "unique-id",
+        });
+
+        let error = serde_json::from_value::<PublishClaims>(old_claim)
+            .expect_err("perm_start_live is not a supported publish claim");
+        assert!(
+            error.to_string().contains("perm_live_control"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

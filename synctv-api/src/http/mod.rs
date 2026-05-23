@@ -652,6 +652,10 @@ fn register_write_routes(_state: &AppState) -> Router<AppState> {
             axum::routing::delete(room::delete_entries),
         )
         .route(
+            "/api/rooms/{room_id}/streams/{media_id}/kick",
+            post(room::kick_room_stream),
+        )
+        .route(
             "/api/rooms/{room_id}/settings/reset",
             post(room::reset_room_settings),
         );
@@ -675,6 +679,10 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
         )
         .route("/api/rooms/{room_id}/members", get(room::get_room_members))
         .route("/api/rooms/{room_id}/streams", get(room::list_room_streams))
+        .route(
+            "/api/rooms/{room_id}/streams/{media_id}",
+            get(room::get_room_stream_info),
+        )
         .route(
             "/api/rooms/{room_id}/chat/history",
             get(room::get_chat_history),

@@ -133,8 +133,10 @@ async fn test_set_settings_with_exact_version_updates_existing_zero_version_row(
     .await
     .unwrap();
 
-    let mut changed = RoomSettings::default();
-    changed.chat_enabled = synctv_core::models::room_settings::ChatEnabled(false);
+    let changed = RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        ..Default::default()
+    };
     let version = settings_repo
         .set_settings_with_exact_version(&room.id, &changed, 0, 1)
         .await

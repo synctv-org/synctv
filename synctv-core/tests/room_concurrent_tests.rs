@@ -547,7 +547,7 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
         PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
         PermissionBits::REORDER_MEDIA_RESOURCES,
         PermissionBits::CLEAR_MEDIA_RESOURCES,
-        PermissionBits::START_LIVE,
+        PermissionBits::LIVE_CONTROL,
         PermissionBits::PLAY_CONTROL,
         PermissionBits::CHANGE_CURRENT_MEDIA,
         PermissionBits::CHANGE_PLAYBACK_RATE,

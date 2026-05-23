@@ -306,6 +306,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_field_attributes(
         &mut main_field_attributes,
         &[
+            ".synctv.admin.GetUserRoomsRequest.user_id",
+            ".synctv.admin.GetRoomMembersRequest.room_id",
+        ],
+        "#[cfg_attr(feature = \"openapi\", param(ignore))]",
+    );
+    add_field_attributes(
+        &mut main_field_attributes,
+        &[
             ".synctv.client.JoinRoomRequest.password",
             ".synctv.client.CreateRoomRequest.password",
             ".synctv.client.CreateRoomRequest.description",
@@ -641,6 +649,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             "#[cfg_attr(feature = \"openapi\", derive(utoipa::IntoParams))]",
         );
+        main_builder = main_builder.type_attribute(
+            path,
+            "#[cfg_attr(feature = \"openapi\", into_params(parameter_in = Query))]",
+        );
     }
     for (path, attr) in &main_schema_aliases {
         main_builder = main_builder.type_attribute(path, attr);
@@ -753,6 +765,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider_builder = provider_builder.type_attribute(
             path,
             "#[cfg_attr(feature = \"openapi\", derive(utoipa::IntoParams))]",
+        );
+        provider_builder = provider_builder.type_attribute(
+            path,
+            "#[cfg_attr(feature = \"openapi\", into_params(parameter_in = Query))]",
         );
     }
     provider_builder = provider_builder.type_attribute(

@@ -43,7 +43,7 @@ struct RoomMemberWithUserRow {
     is_active: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct RoomMemberRow {
     room_id: RoomId,
     user_id: UserId,

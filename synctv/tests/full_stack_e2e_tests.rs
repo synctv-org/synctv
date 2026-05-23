@@ -3714,7 +3714,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "admin",
             "--admin-added-permissions",
             &(synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE
-                | synctv_core::models::PermissionBits::START_LIVE)
+                | synctv_core::models::PermissionBits::LIVE_CONTROL)
                 .to_string(),
             "--admin-removed-permissions",
             &synctv_core::models::PermissionBits::SEND_CHAT.to_string(),
@@ -4629,6 +4629,40 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
     assert!(
         banned_publish_key_error.contains("is banned"),
         "banned actor publish-key should fail with explicit state message, got: {banned_publish_key_error}"
+    );
+
+    let banned_room = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "ban",
+            &room_id,
+            "--reason",
+            "publish-key room guard",
+        ],
+        "ban room before creator publish key",
+    )
+    .await;
+    assert_eq!(banned_room["room"]["is_banned"], true);
+
+    let creator_banned_room_publish_key_error = run_synctv_remote_cli_failure(
+        &server,
+        &[
+            "provider",
+            "rtmp",
+            "create-publish-key",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            &media_id,
+        ],
+        "media creator publish key in banned room",
+    )
+    .await;
+    assert!(
+        creator_banned_room_publish_key_error.contains("Room is banned"),
+        "media creator publish-key in banned room should fail with room state message, got: {creator_banned_room_publish_key_error}"
     );
 }
 
@@ -7830,7 +7864,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         other => panic!("expected RoomSettingsChanged, got: {other:?}"),
     }
 
-    let permission_bits = synctv_core::models::PermissionBits::START_LIVE
+    let permission_bits = synctv_core::models::PermissionBits::LIVE_CONTROL
         | synctv_core::models::PermissionBits::PLAY_CONTROL;
     let _ = run_synctv_remote_cli_json(
         &server,

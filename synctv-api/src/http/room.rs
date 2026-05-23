@@ -34,7 +34,8 @@ use crate::proto::client::{
     DeletePlaylistResponse, DeleteRoomResponse, EditMediaResponse, GetChatHistoryRequest,
     GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest,
     GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse,
-    JoinRoomResponse, LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, JoinRoomResponse, KickRoomStreamRequest,
+    KickRoomStreamResponse, LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
     ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
     ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
     ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
@@ -52,6 +53,12 @@ pub type StartPlaybackBody = StartPlaybackRequest;
 pub type StopPlaybackBody = StopPlaybackRequest;
 pub type AddMediaBody = AddMediaRequest;
 pub type DeleteEntriesBody = DeleteEntriesRequest;
+#[derive(Debug, Default, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct KickRoomStreamBody {
+    #[serde(default)]
+    pub reason: String,
+}
 
 #[cfg(test)]
 fn parse_optional_query_i32(
@@ -94,6 +101,7 @@ pub type MovePlaylistBody = crate::proto::client::MovePlaylistRequest;
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetPlaybackQuery {
     pub delivery_preference: Option<String>,
     pub max_streaming_bitrate: Option<i64>,
@@ -127,6 +135,12 @@ pub struct WatchPlaybackSnapshotQuery {
     pub containers: Option<String>,
     pub audio_capability: Option<String>,
     pub subtitle_preference: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RoomStreamPath {
+    pub room_id: String,
+    pub media_id: String,
 }
 
 struct HttpWatchMessageSender {
@@ -1362,6 +1376,100 @@ pub async fn list_room_streams(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/streams/{media_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        responses(
+            (status = 200, description = "Room live stream information", body = GetRoomStreamInfoResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_room_stream_info(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomStreamPath>,
+) -> AppResult<Json<GetRoomStreamInfoResponse>> {
+    let room_id = path.room_id;
+    let req = GetRoomStreamInfoRequest {
+        media_id: path.media_id,
+    };
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_room_stream_info(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/streams/{media_id}/kick",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        request_body = KickRoomStreamBody,
+        responses(
+            (status = 200, description = "Room live stream kicked", body = KickRoomStreamResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn kick_room_stream(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomStreamPath>,
+    ProtoJson(req): ProtoJson<KickRoomStreamBody>,
+) -> AppResult<Json<KickRoomStreamResponse>> {
+    let room_id = path.room_id;
+    let req = KickRoomStreamRequest {
+        media_id: path.media_id,
+        reason: req.reason,
+    };
+    execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .kick_room_stream(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(KickRoomStreamResponse {}))
+}
+
 /// Check if room exists (public endpoint)
 #[cfg_attr(
     feature = "openapi",
@@ -2498,6 +2606,16 @@ mod tests {
 
         assert_eq!(req.room_id, "room_1");
         assert_eq!(req.media_id, "med_1");
+    }
+
+    #[test]
+    fn test_kick_room_stream_body_does_not_require_path_media_id() {
+        let empty: super::KickRoomStreamBody = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.reason, "");
+
+        let with_reason: super::KickRoomStreamBody =
+            serde_json::from_str(r#"{"reason":"moderation"}"#).unwrap();
+        assert_eq!(with_reason.reason, "moderation");
     }
 
     #[test]

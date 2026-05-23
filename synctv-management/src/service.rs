@@ -35,12 +35,12 @@ use crate::proto::{
     GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
     GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
     GetSystemStatsRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
-    KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-    ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
-    ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-    ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
-    PurgeSliceCacheNodeResult, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
-    RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+    KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
+    ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
+    ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
+    ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+    MovePlaylistRequest, PurgeSliceCacheNodeResult, PurgeSliceCacheRequest,
+    PurgeSliceCacheResponse, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
     SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo,
     SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest,
@@ -2247,6 +2247,30 @@ impl ManagementService for ManagementServiceImpl {
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
+    }
+
+    async fn kick_room_stream(
+        &self,
+        request: Request<KickRoomStreamRequest>,
+    ) -> Result<Response<client_proto::KickRoomStreamResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        self.admin_api
+            .kick_stream(
+                admin_proto::KickStreamRequest {
+                    room_id: req.room_id,
+                    media_id: req.media_id,
+                    reason: req.reason,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(
+            client_proto::KickRoomStreamResponse {},
+        ))
     }
 
     async fn list_playlists(

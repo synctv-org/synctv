@@ -23,6 +23,44 @@ use crate::app::Application;
 const MANAGEMENT_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_STOP_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
+const CLI_NAMED_PERMISSIONS: &[(&str, u64)] = &[
+    ("send_chat", PermissionBits::SEND_CHAT),
+    (
+        "create_media_resource",
+        PermissionBits::CREATE_MEDIA_RESOURCE,
+    ),
+    (
+        "delete_media_resource_any",
+        PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+    ),
+    (
+        "reorder_media_resources",
+        PermissionBits::REORDER_MEDIA_RESOURCES,
+    ),
+    (
+        "clear_media_resources",
+        PermissionBits::CLEAR_MEDIA_RESOURCES,
+    ),
+    ("live_control", PermissionBits::LIVE_CONTROL),
+    ("play_control", PermissionBits::PLAY_CONTROL),
+    ("change_current_media", PermissionBits::CHANGE_CURRENT_MEDIA),
+    ("change_playback_rate", PermissionBits::CHANGE_PLAYBACK_RATE),
+    ("approve_member", PermissionBits::APPROVE_MEMBER),
+    ("kick_member", PermissionBits::KICK_MEMBER),
+    (
+        "set_member_permissions",
+        PermissionBits::SET_MEMBER_PERMISSIONS,
+    ),
+    ("add_member", PermissionBits::ADD_MEMBER),
+    ("set_room_settings", PermissionBits::SET_ROOM_SETTINGS),
+    ("delete_chat", PermissionBits::DELETE_CHAT),
+    ("delete_room", PermissionBits::DELETE_ROOM),
+    ("view_media_resources", PermissionBits::VIEW_MEDIA_RESOURCES),
+    ("view_member_list", PermissionBits::VIEW_MEMBER_LIST),
+    ("view_chat_history", PermissionBits::VIEW_CHAT_HISTORY),
+    ("use_webrtc", PermissionBits::USE_WEBRTC),
+];
+
 macro_rules! management_unary_call {
     ($session:expr, $operation:literal, $method:ident, $request:expr) => {{
         let mut client = $session.management_client();
@@ -780,6 +818,8 @@ pub struct RoomStreamCommand {
 pub enum RoomStreamSubcommand {
     /// List active RTMP publish sessions in a room
     List(RoomStreamListArgs),
+    /// Kick an active RTMP publish session in a room
+    Kick(RoomStreamKickArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1873,17 +1913,95 @@ pub struct RoomMemberSetPermissionsArgs {
     #[arg(long, value_enum)]
     pub role: Option<CliRoomMemberRole>,
 
-    #[arg(long)]
-    pub added_permissions: Option<u64>,
+    #[arg(
+        long,
+        value_parser = parse_permission_bits_arg,
+        value_name = "BITS|NAMES",
+        help = "Permission override as a u64 bitmask, comma-separated names, or JSON array of names"
+    )]
+    pub added_permissions: Option<PermissionOverrideBits>,
 
-    #[arg(long)]
-    pub removed_permissions: Option<u64>,
+    #[arg(
+        long,
+        value_parser = parse_permission_bits_arg,
+        value_name = "BITS|NAMES",
+        help = "Permission override as a u64 bitmask, comma-separated names, or JSON array of names"
+    )]
+    pub removed_permissions: Option<PermissionOverrideBits>,
 
-    #[arg(long)]
-    pub admin_added_permissions: Option<u64>,
+    #[arg(
+        long,
+        value_parser = parse_permission_bits_arg,
+        value_name = "BITS|NAMES",
+        help = "Admin permission override as a u64 bitmask, comma-separated names, or JSON array of names"
+    )]
+    pub admin_added_permissions: Option<PermissionOverrideBits>,
 
-    #[arg(long)]
-    pub admin_removed_permissions: Option<u64>,
+    #[arg(
+        long,
+        value_parser = parse_permission_bits_arg,
+        value_name = "BITS|NAMES",
+        help = "Admin permission override as a u64 bitmask, comma-separated names, or JSON array of names"
+    )]
+    pub admin_removed_permissions: Option<PermissionOverrideBits>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PermissionOverrideBits(u64);
+
+impl From<PermissionOverrideBits> for u64 {
+    fn from(value: PermissionOverrideBits) -> Self {
+        value.0
+    }
+}
+
+fn parse_permission_bits_arg(raw: &str) -> std::result::Result<PermissionOverrideBits, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("permission override must not be empty".to_string());
+    }
+
+    if let Ok(bits) = trimmed.parse::<u64>() {
+        return Ok(PermissionOverrideBits(bits));
+    }
+
+    let names = if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<String>>(trimmed).map_err(|error| {
+            format!("permission JSON array must contain permission names: {error}")
+        })?
+    } else {
+        trimmed
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+
+    if names.is_empty() {
+        return Err("permission override must include at least one permission name".to_string());
+    }
+
+    let mut bits = 0_u64;
+    for name in names {
+        let canonical = name.replace('-', "_").to_ascii_lowercase();
+        let Some((_, bit)) = CLI_NAMED_PERMISSIONS
+            .iter()
+            .find(|(permission_name, _)| *permission_name == canonical)
+        else {
+            let allowed = CLI_NAMED_PERMISSIONS
+                .iter()
+                .map(|(permission_name, _)| *permission_name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "unknown permission name '{name}'. Allowed: {allowed}"
+            ));
+        };
+        bits |= *bit;
+    }
+
+    Ok(PermissionOverrideBits(bits))
 }
 
 #[derive(Debug, Args)]
@@ -2227,6 +2345,18 @@ pub struct RoomStreamListArgs {
 
     #[arg(long = "sort-dir", value_enum, default_value_t = CliSortDirection::Asc)]
     pub sort_dir: CliSortDirection,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomStreamKickArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[arg(long)]
+    pub media_id: String,
+
+    #[arg(long)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -3772,6 +3902,7 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         },
         RoomSubcommand::Stream(command) => match &mut command.command {
             RoomStreamSubcommand::List(args) => merge_room_scoped_remote_args(&mut args.room, root),
+            RoomStreamSubcommand::Kick(args) => merge_room_scoped_remote_args(&mut args.room, root),
         },
         RoomSubcommand::Batch(command) => match &mut command.command {
             RoomBatchSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
@@ -4850,12 +4981,12 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                             synctv_proto::common::RoomMemberRole::Unspecified as i32,
                             CliRoomMemberRole::to_proto,
                         ),
-                        added_permissions: args.added_permissions.unwrap_or_default(),
-                        removed_permissions: args.removed_permissions.unwrap_or_default(),
-                        admin_added_permissions: args.admin_added_permissions.unwrap_or_default(),
+                        added_permissions: args.added_permissions.map_or(0, Into::into),
+                        removed_permissions: args.removed_permissions.map_or(0, Into::into),
+                        admin_added_permissions: args.admin_added_permissions.map_or(0, Into::into),
                         admin_removed_permissions: args
                             .admin_removed_permissions
-                            .unwrap_or_default(),
+                            .map_or(0, Into::into),
                     }
                 )?;
                 args.room.remote.print_output(&response)
@@ -4994,6 +5125,20 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                             CliRoomStreamSortField::to_proto,
                         ),
                         sort_direction: args.sort_dir.to_proto(),
+                    }
+                )?;
+                args.room.remote.print_output(&response)
+            }
+            RoomStreamSubcommand::Kick(args) => {
+                let session = connect_remote_access(&args.room.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "kick room stream",
+                    kick_room_stream,
+                    management_proto::KickRoomStreamRequest {
+                        room_id: args.room.room_id,
+                        media_id: args.media_id,
+                        reason: args.reason.unwrap_or_default(),
                     }
                 )?;
                 args.room.remote.print_output(&response)
@@ -8450,6 +8595,7 @@ impl_identity_to_human!(
     synctv_proto::admin::GetSystemStatsResponse,
     synctv_proto::admin::ListActiveStreamsResponse,
     synctv_proto::admin::KickStreamResponse,
+    synctv_proto::client::KickRoomStreamResponse,
     synctv_proto::admin::BatchBanUsersResponse,
     synctv_proto::admin::BatchDeleteUsersResponse,
     synctv_proto::admin::BatchBanRoomsResponse,
@@ -8584,47 +8730,13 @@ fn humanize_room_member_role(raw: i64) -> Option<String> {
 }
 
 fn humanize_permission_bits(bits: u64) -> Vec<String> {
-    [
-        (PermissionBits::SEND_CHAT, "send_chat"),
-        (
-            PermissionBits::CREATE_MEDIA_RESOURCE,
-            "create_media_resource",
-        ),
-        (
-            PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
-            "delete_media_resource_any",
-        ),
-        (
-            PermissionBits::REORDER_MEDIA_RESOURCES,
-            "reorder_media_resources",
-        ),
-        (
-            PermissionBits::CLEAR_MEDIA_RESOURCES,
-            "clear_media_resources",
-        ),
-        (PermissionBits::START_LIVE, "start_live"),
-        (PermissionBits::PLAY_CONTROL, "play_control"),
-        (PermissionBits::CHANGE_CURRENT_MEDIA, "change_current_media"),
-        (PermissionBits::CHANGE_PLAYBACK_RATE, "change_playback_rate"),
-        (PermissionBits::APPROVE_MEMBER, "approve_member"),
-        (PermissionBits::KICK_MEMBER, "kick_member"),
-        (
-            PermissionBits::SET_MEMBER_PERMISSIONS,
-            "set_member_permissions",
-        ),
-        (PermissionBits::ADD_MEMBER, "add_member"),
-        (PermissionBits::SET_ROOM_SETTINGS, "set_room_settings"),
-        (PermissionBits::DELETE_CHAT, "delete_chat"),
-        (PermissionBits::DELETE_ROOM, "delete_room"),
-        (PermissionBits::VIEW_MEDIA_RESOURCES, "view_media_resources"),
-        (PermissionBits::VIEW_MEMBER_LIST, "view_member_list"),
-        (PermissionBits::VIEW_CHAT_HISTORY, "view_chat_history"),
-        (PermissionBits::USE_WEBRTC, "use_webrtc"),
-    ]
-    .into_iter()
-    .filter(|&(permission, _)| bits & permission != 0)
-    .map(|(_, name)| name.to_string())
-    .collect()
+    CLI_NAMED_PERMISSIONS
+        .iter()
+        .copied()
+        .map(|(name, permission)| (permission, name))
+        .filter(|&(permission, _)| bits & permission != 0)
+        .map(|(_, name)| name.to_string())
+        .collect()
 }
 
 fn humanize_provider_instance_status(raw: i64) -> Option<String> {
@@ -9404,7 +9516,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_room_stream_help_exposes_room_scoped_stream_listing_only() {
+    fn cli_room_stream_help_exposes_room_scoped_stream_management_only() {
         let mut command = Cli::command();
         let room = command
             .find_subcommand_mut("room")
@@ -9421,6 +9533,10 @@ mod tests {
         assert!(
             stream_help.contains("list"),
             "room stream help should show the room-scoped list command: {stream_help}"
+        );
+        assert!(
+            stream_help.contains("kick"),
+            "room stream help should show the room-scoped kick command: {stream_help}"
         );
         assert!(
             !stream_help.contains("publish-key") && !stream_help.contains("get"),
@@ -12339,7 +12455,45 @@ mod tests {
                 assert_eq!(args.user.username.as_deref(), Some("alice"));
                 assert_eq!(args.user.user_id, None);
                 assert_eq!(args.role, Some(CliRoomMemberRole::Admin));
-                assert_eq!(args.admin_added_permissions, Some(7));
+                assert_eq!(
+                    args.admin_added_permissions,
+                    Some(PermissionOverrideBits(7))
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_member_permission_names() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "member",
+            "set-permissions",
+            "--room-id",
+            "room-1",
+            "alice",
+            "--added-permissions",
+            "play_control,kick-member",
+            "--removed-permissions",
+            r#"["send_chat"]"#,
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Member(RoomMemberCommand {
+                        command: RoomMemberSubcommand::SetPermissions(args),
+                    }),
+            }) => {
+                assert_eq!(
+                    args.added_permissions.map(u64::from),
+                    Some(PermissionBits::PLAY_CONTROL | PermissionBits::KICK_MEMBER)
+                );
+                assert_eq!(
+                    args.removed_permissions.map(u64::from),
+                    Some(PermissionBits::SEND_CHAT)
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12909,6 +13063,36 @@ mod tests {
             result.is_ok(),
             "room stream list should accept pagination, search, and sort flags"
         );
+    }
+
+    #[test]
+    fn cli_parses_room_stream_kick_subcommand() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "stream",
+            "kick",
+            "--room-id",
+            "room-1",
+            "--media-id",
+            "media-1",
+            "--reason",
+            "moderation",
+        ]);
+
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Stream(RoomStreamCommand {
+                        command: RoomStreamSubcommand::Kick(args),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.media_id, "media-1");
+                assert_eq!(args.reason.as_deref(), Some("moderation"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
     }
 
     #[test]

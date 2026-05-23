@@ -361,8 +361,8 @@ mod tests {
         GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
         GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
         GetSystemStatsRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
-        KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-        ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
+        KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
+        ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
         ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
         ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
         MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
@@ -819,6 +819,12 @@ mod tests {
             &self,
             _: Request<ListRoomStreamsRequest>,
         ) -> std::result::Result<Response<client_proto::ListRoomStreamsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn kick_room_stream(
+            &self,
+            _: Request<KickRoomStreamRequest>,
+        ) -> std::result::Result<Response<client_proto::KickRoomStreamResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn list_playlists(

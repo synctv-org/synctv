@@ -89,7 +89,7 @@ Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前
     **重点**：
 
     - RTMP 是推流入口，不是普通点播 Provider。
-    - 房间成员需要 `start_live` 权限才能开始直播。
+    - 房间成员需要 `live_control` 权限才能管理直播和创建推流 key。
     - 多副本下必须明确 HLS backend：本地 publisher-node proxy、`shared_file` 或 OSS。
     - 直播路径比点播更依赖端口、存储和长连接 drain。
 

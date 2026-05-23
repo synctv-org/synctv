@@ -73,6 +73,8 @@ service RoomService {
     // Member Management (room-scoped operations)
     rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
+    rpc GetRoomStreamInfo(GetRoomStreamInfoRequest) returns (GetRoomStreamInfoResponse);
+    rpc KickRoomStream(KickRoomStreamRequest) returns (KickRoomStreamResponse);
     rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
     rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
     rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
@@ -1023,6 +1025,35 @@ message ListRoomStreamsResponse {
     repeated StreamEntry streams = 1;
     int32 total = 2;
 }
+
+message GetRoomStreamInfoRequest {
+    string media_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^med_[A-Za-z0-9]+$"
+    }];
+}
+
+message RoomStreamPublisherInfo {
+    string user_id = 1;
+    int64 started_at = 2;
+}
+
+message GetRoomStreamInfoResponse {
+    bool active = 1;
+    RoomStreamPublisherInfo publisher = 2;
+}
+
+message KickRoomStreamRequest {
+    string media_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^med_[A-Za-z0-9]+$"
+    }];
+    string reason = 2;
+}
+
+message KickRoomStreamResponse {}
 
 message AddMemberRequest {
     string user_id = 1 [(buf.validate.field).string = {

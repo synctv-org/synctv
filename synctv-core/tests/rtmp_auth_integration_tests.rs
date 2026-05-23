@@ -191,7 +191,7 @@ async fn rtmp_auth_test_publish_key_generation_and_validation() {
     assert_eq!(claims.room_id, room.id.to_string());
     assert_eq!(claims.media_id, media_id.to_string());
     assert_eq!(claims.user_id, user.id.to_string());
-    assert!(claims.perm_start_live);
+    assert!(claims.perm_live_control);
 }
 
 // Test 2: Expired tokens are rejected

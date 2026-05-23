@@ -636,6 +636,19 @@ struct ValidatedPublish {
     auth_level: &'static str,
 }
 
+fn media_creator_publish_authorized(
+    is_global_admin: bool,
+    is_room_admin_or_creator: bool,
+    is_room_member: bool,
+    media_creator_id: Option<&UserId>,
+    user_id: &UserId,
+) -> bool {
+    !is_global_admin
+        && !is_room_admin_or_creator
+        && is_room_member
+        && media_creator_id == Some(user_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoomAccessRejection {
     Banned,
@@ -750,21 +763,26 @@ impl SyncTvRtmpAuth {
     ) -> Result<&'static str, Box<dyn std::error::Error + Send + Sync>> {
         let is_global_admin = user.role.is_admin_or_above();
 
-        let is_room_admin_or_creator = if is_global_admin {
-            false
+        let room_member = if is_global_admin {
+            None
         } else {
-            match self
-                .room_service
+            self.room_service
                 .member_service()
                 .get_member(room_id, user_id)
                 .await
-            {
-                Ok(Some(member)) => matches!(
+                .ok()
+                .flatten()
+        };
+
+        let is_room_admin_or_creator = if is_global_admin {
+            false
+        } else {
+            room_member.as_ref().is_some_and(|member| {
+                matches!(
                     member.role,
                     synctv_core::models::RoomRole::Creator | synctv_core::models::RoomRole::Admin
-                ),
-                _ => false,
-            }
+                )
+            })
         };
 
         // Verify media belongs to this room
@@ -784,7 +802,20 @@ impl SyncTvRtmpAuth {
         }
 
         let is_media_creator = if !is_global_admin && !is_room_admin_or_creator {
-            media.creator_id.as_ref() == Some(user_id)
+            if room_member.is_none() {
+                return Err(format!(
+                    "Insufficient permissions to publish: user {} is not a member of room {}",
+                    claims.user_id, room_id
+                )
+                .into());
+            }
+            media_creator_publish_authorized(
+                is_global_admin,
+                is_room_admin_or_creator,
+                room_member.is_some(),
+                media.creator_id.as_ref(),
+                user_id,
+            )
         } else {
             false
         };
@@ -1573,6 +1604,26 @@ mod tests {
             user_id: user_id.parse().expect("numeric test user id"),
             auth_level: "test",
         }
+    }
+
+    #[test]
+    fn test_media_creator_publish_authorization_requires_room_membership() {
+        let user_id = UserId::expect_positive(301);
+
+        assert!(!media_creator_publish_authorized(
+            false,
+            false,
+            false,
+            Some(&user_id),
+            &user_id
+        ));
+        assert!(media_creator_publish_authorized(
+            false,
+            false,
+            true,
+            Some(&user_id),
+            &user_id
+        ));
     }
 
     fn make_test_auth_with_registry(registry: Arc<dyn StreamRegistryTrait>) -> SyncTvRtmpAuth {

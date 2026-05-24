@@ -258,6 +258,14 @@ These variables are read by the `media-provider-server` binary, not by the main 
 | `PROVIDER_LISTEN_ADDR` | Provider gRPC listen address, default `[::]:50051` |
 | `PROVIDER_GRPC_COMPRESSION_ENABLED` | Allow provider server gzip compression negotiation, default `true` |
 
+## CLI-Only Variables
+
+These variables are read by the `synctv` management CLI and are not service static-configuration fields. `config validate --strict` does not report them as unsupported `SYNCTV_` configuration variables.
+
+| Environment variable | Meaning |
+| --- | --- |
+| `SYNCTV_MANAGEMENT_ENDPOINT` | Management endpoint used by CLI commands, for example `unix:///var/lib/synctv/run/synctv.sock` or `http://127.0.0.1:50052` |
+
 ## Continue Reading
 
 - [How Configuration Works](../../configuration/how-configuration-works/)

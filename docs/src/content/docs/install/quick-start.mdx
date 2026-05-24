@@ -8,6 +8,7 @@ import {
   composeDeploymentDocsUrl,
   composeInitScriptUrl,
   composePostgresEnvExampleUrl,
+  composeRedisEnvExampleUrl,
   composeSynctvEnvExampleUrl,
   dockerComposeFileUrl,
 } from '../../../lib/project';
@@ -18,7 +19,7 @@ import {
 
 - Docker 和 Docker Compose 可用。
 - `openssl` 和 `python3` 可用于生成环境文件。
-- 当前目录可以长期保存 Compose 文件、`.env.postgres`、`.env.synctv` 和数据卷。
+- 当前目录可以长期保存 Compose 文件、`.env.postgres`、`.env.redis`、`.env.synctv` 和数据卷。
 - 已准备 root 用户密码。生产环境使用密码管理器生成。
 
 ## 启动
@@ -32,6 +33,7 @@ import {
        'cd synctv-compose',
        `curl -fsSLO ${dockerComposeFileUrl}`,
        `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+       `curl -fsSLO ${composeRedisEnvExampleUrl}`,
        `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
        'mkdir -p scripts',
        `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
@@ -40,7 +42,7 @@ import {
      lang="bash"
    />
 
-2. 生成 `.env.postgres` 和 `.env.synctv`：
+2. 生成 `.env.postgres`、`.env.redis` 和 `.env.synctv`：
 
    ```bash
    ./scripts/init-compose-env.sh
@@ -97,7 +99,7 @@ http://localhost:8080
 
 | 现象 | 处理 |
 | --- | --- |
-| `docker compose config` 提示变量缺失 | 确认已运行 `./scripts/init-compose-env.sh`，并在当前目录保留 `.env.postgres` 和 `.env.synctv`。 |
+| `docker compose config` 提示变量缺失 | 确认已运行 `./scripts/init-compose-env.sh`，并在当前目录保留 `.env.postgres`、`.env.redis` 和 `.env.synctv`。 |
 | `/health/ready` 失败 | 运行 `docker compose logs -f synctv`，先看第一条启动错误。 |
 | 浏览器跨域错误 | 在 `.env.synctv` 中设置 `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS`，只填写 origin。 |
 | root 用户无法登录 | 确认数据库首次启动时已设置 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，并查看启动日志中的 bootstrap 结果。 |

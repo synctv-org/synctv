@@ -7,6 +7,7 @@ import { Aside, Code, Steps } from '@astrojs/starlight/components';
 import {
   composeInitScriptUrl,
   composePostgresEnvExampleUrl,
+  composeRedisEnvExampleUrl,
   composeSynctvEnvExampleUrl,
   dockerComposeFileUrl,
   englishComposeDeploymentDocsUrl,
@@ -18,7 +19,7 @@ This path is for single-node production: one SyncTV process, one PostgreSQL inst
 
 - Docker and Docker Compose are available.
 - `openssl` and `python3` are available for the env initializer.
-- The current directory can permanently store Compose files, `.env.postgres`, `.env.synctv`, and volumes.
+- The current directory can permanently store Compose files, `.env.postgres`, `.env.redis`, `.env.synctv`, and volumes.
 - You have an initial root password. Use a password manager in production.
 
 ## Start
@@ -32,6 +33,7 @@ This path is for single-node production: one SyncTV process, one PostgreSQL inst
        'cd synctv-compose',
        `curl -fsSLO ${dockerComposeFileUrl}`,
        `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+       `curl -fsSLO ${composeRedisEnvExampleUrl}`,
        `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
        'mkdir -p scripts',
        `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
@@ -40,7 +42,7 @@ This path is for single-node production: one SyncTV process, one PostgreSQL inst
      lang="bash"
    />
 
-2. Generate `.env.postgres` and `.env.synctv`:
+2. Generate `.env.postgres`, `.env.redis`, and `.env.synctv`:
 
    ```bash
    ./scripts/init-compose-env.sh
@@ -97,7 +99,7 @@ Do not delete or regenerate the long-lived secrets in `.env.synctv`. Changing `S
 
 | Symptom | Action |
 | --- | --- |
-| `docker compose config` reports missing variables | Run `./scripts/init-compose-env.sh` and keep `.env.postgres` and `.env.synctv` in the current directory. |
+| `docker compose config` reports missing variables | Run `./scripts/init-compose-env.sh` and keep `.env.postgres`, `.env.redis`, and `.env.synctv` in the current directory. |
 | `/health/ready` fails | Run `docker compose logs -f synctv` and inspect the first startup error. |
 | Browser CORS errors | Set `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS` in `.env.synctv`; use origins only. |
 | Root user cannot log in | Confirm `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` was set before first database startup and inspect bootstrap logs. |

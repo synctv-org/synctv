@@ -21,7 +21,7 @@ Production configuration should pin only the values you own: secrets, database, 
 <Tabs syncKey="config-example">
   <TabItem label="Compose env" icon="seti:docker">
 
-[Quick Start](../../install/quick-start/) production Compose uses `.env.postgres` and `.env.synctv`. Confirm at least:
+[Quick Start](../../install/quick-start/) production Compose uses `.env.postgres`, `.env.redis`, and `.env.synctv`. Confirm at least:
 
 ```dotenv
 # .env.synctv
@@ -52,7 +52,7 @@ Use the YAML templates below for bare-metal, Kubernetes, or custom secret files.
 Use `_file` keys for secrets whenever possible.
 
 <Aside type="note">
-Production Compose users should maintain `.env.postgres` and `.env.synctv`; do not maintain a second copy of YAML secrets.
+Production Compose users should maintain `.env.postgres`, `.env.redis`, and `.env.synctv`; do not maintain a second copy of YAML secrets.
 </Aside>
 
 ```yaml

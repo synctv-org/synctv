@@ -49,7 +49,7 @@ Start with the first error. Later errors are often cascading failures.
 | `jwt.secret` is a placeholder or too weak | Production still uses an example secret | Generate a strong secret and inject it through secret/env |
 | `opaque_server_setup_secret` is empty or invalid | OPAQUE long-lived secret is missing | Generate and preserve `security.opaque_server_setup_secret` |
 | `credential_encryption_key` has invalid format | Not 64 hex characters | Generate it with `openssl rand -hex 32` |
-| `required variable ... is missing` | Production Compose is missing `.env.postgres` or `.env.synctv` | Run `./scripts/init-compose-env.sh` |
+| `required variable ... is missing` | Production Compose is missing `.env.postgres`, `.env.redis`, or `.env.synctv` | Run `./scripts/init-compose-env.sh` |
 | `/health/ready` is not 200 | Database, Redis, or startup dependency is not ready | Inspect readiness body and first startup log error |
 | Browser CORS error | Origin missing, path used as origin, or proxy blocks OPTIONS | Use real origins only in `server.cors_allowed_origins` |
 | gRPC Ingress fails but HTTP works | Missing separate gRPC Ingress or backend protocol | Set `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` |

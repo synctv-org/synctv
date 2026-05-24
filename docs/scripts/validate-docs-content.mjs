@@ -179,13 +179,16 @@ function validateRuntimeEnvironmentVariables() {
 
   const runtimeEnvVars = new Set(extractRuntimeEnvVars(configSource));
   runtimeEnvVars.add('SYNCTV_CONFIG_PATH');
+  const cliOnlyEnvVars = new Set(extractCliOnlyEnvVars(configSource));
 
   const documentedEnvVars = new Set(
     [...envReference.matchAll(/`(SYNCTV_[A-Z0-9_]+)`/g)].map((match) => match[1])
   );
 
   const undocumented = [...runtimeEnvVars].filter((name) => !documentedEnvVars.has(name)).sort();
-  const stale = [...documentedEnvVars].filter((name) => !runtimeEnvVars.has(name)).sort();
+  const stale = [...documentedEnvVars]
+    .filter((name) => !runtimeEnvVars.has(name) && !cliOnlyEnvVars.has(name))
+    .sort();
 
   if (undocumented.length > 0) {
     errors.push(
@@ -199,6 +202,21 @@ function validateRuntimeEnvironmentVariables() {
   }
 
   return errors;
+}
+
+function extractCliOnlyEnvVars(configSource) {
+  const start = configSource.indexOf('fn is_cli_only_synctv_env_var');
+  if (start < 0) {
+    throw new Error('Could not find is_cli_only_synctv_env_var in synctv-core/src/config.rs');
+  }
+
+  const end = configSource.indexOf('/// Connection limits configuration', start);
+  if (end < 0) {
+    throw new Error('Could not find end of is_cli_only_synctv_env_var in synctv-core/src/config.rs');
+  }
+
+  const section = configSource.slice(start, end);
+  return [...new Set([...section.matchAll(/"(SYNCTV_[A-Z0-9_]+)"/g)].map((match) => match[1]))];
 }
 
 function extractRuntimeEnvVars(configSource) {

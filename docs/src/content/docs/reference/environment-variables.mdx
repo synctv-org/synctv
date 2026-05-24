@@ -311,3 +311,11 @@ description: 常用 SYNCTV_ 环境变量速查。
 | `SYNCTV_GRPC_RATE_LIMITS_READ_WINDOW_SECONDS` | `grpc_rate_limits.read_window_seconds` |
 | `SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS` | `grpc_rate_limits.websocket_max_requests` |
 | `SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS` | `grpc_rate_limits.websocket_window_seconds` |
+
+## CLI 专用变量
+
+这些变量由 `synctv` 管理 CLI 读取，不属于服务端静态配置文件字段。`config validate --strict` 不会把它们当作未知 `SYNCTV_` 配置变量报错。
+
+| 环境变量 | 含义 |
+| --- | --- |
+| `SYNCTV_MANAGEMENT_ENDPOINT` | 管理 CLI 连接的 management endpoint，例如 `unix:///var/lib/synctv/run/synctv.sock` 或 `http://127.0.0.1:50052` |

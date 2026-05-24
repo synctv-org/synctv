@@ -21,7 +21,7 @@ import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 <Tabs syncKey="config-example">
   <TabItem label="Compose env" icon="seti:docker">
 
-[快速开始](../../install/quick-start/) 的生产 Compose 使用 `.env.postgres` 和 `.env.synctv`。最小需要确认：
+[快速开始](../../install/quick-start/) 的生产 Compose 使用 `.env.postgres`、`.env.redis` 和 `.env.synctv`。最小需要确认：
 
 ```dotenv
 # .env.synctv
@@ -52,7 +52,7 @@ curl -fsS http://localhost:8080/health/ready
 这个示例覆盖生产部署的常见必填项。secret 使用 `_file` 形式注入。
 
 <Aside type="note">
-生产 Compose 用户维护 `.env.postgres` 和 `.env.synctv`；不要同时维护第二份 YAML secret。
+生产 Compose 用户维护 `.env.postgres`、`.env.redis` 和 `.env.synctv`；不要同时维护第二份 YAML secret。
 </Aside>
 
 ```yaml

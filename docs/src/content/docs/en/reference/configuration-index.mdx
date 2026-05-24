@@ -40,7 +40,7 @@ curl -fsS http://localhost:8080/health/ready
 
 ## Single-node Production Focus
 
-Production Compose uses `.env.postgres` and `.env.synctv`; it does not require a hand-written full YAML file. Before launch, confirm:
+Production Compose uses `.env.postgres`, `.env.redis`, and `.env.synctv`; it does not require a hand-written full YAML file. Before launch, confirm:
 
 | Goal | Compose/env focus | Config field |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ Production Compose uses `.env.postgres` and `.env.synctv`; it does not require a
 | Provider credential encryption | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
 | Web frontend CORS | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'` | `server.cors_allowed_origins` |
 | PostgreSQL | `.env.postgres` and Compose volume | `database.*` |
-| Redis | Compose Redis service and key prefix | `redis.*` |
+| Redis | `.env.redis`, Compose Redis service, and key prefix | `redis.*` |
 | Runtime files | Compose `/data` volume | `data_dir` |
 
 Use the field index below for bare-metal, Kubernetes, secret files, or custom YAML.

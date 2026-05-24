@@ -40,7 +40,7 @@ curl -fsS http://localhost:8080/health/ready
 
 ## 单机生产重点字段
 
-生产 Compose 优先维护 `.env.postgres` 和 `.env.synctv`，不需要手写完整 YAML。上线前确认：
+生产 Compose 优先维护 `.env.postgres`、`.env.redis` 和 `.env.synctv`，不需要手写完整 YAML。上线前确认：
 
 | 目标 | Compose/env 重点 | 对应配置字段 |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ curl -fsS http://localhost:8080/health/ready
 | Provider 凭据加密 | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
 | Web 前端跨域 | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'` | `server.cors_allowed_origins` |
 | PostgreSQL | `.env.postgres` 和 Compose 数据卷 | `database.*` |
-| Redis | Compose Redis 服务和 key prefix | `redis.*` |
+| Redis | `.env.redis`、Compose Redis 服务和 key prefix | `redis.*` |
 | 运行时文件 | Compose `/data` volume | `data_dir` |
 
 裸机、Kubernetes、secret file 或自定义配置文件使用下面的字段索引。

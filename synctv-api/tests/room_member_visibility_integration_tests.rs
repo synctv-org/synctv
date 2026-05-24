@@ -7,8 +7,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::RequireApproval, PermissionBits, RoomRole, RoomSettings, SignupMethod, User,
-        UserId, UserRole, UserStatus,
+        room_settings::RequireApproval, RoomMemberPermissionBits, RoomRole, RoomSettings,
+        SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::UserRepository,
     service::{
@@ -120,7 +120,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
             room.id,
             owner.id,
             observer.id,
-            PermissionBits::VIEW_MEMBER_LIST,
+            RoomMemberPermissionBits::VIEW_MEMBER_LIST,
         )
         .await
         .unwrap();

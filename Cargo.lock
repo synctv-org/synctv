@@ -6231,6 +6231,7 @@ dependencies = [
  "hostname",
  "hyper",
  "hyper-util",
+ "jsonwebtoken",
  "mimalloc",
  "opaque-ke",
  "parking_lot",

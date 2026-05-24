@@ -9,7 +9,8 @@
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        PermissionBits, Room, RoomId, RoomMember, RoomRole, SignupMethod, User, UserId, UserStatus,
+        Room, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet,
+        RoomRole, SignupMethod, User, UserId, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
     service::permission::PermissionService,
@@ -103,7 +104,8 @@ async fn test_permission_check_with_database_member() {
 
     let user_id = create_test_user(&pool, &UserId::new()).await;
     let mut member = make_member(room.id, user_id, RoomRole::Member);
-    member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE;
+    member.added_permissions =
+        RoomMemberPermissionBits::CHAT | RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE;
     member_repo
         .add(&member)
         .await
@@ -113,17 +115,17 @@ async fn test_permission_check_with_database_member() {
 
     // check_permission_no_cache returns Ok(()) if granted, Err if denied
     perm_service
-        .check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
+        .check_permission_no_cache(&room.id, &user_id, RoomPermission::CHAT)
         .await
-        .expect("User should have SEND_CHAT permission");
+        .expect("User should have CHAT permission");
 
     perm_service
-        .check_permission_no_cache(&room.id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
+        .check_permission_no_cache(&room.id, &user_id, RoomPermission::CREATE_MEDIA_RESOURCE)
         .await
         .expect("User should have CREATE_MEDIA_RESOURCE permission");
 
     let kick_result = perm_service
-        .check_permission_no_cache(&room.id, &user_id, PermissionBits::KICK_MEMBER)
+        .check_permission_no_cache(&room.id, &user_id, RoomPermission::KICK_MEMBER)
         .await;
     assert!(
         kick_result.is_err(),
@@ -163,12 +165,12 @@ async fn test_permission_allow_deny_pattern() {
     let perm_service = make_perm_service(member_repo, room_repo);
 
     perm_service
-        .check_permission_no_cache(&room.id, &admin_id, PermissionBits::KICK_MEMBER)
+        .check_permission_no_cache(&room.id, &admin_id, RoomPermission::KICK_MEMBER)
         .await
         .expect("Admin should be able to kick members");
 
     let guest_chat_result = perm_service
-        .check_permission_no_cache(&room.id, &guest_id, PermissionBits::SEND_CHAT)
+        .check_permission_no_cache(&room.id, &guest_id, RoomPermission::CHAT)
         .await;
     assert!(
         guest_chat_result.is_err(),
@@ -205,7 +207,7 @@ async fn test_permission_removed_member_denied() {
     let perm_service = make_perm_service(member_repo, room_repo);
 
     let result = perm_service
-        .check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
+        .check_permission_no_cache(&room.id, &user_id, RoomPermission::CHAT)
         .await;
     assert!(
         result.is_err(),
@@ -232,7 +234,7 @@ async fn test_permission_non_member_denied() {
 
     let non_member_id = UserId::new();
     let result = perm_service
-        .check_permission_no_cache(&room.id, &non_member_id, PermissionBits::SEND_CHAT)
+        .check_permission_no_cache(&room.id, &non_member_id, RoomPermission::CHAT)
         .await;
     assert!(result.is_err(), "Non-member should not have permissions");
 }
@@ -240,23 +242,23 @@ async fn test_permission_non_member_denied() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_permission_bit_operations() {
-    let mut perms = PermissionBits(0);
+    let mut perms = RoomPermissionSet(0);
 
-    perms.grant(PermissionBits::SEND_CHAT);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
+    perms.grant(RoomPermission::CHAT);
+    assert!(perms.has(RoomPermission::CHAT));
 
-    perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    perms.grant(RoomPermission::CREATE_MEDIA_RESOURCE);
+    assert!(perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 
-    perms.revoke(PermissionBits::SEND_CHAT);
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    perms.revoke(RoomPermission::CHAT);
+    assert!(!perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 
-    perms = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::KICK_MEMBER));
-    assert!(perms.has(PermissionBits::SET_ROOM_SETTINGS));
+    perms = RoomPermissionSet::default_admin();
+    assert!(perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::KICK_MEMBER));
+    assert!(perms.has(RoomPermission::SET_ROOM_SETTINGS));
 }
 
 #[tokio::test]
@@ -293,7 +295,7 @@ async fn test_concurrent_permission_checks() {
 
         let handle = tokio::spawn(async move {
             service
-                .check_permission(&room_id, &uid, PermissionBits::SEND_CHAT)
+                .check_permission(&room_id, &uid, RoomPermission::CHAT)
                 .await
                 .expect("Permission check should succeed");
         });

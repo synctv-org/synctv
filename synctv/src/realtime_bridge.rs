@@ -162,12 +162,14 @@ pub fn room_event_to_realtime_event(
             target_username: String::new(),
             changed_by: *updated_by_user_id,
             changed_by_username: updated_by_username.clone(),
-            new_permissions: synctv_core::models::PermissionBits(*effective_permissions),
+            new_permissions: synctv_core::models::RoomPermissionSet(*effective_permissions),
             role: *role,
-            added_permissions: synctv_core::models::PermissionBits(*added_permissions),
-            removed_permissions: synctv_core::models::PermissionBits(*removed_permissions),
-            admin_added_permissions: synctv_core::models::PermissionBits(*admin_added_permissions),
-            admin_removed_permissions: synctv_core::models::PermissionBits(
+            added_permissions: synctv_core::models::RoomPermissionSet(*added_permissions),
+            removed_permissions: synctv_core::models::RoomPermissionSet(*removed_permissions),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet(
+                *admin_added_permissions,
+            ),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet(
                 *admin_removed_permissions,
             ),
             timestamp,

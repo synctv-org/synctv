@@ -4,7 +4,10 @@
 
 mod permission_test_support;
 
-use synctv_core::{models::PermissionBits, repository::UserRepository};
+use synctv_core::{
+    models::{RoomMemberPermissionBits, RoomPermission},
+    repository::UserRepository,
+};
 use synctv_core_testing::create_test_pool;
 
 use permission_test_support::{make_room_service, make_user};
@@ -40,11 +43,16 @@ async fn test_allow_override_role_default() {
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(!perms_before.has(PermissionBits::KICK_MEMBER));
+    assert!(!perms_before.has(RoomPermission::USE_WEBRTC));
 
     room_service
         .member_service()
-        .grant_permission(room.id, creator.id, member.id, PermissionBits::KICK_MEMBER)
+        .grant_permission(
+            room.id,
+            creator.id,
+            member.id,
+            RoomMemberPermissionBits::USE_WEBRTC,
+        )
         .await
         .unwrap();
 
@@ -52,8 +60,8 @@ async fn test_allow_override_role_default() {
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(perms_after.has(PermissionBits::KICK_MEMBER));
-    assert!(perms_after.has(PermissionBits::SEND_CHAT));
+    assert!(perms_after.has(RoomPermission::USE_WEBRTC));
+    assert!(perms_after.has(RoomPermission::CHAT));
 }
 
 #[tokio::test]
@@ -87,11 +95,16 @@ async fn test_deny_override_role_default() {
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(perms_before.has(PermissionBits::SEND_CHAT));
+    assert!(perms_before.has(RoomPermission::CHAT));
 
     room_service
         .member_service()
-        .revoke_permission(room.id, creator.id, member.id, PermissionBits::SEND_CHAT)
+        .revoke_permission(
+            room.id,
+            creator.id,
+            member.id,
+            RoomMemberPermissionBits::CHAT,
+        )
         .await
         .unwrap();
 
@@ -99,6 +112,6 @@ async fn test_deny_override_role_default() {
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(!perms_after.has(PermissionBits::SEND_CHAT));
-    assert!(perms_after.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    assert!(!perms_after.has(RoomPermission::CHAT));
+    assert!(perms_after.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 }

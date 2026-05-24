@@ -7,8 +7,8 @@ mod permission_test_support;
 use synctv_core::{
     cache::{CacheDomain, ConsistencyCoordinator, RedisVersionFenceStore, VersionFenceStore},
     models::{
-        room_settings::MemberRemovedPermissions, PermissionBits, RoomId, RoomMember, RoomRole,
-        UserId,
+        room_settings::MemberRemovedPermissions, RoomId, RoomMember, RoomMemberPermissionBits,
+        RoomPermission, RoomRole, UserId,
     },
     repository::{RoomMemberRepository, RoomSettingsRepository, UserRepository},
     service::room::RoomServiceOptions,
@@ -120,13 +120,19 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
         .get_user_permissions_strong(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(initial.has_all(PermissionBits::SEND_CHAT));
+    assert!(initial.has(RoomPermission::CHAT));
 
     let updated = room_service
-        .set_member_permission(room.id, creator.id, member.id, 0, PermissionBits::SEND_CHAT)
+        .set_member_permission(
+            room.id,
+            creator.id,
+            member.id,
+            0,
+            RoomMemberPermissionBits::CHAT,
+        )
         .await
         .unwrap();
-    assert_eq!(updated.removed_permissions, PermissionBits::SEND_CHAT);
+    assert_eq!(updated.removed_permissions, RoomMemberPermissionBits::CHAT);
 
     let fence_version = fence
         .current_version(&CacheDomain::Permission {
@@ -143,7 +149,7 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
         .await
         .unwrap();
     assert!(
-        !strong.has_all(PermissionBits::SEND_CHAT),
+        !strong.has(RoomPermission::CHAT),
         "strong permission read must reject stale L1 after fence bump"
     );
 }
@@ -197,10 +203,10 @@ async fn test_strong_permission_read_rejects_stale_l1_after_room_settings_fence_
         .get_user_permissions_strong(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(initial.has_all(PermissionBits::SEND_CHAT));
+    assert!(initial.has(RoomPermission::CHAT));
 
     let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
-    settings.member_removed_permissions = MemberRemovedPermissions(PermissionBits::SEND_CHAT);
+    settings.member_removed_permissions = MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
     room_service
         .set_room_settings(&room.id, &settings)
         .await
@@ -218,7 +224,7 @@ async fn test_strong_permission_read_rejects_stale_l1_after_room_settings_fence_
         .await
         .unwrap();
     assert!(
-        !strong.has_all(PermissionBits::SEND_CHAT),
+        !strong.has(RoomPermission::CHAT),
         "strong permission read must reject stale L1 after room settings fence bump"
     );
 }
@@ -306,14 +312,14 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
         .expect("eventual permission read should populate L1");
-    assert!(cached.has_all(PermissionBits::SEND_CHAT));
+    assert!(cached.has(RoomPermission::CHAT));
 
     member_repo
         .update_permissions(
             &room.id,
             &member.id,
             0,
-            PermissionBits::SEND_CHAT,
+            RoomMemberPermissionBits::CHAT,
             member_row.version,
         )
         .await
@@ -324,7 +330,7 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
         .await
         .expect("strong read should be able to trust the freshly populated L1 entry");
     assert!(
-        strong.has_all(PermissionBits::SEND_CHAT),
+        strong.has(RoomPermission::CHAT),
         "eventual cache population must store the room settings version so strong reads can trust the entry"
     );
 }
@@ -378,7 +384,7 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
         .expect("eventual permission read should populate L1 before Redis fences exist");
-    assert!(cached.has_all(PermissionBits::SEND_CHAT));
+    assert!(cached.has(RoomPermission::CHAT));
     assert_eq!(
         fence
             .current_version(&CacheDomain::Permission {
@@ -398,7 +404,13 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
     );
 
     room_service
-        .set_member_permission(room.id, creator.id, member.id, 0, PermissionBits::SEND_CHAT)
+        .set_member_permission(
+            room.id,
+            creator.id,
+            member.id,
+            0,
+            RoomMemberPermissionBits::CHAT,
+        )
         .await
         .unwrap();
     let permission_domain = CacheDomain::Permission {
@@ -423,7 +435,7 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
         .await
         .expect("strong permission read should fall back to DB when fences are missing");
     assert!(
-        !strong.has_all(PermissionBits::SEND_CHAT),
+        !strong.has(RoomPermission::CHAT),
         "missing authoritative fences must not allow stale L1 authorization data"
     );
 
@@ -476,9 +488,9 @@ async fn test_check_permissions_batch_all_present() {
             &room.id,
             &creator.id,
             &[
-                PermissionBits::SEND_CHAT,
-                PermissionBits::CREATE_MEDIA_RESOURCE,
-                PermissionBits::DELETE_ROOM,
+                RoomPermission::CHAT,
+                RoomPermission::CREATE_MEDIA_RESOURCE,
+                RoomPermission::SET_ROOM_SETTINGS,
             ],
         )
         .await;
@@ -523,7 +535,7 @@ async fn test_check_permissions_batch_one_missing_fails() {
         .check_permissions(
             &room.id,
             &member.id,
-            &[PermissionBits::SEND_CHAT, PermissionBits::DELETE_ROOM],
+            &[RoomPermission::CHAT, RoomPermission::SET_ROOM_SETTINGS],
         )
         .await;
 
@@ -578,10 +590,10 @@ async fn test_check_permissions_batch_rejects_stale_l1_after_room_settings_fence
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
         .expect("eventual permission read should populate stale L1 fixture");
-    assert!(cached.has_all(PermissionBits::SEND_CHAT));
+    assert!(cached.has(RoomPermission::CHAT));
 
     let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
-    settings.member_removed_permissions = MemberRemovedPermissions(PermissionBits::SEND_CHAT);
+    settings.member_removed_permissions = MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
     room_service
         .set_room_settings(&room.id, &settings)
         .await
@@ -592,7 +604,7 @@ async fn test_check_permissions_batch_rejects_stale_l1_after_room_settings_fence
         .unwrap();
 
     let result = perm_service
-        .check_permissions(&room.id, &member.id, &[PermissionBits::SEND_CHAT])
+        .check_permissions(&room.id, &member.id, &[RoomPermission::CHAT])
         .await;
 
     assert!(
@@ -716,7 +728,7 @@ async fn test_check_permission_bypasses_stale_l1_after_membership_removed() {
         .unwrap();
 
     let result = perm_service
-        .check_permission(&room.id, &member.id, PermissionBits::SEND_CHAT)
+        .check_permission(&room.id, &member.id, RoomPermission::CHAT)
         .await;
 
     assert!(

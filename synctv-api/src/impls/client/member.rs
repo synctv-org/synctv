@@ -3,7 +3,7 @@
 use crate::impls::ApiError;
 use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
-use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, UserId};
+use synctv_core::models::{ReviewRequestId, ReviewStatus, UserId};
 use synctv_core::service::{RoomJoinReviewListQuery, RoomJoinReviewRecord};
 
 use super::convert::{
@@ -104,7 +104,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if permissions.has(PermissionBits::APPROVE_MEMBER) {
+        if permissions.has(synctv_core::models::RoomPermission::APPROVE_MEMBER) {
             Ok(())
         } else {
             Err(ApiError::Authorization(
@@ -202,7 +202,7 @@ impl ClientApiImpl {
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_MEMBER_LIST)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEMBER_LIST)
             .await?;
         let rid = actor.room_id();
 

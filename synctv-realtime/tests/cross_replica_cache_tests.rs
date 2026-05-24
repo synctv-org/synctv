@@ -174,17 +174,17 @@ async fn test_cross_replica_permission_changed() {
             room_id,
             target_user_id: UserId::expect_positive(10_000_038),
             target_username: "target_user".to_string(),
-            new_permissions: synctv_core::models::PermissionBits(
-                synctv_core::models::PermissionBits::DEFAULT_MEMBER
-                    | synctv_core::models::PermissionBits::KICK_MEMBER,
+            new_permissions: synctv_core::models::RoomPermissionSet(
+                synctv_core::models::RoomPermissionSet::default_member().0
+                    | synctv_core::models::RoomAdminPermissionBits::KICK_MEMBER,
             ),
             role: 3,
-            added_permissions: synctv_core::models::PermissionBits(
-                synctv_core::models::PermissionBits::KICK_MEMBER,
+            added_permissions: synctv_core::models::RoomPermissionSet(
+                synctv_core::models::RoomAdminPermissionBits::KICK_MEMBER,
             ),
-            removed_permissions: synctv_core::models::PermissionBits::empty(),
-            admin_added_permissions: synctv_core::models::PermissionBits::empty(),
-            admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
+            removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet::empty(),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
             changed_by: UserId::expect_positive(10_000_039),
             changed_by_username: "admin_user".to_string(),
             timestamp: Utc::now(),
@@ -204,7 +204,7 @@ async fn test_cross_replica_permission_changed() {
     {
         assert_eq!(*target_user_id, UserId::expect_positive(10_000_038));
         assert!(
-            new_permissions.has(synctv_core::models::PermissionBits::KICK_MEMBER),
+            new_permissions.has(synctv_core::models::RoomPermission::KICK_MEMBER),
             "New permissions should include KICK_MEMBER"
         );
         assert_eq!(changed_by_username, "admin_user");

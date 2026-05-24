@@ -7,8 +7,8 @@ use crate::{
     cache::CacheInvalidationRuntime,
     models::{
         AddMemberOptions, AuditAction, AuditTargetType, MemberStatus, MyRoomListQuery, PageParams,
-        PermissionBits, Room, RoomId, RoomMember, RoomMemberWithUser, RoomRole, RoomSettings,
-        UserId,
+        Room, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId, RoomMember,
+        RoomMemberPermissionBits, RoomMemberWithUser, RoomRole, RoomSettings, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::audit::AuditService,
@@ -59,14 +59,43 @@ impl MemberService {
         matches!(role, RoomRole::Admin)
     }
 
-    fn validate_assignable_permissions(permissions: u64) -> Result<()> {
-        if PermissionBits::includes_only_assignable_in_room(permissions) {
+    fn validate_permission_bits_for_role(role: RoomRole, permissions: u64) -> Result<()> {
+        match role {
+            RoomRole::Creator | RoomRole::Admin => {
+                Self::validate_admin_permission_bits(permissions)
+            }
+            RoomRole::Member => Self::validate_member_permission_bits(permissions),
+            RoomRole::Guest => Self::validate_guest_permission_bits(permissions),
+        }
+    }
+
+    fn validate_member_permission_bits(permissions: u64) -> Result<()> {
+        if RoomMemberPermissionBits::includes_only_defined(permissions) {
             return Ok(());
         }
 
         Err(Error::InvalidInput(
-            "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
-                .to_string(),
+            "Permission set includes bits outside the member permission bitspace".to_string(),
+        ))
+    }
+
+    fn validate_guest_permission_bits(permissions: u64) -> Result<()> {
+        if RoomGuestPermissionBits::includes_only_defined(permissions) {
+            return Ok(());
+        }
+
+        Err(Error::InvalidInput(
+            "Permission set includes bits outside the guest permission bitspace".to_string(),
+        ))
+    }
+
+    fn validate_admin_permission_bits(permissions: u64) -> Result<()> {
+        if RoomAdminPermissionBits::includes_only_defined(permissions) {
+            return Ok(());
+        }
+
+        Err(Error::InvalidInput(
+            "Permission set includes bits outside the admin permission bitspace".to_string(),
         ))
     }
 
@@ -410,16 +439,13 @@ impl MemberService {
         added_permissions: u64,
         removed_permissions: u64,
     ) -> Result<RoomMember> {
-        Self::validate_assignable_permissions(added_permissions)?;
-        Self::validate_assignable_permissions(removed_permissions)?;
-
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                PermissionBits::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
 
@@ -435,6 +461,8 @@ impl MemberService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
+                Self::validate_permission_bits_for_role(member.role, added_permissions)?;
+                Self::validate_permission_bits_for_role(member.role, removed_permissions)?;
                 self.apply_permission_write(
                     &room_id,
                     &target_user_id,
@@ -535,10 +563,8 @@ impl MemberService {
             admin_added_permissions,
             admin_removed_permissions,
         } = update;
-        Self::validate_assignable_permissions(added_permissions)?;
-        Self::validate_assignable_permissions(removed_permissions)?;
-        Self::validate_assignable_permissions(admin_added_permissions)?;
-        Self::validate_assignable_permissions(admin_removed_permissions)?;
+        Self::validate_admin_permission_bits(admin_added_permissions)?;
+        Self::validate_admin_permission_bits(admin_removed_permissions)?;
 
         let has_permission_changes = added_permissions > 0
             || removed_permissions > 0
@@ -553,6 +579,8 @@ impl MemberService {
 
         let effective_role = role.unwrap_or(target_member.role);
         let effective_is_admin = matches!(effective_role, RoomRole::Admin);
+        Self::validate_permission_bits_for_role(effective_role, added_permissions)?;
+        Self::validate_permission_bits_for_role(effective_role, removed_permissions)?;
 
         if has_permission_changes {
             if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
@@ -778,15 +806,13 @@ impl MemberService {
         target_user_id: UserId,
         permission: u64,
     ) -> Result<RoomMember> {
-        Self::validate_assignable_permissions(permission)?;
-
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                PermissionBits::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
 
@@ -799,6 +825,7 @@ impl MemberService {
                 let target_member = target_member.ok_or_else(|| {
                     Error::NotFound("User is not a member of this room".to_string())
                 })?;
+                Self::validate_permission_bits_for_role(target_member.role, permission)?;
                 // Atomic grant in SQL against the override layer used by the target role.
                 self.apply_permission_write(
                     &room_id,
@@ -887,15 +914,13 @@ impl MemberService {
         target_user_id: UserId,
         permission: u64,
     ) -> Result<RoomMember> {
-        Self::validate_assignable_permissions(permission)?;
-
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                PermissionBits::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
 
@@ -908,6 +933,7 @@ impl MemberService {
                 let target_member = target_member.ok_or_else(|| {
                     Error::NotFound("User is not a member of this room".to_string())
                 })?;
+                Self::validate_permission_bits_for_role(target_member.role, permission)?;
                 // Atomic revoke in SQL against the override layer used by the target role.
                 self.apply_permission_write(
                     &room_id,
@@ -1001,7 +1027,7 @@ impl MemberService {
             .check_permission_no_cache(
                 &room_id,
                 &granter_id,
-                PermissionBits::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
 
@@ -1276,7 +1302,11 @@ impl MemberService {
     ) -> Result<Vec<RoomMemberWithUser>> {
         // Check admin permission without cache - security-critical operation
         self.permission_service
-            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::KICK_MEMBER)
+            .check_permission_no_cache(
+                &room_id.clone(),
+                &admin_id,
+                crate::models::RoomPermission::KICK_MEMBER,
+            )
             .await?;
 
         // Get all current member rows.

@@ -2,8 +2,7 @@
 
 use serde_json::Value as JsonValue;
 use synctv_core::models::{
-    PermissionBits, PlaylistListSortBy as CorePlaylistListSortBy,
-    SortDirection as CoreSortDirection, UserId,
+    PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection, UserId,
 };
 use synctv_core::service::playlist::{
     CreatePlaylistRequest as CoreCreatePlaylistRequest,
@@ -160,7 +159,11 @@ impl ClientApiImpl {
         // Playlists/folders and media are both media resources; creating either
         // requires the shared resource creation permission.
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::CREATE_MEDIA_RESOURCE)
+            .check_permission(
+                &rid,
+                &uid,
+                synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            )
             .await
             .map_err(Self::map_room_access_error)?;
         let service_req = build_create_playlist_request(&rid, req, &self.public_id_codec)?;
@@ -280,7 +283,11 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
 
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::REORDER_MEDIA_RESOURCES)
+            .check_permission(
+                &rid,
+                &uid,
+                synctv_core::models::RoomPermission::REORDER_MEDIA_RESOURCES,
+            )
             .await
             .map_err(Self::map_room_access_error)?;
         let service_req = build_move_playlist_request(req, &self.public_id_codec)?;
@@ -378,8 +385,11 @@ impl ClientApiImpl {
         actor: &RoomActor,
         playlist_id: &str,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
-            .await?;
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+        )
+        .await?;
         let rid = actor.room_id();
         let pid = crate::impls::parse_playlist_id_param(
             playlist_id,
@@ -459,8 +469,11 @@ impl ClientApiImpl {
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
-            .await?;
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+        )
+        .await?;
         let rid = actor.room_id();
         let page = page_i32_to_usize(req.page.max(1), "page")?;
         let page_size = if req.page_size <= 0 {

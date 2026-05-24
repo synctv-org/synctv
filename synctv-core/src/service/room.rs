@@ -75,8 +75,9 @@ use crate::{
     },
     models::{
         AddMemberOptions, AuditAction, AuditTargetType, ChatMessage, ChatMessageType, Media,
-        MediaId, MemberStatus, PageParams, PermissionBits, Playlist, PlaylistId, ReviewRequestId,
-        ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
+        MediaId, MemberStatus, PageParams, Playlist, PlaylistId, ReviewRequestId, ReviewStatus,
+        Room, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId, RoomListQuery, RoomMember,
+        RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole,
         RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
@@ -163,12 +164,12 @@ pub struct PermissionChangedOutboxSnapshot {
     pub target_username: String,
     pub changed_by: UserId,
     pub changed_by_username: String,
-    pub new_permissions: PermissionBits,
+    pub new_permissions: RoomPermissionSet,
     pub role: i32,
-    pub added_permissions: PermissionBits,
-    pub removed_permissions: PermissionBits,
-    pub admin_added_permissions: PermissionBits,
-    pub admin_removed_permissions: PermissionBits,
+    pub added_permissions: RoomPermissionSet,
+    pub removed_permissions: RoomPermissionSet,
+    pub admin_added_permissions: RoomPermissionSet,
+    pub admin_removed_permissions: RoomPermissionSet,
 }
 
 #[derive(Debug, Clone)]
@@ -437,6 +438,36 @@ impl std::fmt::Debug for RoomService {
 }
 
 impl RoomService {
+    fn validate_override_bits_for_role(
+        role: RoomRole,
+        added_permissions: u64,
+        removed_permissions: u64,
+    ) -> Result<()> {
+        let valid = match role {
+            RoomRole::Creator | RoomRole::Admin => {
+                RoomAdminPermissionBits::includes_only_defined(added_permissions)
+                    && RoomAdminPermissionBits::includes_only_defined(removed_permissions)
+            }
+            RoomRole::Member => {
+                RoomMemberPermissionBits::includes_only_defined(added_permissions)
+                    && RoomMemberPermissionBits::includes_only_defined(removed_permissions)
+            }
+            RoomRole::Guest => {
+                RoomGuestPermissionBits::includes_only_defined(added_permissions)
+                    && RoomGuestPermissionBits::includes_only_defined(removed_permissions)
+            }
+        };
+
+        if valid {
+            Ok(())
+        } else {
+            Err(Error::InvalidInput(
+                "Permission set includes bits outside the target role permission bitspace"
+                    .to_string(),
+            ))
+        }
+    }
+
     async fn load_authorized_admin_actor(
         &self,
         admin_user_id: &UserId,
@@ -1450,19 +1481,19 @@ impl RoomService {
                 self.permission_service
                     .effective_member_permissions(member, &room_settings),
                 i32::from(member.role),
-                PermissionBits(member.added_permissions),
-                PermissionBits(member.removed_permissions),
-                PermissionBits(member.admin_added_permissions),
-                PermissionBits(member.admin_removed_permissions),
+                RoomPermissionSet(member.added_permissions),
+                RoomPermissionSet(member.removed_permissions),
+                RoomPermissionSet(member.admin_added_permissions),
+                RoomPermissionSet(member.admin_removed_permissions),
             )
         } else {
             (
-                PermissionBits::empty(),
+                RoomPermissionSet::empty(),
                 i32::from(RoomRole::Member),
-                PermissionBits::empty(),
-                PermissionBits::empty(),
-                PermissionBits::empty(),
-                PermissionBits::empty(),
+                RoomPermissionSet::empty(),
+                RoomPermissionSet::empty(),
+                RoomPermissionSet::empty(),
+                RoomPermissionSet::empty(),
             )
         };
 
@@ -2765,7 +2796,11 @@ impl RoomService {
         self.ensure_room_creator_is_active_for_access(&room, &actor_id)
             .await?;
         self.permission_service
-            .check_permission_no_cache(&room_id, &actor_id, PermissionBits::ADD_MEMBER)
+            .check_permission_no_cache(
+                &room_id,
+                &actor_id,
+                crate::models::RoomPermission::ADD_MEMBER,
+            )
             .await?;
 
         self.ensure_target_user_can_join(&target_user_id).await?;
@@ -2776,7 +2811,7 @@ impl RoomService {
             &self.permission_service,
             &room_id,
             &actor_id,
-            PermissionBits::ADD_MEMBER,
+            crate::models::RoomPermission::ADD_MEMBER,
         )
         .await?;
         let created = self
@@ -2862,7 +2897,11 @@ impl RoomService {
             .await?;
 
         self.permission_service
-            .check_permission_no_cache(&room_id, &actor_id, PermissionBits::APPROVE_MEMBER)
+            .check_permission_no_cache(
+                &room_id,
+                &actor_id,
+                crate::models::RoomPermission::APPROVE_MEMBER,
+            )
             .await?;
 
         let mut tx = self.pool.begin().await?;
@@ -2871,7 +2910,7 @@ impl RoomService {
             &self.permission_service,
             &room_id,
             &actor_id,
-            PermissionBits::APPROVE_MEMBER,
+            crate::models::RoomPermission::APPROVE_MEMBER,
         )
         .await?;
         let (target_user_id, updated) = self
@@ -2933,7 +2972,11 @@ impl RoomService {
         self.ensure_room_creator_is_active_for_access(&room, &actor_id)
             .await?;
         self.permission_service
-            .check_permission_no_cache(&room_id, &actor_id, PermissionBits::APPROVE_MEMBER)
+            .check_permission_no_cache(
+                &room_id,
+                &actor_id,
+                crate::models::RoomPermission::APPROVE_MEMBER,
+            )
             .await?;
 
         let mut tx = self.pool.begin().await?;
@@ -2942,7 +2985,7 @@ impl RoomService {
             &self.permission_service,
             &room_id,
             &actor_id,
-            PermissionBits::APPROVE_MEMBER,
+            crate::models::RoomPermission::APPROVE_MEMBER,
         )
         .await?;
         let (target_user_id, _) =
@@ -3482,7 +3525,7 @@ impl RoomService {
     ///
     /// This is the single entry point for combining the global guest default
     /// permission set with room-level guest added/removed permissions.
-    pub async fn get_guest_permissions(&self, room_id: &RoomId) -> Result<PermissionBits> {
+    pub async fn get_guest_permissions(&self, room_id: &RoomId) -> Result<RoomPermissionSet> {
         let settings = self.get_room_settings(room_id).await?;
         Ok(self
             .permission_service
@@ -3513,8 +3556,8 @@ impl RoomService {
     ///
     /// Authorization model:
     /// - room creator can delete their own room
+    /// - room members with DELETE_ROOM can delete the room
     /// - global admin/root can delete any room
-    /// - room-scoped admins cannot delete a room unless they are also a global admin
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         self.delete_room_with_outbox(room_id, user_id, None).await
     }
@@ -3536,11 +3579,19 @@ impl RoomService {
         let actor = self.user_service.get_user(&user_id).await?;
         let is_global_admin = actor.role.is_admin_or_above();
         let is_creator = room.created_by == user_id;
+        let has_room_delete_permission = if is_creator || is_global_admin {
+            true
+        } else {
+            self.permission_service
+                .check_permission_no_cache(&room_id, &user_id, RoomPermission::DELETE_ROOM)
+                .await
+                .is_ok()
+        };
 
-        if !is_creator && !is_global_admin {
+        if !is_creator && !is_global_admin && !has_room_delete_permission {
             if self.member_repo.get(&room_id, &user_id).await?.is_some() {
                 return Err(Error::Authorization(
-                    "Only the room creator or a global admin can delete this room".to_string(),
+                    "Only the room creator, a member with delete_room permission, or a global admin can delete this room".to_string(),
                 ));
             }
 
@@ -3905,7 +3956,11 @@ impl RoomService {
     ) -> Result<crate::cache::RoomSettingsSnapshot> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
             .await?;
 
         // Validate permission escalation
@@ -4435,7 +4490,11 @@ impl RoomService {
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
     ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
             .await?;
 
         self.room_repo
@@ -4471,7 +4530,7 @@ impl RoomService {
                             &self.permission_service,
                             &room_id,
                             &user_id,
-                            PermissionBits::SET_ROOM_SETTINGS,
+                            crate::models::RoomPermission::SET_ROOM_SETTINGS,
                         )
                         .await?;
                         let domain = CacheDomain::RoomSettings { room_id };
@@ -4583,7 +4642,11 @@ impl RoomService {
 
         // 1. Permission check
         self.permission_service
-            .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
+            .check_permission(
+                room_id,
+                user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
             .await?;
 
         // 2. Validate via registry (type parsing + value constraints from macro validators)
@@ -4732,7 +4795,11 @@ impl RoomService {
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
     ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.permission_service
-            .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
+            .check_permission(
+                room_id,
+                user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
             .await?;
 
         let default_settings = RoomSettings::default();
@@ -4752,7 +4819,7 @@ impl RoomService {
                         &self.permission_service,
                         room_id,
                         user_id,
-                        PermissionBits::SET_ROOM_SETTINGS,
+                        crate::models::RoomPermission::SET_ROOM_SETTINGS,
                     )
                     .await?;
                     let domain = CacheDomain::RoomSettings { room_id: *room_id };
@@ -5179,7 +5246,11 @@ impl RoomService {
 
         // Check permission
         self.permission_service
-            .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
+            .check_permission(
+                room_id,
+                user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
             .await?;
 
         let room = self
@@ -5341,12 +5412,11 @@ impl RoomService {
         removed_permissions: u64,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<crate::models::RoomMember> {
-        if !PermissionBits::includes_only_assignable_in_room(added_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(removed_permissions)
+        if !RoomMemberPermissionBits::includes_only_defined(added_permissions)
+            || !RoomMemberPermissionBits::includes_only_defined(removed_permissions)
         {
             return Err(Error::InvalidInput(
-                "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
-                    .to_string(),
+                "Permission set includes bits outside the member permission bitspace".to_string(),
             ));
         }
 
@@ -5361,7 +5431,7 @@ impl RoomService {
                     &self.permission_service,
                     &room_id,
                     &granter_id,
-                    PermissionBits::SET_MEMBER_PERMISSIONS,
+                    crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
                 )
                 .await?;
                 let member = self
@@ -5648,7 +5718,7 @@ impl RoomService {
             &self.permission_service,
             &room_id,
             &kicker_id,
-            PermissionBits::KICK_MEMBER,
+            crate::models::RoomPermission::KICK_MEMBER,
         )
         .await?;
         let Some(observed_version) = self
@@ -5796,13 +5866,11 @@ impl RoomService {
             admin_added_permissions,
             admin_removed_permissions,
         } = update;
-        if !PermissionBits::includes_only_assignable_in_room(added_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(removed_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(admin_added_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(admin_removed_permissions)
+        if !RoomAdminPermissionBits::includes_only_defined(admin_added_permissions)
+            || !RoomAdminPermissionBits::includes_only_defined(admin_removed_permissions)
         {
             return Err(Error::InvalidInput(
-                "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
+                "Permission set includes bits outside the target role permission bitspace"
                     .to_string(),
             ));
         }
@@ -5814,6 +5882,11 @@ impl RoomService {
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
         let effective_role = role.unwrap_or(current.role);
         let effective_is_admin = matches!(effective_role, RoomRole::Admin);
+        Self::validate_override_bits_for_role(
+            effective_role,
+            added_permissions,
+            removed_permissions,
+        )?;
 
         if let Some(new_role) = role {
             if new_role == RoomRole::Creator {
@@ -6117,13 +6190,11 @@ impl RoomService {
         admin_removed_permissions: u64,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<crate::models::RoomMember> {
-        if !PermissionBits::includes_only_assignable_in_room(added_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(removed_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(admin_added_permissions)
-            || !PermissionBits::includes_only_assignable_in_room(admin_removed_permissions)
+        if !RoomAdminPermissionBits::includes_only_defined(admin_added_permissions)
+            || !RoomAdminPermissionBits::includes_only_defined(admin_removed_permissions)
         {
             return Err(Error::InvalidInput(
-                "Permission set includes undefined or lifecycle-only permissions that cannot be delegated within a room"
+                "Permission set includes bits outside the target role permission bitspace"
                     .to_string(),
             ));
         }
@@ -6135,6 +6206,13 @@ impl RoomService {
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
         let effective_role = role.unwrap_or(current.role);
         let effective_is_admin = matches!(effective_role, RoomRole::Admin);
+        if apply_permission_update {
+            Self::validate_override_bits_for_role(
+                effective_role,
+                added_permissions,
+                removed_permissions,
+            )?;
+        }
 
         if let Some(new_role) = role {
             if new_role == RoomRole::Creator {
@@ -6185,7 +6263,7 @@ impl RoomService {
                 &self.permission_service,
                 &room_id,
                 &actor_id,
-                PermissionBits::SET_MEMBER_PERMISSIONS,
+                crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
         }
@@ -6848,7 +6926,7 @@ impl RoomService {
                 &self.permission_service,
                 &room_id,
                 &user_id,
-                PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+                crate::models::RoomPermission::DELETE_MEDIA_RESOURCE_ANY,
             )
             .await?
         {
@@ -7187,7 +7265,7 @@ impl RoomService {
             &self.permission_service,
             &room_id,
             &user_id,
-            PermissionBits::CLEAR_MEDIA_RESOURCES,
+            crate::models::RoomPermission::CLEAR_MEDIA_RESOURCES,
         )
         .await?;
 
@@ -7356,7 +7434,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         update_fn: impl Fn(&mut RoomPlaybackState),
-        required_permission: u64,
+        required_permission: RoomPermission,
     ) -> Result<RoomPlaybackState> {
         // Check permission
         self.permission_service
@@ -7420,7 +7498,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-        permission: u64,
+        permission: RoomPermission,
     ) -> Result<()> {
         let room = self.get_room(room_id).await?;
         self.ensure_room_creator_is_active_for_access(&room, user_id)
@@ -8385,7 +8463,7 @@ async fn has_room_permission_in_tx(
     permission_service: &PermissionService,
     room_id: &RoomId,
     user_id: &UserId,
-    permission: u64,
+    permission: RoomPermission,
 ) -> Result<bool> {
     let row = sqlx::query!(
         r#"
@@ -8441,10 +8519,9 @@ async fn has_room_permission_in_tx(
 
     let permissions = permission_service
         .effective_permission_calculator()
-        .effective_for_member(&member, &settings)
-        .0;
+        .effective_for_member(&member, &settings);
 
-    Ok((permissions & permission) == permission)
+    Ok(permissions.has(permission))
 }
 
 async fn has_active_room_membership_in_tx(
@@ -8483,7 +8560,7 @@ async fn ensure_actor_has_room_permission_now_tx(
     permission_service: &PermissionService,
     room_id: &RoomId,
     actor_id: &UserId,
-    permission: u64,
+    permission: RoomPermission,
 ) -> Result<()> {
     let room_state = sqlx::query!(
         r"
@@ -8534,8 +8611,8 @@ fn permission_bits_from_signed(bits: i64) -> Result<u64> {
 fn effective_room_permissions_from_base(
     settings: &RoomSettings,
     member: &RoomMember,
-    global_default: PermissionBits,
-) -> PermissionBits {
+    global_default: RoomPermissionSet,
+) -> RoomPermissionSet {
     let calculator = crate::service::permission::EffectivePermissionCalculator::new(
         crate::service::permission::RuntimePermissionDefaults {
             admin: global_default,
@@ -8550,10 +8627,10 @@ fn effective_room_permissions_from_base(
 fn has_room_permission_from_base(
     settings: &RoomSettings,
     member: &RoomMember,
-    global_default: PermissionBits,
-    permission: u64,
+    global_default: RoomPermissionSet,
+    permission: RoomPermission,
 ) -> bool {
-    if !member.has_permission(permission, PermissionBits(PermissionBits::ALL)) {
+    if !member.has_permission(permission, RoomPermissionSet::all()) {
         return false;
     }
 
@@ -9057,7 +9134,8 @@ mod tests {
             AllowGuestJoin, ChatEnabled, DanmakuEnabled, GuestAddedPermissions, MaxMembers,
             MemberAddedPermissions, RequirePassword,
         },
-        PermissionBits, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus, UserId,
+        RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
+        RoomRole, RoomSettings, RoomStatus, UserId,
     };
     use crate::test_helpers::RoomFixture;
     use crate::Error;
@@ -9155,11 +9233,13 @@ mod tests {
             UserId::expect_positive(1),
             RoomRole::Member,
         );
-        let runtime_member_default =
-            PermissionBits(PermissionBits::DEFAULT_MEMBER & !PermissionBits::CREATE_MEDIA_RESOURCE);
+        let runtime_member_default = RoomPermissionSet(
+            RoomPermissionSet::default_member().0
+                & !crate::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+        );
 
         assert!(
-            PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::CREATE_MEDIA_RESOURCE),
+            RoomPermissionSet::default_member().has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE),
             "static defaults include CREATE_MEDIA_RESOURCE, so this test guards against falling back to them"
         );
         assert!(
@@ -9167,7 +9247,7 @@ mod tests {
                 &settings,
                 &member,
                 runtime_member_default,
-                PermissionBits::CREATE_MEDIA_RESOURCE,
+                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
             ),
             "transactional permission checks must honor runtime role defaults"
         );
@@ -9354,7 +9434,7 @@ mod tests {
     fn test_settings_validate_permissions_guest_escalation_is_rejected() {
         let mut settings = RoomSettings::default();
         // Grant guests a permission that exceeds the guest-specific ceiling.
-        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::KICK_MEMBER);
+        settings.guest_added_permissions = GuestAddedPermissions(1 << 21);
         let result = settings.validate_permissions();
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -9369,7 +9449,7 @@ mod tests {
     fn test_settings_validate_permissions_member_escalation_is_rejected() {
         let mut settings = RoomSettings::default();
         // Grant members a lifecycle permission that is not assignable in room settings.
-        settings.member_added_permissions = MemberAddedPermissions(PermissionBits::DELETE_ROOM);
+        settings.member_added_permissions = MemberAddedPermissions(1 << 21);
         let result = settings.validate_permissions();
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -9384,36 +9464,70 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_override_bits_for_guest_rejects_member_bitspace() {
+        let result = RoomService::validate_override_bits_for_role(
+            RoomRole::Guest,
+            RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
+            0,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::InvalidInput(message) => {
+                assert!(
+                    message.contains("target role permission bitspace"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("Expected InvalidInput, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_override_bits_for_guest_accepts_guest_bitspace() {
+        RoomService::validate_override_bits_for_role(
+            RoomRole::Guest,
+            RoomGuestPermissionBits::VIEW_CHAT_HISTORY,
+            RoomGuestPermissionBits::USE_WEBRTC,
+        )
+        .expect("guest override bits should validate in the guest bitspace");
+    }
+
+    #[test]
     fn test_settings_validate_permissions_within_limits_is_ok() {
         let mut settings = RoomSettings::default();
         // Grant guests a guest-level permission.
-        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
+        settings.guest_added_permissions =
+            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
         assert!(settings.validate_permissions().is_ok());
     }
 
     #[test]
     fn test_admin_permissions_with_added_and_removed() {
         let mut settings = RoomSettings::default();
-        let base =
-            PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE);
+        let base = RoomPermissionSet(
+            crate::models::RoomAdminPermissionBits::CHAT
+                | crate::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+        );
 
-        // Add PLAY_CONTROL, remove SEND_CHAT
-        settings.admin_added_permissions =
-            crate::models::room_settings::AdminAddedPermissions(PermissionBits::PLAY_CONTROL);
-        settings.admin_removed_permissions =
-            crate::models::room_settings::AdminRemovedPermissions(PermissionBits::SEND_CHAT);
+        // Add PLAY_CONTROL, remove CHAT
+        settings.admin_added_permissions = crate::models::room_settings::AdminAddedPermissions(
+            crate::models::RoomAdminPermissionBits::PLAY_CONTROL,
+        );
+        settings.admin_removed_permissions = crate::models::room_settings::AdminRemovedPermissions(
+            crate::models::RoomAdminPermissionBits::CHAT,
+        );
 
         let result = settings.admin_permissions(base);
-        // Should have CREATE_MEDIA_RESOURCE and PLAY_CONTROL, but not SEND_CHAT
-        assert!(result.0 & PermissionBits::CREATE_MEDIA_RESOURCE != 0);
-        assert!(result.0 & PermissionBits::PLAY_CONTROL != 0);
-        assert_eq!(result.0 & PermissionBits::SEND_CHAT, 0);
+        // Should have CREATE_MEDIA_RESOURCE and PLAY_CONTROL, but not CHAT
+        assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
+        assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
+        assert!(!result.has(crate::models::RoomPermission::CHAT));
     }
 
     #[test]
     fn test_guest_permissions_capped_at_guest_ceiling() {
         let settings = RoomSettings::default();
-        let base = PermissionBits(0);
+        let base = RoomPermissionSet(0);
         let result = settings.guest_permissions(base);
         // Default guest added permissions are 0, so result should be 0
         assert_eq!(result.0, 0);
@@ -9502,16 +9616,21 @@ mod tests {
         assert_eq!(member.added_permissions, 0);
         assert_eq!(member.removed_permissions, 0);
 
-        member.add_permissions(PermissionBits::PLAY_CONTROL);
-        assert_eq!(member.added_permissions, PermissionBits::PLAY_CONTROL);
+        member.add_permissions(crate::models::RoomMemberPermissionBits::USE_WEBRTC);
+        assert_eq!(
+            member.added_permissions,
+            crate::models::RoomMemberPermissionBits::USE_WEBRTC
+        );
 
-        member.remove_permissions(PermissionBits::SEND_CHAT);
-        assert_eq!(member.removed_permissions, PermissionBits::SEND_CHAT);
+        member.remove_permissions(crate::models::RoomMemberPermissionBits::CHAT);
+        assert_eq!(
+            member.removed_permissions,
+            crate::models::RoomMemberPermissionBits::CHAT
+        );
 
-        let effective =
-            member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
-        assert!(effective.has(PermissionBits::PLAY_CONTROL));
-        assert!(!effective.has(PermissionBits::SEND_CHAT));
+        let effective = member.effective_permissions(RoomPermissionSet::default_member());
+        assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(!effective.has(crate::models::RoomPermission::CHAT));
     }
 
     /// Documents the A→B→A password change race condition.

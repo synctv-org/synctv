@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
-use super::permission::{PermissionBits, Role as RoomRole};
+use super::permission::{
+    Role as RoomRole, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
+    RoomPermission, RoomPermissionSet,
+};
 use super::query::SortDirection;
 use super::room::RoomStatus;
 
@@ -308,32 +311,39 @@ impl RoomMember {
     }
 
     #[must_use]
-    pub const fn effective_permissions(&self, role_default: PermissionBits) -> PermissionBits {
+    pub const fn effective_permissions(
+        &self,
+        role_default: RoomPermissionSet,
+    ) -> RoomPermissionSet {
         match self.role {
-            RoomRole::Creator => PermissionBits(PermissionBits::ALL),
+            RoomRole::Creator => RoomPermissionSet::all(),
             RoomRole::Admin => {
                 let mut result = role_default.0;
-                result |= self.admin_added_permissions;
-                result &= !self.admin_removed_permissions;
-                PermissionBits(result)
+                result |= RoomAdminPermissionBits::to_permissions(self.admin_added_permissions);
+                result &= !RoomAdminPermissionBits::to_permissions(self.admin_removed_permissions);
+                RoomPermissionSet(result)
             }
             RoomRole::Member => {
                 let mut result = role_default.0;
-                result |= self.added_permissions;
-                result &= !self.removed_permissions;
-                PermissionBits(result)
+                result |= RoomMemberPermissionBits::to_permissions(self.added_permissions);
+                result &= !RoomMemberPermissionBits::to_permissions(self.removed_permissions);
+                RoomPermissionSet(result)
             }
             RoomRole::Guest => {
-                let mut result = role_default.0 & PermissionBits::GUEST_ASSIGNABLE;
-                result |= self.added_permissions & PermissionBits::GUEST_ASSIGNABLE;
-                result &= !self.removed_permissions;
-                PermissionBits(result)
+                let mut result = role_default.0 & RoomPermissionSet::guest_assignable().0;
+                result |= RoomGuestPermissionBits::to_permissions(self.added_permissions);
+                result &= !RoomGuestPermissionBits::to_permissions(self.removed_permissions);
+                RoomPermissionSet(result)
             }
         }
     }
 
     #[must_use]
-    pub const fn has_permission(&self, permission: u64, role_default: PermissionBits) -> bool {
+    pub const fn has_permission(
+        &self,
+        permission: RoomPermission,
+        role_default: RoomPermissionSet,
+    ) -> bool {
         self.effective_permissions(role_default).has(permission)
     }
 
@@ -371,7 +381,7 @@ pub struct RoomMemberWithUser {
 
 impl RoomMemberWithUser {
     #[must_use]
-    pub fn effective_permissions(&self, role_default: PermissionBits) -> PermissionBits {
+    pub fn effective_permissions(&self, role_default: RoomPermissionSet) -> RoomPermissionSet {
         let member = RoomMember {
             room_id: self.room_id,
             user_id: self.user_id,
@@ -400,58 +410,58 @@ mod tests {
     #[test]
     fn test_creator_always_has_all_permissions() {
         let member = test_member(RoomRole::Creator);
-        let result = member.effective_permissions(PermissionBits::empty());
-        assert_eq!(result.0, PermissionBits::ALL);
+        let result = member.effective_permissions(RoomPermissionSet::empty());
+        assert_eq!(result.0, RoomPermissionSet::all().0);
     }
 
     #[test]
     fn test_member_with_added_permissions() {
         let mut member = test_member(RoomRole::Member);
-        member.added_permissions = PermissionBits::KICK_MEMBER;
-        let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        member.added_permissions = RoomMemberPermissionBits::USE_WEBRTC;
+        let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
-        assert!(result.has(PermissionBits::KICK_MEMBER));
-        assert!(result.has(PermissionBits::SEND_CHAT));
+        assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(result.has(crate::models::RoomPermission::CHAT));
     }
 
     #[test]
     fn test_member_with_removed_permissions() {
         let mut member = test_member(RoomRole::Member);
-        member.removed_permissions = PermissionBits::SEND_CHAT;
-        let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        member.removed_permissions = RoomMemberPermissionBits::CHAT;
+        let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
-        assert!(!result.has(PermissionBits::SEND_CHAT));
-        assert!(result.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        assert!(!result.has(crate::models::RoomPermission::CHAT));
+        assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_admin_uses_admin_overrides() {
         let mut member = test_member(RoomRole::Admin);
-        member.admin_added_permissions = PermissionBits::PLAY_CONTROL;
-        member.admin_removed_permissions = PermissionBits::KICK_MEMBER;
-        let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        member.admin_added_permissions = RoomAdminPermissionBits::PLAY_CONTROL;
+        member.admin_removed_permissions = RoomAdminPermissionBits::KICK_MEMBER;
+        let default = RoomPermissionSet::default_member();
         let result = member.effective_permissions(default);
-        assert!(result.has(PermissionBits::PLAY_CONTROL));
-        assert!(!result.has(PermissionBits::KICK_MEMBER));
+        assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
+        assert!(!result.has(crate::models::RoomPermission::KICK_MEMBER));
     }
 
     #[test]
     fn test_guest_rejects_added_chat() {
         let mut member = test_member(RoomRole::Guest);
-        member.added_permissions = PermissionBits::SEND_CHAT;
-        let default = PermissionBits(PermissionBits::DEFAULT_GUEST);
+        member.added_permissions = RoomMemberPermissionBits::CHAT;
+        let default = RoomPermissionSet::default_guest();
         let result = member.effective_permissions(default);
-        assert!(!result.has(PermissionBits::SEND_CHAT));
-        assert!(!result.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+        assert!(!result.has(crate::models::RoomPermission::CHAT));
+        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]
     fn test_guest_accepts_guest_assignable_override() {
         let mut member = test_member(RoomRole::Guest);
-        member.added_permissions = PermissionBits::USE_WEBRTC;
-        let default = PermissionBits(PermissionBits::DEFAULT_GUEST);
+        member.added_permissions = RoomGuestPermissionBits::USE_WEBRTC;
+        let default = RoomPermissionSet::default_guest();
         let result = member.effective_permissions(default);
-        assert!(result.has(PermissionBits::USE_WEBRTC));
+        assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
     }
 
     #[test]

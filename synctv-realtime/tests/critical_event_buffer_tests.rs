@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::models::id::{MediaId, RoomId, UserId};
-use synctv_core::models::PermissionBits;
+use synctv_core::models::RoomPermissionSet;
 use synctv_realtime::sync::events::RealtimeEvent;
 
 fn event_id() -> String {
@@ -78,12 +78,12 @@ fn test_permission_changed_is_critical() {
         target_username: "test_target".to_string(),
         changed_by,
         changed_by_username: "admin".to_string(),
-        new_permissions: PermissionBits(0),
+        new_permissions: RoomPermissionSet(0),
         role: 0, // RoomMemberRole::Guest
-        added_permissions: PermissionBits(0),
-        removed_permissions: PermissionBits(0),
-        admin_added_permissions: PermissionBits(0),
-        admin_removed_permissions: PermissionBits(0),
+        added_permissions: RoomPermissionSet(0),
+        removed_permissions: RoomPermissionSet(0),
+        admin_added_permissions: RoomPermissionSet(0),
+        admin_removed_permissions: RoomPermissionSet(0),
         timestamp: chrono::Utc::now(),
     };
     assert!(

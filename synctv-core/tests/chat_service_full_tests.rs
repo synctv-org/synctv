@@ -16,8 +16,8 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         room_settings::{ChatEnabled, DanmakuEnabled},
-        DanmakuPosition, PermissionBits, RoomId, RoomSettings, SendDanmakuRequest, User, UserId,
-        UserRole, UserStatus,
+        DanmakuPosition, RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits, RoomSettings,
+        SendDanmakuRequest, User, UserId, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
@@ -142,7 +142,7 @@ fn make_user(username: &str) -> User {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_send_message_without_send_chat_permission_denied() {
+async fn test_send_message_without_chat_permission_denied() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -181,10 +181,15 @@ async fn test_send_message_without_send_chat_permission_denied() {
         .await
         .unwrap();
 
-    // Revoke SEND_CHAT permission from the member
+    // Revoke CHAT permission from the member
     room_service
         .member_service()
-        .revoke_permission(room.id, creator.id, member.id, PermissionBits::SEND_CHAT)
+        .revoke_permission(
+            room.id,
+            creator.id,
+            member.id,
+            RoomMemberPermissionBits::CHAT,
+        )
         .await
         .unwrap();
 
@@ -194,7 +199,7 @@ async fn test_send_message_without_send_chat_permission_denied() {
 
     assert!(
         result.is_err(),
-        "send_message should fail without SEND_CHAT permission"
+        "send_message should fail without CHAT permission"
     );
     match result.unwrap_err() {
         Error::Authorization(_) => {}
@@ -534,11 +539,26 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .join_room(room.id, admin.id, None)
         .await
         .unwrap();
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id,
+            creator.id,
+            admin.id,
+            synctv_core::models::RoomRole::Admin,
+        )
+        .await
+        .unwrap();
 
     // Grant DELETE_CHAT permission to admin
     room_service
         .member_service()
-        .grant_permission(room.id, creator.id, admin.id, PermissionBits::DELETE_CHAT)
+        .grant_permission(
+            room.id,
+            creator.id,
+            admin.id,
+            RoomAdminPermissionBits::DELETE_CHAT,
+        )
         .await
         .unwrap();
 

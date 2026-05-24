@@ -12,10 +12,7 @@ use crate::{
         InvalidationMessage, PlaybackStateCache, SingleFlight, VersionFenceReservation,
         VersionFenceStore,
     },
-    models::{
-        MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
-        UserId,
-    },
+    models::{MediaId, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings, UserId},
     repository::RoomPlaybackStateRepository,
     service::{media::MediaService, permission::PermissionService, UserService},
     Error, Result,
@@ -1086,7 +1083,11 @@ impl PlaybackService {
         playing: bool,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::PLAY_CONTROL,
+            )
             .await?;
 
         let state = self
@@ -1128,7 +1129,11 @@ impl PlaybackService {
         validate_seek_position(position)?;
 
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::PLAY_CONTROL,
+            )
             .await?;
 
         let result = self
@@ -1176,7 +1181,11 @@ impl PlaybackService {
         speed: f64,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::CHANGE_PLAYBACK_RATE)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::CHANGE_PLAYBACK_RATE,
+            )
             .await?;
 
         validate_playback_speed_value(speed)?;
@@ -1773,7 +1782,11 @@ impl PlaybackService {
     ) -> Result<RoomPlaybackState> {
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MEDIA)
+                .check_permission(
+                    &room_id,
+                    &user_id,
+                    crate::models::RoomPermission::CHANGE_CURRENT_MEDIA,
+                )
                 .await?;
         }
         let target = SwitchPlaybackTarget {
@@ -1863,7 +1876,11 @@ impl PlaybackService {
     ) -> Result<RoomPlaybackState> {
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
+                .check_permission(
+                    &room_id,
+                    &user_id,
+                    crate::models::RoomPermission::PLAY_CONTROL,
+                )
                 .await?;
         }
 
@@ -2000,19 +2017,19 @@ impl PlaybackService {
         bypass_permission: bool,
     ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
-        let mut required_perms = PermissionBits::NONE;
+        let mut required_permissions = Vec::new();
         if playing.is_some() {
-            required_perms |= PermissionBits::PLAY_CONTROL;
+            required_permissions.push(crate::models::RoomPermission::PLAY_CONTROL);
         }
         if position.is_some() {
-            required_perms |= PermissionBits::PLAY_CONTROL;
+            required_permissions.push(crate::models::RoomPermission::PLAY_CONTROL);
         }
         if speed.is_some() {
-            required_perms |= PermissionBits::CHANGE_PLAYBACK_RATE;
+            required_permissions.push(crate::models::RoomPermission::CHANGE_PLAYBACK_RATE);
         }
-        if required_perms != PermissionBits::NONE && !bypass_permission {
+        if !required_permissions.is_empty() && !bypass_permission {
             self.permission_service
-                .check_permission(&room_id, &user_id, required_perms)
+                .check_permissions(&room_id, &user_id, &required_permissions)
                 .await?;
         }
 

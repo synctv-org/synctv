@@ -1,4 +1,4 @@
-use synctv_core::models::{MediaId, PermissionBits, UserId};
+use synctv_core::models::{MediaId, UserId};
 
 use crate::impls::{ApiError, ClientApiImpl};
 use crate::proto::client::{
@@ -206,7 +206,11 @@ impl ClientApiImpl {
             .map_err(ApiError::InvalidInput)?;
 
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::LIVE_CONTROL)
+            .check_permission(
+                &rid,
+                &uid,
+                synctv_core::models::RoomPermission::LIVE_CONTROL,
+            )
             .await
             .map_err(Self::map_room_access_error)?;
 

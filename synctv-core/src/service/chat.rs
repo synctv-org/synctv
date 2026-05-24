@@ -10,7 +10,7 @@ use tracing::{debug, error, info};
 
 use crate::{
     cache::UsernameCache,
-    models::{ChatMessage, PermissionBits, RoomId, SendDanmakuRequest, UserId},
+    models::{ChatMessage, RoomId, SendDanmakuRequest, UserId},
     repository::ChatRepository,
     service::{
         notification::NotificationService, ContentFilter, PermissionService, RateLimitConfig,
@@ -122,9 +122,9 @@ impl ChatService {
         content: String,
         control: Option<&ExecutionControl>,
     ) -> Result<ChatMessage> {
-        // Check SEND_CHAT permission
+        // Check CHAT permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::SEND_CHAT)
+            .check_permission(&room_id, &user_id, crate::models::RoomPermission::CHAT)
             .await?;
 
         // Check if chat is enabled for this room
@@ -264,7 +264,7 @@ impl ChatService {
         if !is_sender {
             // Not the sender, check DELETE_CHAT permission via PermissionService
             self.permission_service
-                .check_permission(room_id, user_id, PermissionBits::DELETE_CHAT)
+                .check_permission(room_id, user_id, crate::models::RoomPermission::DELETE_CHAT)
                 .await?;
         }
 
@@ -302,9 +302,9 @@ impl ChatService {
     ) -> Result<crate::models::DanmakuMessage> {
         use crate::models::DanmakuMessage;
 
-        // Check SEND_CHAT permission (danmaku is a form of chat)
+        // Check CHAT permission (danmaku is a form of chat)
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::SEND_CHAT)
+            .check_permission(&room_id, &user_id, crate::models::RoomPermission::CHAT)
             .await?;
 
         // Check if danmaku is enabled for this room

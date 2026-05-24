@@ -2687,8 +2687,8 @@ mod websocket_e2e {
             "PlaylistDeleted event should be forwarded"
         );
 
-        let permission_bits = synctv_core::models::PermissionBits::LIVE_CONTROL
-            | synctv_core::models::PermissionBits::PLAY_CONTROL;
+        let permission_bits = synctv_core::models::RoomAdminPermissionBits::LIVE_CONTROL
+            | synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL;
         server1.realtime_manager.broadcast(
             synctv_realtime::sync::RealtimeEvent::PermissionChanged {
                 event_id: synctv_common::snanoid!(16),
@@ -2697,12 +2697,12 @@ mod websocket_e2e {
                 target_username: "matrix_member".to_string(),
                 changed_by: owner_id,
                 changed_by_username: "matrix_owner".to_string(),
-                new_permissions: synctv_core::models::PermissionBits(permission_bits),
+                new_permissions: synctv_core::models::RoomPermissionSet(permission_bits),
                 role: synctv_proto::common::RoomMemberRole::Admin as i32,
-                added_permissions: synctv_core::models::PermissionBits(0),
-                removed_permissions: synctv_core::models::PermissionBits(0),
-                admin_added_permissions: synctv_core::models::PermissionBits(permission_bits),
-                admin_removed_permissions: synctv_core::models::PermissionBits(0),
+                added_permissions: synctv_core::models::RoomPermissionSet(0),
+                removed_permissions: synctv_core::models::RoomPermissionSet(0),
+                admin_added_permissions: synctv_core::models::RoomPermissionSet(permission_bits),
+                admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
                 timestamp: chrono::Utc::now(),
             },
         );

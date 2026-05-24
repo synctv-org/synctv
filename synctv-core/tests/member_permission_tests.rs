@@ -13,7 +13,10 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     config::PasswordComplexityConfig,
-    models::{PermissionBits, RoomRole, User, UserId, UserRole, UserStatus},
+    models::{
+        RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomRole, User, UserId,
+        UserRole, UserStatus,
+    },
     repository::{RoomMemberRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
@@ -129,7 +132,13 @@ async fn test_set_member_permissions_requires_grant_permission() {
 
     // Member does NOT have GRANT_PERMISSION by default
     let result = member_service
-        .set_member_permissions(room.id, member.id, target.id, PermissionBits::SEND_CHAT, 0)
+        .set_member_permissions(
+            room.id,
+            member.id,
+            target.id,
+            RoomMemberPermissionBits::CHAT,
+            0,
+        )
         .await;
 
     assert!(
@@ -176,19 +185,19 @@ async fn test_set_member_permissions_creator_can_set() {
             room.id,
             creator.id,
             target.id,
-            PermissionBits::KICK_MEMBER | PermissionBits::USE_WEBRTC,
+            RoomMemberPermissionBits::USE_WEBRTC | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
             0,
         )
         .await
         .unwrap();
 
     assert!(
-        updated.added_permissions & PermissionBits::USE_WEBRTC != 0,
+        updated.added_permissions & RoomMemberPermissionBits::USE_WEBRTC != 0,
         "USE_WEBRTC should be added"
     );
     assert!(
-        updated.added_permissions & PermissionBits::KICK_MEMBER != 0,
-        "KICK_MEMBER should be added"
+        updated.added_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY != 0,
+        "VIEW_CHAT_HISTORY should be added"
     );
 }
 
@@ -236,20 +245,20 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
             room.id,
             creator.id,
             target.id,
-            PermissionBits::USE_WEBRTC,
-            PermissionBits::KICK_MEMBER,
+            RoomAdminPermissionBits::USE_WEBRTC,
+            RoomAdminPermissionBits::KICK_MEMBER,
         )
         .await
         .unwrap();
 
     assert_eq!(
-        updated.admin_added_permissions & PermissionBits::USE_WEBRTC,
-        PermissionBits::USE_WEBRTC,
+        updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
+        RoomAdminPermissionBits::USE_WEBRTC,
         "admin target must persist allow overrides into admin_added_permissions"
     );
     assert_eq!(
-        updated.admin_removed_permissions & PermissionBits::KICK_MEMBER,
-        PermissionBits::KICK_MEMBER,
+        updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
+        RoomAdminPermissionBits::KICK_MEMBER,
         "admin target must persist deny overrides into admin_removed_permissions"
     );
     assert_eq!(
@@ -267,11 +276,11 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         .await
         .unwrap();
     assert!(
-        effective.has(PermissionBits::USE_WEBRTC),
+        effective.has(RoomPermission::USE_WEBRTC),
         "admin allow override should affect effective permissions"
     );
     assert!(
-        !effective.has(PermissionBits::KICK_MEMBER),
+        !effective.has(RoomPermission::KICK_MEMBER),
         "admin deny override should affect effective permissions"
     );
 }
@@ -319,21 +328,21 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
             role: Some(RoomRole::Admin),
             added_permissions: 0,
             removed_permissions: 0,
-            admin_added_permissions: PermissionBits::USE_WEBRTC,
-            admin_removed_permissions: PermissionBits::KICK_MEMBER,
+            admin_added_permissions: RoomAdminPermissionBits::USE_WEBRTC,
+            admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
         })
         .await
         .unwrap();
 
     assert_eq!(updated.role, RoomRole::Admin);
     assert_eq!(
-        updated.admin_added_permissions & PermissionBits::USE_WEBRTC,
-        PermissionBits::USE_WEBRTC,
+        updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
+        RoomAdminPermissionBits::USE_WEBRTC,
         "role-to-admin update must persist allow override in admin_added_permissions"
     );
     assert_eq!(
-        updated.admin_removed_permissions & PermissionBits::KICK_MEMBER,
-        PermissionBits::KICK_MEMBER,
+        updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
+        RoomAdminPermissionBits::KICK_MEMBER,
         "role-to-admin update must persist deny override in admin_removed_permissions"
     );
     assert_eq!(
@@ -476,19 +485,16 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
 
     let err = room_service
         .member_service()
-        .set_member_permissions(
-            room.id,
-            creator.id,
-            target.id,
-            PermissionBits::DELETE_ROOM,
-            0,
-        )
+        .set_member_permissions(room.id, creator.id, target.id, 1 << 21, 0)
         .await
         .unwrap_err();
 
     match err {
         Error::InvalidInput(message) => {
-            assert!(message.contains("lifecycle-only"), "got: {message}");
+            assert!(
+                message.contains("member permission bitspace"),
+                "got: {message}"
+            );
         }
         other => panic!("Expected InvalidInput, got: {other:?}"),
     }
@@ -546,7 +552,7 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
             room.id,
             creator.id,
             target.id,
-            PermissionBits::KICK_MEMBER,
+            RoomMemberPermissionBits::USE_WEBRTC,
             0,
         )
         .await;
@@ -611,7 +617,12 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
         first_barrier.wait().await;
         first_service
             .member_service()
-            .grant_permission(room.id, creator.id, target.id, PermissionBits::USE_WEBRTC)
+            .grant_permission(
+                room.id,
+                creator.id,
+                target.id,
+                RoomMemberPermissionBits::USE_WEBRTC,
+            )
             .await
     });
     let second_service = room_service.clone();
@@ -623,7 +634,7 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
                 room.id,
                 creator.id,
                 target.id,
-                PermissionBits::CHANGE_PLAYBACK_RATE,
+                RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
             )
             .await
     });
@@ -637,12 +648,12 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        refreshed.added_permissions & PermissionBits::USE_WEBRTC,
-        PermissionBits::USE_WEBRTC
+        refreshed.added_permissions & RoomMemberPermissionBits::USE_WEBRTC,
+        RoomMemberPermissionBits::USE_WEBRTC
     );
     assert_eq!(
-        refreshed.added_permissions & PermissionBits::CHANGE_PLAYBACK_RATE,
-        PermissionBits::CHANGE_PLAYBACK_RATE
+        refreshed.added_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+        RoomMemberPermissionBits::VIEW_CHAT_HISTORY
     );
 }
 
@@ -685,7 +696,12 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
         first_barrier.wait().await;
         first_service
             .member_service()
-            .revoke_permission(room.id, creator.id, target.id, PermissionBits::USE_WEBRTC)
+            .revoke_permission(
+                room.id,
+                creator.id,
+                target.id,
+                RoomMemberPermissionBits::USE_WEBRTC,
+            )
             .await
     });
     let second_service = room_service.clone();
@@ -697,7 +713,7 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
                 room.id,
                 creator.id,
                 target.id,
-                PermissionBits::CHANGE_PLAYBACK_RATE,
+                RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
             )
             .await
     });
@@ -711,12 +727,12 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        refreshed.removed_permissions & PermissionBits::USE_WEBRTC,
-        PermissionBits::USE_WEBRTC
+        refreshed.removed_permissions & RoomMemberPermissionBits::USE_WEBRTC,
+        RoomMemberPermissionBits::USE_WEBRTC
     );
     assert_eq!(
-        refreshed.removed_permissions & PermissionBits::CHANGE_PLAYBACK_RATE,
-        PermissionBits::CHANGE_PLAYBACK_RATE
+        refreshed.removed_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+        RoomMemberPermissionBits::VIEW_CHAT_HISTORY
     );
 }
 
@@ -754,8 +770,8 @@ async fn test_reset_member_permissions_clears_all_overrides() {
             room.id,
             creator.id,
             target.id,
-            PermissionBits::KICK_MEMBER | PermissionBits::USE_WEBRTC,
-            PermissionBits::SEND_CHAT,
+            RoomMemberPermissionBits::USE_WEBRTC | RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+            RoomMemberPermissionBits::CHAT,
         )
         .await
         .unwrap();
@@ -768,12 +784,12 @@ async fn test_reset_member_permissions_clears_all_overrides() {
         .unwrap()
         .unwrap();
     assert!(
-        member_before.added_permissions & PermissionBits::KICK_MEMBER != 0,
-        "Should have KICK_MEMBER added before reset"
+        member_before.added_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY != 0,
+        "Should have VIEW_CHAT_HISTORY added before reset"
     );
     assert!(
-        member_before.removed_permissions & PermissionBits::SEND_CHAT != 0,
-        "Should have SEND_CHAT removed before reset"
+        member_before.removed_permissions & RoomMemberPermissionBits::CHAT != 0,
+        "Should have CHAT removed before reset"
     );
 
     // Reset all permissions
@@ -883,13 +899,18 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
 
     let member_service = room_service.member_service();
     let updated = member_service
-        .grant_permission(room.id, creator.id, target.id, PermissionBits::USE_WEBRTC)
+        .grant_permission(
+            room.id,
+            creator.id,
+            target.id,
+            RoomAdminPermissionBits::USE_WEBRTC,
+        )
         .await
         .unwrap();
 
     assert_eq!(
-        updated.admin_added_permissions & PermissionBits::USE_WEBRTC,
-        PermissionBits::USE_WEBRTC,
+        updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
+        RoomAdminPermissionBits::USE_WEBRTC,
         "grant_permission must target admin_added_permissions for admin members"
     );
     assert_eq!(
@@ -898,13 +919,18 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
     );
 
     let updated = member_service
-        .revoke_permission(room.id, creator.id, target.id, PermissionBits::KICK_MEMBER)
+        .revoke_permission(
+            room.id,
+            creator.id,
+            target.id,
+            RoomAdminPermissionBits::KICK_MEMBER,
+        )
         .await
         .unwrap();
 
     assert_eq!(
-        updated.admin_removed_permissions & PermissionBits::KICK_MEMBER,
-        PermissionBits::KICK_MEMBER,
+        updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
+        RoomAdminPermissionBits::KICK_MEMBER,
         "revoke_permission must target admin_removed_permissions for admin members"
     );
     assert_eq!(
@@ -918,11 +944,11 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .await
         .unwrap();
     assert!(
-        effective.has(PermissionBits::USE_WEBRTC),
+        effective.has(RoomPermission::USE_WEBRTC),
         "granted admin override should be visible in effective permissions"
     );
     assert!(
-        !effective.has(PermissionBits::KICK_MEMBER),
+        !effective.has(RoomPermission::KICK_MEMBER),
         "revoked admin override should be visible in effective permissions"
     );
 }
@@ -961,13 +987,16 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
 
     let err = room_service
         .member_service()
-        .grant_permission(room.id, creator.id, target.id, PermissionBits::DELETE_ROOM)
+        .grant_permission(room.id, creator.id, target.id, 1 << 21)
         .await
         .unwrap_err();
 
     match err {
         Error::InvalidInput(message) => {
-            assert!(message.contains("lifecycle-only"), "got: {message}");
+            assert!(
+                message.contains("member permission bitspace"),
+                "got: {message}"
+            );
         }
         other => panic!("Expected InvalidInput, got: {other:?}"),
     }
@@ -1025,12 +1054,7 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
         .unwrap();
 
     let err = member_repo
-        .grant_admin_permission_atomic_for_role(
-            &room.id,
-            &target.id,
-            PermissionBits::DELETE_ROOM,
-            stale_admin.role,
-        )
+        .grant_admin_permission_atomic_for_role(&room.id, &target.id, 1 << 21, stale_admin.role)
         .await
         .unwrap_err();
     assert!(matches!(err, synctv_core::Error::OptimisticLockConflict));

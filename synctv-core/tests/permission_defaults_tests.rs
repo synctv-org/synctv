@@ -7,7 +7,10 @@
 
 mod permission_test_support;
 
-use synctv_core::{models::PermissionBits, repository::UserRepository};
+use synctv_core::{
+    models::{RoomPermission, RoomPermissionSet},
+    repository::UserRepository,
+};
 use synctv_core_testing::create_test_pool;
 
 use permission_test_support::{make_room_service, make_user};
@@ -40,13 +43,12 @@ async fn test_creator_has_all_permissions() {
 
     assert_eq!(
         perms.0,
-        PermissionBits::ALL,
+        RoomPermissionSet::all().0,
         "Creator should have ALL permissions"
     );
-    assert!(perms.has(PermissionBits::DELETE_ROOM));
-    assert!(perms.has(PermissionBits::KICK_MEMBER));
-    assert!(perms.has(PermissionBits::KICK_MEMBER));
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
-    assert!(perms.has(PermissionBits::USE_WEBRTC));
+    assert!(perms.has(RoomPermission::KICK_MEMBER));
+    assert!(perms.has(RoomPermission::KICK_MEMBER));
+    assert!(perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(perms.has(RoomPermission::USE_WEBRTC));
 }

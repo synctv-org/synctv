@@ -5,7 +5,10 @@
 //! Run with: cargo test --test `integration_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::{models::UserId, service::auth::TokenType};
+use synctv_core::{
+    models::{RoomPermission, UserId},
+    service::auth::TokenType,
+};
 use synctv_core_testing::create_test_jwt_service;
 
 /// Helper to create a test JWT service with a test secret
@@ -195,22 +198,22 @@ async fn test_publish_key_invalid_token() {
 
 #[test]
 fn test_permission_bits_operations() {
-    use synctv_core::models::PermissionBits;
+    use synctv_core::models::RoomPermissionSet;
 
-    let mut perms = PermissionBits(0);
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
+    let mut perms = RoomPermissionSet(0);
+    assert!(!perms.has(RoomPermission::CHAT));
 
-    perms.grant(PermissionBits::SEND_CHAT);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(!perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    perms.grant(RoomPermission::CHAT);
+    assert!(perms.has(RoomPermission::CHAT));
+    assert!(!perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 
-    perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    perms.grant(RoomPermission::CREATE_MEDIA_RESOURCE);
+    assert!(perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 
-    perms.revoke(PermissionBits::SEND_CHAT);
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    perms.revoke(RoomPermission::CHAT);
+    assert!(!perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 }
 
 #[test]
@@ -465,21 +468,21 @@ async fn test_e2e_publish_key_workflow() {
 
 #[tokio::test]
 async fn test_e2e_permission_checks() {
-    use synctv_core::models::PermissionBits;
+    use synctv_core::models::RoomPermissionSet;
 
-    let mut member_perms = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+    let mut member_perms = RoomPermissionSet::default_member();
 
-    assert!(member_perms.has(PermissionBits::SEND_CHAT));
-    assert!(member_perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
-    assert!(!member_perms.has(PermissionBits::KICK_MEMBER));
+    assert!(member_perms.has(RoomPermission::CHAT));
+    assert!(member_perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(!member_perms.has(RoomPermission::KICK_MEMBER));
 
-    member_perms.grant(PermissionBits::KICK_MEMBER);
-    assert!(member_perms.has(PermissionBits::KICK_MEMBER));
-    assert!(member_perms.has(PermissionBits::SEND_CHAT));
+    member_perms.grant(RoomPermission::KICK_MEMBER);
+    assert!(member_perms.has(RoomPermission::KICK_MEMBER));
+    assert!(member_perms.has(RoomPermission::CHAT));
 
-    member_perms.revoke(PermissionBits::KICK_MEMBER);
-    assert!(!member_perms.has(PermissionBits::KICK_MEMBER));
-    assert!(member_perms.has(PermissionBits::SEND_CHAT));
+    member_perms.revoke(RoomPermission::KICK_MEMBER);
+    assert!(!member_perms.has(RoomPermission::KICK_MEMBER));
+    assert!(member_perms.has(RoomPermission::CHAT));
 }
 
 #[tokio::test]
@@ -589,18 +592,19 @@ async fn test_e2e_multiple_users_concurrent_auth() {
 
 #[tokio::test]
 async fn test_e2e_permission_inheritance() {
-    use synctv_core::models::PermissionBits;
+    use synctv_core::models::RoomPermissionSet;
 
-    let admin = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    assert!(admin.has(PermissionBits::SEND_CHAT));
-    assert!(admin.has(PermissionBits::CREATE_MEDIA_RESOURCE));
-    assert!(admin.has(PermissionBits::KICK_MEMBER));
-    assert!(admin.has(PermissionBits::SET_ROOM_SETTINGS));
+    let admin = RoomPermissionSet::default_admin();
+    assert!(admin.has(RoomPermission::CHAT));
+    assert!(admin.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(admin.has(RoomPermission::KICK_MEMBER));
+    assert!(admin.has(RoomPermission::SET_ROOM_SETTINGS));
+    assert!(!admin.has(RoomPermission::DELETE_ROOM));
 
-    let guest = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    assert!(!guest.has(PermissionBits::VIEW_MEDIA_RESOURCES));
-    assert!(!guest.has(PermissionBits::SEND_CHAT));
-    assert!(!guest.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+    let guest = RoomPermissionSet::default_guest();
+    assert!(!guest.has(RoomPermission::VIEW_MEDIA_RESOURCES));
+    assert!(!guest.has(RoomPermission::CHAT));
+    assert!(!guest.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 }
 
 #[tokio::test]
@@ -823,10 +827,10 @@ async fn test_cache_invalidation_multiple_subscribers() {
 #[tokio::test]
 async fn test_concurrent_permission_checks() {
     use std::sync::Arc;
-    use synctv_core::models::PermissionBits;
+    use synctv_core::models::RoomPermissionSet;
 
     let perms = Arc::new(std::sync::atomic::AtomicU64::new(
-        PermissionBits::DEFAULT_MEMBER,
+        RoomPermissionSet::default_member().0,
     ));
 
     // Spawn multiple concurrent readers
@@ -835,8 +839,8 @@ async fn test_concurrent_permission_checks() {
         let perms = perms.clone();
         let handle = tokio::spawn(async move {
             let current = perms.load(std::sync::atomic::Ordering::SeqCst);
-            let bits = PermissionBits(current);
-            bits.has(PermissionBits::SEND_CHAT)
+            let bits = RoomPermissionSet(current);
+            bits.has(RoomPermission::CHAT)
         });
         read_handles.push(handle);
     }
@@ -847,7 +851,7 @@ async fn test_concurrent_permission_checks() {
         let perms = perms.clone();
         let handle = tokio::spawn(async move {
             perms.fetch_or(
-                PermissionBits::KICK_MEMBER,
+                synctv_core::models::RoomAdminPermissionBits::KICK_MEMBER,
                 std::sync::atomic::Ordering::SeqCst,
             );
         });
@@ -862,9 +866,9 @@ async fn test_concurrent_permission_checks() {
     }
 
     // Verify final state includes KICK_MEMBER
-    let final_perms = PermissionBits(perms.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(final_perms.has(PermissionBits::KICK_MEMBER));
-    assert!(final_perms.has(PermissionBits::SEND_CHAT)); // Original permission preserved
+    let final_perms = RoomPermissionSet(perms.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(final_perms.has(RoomPermission::KICK_MEMBER));
+    assert!(final_perms.has(RoomPermission::CHAT)); // Original permission preserved
 }
 
 // Token Blacklist Tests
@@ -963,10 +967,10 @@ async fn test_playback_state_concurrent_updates() {
 fn test_permission_bits_remain_consistent_under_concurrent_updates() {
     use std::sync::Arc;
     use std::thread;
-    use synctv_core::models::PermissionBits;
+    use synctv_core::models::RoomPermissionSet;
 
     let perms = Arc::new(std::sync::atomic::AtomicU64::new(
-        PermissionBits::DEFAULT_MEMBER,
+        RoomPermissionSet::default_member().0,
     ));
     let mut handles = vec![];
 
@@ -976,18 +980,18 @@ fn test_permission_bits_remain_consistent_under_concurrent_updates() {
             for _ in 0..10000 {
                 // Read
                 let current = perms.load(std::sync::atomic::Ordering::SeqCst);
-                let bits = PermissionBits(current);
+                let bits = RoomPermissionSet(current);
 
                 // Check some permissions
-                let _ = bits.has(PermissionBits::SEND_CHAT);
+                let _ = bits.has(RoomPermission::CHAT);
 
                 // Grant and revoke
                 perms.fetch_or(
-                    PermissionBits::CREATE_MEDIA_RESOURCE,
+                    synctv_core::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
                     std::sync::atomic::Ordering::SeqCst,
                 );
                 perms.fetch_and(
-                    !PermissionBits::CREATE_MEDIA_RESOURCE,
+                    !synctv_core::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
                     std::sync::atomic::Ordering::SeqCst,
                 );
             }
@@ -999,6 +1003,6 @@ fn test_permission_bits_remain_consistent_under_concurrent_updates() {
     }
 
     // Final state should be valid
-    let final_perms = PermissionBits(perms.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(final_perms.has(PermissionBits::SEND_CHAT)); // Should still have original permission
+    let final_perms = RoomPermissionSet(perms.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(final_perms.has(RoomPermission::CHAT)); // Should still have original permission
 }

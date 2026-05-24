@@ -2,7 +2,7 @@
 
 use crate::impls::ApiError;
 use std::collections::HashMap;
-use synctv_core::models::{PermissionBits, UserId};
+use synctv_core::models::UserId;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
 
@@ -789,7 +789,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::PermissionBits::SET_ROOM_SETTINGS,
+                synctv_core::models::RoomPermission::SET_ROOM_SETTINGS,
             )
             .await
             .map_err(ApiError::from)?;
@@ -1263,8 +1263,11 @@ impl ClientApiImpl {
         actor: &RoomActor,
         req: crate::proto::client::GetChatHistoryRequest,
     ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
-        self.require_room_permission(actor, PermissionBits::VIEW_CHAT_HISTORY)
-            .await?;
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
+        )
+        .await?;
         self.get_chat_history_for_room_id(&actor.room_id(), req)
             .await
     }

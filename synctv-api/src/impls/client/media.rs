@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
     MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
-    PermissionBits, Playlist, PlaylistListQuery as CorePlaylistListQuery,
+    Playlist, PlaylistListQuery as CorePlaylistListQuery,
     PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
     UserId,
 };
@@ -794,7 +794,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::PermissionBits::CLEAR_MEDIA_RESOURCES,
+                synctv_core::models::RoomPermission::CLEAR_MEDIA_RESOURCES,
             )
             .await
             .map_err(ApiError::from)?;
@@ -941,7 +941,7 @@ impl ClientApiImpl {
             .check_permission(
                 &rid,
                 &uid,
-                synctv_core::models::PermissionBits::REORDER_MEDIA_RESOURCES,
+                synctv_core::models::RoomPermission::REORDER_MEDIA_RESOURCES,
             )
             .await
             .map_err(Self::map_room_access_error)?;
@@ -1016,8 +1016,11 @@ impl ClientApiImpl {
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
-            .await?;
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+        )
+        .await?;
         let rid = actor.room_id();
         let viewer_id = actor.user_id();
         let Some(playlist_id) = (if req.playlist_id.is_empty() {
@@ -1445,8 +1448,11 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::Media, ApiError> {
         let rid = actor.room_id();
         let mid = crate::impls::parse_media_id_param(media_id, "media_id", &self.public_id_codec)?;
-        self.require_room_permission(actor, PermissionBits::VIEW_MEDIA_RESOURCES)
-            .await?;
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+        )
+        .await?;
 
         // Direct lookup by ID instead of loading the entire playlist.
         let media = self

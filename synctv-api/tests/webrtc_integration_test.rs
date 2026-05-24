@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{Config, WebRTCConfig, WebRTCMode};
-use synctv_core::models::PermissionBits;
+use synctv_core::models::{RoomGuestPermissionBits, RoomMemberPermissionBits};
 
 // Test Infrastructure Setup
 
@@ -379,7 +379,12 @@ mod permissions {
             .expect("join room");
         fixture
             .room_service
-            .grant_permission(room.id, creator.id, member.id, PermissionBits::USE_WEBRTC)
+            .grant_permission(
+                room.id,
+                creator.id,
+                member.id,
+                RoomMemberPermissionBits::USE_WEBRTC,
+            )
             .await
             .expect("grant USE_WEBRTC");
 
@@ -452,7 +457,8 @@ mod permissions {
             .await
             .expect("load room settings");
         settings.allow_guest_join = AllowGuestJoin(true);
-        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
+        settings.guest_added_permissions =
+            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
         fixture
             .room_service
             .set_settings(room.id, creator.id, settings)
@@ -550,7 +556,12 @@ mod permissions {
         fixture
             .room_service
             .member_service()
-            .revoke_permission(room.id, creator.id, member.id, PermissionBits::USE_WEBRTC)
+            .revoke_permission(
+                room.id,
+                creator.id,
+                member.id,
+                RoomMemberPermissionBits::USE_WEBRTC,
+            )
             .await
             .expect("revoke USE_WEBRTC");
 

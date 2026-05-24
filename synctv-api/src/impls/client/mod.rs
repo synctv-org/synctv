@@ -39,7 +39,7 @@ mod tests;
 
 use futures::future::BoxFuture;
 use std::sync::Arc;
-use synctv_core::models::{PermissionBits, RoomId, RoomStatus};
+use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
 use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
 use synctv_core::service::{ReviewService, RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
@@ -132,7 +132,7 @@ pub struct GuestRoomAccess {
     pub display_name: String,
     pub session_id: String,
     pub token_jti: String,
-    pub permissions: PermissionBits,
+    pub permissions: RoomPermissionSet,
     pub room_guest_version: i64,
 }
 
@@ -377,7 +377,7 @@ impl ClientApiImpl {
 
     pub(crate) fn require_guest_permission(
         access: &GuestRoomAccess,
-        permission: u64,
+        permission: synctv_core::models::RoomPermission,
     ) -> Result<(), ApiError> {
         if access.permissions.has(permission) {
             Ok(())
@@ -391,7 +391,7 @@ impl ClientApiImpl {
     pub(crate) async fn require_room_permission(
         &self,
         actor: &RoomActor,
-        permission: u64,
+        permission: synctv_core::models::RoomPermission,
     ) -> Result<(), ApiError> {
         match actor {
             RoomActor::User { room_id, user_id } => self

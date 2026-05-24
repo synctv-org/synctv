@@ -1,6 +1,6 @@
 //! WebRTC operations: ICE servers, network quality
 
-use synctv_core::models::{PermissionBits, RoomId, UserId};
+use synctv_core::models::{RoomId, UserId};
 
 use super::{ClientApiImpl, RoomActor};
 use crate::impls::ApiError;
@@ -51,7 +51,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
         use crate::proto::client::{GetIceServersResponse, IceServer};
 
-        self.require_room_permission(actor, PermissionBits::USE_WEBRTC)
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::USE_WEBRTC)
             .await?;
         let room_id = actor.room_id();
         let room = self

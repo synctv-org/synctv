@@ -501,7 +501,7 @@ pub(crate) fn playback_state_to_proto(
 #[cfg(test)]
 pub(super) fn room_member_to_proto(
     member: &synctv_core::models::RoomMemberWithUser,
-    role_default: synctv_core::models::PermissionBits,
+    role_default: synctv_core::models::RoomPermissionSet,
     public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     room_member_to_proto_with_permissions(
@@ -513,7 +513,7 @@ pub(super) fn room_member_to_proto(
 
 pub(crate) fn room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
-    permissions: synctv_core::models::PermissionBits,
+    permissions: synctv_core::models::RoomPermissionSet,
     public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {

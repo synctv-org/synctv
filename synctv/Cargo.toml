@@ -182,6 +182,7 @@ tempfile.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
 prost.workspace = true
+jsonwebtoken.workspace = true
 clap = { workspace = true, features = ["derive"] }
 clap_complete.workspace = true
 tokio-stream.workspace = true

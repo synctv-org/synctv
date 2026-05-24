@@ -1,14 +1,17 @@
 //! Unit tests for pure model logic (no Docker/database needed)
 //!
 //! Covers: `UserRole`, `UserStatus`, User permission checks, `RoomStatus`,
-//! `PermissionBits`, `RoomRole`, room permission calculations.
+//! `RoomPermissionSet`, `RoomRole`, room permission calculations.
 //!
 //! Run with: cargo test --test `model_logic_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::room::RoomSettingsJson;
 use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
-use synctv_core::models::{PermissionBits, RoomRole, RoomStatus};
+use synctv_core::models::{
+    RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
+    RoomStatus,
+};
 
 // UserRole tests
 
@@ -197,63 +200,72 @@ fn test_room_status_predicates() {
     assert!(RoomStatus::Closed.is_closed());
 }
 
-// PermissionBits tests
+// RoomPermissionSet tests
 
 #[test]
 fn test_permission_bits_has_single() {
-    let perms =
-        PermissionBits::new(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
-    assert!(!perms.has(PermissionBits::DELETE_MEDIA_RESOURCE_ANY));
+    let perms = RoomPermissionSet::new(
+        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
+    );
+    assert!(perms.has(RoomPermission::CHAT));
+    assert!(perms.has(RoomPermission::CREATE_MEDIA_RESOURCE));
+    assert!(!perms.has(RoomPermission::DELETE_MEDIA_RESOURCE_ANY));
 }
 
 #[test]
 fn test_permission_bits_has_all() {
-    let perms = PermissionBits::new(
-        PermissionBits::SEND_CHAT
-            | PermissionBits::CREATE_MEDIA_RESOURCE
-            | PermissionBits::PLAY_CONTROL,
+    let perms = RoomPermissionSet::new(
+        RoomAdminPermissionBits::CHAT
+            | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+            | RoomAdminPermissionBits::PLAY_CONTROL,
     );
-    assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
-    assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::DELETE_MEDIA_RESOURCE_ANY));
+    assert!(perms.has_all(RoomPermissionSet::new(
+        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+    )));
+    assert!(!perms.has_all(RoomPermissionSet::new(
+        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY
+    )));
 }
 
 #[test]
 fn test_permission_bits_has_any() {
-    let perms = PermissionBits::new(PermissionBits::SEND_CHAT);
-    assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
-    assert!(!perms.has_any(PermissionBits::CREATE_MEDIA_RESOURCE | PermissionBits::PLAY_CONTROL));
+    let perms = RoomPermissionSet::new(RoomAdminPermissionBits::CHAT);
+    assert!(perms.has_any(RoomPermissionSet::new(
+        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+    )));
+    assert!(!perms.has_any(RoomPermissionSet::new(
+        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE | RoomAdminPermissionBits::PLAY_CONTROL
+    )));
 }
 
 #[test]
 fn test_permission_bits_grant_and_revoke() {
-    let mut perms = PermissionBits::empty();
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
+    let mut perms = RoomPermissionSet::empty();
+    assert!(!perms.has(RoomPermission::CHAT));
 
-    perms.grant(PermissionBits::SEND_CHAT);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
+    perms.grant(RoomPermission::CHAT);
+    assert!(perms.has(RoomPermission::CHAT));
 
-    perms.revoke(PermissionBits::SEND_CHAT);
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
+    perms.revoke(RoomPermission::CHAT);
+    assert!(!perms.has(RoomPermission::CHAT));
 }
 
 #[test]
 fn test_permission_bits_toggle() {
-    let mut perms = PermissionBits::empty();
-    perms.toggle(PermissionBits::SEND_CHAT);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    perms.toggle(PermissionBits::SEND_CHAT);
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
+    let mut perms = RoomPermissionSet::empty();
+    perms.toggle(RoomPermission::CHAT);
+    assert!(perms.has(RoomPermission::CHAT));
+    perms.toggle(RoomPermission::CHAT);
+    assert!(!perms.has(RoomPermission::CHAT));
 }
 
 #[test]
 fn test_permission_bits_set() {
-    let mut perms = PermissionBits::empty();
-    perms.set(PermissionBits::SEND_CHAT, true);
-    assert!(perms.has(PermissionBits::SEND_CHAT));
-    perms.set(PermissionBits::SEND_CHAT, false);
-    assert!(!perms.has(PermissionBits::SEND_CHAT));
+    let mut perms = RoomPermissionSet::empty();
+    perms.set(RoomPermission::CHAT, true);
+    assert!(perms.has(RoomPermission::CHAT));
+    perms.set(RoomPermission::CHAT, false);
+    assert!(!perms.has(RoomPermission::CHAT));
 }
 
 // RoomRole tests
@@ -266,13 +278,13 @@ fn test_room_role_permissions_hierarchy() {
     let guest = RoomRole::Guest.permissions();
 
     // Creator has all permissions
-    assert_eq!(creator.0, PermissionBits::ALL);
+    assert_eq!(creator.0, RoomPermissionSet::all().0);
 
     // Admin is a superset of member
-    assert!(admin.has_all(member.0));
+    assert!(admin.has_all(member));
 
     // Member is a superset of guest
-    assert!(member.has_all(guest.0));
+    assert!(member.has_all(guest));
 }
 
 #[test]
@@ -294,46 +306,59 @@ fn test_room_role_from_str_roundtrip() {
 
 #[test]
 fn test_effective_permissions_no_overrides() {
-    let global = PermissionBits::new(PermissionBits::DEFAULT_MEMBER);
+    let global = RoomPermissionSet::default_member();
     let effective = RoomSettingsJson::effective_permissions_for_role(global, None, None);
     assert_eq!(effective, global);
 }
 
 #[test]
 fn test_effective_permissions_add_only() {
-    let global = PermissionBits::new(PermissionBits::DEFAULT_MEMBER);
-    let added = PermissionBits::PLAY_CONTROL;
+    let global = RoomPermissionSet::default_member();
+    let added = RoomAdminPermissionBits::PLAY_CONTROL;
     let effective = RoomSettingsJson::effective_permissions_for_role(global, Some(added), None);
-    assert!(effective.has(PermissionBits::PLAY_CONTROL));
-    assert!(effective.has(PermissionBits::SEND_CHAT)); // Original preserved
+    assert!(effective.has(RoomPermission::PLAY_CONTROL));
+    assert!(effective.has(RoomPermission::CHAT)); // Original preserved
 }
 
 #[test]
 fn test_effective_permissions_remove_only() {
-    let global = PermissionBits::new(PermissionBits::DEFAULT_MEMBER);
-    let removed = PermissionBits::SEND_CHAT;
+    let global = RoomPermissionSet::default_member();
+    let removed = RoomAdminPermissionBits::CHAT;
     let effective = RoomSettingsJson::effective_permissions_for_role(global, None, Some(removed));
-    assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
-    assert!(effective.has(PermissionBits::CREATE_MEDIA_RESOURCE)); // Other preserved
+    assert!(!effective.has(RoomPermission::CHAT)); // Removed
+    assert!(effective.has(RoomPermission::CREATE_MEDIA_RESOURCE)); // Other preserved
 }
 
 #[test]
 fn test_effective_permissions_add_and_remove() {
-    let global = PermissionBits::new(PermissionBits::DEFAULT_MEMBER);
-    let added = PermissionBits::PLAY_CONTROL;
-    let removed = PermissionBits::SEND_CHAT;
+    let global = RoomPermissionSet::default_member();
+    let added = RoomAdminPermissionBits::PLAY_CONTROL;
+    let removed = RoomAdminPermissionBits::CHAT;
     let effective =
         RoomSettingsJson::effective_permissions_for_role(global, Some(added), Some(removed));
-    assert!(effective.has(PermissionBits::PLAY_CONTROL)); // Added
-    assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
-    assert!(effective.has(PermissionBits::CREATE_MEDIA_RESOURCE)); // Unchanged
+    assert!(effective.has(RoomPermission::PLAY_CONTROL)); // Added
+    assert!(!effective.has(RoomPermission::CHAT)); // Removed
+    assert!(effective.has(RoomPermission::CREATE_MEDIA_RESOURCE)); // Unchanged
 }
 
 #[test]
 fn test_effective_permissions_remove_overrides_add() {
     // If the same bit is both added and removed, remove wins (applied second)
-    let global = PermissionBits::empty();
-    let bit = PermissionBits::SEND_CHAT;
+    let global = RoomPermissionSet::empty();
+    let bit = RoomAdminPermissionBits::CHAT;
     let effective = RoomSettingsJson::effective_permissions_for_role(global, Some(bit), Some(bit));
-    assert!(!effective.has(PermissionBits::SEND_CHAT));
+    assert!(!effective.has(RoomPermission::CHAT));
+}
+
+#[test]
+fn test_member_permissions_maps_member_bitspace() {
+    let settings = RoomSettingsJson {
+        member_added_permissions: Some(RoomMemberPermissionBits::USE_WEBRTC),
+        member_removed_permissions: Some(RoomMemberPermissionBits::CHAT),
+        ..RoomSettingsJson::default()
+    };
+
+    let effective = settings.member_permissions(RoomPermissionSet::default_member());
+    assert!(effective.has(RoomPermission::USE_WEBRTC));
+    assert!(!effective.has(RoomPermission::CHAT));
 }

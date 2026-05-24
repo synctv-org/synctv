@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{PermissionBits, Playlist, User, UserId, UserRole, UserStatus},
+    models::{Playlist, RoomMemberPermissionBits, User, UserId, UserRole, UserStatus},
     provider::DynamicListQuery,
     repository::UserRepository,
     service::{
@@ -166,7 +166,7 @@ async fn test_add_media_without_permission_denied() {
             room.id,
             creator.id,
             member.id,
-            PermissionBits::CREATE_MEDIA_RESOURCE,
+            RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
         )
         .await
         .unwrap();

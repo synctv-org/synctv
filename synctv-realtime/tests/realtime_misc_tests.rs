@@ -39,14 +39,12 @@ async fn test_critical_events_high_priority() {
         target_username: "listener".to_string(),
         changed_by: UserId::expect_positive(10_000_027),
         changed_by_username: "admin".to_string(),
-        new_permissions: synctv_core::models::PermissionBits(
-            synctv_core::models::PermissionBits::DEFAULT_MEMBER,
-        ),
+        new_permissions: synctv_core::models::RoomPermissionSet::default_member(),
         role: 2, // Member role
-        added_permissions: synctv_core::models::PermissionBits::empty(),
-        removed_permissions: synctv_core::models::PermissionBits::empty(),
-        admin_added_permissions: synctv_core::models::PermissionBits::empty(),
-        admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
+        added_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        admin_added_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        admin_removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
         timestamp: Utc::now(),
     };
 

@@ -8,9 +8,9 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::RequireApproval, MemberStatus, PermissionBits, ReviewRequestId,
-        ReviewStatus, RoomRole, RoomSettings, RoomStatus, SignupMethod, User, UserId, UserRole,
-        UserStatus,
+        room_settings::RequireApproval, MemberStatus, ReviewRequestId, ReviewStatus,
+        RoomAdminPermissionBits, RoomRole, RoomSettings, RoomStatus, SignupMethod, User, UserId,
+        UserRole, UserStatus,
     },
     repository::{
         ProviderInstanceRepository, RoomMemberRepository, RoomRepository, SettingsRepository,
@@ -349,7 +349,8 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
             synctv_proto::client::UpdateMemberPermissionsRequest {
                 user_id: moderator_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
-                added_permissions: PermissionBits::APPROVE_MEMBER | PermissionBits::KICK_MEMBER,
+                added_permissions: RoomAdminPermissionBits::APPROVE_MEMBER
+                    | RoomAdminPermissionBits::KICK_MEMBER,
                 removed_permissions: 0,
                 admin_added_permissions: 0,
                 admin_removed_permissions: 0,
@@ -495,7 +496,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
                 user_id: target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Admin as i32,
                 added_permissions: 0,
-                removed_permissions: PermissionBits::KICK_MEMBER,
+                removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
                 admin_added_permissions: 0,
                 admin_removed_permissions: 0,
             },
@@ -517,7 +518,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
                 added_permissions: 0,
                 removed_permissions: 0,
                 admin_added_permissions: 0,
-                admin_removed_permissions: PermissionBits::KICK_MEMBER,
+                admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
             },
         )
         .await
@@ -531,10 +532,13 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
     );
     assert_eq!(
         updated.admin_removed_permissions,
-        PermissionBits::KICK_MEMBER
+        RoomAdminPermissionBits::KICK_MEMBER
     );
     assert_eq!(updated.removed_permissions, 0);
-    assert_eq!(updated.permissions & PermissionBits::KICK_MEMBER, 0);
+    assert_eq!(
+        updated.permissions & RoomAdminPermissionBits::KICK_MEMBER,
+        0
+    );
 }
 
 #[tokio::test]

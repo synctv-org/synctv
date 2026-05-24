@@ -10,10 +10,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{
-        normalize_provider_instance_name_owned, PermissionBits, Playlist, PlaylistId, RoomId,
-        UserId,
-    },
+    models::{normalize_provider_instance_name_owned, Playlist, PlaylistId, RoomId, UserId},
     provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     repository::PlaylistRepository,
@@ -366,7 +363,11 @@ impl PlaylistService {
 
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
+                .check_permission(
+                    &room_id,
+                    &user_id,
+                    crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+                )
                 .await?;
         }
 
@@ -652,7 +653,7 @@ impl PlaylistService {
                         .check_permission_no_cache(
                             &room_id,
                             &user_id,
-                            PermissionBits::CREATE_MEDIA_RESOURCE,
+                            crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
                         )
                         .await?;
                 }
@@ -770,7 +771,11 @@ impl PlaylistService {
     ) -> Result<Playlist> {
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::REORDER_MEDIA_RESOURCES)
+                .check_permission(
+                    &room_id,
+                    &user_id,
+                    crate::models::RoomPermission::REORDER_MEDIA_RESOURCES,
+                )
                 .await?;
         }
 

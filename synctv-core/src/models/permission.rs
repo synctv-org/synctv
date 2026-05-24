@@ -13,154 +13,64 @@ use serde::{Deserialize, Serialize};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
 use std::str::FromStr;
 
-/// Permission bitmask.
+/// A semantic room permission used by authorization checks.
 ///
-/// The public protobuf/API representation is `uint64`, but persisted room
-/// permission overrides use PostgreSQL `BIGINT`. Every defined product bit must
-/// remain representable in signed storage.
+/// This enum deliberately has no numeric representation. Numeric permission
+/// bits live in the role-specific bitspaces below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RoomPermission {
+    Chat,
+    CreateMediaResource,
+    ViewMediaResources,
+    ViewMemberList,
+    ViewChatHistory,
+    UseWebrtc,
+    DeleteMediaResourceAny,
+    ReorderMediaResources,
+    ClearMediaResources,
+    LiveControl,
+    PlayControl,
+    ChangeCurrentMedia,
+    ChangePlaybackRate,
+    ApproveMember,
+    KickMember,
+    SetMemberPermissions,
+    AddMember,
+    SetRoomSettings,
+    DeleteChat,
+    DeleteRoom,
+}
+
+impl RoomPermission {
+    pub const CHAT: Self = Self::Chat;
+    pub const CREATE_MEDIA_RESOURCE: Self = Self::CreateMediaResource;
+    pub const VIEW_MEDIA_RESOURCES: Self = Self::ViewMediaResources;
+    pub const VIEW_MEMBER_LIST: Self = Self::ViewMemberList;
+    pub const VIEW_CHAT_HISTORY: Self = Self::ViewChatHistory;
+    pub const USE_WEBRTC: Self = Self::UseWebrtc;
+    pub const DELETE_MEDIA_RESOURCE_ANY: Self = Self::DeleteMediaResourceAny;
+    pub const REORDER_MEDIA_RESOURCES: Self = Self::ReorderMediaResources;
+    pub const CLEAR_MEDIA_RESOURCES: Self = Self::ClearMediaResources;
+    pub const LIVE_CONTROL: Self = Self::LiveControl;
+    pub const PLAY_CONTROL: Self = Self::PlayControl;
+    pub const CHANGE_CURRENT_MEDIA: Self = Self::ChangeCurrentMedia;
+    pub const CHANGE_PLAYBACK_RATE: Self = Self::ChangePlaybackRate;
+    pub const APPROVE_MEMBER: Self = Self::ApproveMember;
+    pub const KICK_MEMBER: Self = Self::KickMember;
+    pub const SET_MEMBER_PERMISSIONS: Self = Self::SetMemberPermissions;
+    pub const ADD_MEMBER: Self = Self::AddMember;
+    pub const SET_ROOM_SETTINGS: Self = Self::SetRoomSettings;
+    pub const DELETE_CHAT: Self = Self::DeleteChat;
+    pub const DELETE_ROOM: Self = Self::DeleteRoom;
+}
+
+/// Effective permissions projected into the admin bitspace for checks and
+/// client-visible snapshots. It is derived data, not an override bitspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct PermissionBits(pub u64);
+pub struct RoomPermissionSet(pub u64);
 
-impl PermissionBits {
-    /// Send chat messages (includes messages with position for danmaku display)
-    pub const SEND_CHAT: u64 = 1 << 0;
-
-    /// Create media resources such as media items or playlists/folders, and
-    /// edit media resources created by the actor.
-    pub const CREATE_MEDIA_RESOURCE: u64 = 1 << 1;
-
-    /// Delete media resources created by other users or resources without a
-    /// recorded creator.
-    pub const DELETE_MEDIA_RESOURCE_ANY: u64 = 1 << 2;
-
-    /// Reorder media resources such as media items or playlists/folders.
-    pub const REORDER_MEDIA_RESOURCES: u64 = 1 << 3;
-
-    /// Clear media resource queues.
-    pub const CLEAR_MEDIA_RESOURCES: u64 = 1 << 4;
-
-    /// Manage live streams and issue RTMP publish keys for room media.
-    pub const LIVE_CONTROL: u64 = 1 << 5;
-
-    /// Play control (play/pause/seek)
-    pub const PLAY_CONTROL: u64 = 1 << 6;
-
-    /// Switch current playback media
-    pub const CHANGE_CURRENT_MEDIA: u64 = 1 << 7;
-
-    /// Change playback rate
-    pub const CHANGE_PLAYBACK_RATE: u64 = 1 << 8;
-
-    /// Approve or reject pending join requests
-    pub const APPROVE_MEMBER: u64 = 1 << 9;
-
-    /// Kick member
-    pub const KICK_MEMBER: u64 = 1 << 10;
-
-    /// Set member permissions
-    pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 11;
-
-    /// Explicitly add a member when self-service joining is disabled
-    pub const ADD_MEMBER: u64 = 1 << 12;
-
-    /// Modify room settings
-    pub const SET_ROOM_SETTINGS: u64 = 1 << 13;
-
-    /// Delete chat messages
-    pub const DELETE_CHAT: u64 = 1 << 14;
-
-    /// Delete room
-    pub const DELETE_ROOM: u64 = 1 << 15;
-
-    /// View media resources such as media items and playlists/folders.
-    pub const VIEW_MEDIA_RESOURCES: u64 = 1 << 16;
-
-    /// Manage any media resource, including deleting resources created by
-    /// others, reordering shared resource lists, and clearing resource queues.
-    pub const MANAGE_MEDIA_RESOURCES: u64 = Self::DELETE_MEDIA_RESOURCE_ANY
-        | Self::REORDER_MEDIA_RESOURCES
-        | Self::CLEAR_MEDIA_RESOURCES;
-
-    /// View member list
-    pub const VIEW_MEMBER_LIST: u64 = 1 << 17;
-
-    /// View chat history
-    pub const VIEW_CHAT_HISTORY: u64 = 1 << 18;
-
-    /// Use WebRTC (voice/video)
-    pub const USE_WEBRTC: u64 = 1 << 19;
-
-    /// All permissions currently defined by the product model.
-    pub const ALL: u64 = Self::SEND_CHAT
-        | Self::CREATE_MEDIA_RESOURCE
-        | Self::DELETE_MEDIA_RESOURCE_ANY
-        | Self::REORDER_MEDIA_RESOURCES
-        | Self::CLEAR_MEDIA_RESOURCES
-        | Self::LIVE_CONTROL
-        | Self::PLAY_CONTROL
-        | Self::CHANGE_CURRENT_MEDIA
-        | Self::CHANGE_PLAYBACK_RATE
-        | Self::APPROVE_MEMBER
-        | Self::KICK_MEMBER
-        | Self::SET_MEMBER_PERMISSIONS
-        | Self::ADD_MEMBER
-        | Self::SET_ROOM_SETTINGS
-        | Self::DELETE_CHAT
-        | Self::DELETE_ROOM
-        | Self::VIEW_MEDIA_RESOURCES
-        | Self::VIEW_MEMBER_LIST
-        | Self::VIEW_CHAT_HISTORY
-        | Self::USE_WEBRTC;
-
-    /// Defined permissions that cannot be delegated through room role/member
-    /// permission overrides.
-    pub const NON_ASSIGNABLE_IN_ROOM: u64 = Self::DELETE_ROOM;
-
-    /// Permissions that can be delegated within a room to non-creator members.
-    ///
-    /// Room deletion is a lifecycle operation owned by the room creator or the
-    /// global management plane. Unknown bits are rejected so raw bitmask update
-    /// paths cannot grant undefined capabilities.
-    pub const ASSIGNABLE_IN_ROOM: u64 = Self::ALL & !Self::NON_ASSIGNABLE_IN_ROOM;
-
-    /// Default member permissions
-    pub const DEFAULT_MEMBER: u64 = Self::SEND_CHAT
-        | Self::CREATE_MEDIA_RESOURCE
-        | Self::VIEW_MEDIA_RESOURCES
-        | Self::VIEW_MEMBER_LIST
-        | Self::VIEW_CHAT_HISTORY
-        | Self::USE_WEBRTC;
-
-    /// Default admin permissions
-    pub const DEFAULT_ADMIN: u64 = Self::DEFAULT_MEMBER
-        | Self::DELETE_MEDIA_RESOURCE_ANY
-        | Self::REORDER_MEDIA_RESOURCES
-        | Self::CLEAR_MEDIA_RESOURCES
-        | Self::LIVE_CONTROL
-        | Self::PLAY_CONTROL
-        | Self::CHANGE_CURRENT_MEDIA
-        | Self::CHANGE_PLAYBACK_RATE
-        | Self::APPROVE_MEMBER
-        | Self::KICK_MEMBER
-        | Self::SET_MEMBER_PERMISSIONS
-        | Self::ADD_MEMBER
-        | Self::SET_ROOM_SETTINGS
-        | Self::DELETE_CHAT;
-
-    /// Default guest permissions.
-    ///
-    /// Guests can enter guest-enabled public rooms, but they do not receive
-    /// media resource permissions by default.
-    pub const DEFAULT_GUEST: u64 = Self::NONE;
-
-    /// Permissions that can be granted to guests.
-    ///
-    /// Guests are not room members and cannot receive write or moderation
-    /// capabilities. Playlist/media access is intentionally not included.
-    pub const GUEST_ASSIGNABLE: u64 =
-        Self::VIEW_MEMBER_LIST | Self::VIEW_CHAT_HISTORY | Self::USE_WEBRTC;
-
+impl RoomPermissionSet {
     pub const NONE: u64 = 0;
 
     #[must_use]
@@ -178,36 +88,64 @@ impl PermissionBits {
         self.0
     }
 
-    /// Check if has specific permission
     #[must_use]
-    pub const fn has(&self, permission: u64) -> bool {
-        (self.0 & permission) != 0
+    pub const fn all() -> Self {
+        Self(RoomAdminPermissionBits::ALL)
     }
 
-    /// Check if has all specified permissions
     #[must_use]
-    pub const fn has_all(&self, permissions: u64) -> bool {
-        (self.0 & permissions) == permissions
+    pub const fn default_admin() -> Self {
+        Self(RoomAdminPermissionBits::to_permissions(
+            RoomAdminPermissionBits::DEFAULT,
+        ))
     }
 
-    /// Check if has any of the specified permissions
     #[must_use]
-    pub const fn has_any(&self, permissions: u64) -> bool {
-        (self.0 & permissions) != 0
+    pub const fn default_member() -> Self {
+        Self(RoomMemberPermissionBits::to_permissions(
+            RoomMemberPermissionBits::DEFAULT,
+        ))
     }
 
-    /// Add permission (Allow pattern)
-    pub const fn grant(&mut self, permission: u64) {
-        self.0 |= permission;
+    #[must_use]
+    pub const fn default_guest() -> Self {
+        Self(RoomGuestPermissionBits::to_permissions(
+            RoomGuestPermissionBits::DEFAULT,
+        ))
     }
 
-    /// Remove permission (Deny pattern)
-    pub const fn revoke(&mut self, permission: u64) {
-        self.0 &= !permission;
+    #[must_use]
+    pub const fn guest_assignable() -> Self {
+        Self(RoomGuestPermissionBits::to_permissions(
+            RoomGuestPermissionBits::ALL,
+        ))
     }
 
-    /// Set permission state
-    pub const fn set(&mut self, permission: u64, enabled: bool) {
+    #[must_use]
+    pub const fn has(&self, permission: RoomPermission) -> bool {
+        let bit = RoomAdminPermissionBits::bit_for(permission);
+        bit != 0 && (self.0 & bit) != 0
+    }
+
+    #[must_use]
+    pub const fn has_all(&self, permissions: Self) -> bool {
+        (self.0 & permissions.0) == permissions.0
+    }
+
+    #[must_use]
+    pub const fn has_any(&self, permissions: Self) -> bool {
+        (self.0 & permissions.0) != 0
+    }
+
+    pub const fn grant(&mut self, permission: RoomPermission) {
+        self.0 |= RoomAdminPermissionBits::bit_for(permission);
+    }
+
+    pub const fn revoke(&mut self, permission: RoomPermission) {
+        self.0 &= !RoomAdminPermissionBits::bit_for(permission);
+    }
+
+    pub const fn set(&mut self, permission: RoomPermission, enabled: bool) {
         if enabled {
             self.grant(permission);
         } else {
@@ -215,36 +153,411 @@ impl PermissionBits {
         }
     }
 
-    /// Toggle permission
-    pub const fn toggle(&mut self, permission: u64) {
-        self.0 ^= permission;
-    }
-
-    #[must_use]
-    pub const fn includes_only_assignable_in_room(bits: u64) -> bool {
-        bits & !Self::ASSIGNABLE_IN_ROOM == 0
+    pub const fn toggle(&mut self, permission: RoomPermission) {
+        self.0 ^= RoomAdminPermissionBits::bit_for(permission);
     }
 }
 
-impl Default for PermissionBits {
+/// Permission bitspace for non-admin room members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoomMemberPermissionBits(pub u64);
+
+impl RoomMemberPermissionBits {
+    pub const CHAT: u64 = 1 << 0;
+    pub const CREATE_MEDIA_RESOURCE: u64 = 1 << 1;
+    pub const VIEW_MEDIA_RESOURCES: u64 = 1 << 2;
+    pub const VIEW_MEMBER_LIST: u64 = 1 << 3;
+    pub const VIEW_CHAT_HISTORY: u64 = 1 << 4;
+    pub const USE_WEBRTC: u64 = 1 << 5;
+
+    pub const ALL: u64 = Self::CHAT
+        | Self::CREATE_MEDIA_RESOURCE
+        | Self::VIEW_MEDIA_RESOURCES
+        | Self::VIEW_MEMBER_LIST
+        | Self::VIEW_CHAT_HISTORY
+        | Self::USE_WEBRTC;
+
+    pub const DEFAULT: u64 = Self::ALL;
+
+    pub const NAMES: &[(&str, u64)] = &[
+        ("chat", Self::CHAT),
+        ("create_media_resource", Self::CREATE_MEDIA_RESOURCE),
+        ("view_media_resources", Self::VIEW_MEDIA_RESOURCES),
+        ("view_member_list", Self::VIEW_MEMBER_LIST),
+        ("view_chat_history", Self::VIEW_CHAT_HISTORY),
+        ("use_webrtc", Self::USE_WEBRTC),
+    ];
+
+    #[must_use]
+    pub const fn includes_only_defined(bits: u64) -> bool {
+        bits & !Self::ALL == 0
+    }
+
+    #[must_use]
+    pub const fn to_permissions(bits: u64) -> u64 {
+        let mut permissions = 0;
+        if bits & Self::CHAT != 0 {
+            permissions |= RoomAdminPermissionBits::CHAT;
+        }
+        if bits & Self::CREATE_MEDIA_RESOURCE != 0 {
+            permissions |= RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE;
+        }
+        if bits & Self::VIEW_MEDIA_RESOURCES != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES;
+        }
+        if bits & Self::VIEW_MEMBER_LIST != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_MEMBER_LIST;
+        }
+        if bits & Self::VIEW_CHAT_HISTORY != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
+        }
+        if bits & Self::USE_WEBRTC != 0 {
+            permissions |= RoomAdminPermissionBits::USE_WEBRTC;
+        }
+        permissions
+    }
+
+    #[must_use]
+    pub const fn from_permissions(permissions: u64) -> u64 {
+        let mut bits = 0;
+        if permissions & RoomAdminPermissionBits::CHAT != 0 {
+            bits |= Self::CHAT;
+        }
+        if permissions & RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE != 0 {
+            bits |= Self::CREATE_MEDIA_RESOURCE;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES != 0 {
+            bits |= Self::VIEW_MEDIA_RESOURCES;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_MEMBER_LIST != 0 {
+            bits |= Self::VIEW_MEMBER_LIST;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
+            bits |= Self::VIEW_CHAT_HISTORY;
+        }
+        if permissions & RoomAdminPermissionBits::USE_WEBRTC != 0 {
+            bits |= Self::USE_WEBRTC;
+        }
+        bits
+    }
+}
+
+/// Permission bitspace for room admins.
+///
+/// Admin bits are independent from member bits even when some names map to the
+/// same runtime capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoomAdminPermissionBits(pub u64);
+
+impl RoomAdminPermissionBits {
+    pub const CHAT: u64 = 1 << 0;
+    pub const CREATE_MEDIA_RESOURCE: u64 = 1 << 1;
+    pub const VIEW_MEDIA_RESOURCES: u64 = 1 << 2;
+    pub const VIEW_MEMBER_LIST: u64 = 1 << 3;
+    pub const VIEW_CHAT_HISTORY: u64 = 1 << 4;
+    pub const USE_WEBRTC: u64 = 1 << 5;
+    pub const DELETE_MEDIA_RESOURCE_ANY: u64 = 1 << 6;
+    pub const REORDER_MEDIA_RESOURCES: u64 = 1 << 7;
+    pub const CLEAR_MEDIA_RESOURCES: u64 = 1 << 8;
+    pub const LIVE_CONTROL: u64 = 1 << 9;
+    pub const PLAY_CONTROL: u64 = 1 << 10;
+    pub const CHANGE_CURRENT_MEDIA: u64 = 1 << 11;
+    pub const CHANGE_PLAYBACK_RATE: u64 = 1 << 12;
+    pub const APPROVE_MEMBER: u64 = 1 << 13;
+    pub const KICK_MEMBER: u64 = 1 << 14;
+    pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 15;
+    pub const ADD_MEMBER: u64 = 1 << 16;
+    pub const SET_ROOM_SETTINGS: u64 = 1 << 17;
+    pub const DELETE_CHAT: u64 = 1 << 18;
+    pub const DELETE_ROOM: u64 = 1 << 19;
+
+    pub const ALL: u64 = Self::CHAT
+        | Self::CREATE_MEDIA_RESOURCE
+        | Self::VIEW_MEDIA_RESOURCES
+        | Self::VIEW_MEMBER_LIST
+        | Self::VIEW_CHAT_HISTORY
+        | Self::USE_WEBRTC
+        | Self::DELETE_MEDIA_RESOURCE_ANY
+        | Self::REORDER_MEDIA_RESOURCES
+        | Self::CLEAR_MEDIA_RESOURCES
+        | Self::LIVE_CONTROL
+        | Self::PLAY_CONTROL
+        | Self::CHANGE_CURRENT_MEDIA
+        | Self::CHANGE_PLAYBACK_RATE
+        | Self::APPROVE_MEMBER
+        | Self::KICK_MEMBER
+        | Self::SET_MEMBER_PERMISSIONS
+        | Self::ADD_MEMBER
+        | Self::SET_ROOM_SETTINGS
+        | Self::DELETE_CHAT
+        | Self::DELETE_ROOM;
+
+    pub const DEFAULT: u64 = Self::ALL & !Self::DELETE_ROOM;
+
+    pub const NAMES: &[(&str, u64)] = &[
+        ("chat", Self::CHAT),
+        ("create_media_resource", Self::CREATE_MEDIA_RESOURCE),
+        ("view_media_resources", Self::VIEW_MEDIA_RESOURCES),
+        ("view_member_list", Self::VIEW_MEMBER_LIST),
+        ("view_chat_history", Self::VIEW_CHAT_HISTORY),
+        ("use_webrtc", Self::USE_WEBRTC),
+        ("delete_media_resource_any", Self::DELETE_MEDIA_RESOURCE_ANY),
+        ("reorder_media_resources", Self::REORDER_MEDIA_RESOURCES),
+        ("clear_media_resources", Self::CLEAR_MEDIA_RESOURCES),
+        ("live_control", Self::LIVE_CONTROL),
+        ("play_control", Self::PLAY_CONTROL),
+        ("change_current_media", Self::CHANGE_CURRENT_MEDIA),
+        ("change_playback_rate", Self::CHANGE_PLAYBACK_RATE),
+        ("approve_member", Self::APPROVE_MEMBER),
+        ("kick_member", Self::KICK_MEMBER),
+        ("set_member_permissions", Self::SET_MEMBER_PERMISSIONS),
+        ("add_member", Self::ADD_MEMBER),
+        ("set_room_settings", Self::SET_ROOM_SETTINGS),
+        ("delete_chat", Self::DELETE_CHAT),
+        ("delete_room", Self::DELETE_ROOM),
+    ];
+
+    #[must_use]
+    pub const fn includes_only_defined(bits: u64) -> bool {
+        bits & !Self::ALL == 0
+    }
+
+    #[must_use]
+    pub const fn bit_for(permission: RoomPermission) -> u64 {
+        match permission {
+            crate::models::RoomPermission::Chat => Self::CHAT,
+            crate::models::RoomPermission::CreateMediaResource => Self::CREATE_MEDIA_RESOURCE,
+            crate::models::RoomPermission::ViewMediaResources => Self::VIEW_MEDIA_RESOURCES,
+            crate::models::RoomPermission::ViewMemberList => Self::VIEW_MEMBER_LIST,
+            crate::models::RoomPermission::ViewChatHistory => Self::VIEW_CHAT_HISTORY,
+            crate::models::RoomPermission::UseWebrtc => Self::USE_WEBRTC,
+            crate::models::RoomPermission::DeleteMediaResourceAny => {
+                Self::DELETE_MEDIA_RESOURCE_ANY
+            }
+            crate::models::RoomPermission::ReorderMediaResources => Self::REORDER_MEDIA_RESOURCES,
+            crate::models::RoomPermission::ClearMediaResources => Self::CLEAR_MEDIA_RESOURCES,
+            crate::models::RoomPermission::LiveControl => Self::LIVE_CONTROL,
+            crate::models::RoomPermission::PlayControl => Self::PLAY_CONTROL,
+            crate::models::RoomPermission::ChangeCurrentMedia => Self::CHANGE_CURRENT_MEDIA,
+            crate::models::RoomPermission::ChangePlaybackRate => Self::CHANGE_PLAYBACK_RATE,
+            crate::models::RoomPermission::ApproveMember => Self::APPROVE_MEMBER,
+            crate::models::RoomPermission::KickMember => Self::KICK_MEMBER,
+            crate::models::RoomPermission::SetMemberPermissions => Self::SET_MEMBER_PERMISSIONS,
+            crate::models::RoomPermission::AddMember => Self::ADD_MEMBER,
+            crate::models::RoomPermission::SetRoomSettings => Self::SET_ROOM_SETTINGS,
+            crate::models::RoomPermission::DeleteChat => Self::DELETE_CHAT,
+            crate::models::RoomPermission::DeleteRoom => Self::DELETE_ROOM,
+        }
+    }
+
+    #[must_use]
+    pub const fn to_permissions(bits: u64) -> u64 {
+        let mut permissions = 0;
+        if bits & Self::CHAT != 0 {
+            permissions |= RoomAdminPermissionBits::CHAT;
+        }
+        if bits & Self::CREATE_MEDIA_RESOURCE != 0 {
+            permissions |= RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE;
+        }
+        if bits & Self::VIEW_MEDIA_RESOURCES != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES;
+        }
+        if bits & Self::VIEW_MEMBER_LIST != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_MEMBER_LIST;
+        }
+        if bits & Self::VIEW_CHAT_HISTORY != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
+        }
+        if bits & Self::USE_WEBRTC != 0 {
+            permissions |= RoomAdminPermissionBits::USE_WEBRTC;
+        }
+        if bits & Self::DELETE_MEDIA_RESOURCE_ANY != 0 {
+            permissions |= RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY;
+        }
+        if bits & Self::REORDER_MEDIA_RESOURCES != 0 {
+            permissions |= RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES;
+        }
+        if bits & Self::CLEAR_MEDIA_RESOURCES != 0 {
+            permissions |= RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES;
+        }
+        if bits & Self::LIVE_CONTROL != 0 {
+            permissions |= RoomAdminPermissionBits::LIVE_CONTROL;
+        }
+        if bits & Self::PLAY_CONTROL != 0 {
+            permissions |= RoomAdminPermissionBits::PLAY_CONTROL;
+        }
+        if bits & Self::CHANGE_CURRENT_MEDIA != 0 {
+            permissions |= RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA;
+        }
+        if bits & Self::CHANGE_PLAYBACK_RATE != 0 {
+            permissions |= RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE;
+        }
+        if bits & Self::APPROVE_MEMBER != 0 {
+            permissions |= RoomAdminPermissionBits::APPROVE_MEMBER;
+        }
+        if bits & Self::KICK_MEMBER != 0 {
+            permissions |= RoomAdminPermissionBits::KICK_MEMBER;
+        }
+        if bits & Self::SET_MEMBER_PERMISSIONS != 0 {
+            permissions |= RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS;
+        }
+        if bits & Self::ADD_MEMBER != 0 {
+            permissions |= RoomAdminPermissionBits::ADD_MEMBER;
+        }
+        if bits & Self::SET_ROOM_SETTINGS != 0 {
+            permissions |= RoomAdminPermissionBits::SET_ROOM_SETTINGS;
+        }
+        if bits & Self::DELETE_CHAT != 0 {
+            permissions |= RoomAdminPermissionBits::DELETE_CHAT;
+        }
+        if bits & Self::DELETE_ROOM != 0 {
+            permissions |= RoomAdminPermissionBits::DELETE_ROOM;
+        }
+        permissions
+    }
+
+    #[must_use]
+    pub const fn from_permissions(permissions: u64) -> u64 {
+        let mut bits = 0;
+        if permissions & RoomAdminPermissionBits::CHAT != 0 {
+            bits |= Self::CHAT;
+        }
+        if permissions & RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE != 0 {
+            bits |= Self::CREATE_MEDIA_RESOURCE;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES != 0 {
+            bits |= Self::VIEW_MEDIA_RESOURCES;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_MEMBER_LIST != 0 {
+            bits |= Self::VIEW_MEMBER_LIST;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
+            bits |= Self::VIEW_CHAT_HISTORY;
+        }
+        if permissions & RoomAdminPermissionBits::USE_WEBRTC != 0 {
+            bits |= Self::USE_WEBRTC;
+        }
+        if permissions & RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY != 0 {
+            bits |= Self::DELETE_MEDIA_RESOURCE_ANY;
+        }
+        if permissions & RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES != 0 {
+            bits |= Self::REORDER_MEDIA_RESOURCES;
+        }
+        if permissions & RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES != 0 {
+            bits |= Self::CLEAR_MEDIA_RESOURCES;
+        }
+        if permissions & RoomAdminPermissionBits::LIVE_CONTROL != 0 {
+            bits |= Self::LIVE_CONTROL;
+        }
+        if permissions & RoomAdminPermissionBits::PLAY_CONTROL != 0 {
+            bits |= Self::PLAY_CONTROL;
+        }
+        if permissions & RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA != 0 {
+            bits |= Self::CHANGE_CURRENT_MEDIA;
+        }
+        if permissions & RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE != 0 {
+            bits |= Self::CHANGE_PLAYBACK_RATE;
+        }
+        if permissions & RoomAdminPermissionBits::APPROVE_MEMBER != 0 {
+            bits |= Self::APPROVE_MEMBER;
+        }
+        if permissions & RoomAdminPermissionBits::KICK_MEMBER != 0 {
+            bits |= Self::KICK_MEMBER;
+        }
+        if permissions & RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS != 0 {
+            bits |= Self::SET_MEMBER_PERMISSIONS;
+        }
+        if permissions & RoomAdminPermissionBits::ADD_MEMBER != 0 {
+            bits |= Self::ADD_MEMBER;
+        }
+        if permissions & RoomAdminPermissionBits::SET_ROOM_SETTINGS != 0 {
+            bits |= Self::SET_ROOM_SETTINGS;
+        }
+        if permissions & RoomAdminPermissionBits::DELETE_CHAT != 0 {
+            bits |= Self::DELETE_CHAT;
+        }
+        if permissions & RoomAdminPermissionBits::DELETE_ROOM != 0 {
+            bits |= Self::DELETE_ROOM;
+        }
+        bits
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoomGuestPermissionBits(pub u64);
+
+impl RoomGuestPermissionBits {
+    pub const VIEW_MEMBER_LIST: u64 = 1 << 32;
+    pub const VIEW_CHAT_HISTORY: u64 = 1 << 33;
+    pub const USE_WEBRTC: u64 = 1 << 34;
+
+    pub const ALL: u64 = Self::VIEW_MEMBER_LIST | Self::VIEW_CHAT_HISTORY | Self::USE_WEBRTC;
+    pub const DEFAULT: u64 = 0;
+
+    pub const NAMES: &[(&str, u64)] = &[
+        ("view_member_list", Self::VIEW_MEMBER_LIST),
+        ("view_chat_history", Self::VIEW_CHAT_HISTORY),
+        ("use_webrtc", Self::USE_WEBRTC),
+    ];
+
+    #[must_use]
+    pub const fn includes_only_defined(bits: u64) -> bool {
+        bits & !Self::ALL == 0
+    }
+
+    #[must_use]
+    pub const fn to_permissions(bits: u64) -> u64 {
+        let mut permissions = 0;
+        if bits & Self::VIEW_MEMBER_LIST != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_MEMBER_LIST;
+        }
+        if bits & Self::VIEW_CHAT_HISTORY != 0 {
+            permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
+        }
+        if bits & Self::USE_WEBRTC != 0 {
+            permissions |= RoomAdminPermissionBits::USE_WEBRTC;
+        }
+        permissions
+    }
+
+    #[must_use]
+    pub const fn from_permissions(permissions: u64) -> u64 {
+        let mut bits = 0;
+        if permissions & RoomAdminPermissionBits::VIEW_MEMBER_LIST != 0 {
+            bits |= Self::VIEW_MEMBER_LIST;
+        }
+        if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
+            bits |= Self::VIEW_CHAT_HISTORY;
+        }
+        if permissions & RoomAdminPermissionBits::USE_WEBRTC != 0 {
+            bits |= Self::USE_WEBRTC;
+        }
+        bits
+    }
+}
+
+impl Default for RoomPermissionSet {
     fn default() -> Self {
         Self::empty()
     }
 }
 
-impl From<u64> for PermissionBits {
+impl From<u64> for RoomPermissionSet {
     fn from(value: u64) -> Self {
         Self(value)
     }
 }
 
-impl From<PermissionBits> for u64 {
-    fn from(value: PermissionBits) -> Self {
+impl From<RoomPermissionSet> for u64 {
+    fn from(value: RoomPermissionSet) -> Self {
         value.0
     }
 }
 
-impl BitOr for PermissionBits {
+impl BitOr for RoomPermissionSet {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
@@ -252,7 +565,7 @@ impl BitOr for PermissionBits {
     }
 }
 
-impl BitOr<u64> for PermissionBits {
+impl BitOr<u64> for RoomPermissionSet {
     type Output = Self;
 
     fn bitor(self, rhs: u64) -> Self::Output {
@@ -260,19 +573,19 @@ impl BitOr<u64> for PermissionBits {
     }
 }
 
-impl BitOrAssign for PermissionBits {
+impl BitOrAssign for RoomPermissionSet {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
     }
 }
 
-impl BitOrAssign<u64> for PermissionBits {
+impl BitOrAssign<u64> for RoomPermissionSet {
     fn bitor_assign(&mut self, rhs: u64) {
         self.0 |= rhs;
     }
 }
 
-impl BitAnd for PermissionBits {
+impl BitAnd for RoomPermissionSet {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
@@ -280,7 +593,7 @@ impl BitAnd for PermissionBits {
     }
 }
 
-impl BitAnd<u64> for PermissionBits {
+impl BitAnd<u64> for RoomPermissionSet {
     type Output = Self;
 
     fn bitand(self, rhs: u64) -> Self::Output {
@@ -288,19 +601,19 @@ impl BitAnd<u64> for PermissionBits {
     }
 }
 
-impl BitAndAssign for PermissionBits {
+impl BitAndAssign for RoomPermissionSet {
     fn bitand_assign(&mut self, rhs: Self) {
         self.0 &= rhs.0;
     }
 }
 
-impl BitAndAssign<u64> for PermissionBits {
+impl BitAndAssign<u64> for RoomPermissionSet {
     fn bitand_assign(&mut self, rhs: u64) {
         self.0 &= rhs;
     }
 }
 
-impl BitXor for PermissionBits {
+impl BitXor for RoomPermissionSet {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
@@ -308,7 +621,7 @@ impl BitXor for PermissionBits {
     }
 }
 
-impl BitXor<u64> for PermissionBits {
+impl BitXor<u64> for RoomPermissionSet {
     type Output = Self;
 
     fn bitxor(self, rhs: u64) -> Self::Output {
@@ -316,19 +629,19 @@ impl BitXor<u64> for PermissionBits {
     }
 }
 
-impl BitXorAssign for PermissionBits {
+impl BitXorAssign for RoomPermissionSet {
     fn bitxor_assign(&mut self, rhs: Self) {
         self.0 ^= rhs.0;
     }
 }
 
-impl BitXorAssign<u64> for PermissionBits {
+impl BitXorAssign<u64> for RoomPermissionSet {
     fn bitxor_assign(&mut self, rhs: u64) {
         self.0 ^= rhs;
     }
 }
 
-impl Not for PermissionBits {
+impl Not for RoomPermissionSet {
     type Output = Self;
 
     fn not(self) -> Self::Output {
@@ -356,12 +669,12 @@ pub enum Role {
 impl Role {
     /// Get base permissions for this role (before custom Allow/Deny modifications)
     #[must_use]
-    pub const fn permissions(&self) -> PermissionBits {
+    pub const fn permissions(&self) -> RoomPermissionSet {
         match self {
-            Self::Creator => PermissionBits(PermissionBits::ALL),
-            Self::Admin => PermissionBits(PermissionBits::DEFAULT_ADMIN),
-            Self::Member => PermissionBits(PermissionBits::DEFAULT_MEMBER),
-            Self::Guest => PermissionBits(PermissionBits::DEFAULT_GUEST),
+            Self::Creator => RoomPermissionSet::all(),
+            Self::Admin => RoomPermissionSet::default_admin(),
+            Self::Member => RoomPermissionSet::default_member(),
+            Self::Guest => RoomPermissionSet::default_guest(),
         }
     }
 }
@@ -447,136 +760,143 @@ mod tests {
 
     #[test]
     fn test_permission_has() {
-        let perms = PermissionBits(PermissionBits::SEND_CHAT);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(!perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        let perms = RoomPermissionSet::new(RoomAdminPermissionBits::CHAT);
+        assert!(perms.has(crate::models::RoomPermission::CHAT));
+        assert!(!perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_permission_grant_revoke() {
-        let mut perms = PermissionBits::empty();
-        perms.grant(PermissionBits::SEND_CHAT);
-        perms.grant(PermissionBits::CREATE_MEDIA_RESOURCE);
+        let mut perms = RoomPermissionSet::empty();
+        perms.grant(crate::models::RoomPermission::CHAT);
+        perms.grant(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE);
 
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        assert!(perms.has(crate::models::RoomPermission::CHAT));
+        assert!(perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
 
-        perms.revoke(PermissionBits::SEND_CHAT);
-        assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        perms.revoke(crate::models::RoomPermission::CHAT);
+        assert!(!perms.has(crate::models::RoomPermission::CHAT));
+        assert!(perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_role_permissions() {
         let creator_perms = Role::Creator.permissions();
-        assert!(creator_perms.has(PermissionBits::DELETE_ROOM));
-        assert!(creator_perms.has(PermissionBits::SEND_CHAT));
+        assert_eq!(creator_perms.0, RoomAdminPermissionBits::ALL);
+        assert!(creator_perms.has(crate::models::RoomPermission::CHAT));
+        assert!(creator_perms.has(crate::models::RoomPermission::DELETE_ROOM));
+
+        let admin_perms = Role::Admin.permissions();
+        assert!(!admin_perms.has(crate::models::RoomPermission::DELETE_ROOM));
 
         let member_perms = Role::Member.permissions();
-        assert!(member_perms.has(PermissionBits::SEND_CHAT));
-        assert!(member_perms.has(PermissionBits::USE_WEBRTC));
-        assert!(!member_perms.has(PermissionBits::DELETE_ROOM));
+        assert!(member_perms.has(crate::models::RoomPermission::CHAT));
+        assert!(member_perms.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(!member_perms.has(crate::models::RoomPermission::KICK_MEMBER));
 
         let guest_perms = Role::Guest.permissions();
-        assert!(!guest_perms.has(PermissionBits::VIEW_MEDIA_RESOURCES));
-        assert!(!guest_perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        assert!(!guest_perms.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
+        assert!(!guest_perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_allow_deny_pattern() {
-        // Start with DEFAULT_MEMBER
-        let mut perms = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        let mut perms = RoomPermissionSet::default_member();
 
         // Add moderation permission (Allow pattern)
-        perms.grant(PermissionBits::KICK_MEMBER);
-        assert!(perms.has(PermissionBits::KICK_MEMBER));
+        perms.grant(crate::models::RoomPermission::KICK_MEMBER);
+        assert!(perms.has(crate::models::RoomPermission::KICK_MEMBER));
 
         // Remove chat permission (Deny pattern)
-        perms.revoke(PermissionBits::SEND_CHAT);
-        assert!(!perms.has(PermissionBits::SEND_CHAT));
+        perms.revoke(crate::models::RoomPermission::CHAT);
+        assert!(!perms.has(crate::models::RoomPermission::CHAT));
 
         // Other DEFAULT_MEMBER permissions remain
-        assert!(perms.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        assert!(perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
     fn test_permission_set_enable_disable() {
-        let mut perms = PermissionBits::empty();
-        perms.set(PermissionBits::SEND_CHAT, true);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        perms.set(PermissionBits::SEND_CHAT, false);
-        assert!(!perms.has(PermissionBits::SEND_CHAT));
+        let mut perms = RoomPermissionSet::empty();
+        perms.set(crate::models::RoomPermission::CHAT, true);
+        assert!(perms.has(crate::models::RoomPermission::CHAT));
+        perms.set(crate::models::RoomPermission::CHAT, false);
+        assert!(!perms.has(crate::models::RoomPermission::CHAT));
     }
 
     #[test]
     fn test_permission_toggle() {
-        let mut perms = PermissionBits::empty();
-        perms.toggle(PermissionBits::SEND_CHAT);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        perms.toggle(PermissionBits::SEND_CHAT);
-        assert!(!perms.has(PermissionBits::SEND_CHAT));
+        let mut perms = RoomPermissionSet::empty();
+        perms.toggle(crate::models::RoomPermission::CHAT);
+        assert!(perms.has(crate::models::RoomPermission::CHAT));
+        perms.toggle(crate::models::RoomPermission::CHAT);
+        assert!(!perms.has(crate::models::RoomPermission::CHAT));
     }
 
     #[test]
     fn test_permission_bits_std_bit_ops() {
-        let chat = PermissionBits::from(PermissionBits::SEND_CHAT);
-        let media = PermissionBits::from(PermissionBits::CREATE_MEDIA_RESOURCE);
+        let chat = RoomPermissionSet::new(RoomAdminPermissionBits::CHAT);
+        let media = RoomPermissionSet::new(RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE);
         let combined = chat | media;
 
-        assert!(combined.has_all(PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE));
-        assert_eq!((combined & chat).bits(), PermissionBits::SEND_CHAT);
+        assert!(combined.has_all(RoomPermissionSet::new(
+            RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+        )));
+        assert_eq!((combined & chat).bits(), RoomAdminPermissionBits::CHAT);
         assert_eq!(
             (combined ^ chat).bits(),
-            PermissionBits::CREATE_MEDIA_RESOURCE
+            RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
         );
 
-        let mut assigned = PermissionBits::empty();
-        assigned |= PermissionBits::SEND_CHAT;
+        let mut assigned = RoomPermissionSet::empty();
+        assigned |= RoomAdminPermissionBits::CHAT;
         assigned |= media;
         assigned &= !chat;
-        assert_eq!(assigned.bits(), PermissionBits::CREATE_MEDIA_RESOURCE);
+        assert_eq!(
+            assigned.bits(),
+            RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+        );
     }
 
     #[test]
-    fn test_room_assignable_permissions_reject_unknown_and_lifecycle_bits() {
-        assert!(PermissionBits::includes_only_assignable_in_room(
-            PermissionBits::SEND_CHAT | PermissionBits::CREATE_MEDIA_RESOURCE
+    fn test_role_permission_bitspaces_reject_unknown_bits() {
+        assert!(RoomMemberPermissionBits::includes_only_defined(
+            RoomMemberPermissionBits::CHAT | RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE
         ));
-        assert!(!PermissionBits::includes_only_assignable_in_room(
-            PermissionBits::ALL | (1 << 21)
+        assert!(!RoomMemberPermissionBits::includes_only_defined(1 << 21));
+        assert!(RoomAdminPermissionBits::includes_only_defined(
+            RoomAdminPermissionBits::KICK_MEMBER
         ));
-        assert!(!PermissionBits::includes_only_assignable_in_room(
-            PermissionBits::DELETE_ROOM
-        ));
+        assert!(!RoomAdminPermissionBits::includes_only_defined(1 << 21));
     }
 
     #[test]
     fn test_permission_grant_idempotent() {
-        let mut perms = PermissionBits::empty();
-        perms.grant(PermissionBits::SEND_CHAT);
-        perms.grant(PermissionBits::SEND_CHAT);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert_eq!(perms.0, PermissionBits::SEND_CHAT);
+        let mut perms = RoomPermissionSet::empty();
+        perms.grant(crate::models::RoomPermission::CHAT);
+        perms.grant(crate::models::RoomPermission::CHAT);
+        assert!(perms.has(crate::models::RoomPermission::CHAT));
+        assert_eq!(perms.0, RoomAdminPermissionBits::CHAT);
     }
 
     #[test]
     fn test_permission_revoke_idempotent() {
-        let mut perms = PermissionBits::empty();
-        perms.revoke(PermissionBits::SEND_CHAT); // no-op on empty
-        assert!(!perms.has(PermissionBits::SEND_CHAT));
+        let mut perms = RoomPermissionSet::empty();
+        perms.revoke(crate::models::RoomPermission::CHAT); // no-op on empty
+        assert!(!perms.has(crate::models::RoomPermission::CHAT));
         assert_eq!(perms.0, 0);
     }
 
     #[test]
     fn test_has_all_with_zero_is_vacuously_true() {
-        let perms = PermissionBits::empty();
-        assert!(perms.has_all(0)); // vacuously true: 0 & 0 == 0
+        let perms = RoomPermissionSet::empty();
+        assert!(perms.has_all(RoomPermissionSet::empty()));
     }
 
     #[test]
     fn test_has_any_with_zero_is_false() {
-        let perms = PermissionBits(PermissionBits::ALL);
-        assert!(!perms.has_any(0)); // 0 & anything == 0
+        let perms = RoomPermissionSet::all();
+        assert!(!perms.has_any(RoomPermissionSet::empty()));
     }
 
     #[test]

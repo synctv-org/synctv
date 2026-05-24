@@ -13,7 +13,7 @@ use synctv_core::bootstrap::{load_config_with_options, LoadConfigOptions};
 use synctv_core::config::absolute_display_path;
 #[cfg(test)]
 use synctv_core::config::default_management_unix_socket_path;
-use synctv_core::models::PermissionBits;
+use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
 use synctv_core::time as app_time;
 use synctv_management::proto as management_proto;
 
@@ -24,42 +24,63 @@ const MANAGEMENT_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_STOP_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 const CLI_NAMED_PERMISSIONS: &[(&str, u64)] = &[
-    ("send_chat", PermissionBits::SEND_CHAT),
+    ("chat", RoomAdminPermissionBits::CHAT),
     (
         "create_media_resource",
-        PermissionBits::CREATE_MEDIA_RESOURCE,
+        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
     ),
     (
+        "view_media_resources",
+        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+    ),
+    (
+        "view_member_list",
+        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
+    ),
+    (
+        "view_chat_history",
+        RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+    ),
+    ("use_webrtc", RoomAdminPermissionBits::USE_WEBRTC),
+    (
         "delete_media_resource_any",
-        PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
     ),
     (
         "reorder_media_resources",
-        PermissionBits::REORDER_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
     ),
     (
         "clear_media_resources",
-        PermissionBits::CLEAR_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES,
     ),
-    ("live_control", PermissionBits::LIVE_CONTROL),
-    ("play_control", PermissionBits::PLAY_CONTROL),
-    ("change_current_media", PermissionBits::CHANGE_CURRENT_MEDIA),
-    ("change_playback_rate", PermissionBits::CHANGE_PLAYBACK_RATE),
-    ("approve_member", PermissionBits::APPROVE_MEMBER),
-    ("kick_member", PermissionBits::KICK_MEMBER),
+    ("live_control", RoomAdminPermissionBits::LIVE_CONTROL),
+    ("play_control", RoomAdminPermissionBits::PLAY_CONTROL),
+    (
+        "change_current_media",
+        RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA,
+    ),
+    (
+        "change_playback_rate",
+        RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE,
+    ),
+    ("approve_member", RoomAdminPermissionBits::APPROVE_MEMBER),
+    ("kick_member", RoomAdminPermissionBits::KICK_MEMBER),
     (
         "set_member_permissions",
-        PermissionBits::SET_MEMBER_PERMISSIONS,
+        RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS,
     ),
-    ("add_member", PermissionBits::ADD_MEMBER),
-    ("set_room_settings", PermissionBits::SET_ROOM_SETTINGS),
-    ("delete_chat", PermissionBits::DELETE_CHAT),
-    ("delete_room", PermissionBits::DELETE_ROOM),
-    ("view_media_resources", PermissionBits::VIEW_MEDIA_RESOURCES),
-    ("view_member_list", PermissionBits::VIEW_MEMBER_LIST),
-    ("view_chat_history", PermissionBits::VIEW_CHAT_HISTORY),
-    ("use_webrtc", PermissionBits::USE_WEBRTC),
+    ("add_member", RoomAdminPermissionBits::ADD_MEMBER),
+    (
+        "set_room_settings",
+        RoomAdminPermissionBits::SET_ROOM_SETTINGS,
+    ),
+    ("delete_chat", RoomAdminPermissionBits::DELETE_CHAT),
+    ("delete_room", RoomAdminPermissionBits::DELETE_ROOM),
 ];
+
+const CLI_MEMBER_NAMED_PERMISSIONS: &[(&str, u64)] = RoomMemberPermissionBits::NAMES;
+const CLI_ADMIN_NAMED_PERMISSIONS: &[(&str, u64)] = RoomAdminPermissionBits::NAMES;
 
 macro_rules! management_unary_call {
     ($session:expr, $operation:literal, $method:ident, $request:expr) => {{
@@ -1915,7 +1936,7 @@ pub struct RoomMemberSetPermissionsArgs {
 
     #[arg(
         long,
-        value_parser = parse_permission_bits_arg,
+        value_parser = parse_member_permission_bits_arg,
         value_name = "BITS|NAMES",
         help = "Permission override as a u64 bitmask, comma-separated names, or JSON array of names"
     )]
@@ -1923,7 +1944,7 @@ pub struct RoomMemberSetPermissionsArgs {
 
     #[arg(
         long,
-        value_parser = parse_permission_bits_arg,
+        value_parser = parse_member_permission_bits_arg,
         value_name = "BITS|NAMES",
         help = "Permission override as a u64 bitmask, comma-separated names, or JSON array of names"
     )]
@@ -1931,7 +1952,7 @@ pub struct RoomMemberSetPermissionsArgs {
 
     #[arg(
         long,
-        value_parser = parse_permission_bits_arg,
+        value_parser = parse_admin_permission_bits_arg,
         value_name = "BITS|NAMES",
         help = "Admin permission override as a u64 bitmask, comma-separated names, or JSON array of names"
     )]
@@ -1939,7 +1960,7 @@ pub struct RoomMemberSetPermissionsArgs {
 
     #[arg(
         long,
-        value_parser = parse_permission_bits_arg,
+        value_parser = parse_admin_permission_bits_arg,
         value_name = "BITS|NAMES",
         help = "Admin permission override as a u64 bitmask, comma-separated names, or JSON array of names"
     )]
@@ -1955,13 +1976,29 @@ impl From<PermissionOverrideBits> for u64 {
     }
 }
 
-fn parse_permission_bits_arg(raw: &str) -> std::result::Result<PermissionOverrideBits, String> {
+fn parse_member_permission_bits_arg(
+    raw: &str,
+) -> std::result::Result<PermissionOverrideBits, String> {
+    parse_permission_bits_from_named_set(raw, CLI_MEMBER_NAMED_PERMISSIONS)
+}
+
+fn parse_admin_permission_bits_arg(
+    raw: &str,
+) -> std::result::Result<PermissionOverrideBits, String> {
+    parse_permission_bits_from_named_set(raw, CLI_ADMIN_NAMED_PERMISSIONS)
+}
+
+fn parse_permission_bits_from_named_set(
+    raw: &str,
+    named_permissions: &[(&str, u64)],
+) -> std::result::Result<PermissionOverrideBits, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("permission override must not be empty".to_string());
     }
 
     if let Ok(bits) = trimmed.parse::<u64>() {
+        reject_unknown_permission_bits(bits, named_permissions)?;
         return Ok(PermissionOverrideBits(bits));
     }
 
@@ -1985,11 +2022,11 @@ fn parse_permission_bits_arg(raw: &str) -> std::result::Result<PermissionOverrid
     let mut bits = 0_u64;
     for name in names {
         let canonical = name.replace('-', "_").to_ascii_lowercase();
-        let Some((_, bit)) = CLI_NAMED_PERMISSIONS
+        let Some((_, bit)) = named_permissions
             .iter()
             .find(|(permission_name, _)| *permission_name == canonical)
         else {
-            let allowed = CLI_NAMED_PERMISSIONS
+            let allowed = named_permissions
                 .iter()
                 .map(|(permission_name, _)| *permission_name)
                 .collect::<Vec<_>>()
@@ -2001,7 +2038,31 @@ fn parse_permission_bits_arg(raw: &str) -> std::result::Result<PermissionOverrid
         bits |= *bit;
     }
 
+    reject_unknown_permission_bits(bits, named_permissions)?;
+
     Ok(PermissionOverrideBits(bits))
+}
+
+fn reject_unknown_permission_bits(
+    bits: u64,
+    named_permissions: &[(&str, u64)],
+) -> std::result::Result<(), String> {
+    let allowed_mask = named_permissions
+        .iter()
+        .fold(0_u64, |mask, (_, bit)| mask | *bit);
+    let invalid = bits & !allowed_mask;
+    if invalid == 0 {
+        return Ok(());
+    }
+
+    let allowed = named_permissions
+        .iter()
+        .map(|(permission_name, _)| *permission_name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "permission override contains bits outside this role bitspace (unknown bits 0x{invalid:x}). Allowed: {allowed}"
+    ))
 }
 
 #[derive(Debug, Args)]
@@ -7843,14 +7904,24 @@ impl ToHuman for synctv_proto::common::RoomMember {
             permissions: self.permissions,
             permission_names: humanize_permission_bits(self.permissions),
             added_permissions: self.added_permissions,
-            added_permission_names: humanize_permission_bits(self.added_permissions),
+            added_permission_names: humanize_named_permission_bits(
+                self.added_permissions,
+                CLI_MEMBER_NAMED_PERMISSIONS,
+            ),
             removed_permissions: self.removed_permissions,
-            removed_permission_names: humanize_permission_bits(self.removed_permissions),
+            removed_permission_names: humanize_named_permission_bits(
+                self.removed_permissions,
+                CLI_MEMBER_NAMED_PERMISSIONS,
+            ),
             admin_added_permissions: self.admin_added_permissions,
-            admin_added_permission_names: humanize_permission_bits(self.admin_added_permissions),
+            admin_added_permission_names: humanize_named_permission_bits(
+                self.admin_added_permissions,
+                CLI_ADMIN_NAMED_PERMISSIONS,
+            ),
             admin_removed_permissions: self.admin_removed_permissions,
-            admin_removed_permission_names: humanize_permission_bits(
+            admin_removed_permission_names: humanize_named_permission_bits(
                 self.admin_removed_permissions,
+                CLI_ADMIN_NAMED_PERMISSIONS,
             ),
             joined_at: humanize_timestamp(self.joined_at),
             is_online: self.is_online,
@@ -8730,7 +8801,11 @@ fn humanize_room_member_role(raw: i64) -> Option<String> {
 }
 
 fn humanize_permission_bits(bits: u64) -> Vec<String> {
-    CLI_NAMED_PERMISSIONS
+    humanize_named_permission_bits(bits, CLI_NAMED_PERMISSIONS)
+}
+
+fn humanize_named_permission_bits(bits: u64, named_permissions: &[(&str, u64)]) -> Vec<String> {
+    named_permissions
         .iter()
         .copied()
         .map(|(name, permission)| (permission, name))
@@ -12475,9 +12550,9 @@ mod tests {
             "room-1",
             "alice",
             "--added-permissions",
-            "play_control,kick-member",
+            "chat,use-webrtc",
             "--removed-permissions",
-            r#"["send_chat"]"#,
+            r#"["chat"]"#,
         ]);
         match cli.command {
             Commands::Room(RoomCommand {
@@ -12488,15 +12563,84 @@ mod tests {
             }) => {
                 assert_eq!(
                     args.added_permissions.map(u64::from),
-                    Some(PermissionBits::PLAY_CONTROL | PermissionBits::KICK_MEMBER)
+                    Some(RoomMemberPermissionBits::CHAT | RoomMemberPermissionBits::USE_WEBRTC)
                 );
                 assert_eq!(
                     args.removed_permissions.map(u64::from),
-                    Some(PermissionBits::SEND_CHAT)
+                    Some(RoomMemberPermissionBits::CHAT)
                 );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_accepts_chat_permission_name() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "member",
+            "set-permissions",
+            "--room-id",
+            "room-1",
+            "alice",
+            "--removed-permissions",
+            r#"["chat"]"#,
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Member(RoomMemberCommand {
+                        command: RoomMemberSubcommand::SetPermissions(args),
+                    }),
+            }) => {
+                assert_eq!(
+                    args.removed_permissions.map(u64::from),
+                    Some(RoomMemberPermissionBits::CHAT)
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_unknown_room_member_permission_name() {
+        let error = Cli::try_parse_from([
+            "synctv",
+            "room",
+            "member",
+            "set-permissions",
+            "--room-id",
+            "room-1",
+            "alice",
+            "--added-permissions",
+            "delete_room",
+        ])
+        .expect_err("room permission overrides must reject unknown permissions");
+
+        let message = error.to_string();
+        assert!(message.contains("unknown permission"));
+        assert!(message.contains("delete_room"));
+    }
+
+    #[test]
+    fn cli_rejects_unknown_room_member_permission_bitmask() {
+        let error = Cli::try_parse_from([
+            "synctv",
+            "room",
+            "member",
+            "set-permissions",
+            "--room-id",
+            "room-1",
+            "alice",
+            "--added-permissions",
+            &(1_u64 << 21).to_string(),
+        ])
+        .expect_err("room permission overrides must reject unknown bitmasks");
+
+        let message = error.to_string();
+        assert!(message.contains("bits outside this role bitspace"));
+        assert!(message.contains("2097152"));
     }
 
     #[test]
@@ -13249,12 +13393,12 @@ mod tests {
                 user_id: "user-1".into(),
                 username: "root".into(),
                 role: synctv_proto::common::RoomMemberRole::Creator as i32,
-                permissions: synctv_core::models::PermissionBits::SEND_CHAT
-                    | synctv_core::models::PermissionBits::VIEW_MEDIA_RESOURCES,
-                added_permissions: synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE,
-                removed_permissions: synctv_core::models::PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
-                admin_added_permissions: synctv_core::models::PermissionBits::KICK_MEMBER,
-                admin_removed_permissions: synctv_core::models::PermissionBits::KICK_MEMBER,
+                permissions: RoomAdminPermissionBits::CHAT
+                    | RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+                added_permissions: RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
+                removed_permissions: RoomMemberPermissionBits::CHAT,
+                admin_added_permissions: RoomAdminPermissionBits::KICK_MEMBER,
+                admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
                 joined_at: 1_775_291_657_i64,
                 is_online: true,
             }],
@@ -13285,7 +13429,7 @@ mod tests {
         assert_eq!(rendered["members"][0]["role"], "creator");
         assert_eq!(
             rendered["members"][0]["permission_names"],
-            json!(["send_chat", "view_media_resources"])
+            json!(["chat", "view_media_resources"])
         );
         assert_eq!(
             rendered["members"][0]["added_permission_names"],

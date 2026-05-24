@@ -17,7 +17,9 @@
 //! RoomSettingsRegistry::has_key("chat_enabled");
 //! ```
 
-use crate::models::permission::PermissionBits;
+use crate::models::permission::{
+    RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
+};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -450,31 +452,29 @@ impl RoomSettings {
     ///
     /// Formula: (`global_default` | added) & ~removed
     #[must_use]
-    pub const fn admin_permissions(&self, global_default: PermissionBits) -> PermissionBits {
+    pub const fn admin_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
         let mut result = global_default.0;
-        result |= self.admin_added_permissions.0;
-        result &= !self.admin_removed_permissions.0;
-        PermissionBits(result)
+        result |= RoomAdminPermissionBits::to_permissions(self.admin_added_permissions.0);
+        result &= !RoomAdminPermissionBits::to_permissions(self.admin_removed_permissions.0);
+        RoomPermissionSet(result)
     }
 
     /// Get effective permissions for Member role
     #[must_use]
-    pub const fn member_permissions(&self, global_default: PermissionBits) -> PermissionBits {
+    pub const fn member_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
         let mut result = global_default.0;
-        // Cap member added permissions to DEFAULT_ADMIN ceiling
-        result |= self.member_added_permissions.0 & PermissionBits::DEFAULT_ADMIN;
-        result &= !self.member_removed_permissions.0;
-        PermissionBits(result)
+        result |= RoomMemberPermissionBits::to_permissions(self.member_added_permissions.0);
+        result &= !RoomMemberPermissionBits::to_permissions(self.member_removed_permissions.0);
+        RoomPermissionSet(result)
     }
 
     /// Get effective permissions for Guest
     #[must_use]
-    pub const fn guest_permissions(&self, global_default: PermissionBits) -> PermissionBits {
-        let mut result = global_default.0 & PermissionBits::GUEST_ASSIGNABLE;
-        // Cap guest added permissions to the guest-specific ceiling.
-        result |= self.guest_added_permissions.0 & PermissionBits::GUEST_ASSIGNABLE;
-        result &= !self.guest_removed_permissions.0;
-        PermissionBits(result)
+    pub const fn guest_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
+        let mut result = global_default.0 & RoomPermissionSet::guest_assignable().0;
+        result |= RoomGuestPermissionBits::to_permissions(self.guest_added_permissions.0);
+        result &= !RoomGuestPermissionBits::to_permissions(self.guest_removed_permissions.0);
+        RoomPermissionSet(result)
     }
 
     /// Set a field by key from a string value via the registry (fully generic).
@@ -491,44 +491,30 @@ impl RoomSettings {
     /// - Guest added permissions cannot exceed `GUEST_ASSIGNABLE`
     /// - Member added permissions cannot exceed `DEFAULT_ADMIN`
     pub fn validate_permissions(&self) -> Result<()> {
-        let admin_unassignable =
-            self.admin_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
-        if admin_unassignable != 0 {
+        if !RoomAdminPermissionBits::includes_only_defined(self.admin_added_permissions.0)
+            || !RoomAdminPermissionBits::includes_only_defined(self.admin_removed_permissions.0)
+        {
             return Err(Error::InvalidInput(
-                "Room admin permission defaults cannot grant undefined or lifecycle-only permissions"
+                "Room admin permission defaults contain bits outside the admin permission bitspace"
                     .to_string(),
             ));
         }
 
-        let member_unassignable =
-            self.member_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
-        if member_unassignable != 0 {
+        if !RoomMemberPermissionBits::includes_only_defined(self.member_added_permissions.0)
+            || !RoomMemberPermissionBits::includes_only_defined(self.member_removed_permissions.0)
+        {
             return Err(Error::InvalidInput(
-                "Room member permission defaults cannot grant undefined or lifecycle-only permissions"
+                "Room member permission defaults contain bits outside the member permission bitspace"
                     .to_string(),
             ));
         }
 
-        let guest_unassignable =
-            self.guest_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
-        if guest_unassignable != 0 {
+        if !RoomGuestPermissionBits::includes_only_defined(self.guest_added_permissions.0)
+            || !RoomGuestPermissionBits::includes_only_defined(self.guest_removed_permissions.0)
+        {
             return Err(Error::InvalidInput(
-                "Room guest permission defaults cannot grant undefined or lifecycle-only permissions"
+                "Room guest permission defaults contain bits outside the guest permission bitspace"
                     .to_string(),
-            ));
-        }
-
-        let guest_overflow = self.guest_added_permissions.0 & !PermissionBits::GUEST_ASSIGNABLE;
-        if guest_overflow != 0 {
-            return Err(Error::InvalidInput(
-                "Guest added permissions cannot exceed guest-level permissions".to_string(),
-            ));
-        }
-
-        let member_overflow = self.member_added_permissions.0 & !PermissionBits::DEFAULT_ADMIN;
-        if member_overflow != 0 {
-            return Err(Error::InvalidInput(
-                "Member added permissions cannot exceed admin-level permissions".to_string(),
             ));
         }
 
@@ -643,28 +629,28 @@ mod tests {
     #[test]
     fn test_admin_permissions_with_added() {
         let settings = RoomSettings {
-            admin_added_permissions: AdminAddedPermissions(PermissionBits::PLAY_CONTROL),
+            admin_added_permissions: AdminAddedPermissions(RoomAdminPermissionBits::PLAY_CONTROL),
             ..Default::default()
         };
-        let global = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        let global = RoomPermissionSet::default_member();
         let result = settings.admin_permissions(global);
-        assert!(result.has(PermissionBits::PLAY_CONTROL));
+        assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
         // Original permissions preserved
-        assert!(result.has(PermissionBits::SEND_CHAT));
+        assert!(result.has(crate::models::RoomPermission::CHAT));
     }
 
     #[test]
     fn test_member_permissions_with_removed() {
         let settings = RoomSettings {
-            member_removed_permissions: MemberRemovedPermissions(PermissionBits::SEND_CHAT),
+            member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
             ..Default::default()
         };
-        let global = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        let global = RoomPermissionSet::default_member();
         let result = settings.member_permissions(global);
-        // SEND_CHAT should be removed
-        assert!(!result.has(PermissionBits::SEND_CHAT));
+        // CHAT should be removed
+        assert!(!result.has(crate::models::RoomPermission::CHAT));
         // Other permissions remain
-        assert!(result.has(PermissionBits::CREATE_MEDIA_RESOURCE));
+        assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
     #[test]
@@ -672,17 +658,19 @@ mod tests {
         let settings = RoomSettings {
             // Give guests additional guest-level abilities.
             guest_added_permissions: GuestAddedPermissions(
-                PermissionBits::USE_WEBRTC | PermissionBits::VIEW_MEMBER_LIST,
+                RoomGuestPermissionBits::USE_WEBRTC | RoomGuestPermissionBits::VIEW_MEMBER_LIST,
             ),
             // But remove one of them.
-            guest_removed_permissions: GuestRemovedPermissions(PermissionBits::VIEW_MEMBER_LIST),
+            guest_removed_permissions: GuestRemovedPermissions(
+                RoomGuestPermissionBits::VIEW_MEMBER_LIST,
+            ),
             ..Default::default()
         };
-        let global = PermissionBits(PermissionBits::DEFAULT_GUEST);
+        let global = RoomPermissionSet::default_guest();
         let result = settings.guest_permissions(global);
-        assert!(result.has(PermissionBits::USE_WEBRTC));
-        assert!(!result.has(PermissionBits::VIEW_MEMBER_LIST));
-        assert!(!result.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+        assert!(result.has(crate::models::RoomPermission::USE_WEBRTC));
+        assert!(!result.has(crate::models::RoomPermission::VIEW_MEMBER_LIST));
+        assert!(!result.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
     }
 
     #[test]

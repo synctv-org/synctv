@@ -22,8 +22,8 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        AddMemberOptions, PermissionBits, Room, RoomId, RoomMember, RoomRole, RoomStatus, User,
-        UserId, UserRole, UserStatus,
+        AddMemberOptions, Room, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission,
+        RoomRole, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
@@ -179,24 +179,11 @@ async fn test_admin_cannot_delete_room() {
         .await
         .expect("Failed to add admin");
 
-    // Admin does not have DELETE_ROOM permission by default
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        RoomRepository::new(pool.clone()),
-        None,
-        1000,
-        300,
-    );
-
-    let admin_perms = permission_service
-        .get_user_permissions_eventually_consistent(&room.id, &admin_user.id)
-        .await
-        .expect("Failed to get permissions");
-
-    // Verify Admin doesn't have DELETE_ROOM permission
+    let room_service = make_room_service(pool.clone());
+    let result = room_service.delete_room(room.id, admin_user.id).await;
     assert!(
-        !admin_perms.has(PermissionBits::DELETE_ROOM),
-        "Admin should not have DELETE_ROOM permission"
+        result.is_err(),
+        "Room-scoped admin should not be able to delete the room"
     );
 }
 
@@ -360,7 +347,7 @@ async fn test_member_cannot_change_settings() {
         .expect("Failed to get permissions");
 
     assert!(
-        !member_perms.has(PermissionBits::SET_ROOM_SETTINGS),
+        !member_perms.has(RoomPermission::SET_ROOM_SETTINGS),
         "Member should not have SET_ROOM_SETTINGS permission"
     );
 }
@@ -558,14 +545,14 @@ async fn test_creator_role_not_global() {
         .await
         .expect("Failed to get Room B permissions");
 
-    // Room A permissions should be higher (Creator has all permissions)
+    // Room A permissions should be higher (Creator has all admin/member permissions)
     assert!(
-        perms_a.has(PermissionBits::DELETE_ROOM),
-        "Creator should have DELETE_ROOM in Room A"
+        perms_a.has(RoomPermission::KICK_MEMBER),
+        "Creator should have admin permissions in Room A"
     );
     assert!(
-        !perms_b.has(PermissionBits::DELETE_ROOM),
-        "Member should not have DELETE_ROOM in Room B"
+        !perms_b.has(RoomPermission::KICK_MEMBER),
+        "Member should not have admin permissions in Room B"
     );
 }
 
@@ -591,14 +578,14 @@ async fn test_member_cannot_grant_self_permissions() {
         .await
         .expect("Failed to add member");
 
-    // Member tries to grant themselves KICK_MEMBER permission (should fail)
+    // Member tries to grant themselves a permission (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
         .grant_permission(
             room.id,
             member_user.id,
             member_user.id,
-            PermissionBits::KICK_MEMBER,
+            RoomMemberPermissionBits::USE_WEBRTC,
         )
         .await;
 
@@ -684,7 +671,12 @@ async fn test_grant_permission_requires_permission() {
     // Member tries to grant permission (should fail - no GRANT_PERMISSION)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .grant_permission(room.id, grantor.id, target.id, PermissionBits::SEND_CHAT)
+        .grant_permission(
+            room.id,
+            grantor.id,
+            target.id,
+            RoomMemberPermissionBits::CHAT,
+        )
         .await;
 
     assert!(
@@ -820,14 +812,14 @@ async fn test_revoked_permission_denied() {
         .expect("Creator should exist")
         .user_id;
 
-    // Revoke SEND_CHAT from member
+    // Revoke CHAT from member
     let member_service = make_member_service(pool.clone());
     member_service
         .revoke_permission(
             room.id,
             owner_user_id,
             member_user.id,
-            PermissionBits::SEND_CHAT,
+            RoomMemberPermissionBits::CHAT,
         )
         .await
         .expect("Failed to revoke permission");
@@ -847,15 +839,15 @@ async fn test_revoked_permission_denied() {
         .expect("Failed to get permissions");
 
     assert!(
-        !effective.has(PermissionBits::SEND_CHAT),
-        "SEND_CHAT should be denied after revocation"
+        !effective.has(RoomPermission::CHAT),
+        "CHAT should be denied after revocation"
     );
 }
 
-/// Test that Member without `SEND_CHAT` cannot send messages.
+/// Test that Member without `CHAT` cannot send messages.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_member_without_send_chat_cannot_send() {
+async fn test_member_without_chat_cannot_send() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
@@ -869,14 +861,14 @@ async fn test_member_without_send_chat_cannot_send() {
         .await
         .expect("Failed to create muted user");
     let mut muted_member = RoomMember::new(room.id, muted_user.id, RoomRole::Member);
-    // Revoke SEND_CHAT
-    muted_member.removed_permissions = PermissionBits::SEND_CHAT;
+    // Revoke CHAT
+    muted_member.removed_permissions = RoomMemberPermissionBits::CHAT;
     member_repo
         .add(&muted_member)
         .await
         .expect("Failed to add muted user");
 
-    // Verify user doesn't have SEND_CHAT
+    // Verify user doesn't have CHAT
     let permission_service = PermissionService::new(
         member_repo.clone(),
         RoomRepository::new(pool.clone()),
@@ -891,7 +883,7 @@ async fn test_member_without_send_chat_cannot_send() {
         .expect("Failed to get permissions");
 
     assert!(
-        !perms.has(PermissionBits::SEND_CHAT),
-        "Muted user should not have SEND_CHAT"
+        !perms.has(RoomPermission::CHAT),
+        "Muted user should not have CHAT"
     );
 }

@@ -9,10 +9,7 @@
 
 use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
-    models::{
-        normalize_provider_instance_name, Media, MediaId, PermissionBits, PlaylistId, RoomId,
-        UserId,
-    },
+    models::{normalize_provider_instance_name, Media, MediaId, PlaylistId, RoomId, UserId},
     provider::{
         provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
         SourceConfig,
@@ -333,7 +330,11 @@ impl MediaService {
 
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            )
             .await?;
 
         if let Some(ref playlist_id) = request.playlist_id {
@@ -501,7 +502,11 @@ impl MediaService {
     ) -> Result<Vec<Media>> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::CREATE_MEDIA_RESOURCE)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            )
             .await?;
 
         if let Some(ref playlist_id) = playlist_id {
@@ -746,7 +751,7 @@ impl MediaService {
                     .check_permission_no_cache(
                         &room_id,
                         &user_id,
-                        PermissionBits::CREATE_MEDIA_RESOURCE,
+                        crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
                     )
                     .await?;
 
@@ -1069,7 +1074,7 @@ impl MediaService {
                 .check_permission_no_cache(
                     &room_id,
                     &user_id,
-                    PermissionBits::REORDER_MEDIA_RESOURCES,
+                    crate::models::RoomPermission::REORDER_MEDIA_RESOURCES,
                 )
                 .await?;
         }
@@ -1479,7 +1484,11 @@ impl MediaService {
     ) -> Result<Vec<DirectoryItem>> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::VIEW_MEDIA_RESOURCES)
+            .check_permission(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::VIEW_MEDIA_RESOURCES,
+            )
             .await?;
 
         // Get playlist

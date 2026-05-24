@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::{
-    MediaId, MemberStatus, PermissionBits, PlaylistId, RoomId, RoomRole, RoomStatus, UserId,
-    UserRole, UserStatus,
+    MediaId, MemberStatus, PlaylistId, RoomGuestPermissionBits, RoomId, RoomPermissionSet,
+    RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 use synctv_core::RedisConnectionRuntime;
@@ -49,7 +49,7 @@ fn test_client_api_without_repository_access() -> super::ClientApiImpl {
     )
 }
 
-fn guest_access(permissions: PermissionBits) -> super::GuestRoomAccess {
+fn guest_access(permissions: RoomPermissionSet) -> super::GuestRoomAccess {
     super::GuestRoomAccess {
         room_id: RoomId::expect_positive(1),
         guest_id: "gst_test".to_string(),
@@ -66,7 +66,7 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
     let api = test_client_api_without_repository_access();
     let err = api
         .list_playlist_items_as_guest(
-            &guest_access(PermissionBits::empty()),
+            &guest_access(RoomPermissionSet::empty()),
             crate::proto::client::ListPlaylistItemsRequest::default(),
         )
         .await
@@ -82,10 +82,14 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
 ) {
     let api = test_client_api_without_repository_access();
-    let requested =
-        PermissionBits(PermissionBits::VIEW_MEDIA_RESOURCES | PermissionBits::USE_WEBRTC);
-    let capped = PermissionBits(requested.0 & PermissionBits::GUEST_ASSIGNABLE);
-    assert!(!capped.has(PermissionBits::VIEW_MEDIA_RESOURCES));
+    let requested = RoomPermissionSet(
+        synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES
+            | synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
+    );
+    let capped = RoomPermissionSet(
+        requested.0 & RoomGuestPermissionBits::to_permissions(RoomGuestPermissionBits::ALL),
+    );
+    assert!(!capped.has(synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES));
 
     let err = api
         .list_playlist_items_as_guest(
@@ -103,7 +107,9 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
 
 #[test]
 fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
-    let actor = super::RoomActor::Guest(guest_access(PermissionBits(PermissionBits::USE_WEBRTC)));
+    let actor = super::RoomActor::Guest(guest_access(RoomPermissionSet(
+        synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
+    )));
     let err = actor
         .require_user_id()
         .expect_err("playlist/media mutation endpoints require a signed-in user");

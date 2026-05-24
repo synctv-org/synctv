@@ -293,12 +293,12 @@ mod tests {
             target_username: "target-user".to_string(),
             changed_by,
             changed_by_username: "actor-user".to_string(),
-            new_permissions: synctv_core::models::PermissionBits(7),
+            new_permissions: synctv_core::models::RoomPermissionSet(7),
             role: i32::from(synctv_core::models::RoomRole::Member),
-            added_permissions: synctv_core::models::PermissionBits(1),
-            removed_permissions: synctv_core::models::PermissionBits(2),
-            admin_added_permissions: synctv_core::models::PermissionBits(0),
-            admin_removed_permissions: synctv_core::models::PermissionBits(0),
+            added_permissions: synctv_core::models::RoomPermissionSet(1),
+            removed_permissions: synctv_core::models::RoomPermissionSet(2),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
         }
     }
 

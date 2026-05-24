@@ -8,7 +8,8 @@ use std::time::Duration;
 use synctv_core::cache::UsernameCache;
 use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
-    MediaId, PermissionBits, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId,
+    MediaId, Playlist, PlaylistId, RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits,
+    RoomPermissionSet, RoomPlaybackState, RoomRole, UserId,
 };
 use synctv_core::repository::NotificationRepository;
 use synctv_core::repository::{
@@ -1231,7 +1232,7 @@ fn test_message_handler_for_user(
     ))
 }
 
-fn test_guest_principal_with_permissions(permissions: PermissionBits) -> RealtimePrincipal {
+fn test_guest_principal_with_permissions(permissions: RoomPermissionSet) -> RealtimePrincipal {
     let session_id = "guest-session-1";
     RealtimePrincipal::guest(
         room_id(),
@@ -1250,7 +1251,7 @@ fn test_guest_message_handler(
     sender: Arc<dyn MessageSender>,
     event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
-    permissions: PermissionBits,
+    permissions: RoomPermissionSet,
 ) -> StreamMessageHandler {
     let pool = test_pool();
     StreamMessageHandler::new_with_principal(
@@ -1403,18 +1404,24 @@ async fn prepare_handler_for_run_after_join(
         .expect("room subscription should cache before run_after_join");
 }
 
-async fn grant_handler_member_permission(
+async fn promote_handler_to_room_admin(
     fixture: &StartTestFixture,
-    permission: u64,
 ) -> synctv_core::models::RoomMember {
-    RoomMemberRepository::new(fixture.pool.clone())
-        .grant_permission_atomic(
+    let member_repo = RoomMemberRepository::new(fixture.pool.clone());
+    let member = member_repo
+        .get(&fixture.handler.room_id, &fixture.handler.user_id)
+        .await
+        .expect("fixture member should load")
+        .expect("fixture member should exist");
+    member_repo
+        .update_role(
             &fixture.handler.room_id,
             &fixture.handler.user_id,
-            permission,
+            RoomRole::Admin,
+            member.version,
         )
         .await
-        .expect("fixture member permission grant should succeed")
+        .expect("fixture member should promote to admin")
 }
 
 async fn wait_for_start_cleanup(
@@ -1609,7 +1616,7 @@ async fn test_start_user_joined_payload_uses_room_permission_overrides() {
         .expect("room settings should load");
     settings.member_removed_permissions =
         synctv_core::models::room_settings::MemberRemovedPermissions(
-            PermissionBits::CREATE_MEDIA_RESOURCE,
+            RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
         );
     handler
         .room_service
@@ -1630,11 +1637,11 @@ async fn test_start_user_joined_payload_uses_room_permission_overrides() {
     let member = joined.member.as_ref().expect("joined member should be set");
 
     assert!(
-        PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::CREATE_MEDIA_RESOURCE),
+        RoomPermissionSet::default_member().has(RoomPermission::CREATE_MEDIA_RESOURCE),
         "static member defaults include CREATE_MEDIA_RESOURCE, so the payload must prove it used room overrides"
     );
     assert!(
-        !PermissionBits(member.permissions).has(PermissionBits::CREATE_MEDIA_RESOURCE),
+        !RoomPermissionSet(member.permissions).has(RoomPermission::CREATE_MEDIA_RESOURCE),
         "initial UserJoined payload must apply room-level permission removals"
     );
 
@@ -2337,7 +2344,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback_snapshot()
         event_service,
         ..
     } = &fixture;
-    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
+    promote_handler_to_room_admin(&fixture).await;
     let media = synctv_core::repository::MediaRepository::new(fixture.pool.clone())
         .create(&synctv_core::models::Media {
             id: MediaId::new(),
@@ -2366,7 +2373,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback_snapshot()
             |state| {
                 state.playing_media_id = Some(media.id);
             },
-            PermissionBits::PLAY_CONTROL,
+            RoomPermission::PLAY_CONTROL,
         )
         .await
         .expect("playback state should be set");
@@ -2463,7 +2470,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback_sna
         event_service,
         ..
     } = &fixture;
-    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
+    promote_handler_to_room_admin(&fixture).await;
     let media = synctv_core::repository::MediaRepository::new(fixture.pool.clone())
         .create(&synctv_core::models::Media {
             id: MediaId::new(),
@@ -2492,7 +2499,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback_sna
             |state| {
                 state.playing_media_id = Some(media.id);
             },
-            PermissionBits::PLAY_CONTROL,
+            RoomPermission::PLAY_CONTROL,
         )
         .await
         .expect("playback state should be set");
@@ -2570,7 +2577,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
         event_service,
         ..
     } = &fixture;
-    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
+    promote_handler_to_room_admin(&fixture).await;
 
     let media = synctv_core::repository::MediaRepository::new(fixture.pool.clone())
         .create(&synctv_core::models::Media {
@@ -2605,7 +2612,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
                 state.speed = 1.0;
                 state.is_playing = true;
             },
-            PermissionBits::PLAY_CONTROL,
+            RoomPermission::PLAY_CONTROL,
         )
         .await
         .expect("playback should point at created media");
@@ -2881,7 +2888,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
         event_service,
         ..
     } = &fixture;
-    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
+    promote_handler_to_room_admin(&fixture).await;
 
     let snapshot_service = SequencedPlaybackSnapshotService::new([
         Ok(crate::proto::client::PlaybackSnapshot {
@@ -2954,7 +2961,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
                 state.speed = 1.0;
                 state.is_playing = true;
             },
-            PermissionBits::PLAY_CONTROL,
+            RoomPermission::PLAY_CONTROL,
         )
         .await
         .expect("playback target should update before broadcasting state change");
@@ -4644,7 +4651,7 @@ async fn test_observe_room_members_without_version_sends_snapshot_immediately() 
                     user_id: handler.user_id.to_string(),
                     username: handler.username.clone(),
                     role: synctv_proto::common::RoomMemberRole::Creator as i32,
-                    permissions: PermissionBits::ALL,
+                    permissions: RoomPermissionSet::all().0,
                     added_permissions: 0,
                     removed_permissions: 0,
                     admin_added_permissions: 0,
@@ -4841,7 +4848,7 @@ async fn test_observed_room_members_receive_future_permission_updates() {
             user_id: "member002abc".to_string(),
             username: "member_two".to_string(),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
-            permissions: PermissionBits::VIEW_MEMBER_LIST,
+            permissions: RoomAdminPermissionBits::VIEW_MEMBER_LIST,
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: 0,
@@ -4860,12 +4867,12 @@ async fn test_observed_room_members_receive_future_permission_updates() {
         target_username: "member_two".to_string(),
         changed_by: handler.user_id,
         changed_by_username: handler.username.clone(),
-        new_permissions: PermissionBits(PermissionBits::VIEW_MEMBER_LIST),
+        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::VIEW_MEMBER_LIST),
         role: synctv_proto::common::RoomMemberRole::Member as i32,
-        added_permissions: PermissionBits(0),
-        removed_permissions: PermissionBits(0),
-        admin_added_permissions: PermissionBits(0),
-        admin_removed_permissions: PermissionBits(0),
+        added_permissions: RoomPermissionSet(0),
+        removed_permissions: RoomPermissionSet(0),
+        admin_added_permissions: RoomPermissionSet(0),
+        admin_removed_permissions: RoomPermissionSet(0),
         timestamp: now(),
     });
 
@@ -4949,8 +4956,8 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
             user_id: handler.user_id.to_string(),
             username: handler.username.clone(),
             role: synctv_proto::common::RoomMemberRole::Creator as i32,
-            permissions: PermissionBits::ALL | PermissionBits::PLAY_CONTROL,
-            added_permissions: PermissionBits::PLAY_CONTROL,
+            permissions: RoomPermissionSet::all().0 | RoomAdminPermissionBits::PLAY_CONTROL,
+            added_permissions: RoomAdminPermissionBits::PLAY_CONTROL,
             removed_permissions: 0,
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
@@ -4967,7 +4974,7 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
         user_id: handler.user_id,
         username: handler.username.clone(),
         settings_json: serde_json::to_vec(&serde_json::json!({
-            "member_added_permissions": PermissionBits::PLAY_CONTROL
+            "admin_added_permissions": RoomAdminPermissionBits::PLAY_CONTROL
         }))
         .expect("room settings JSON should serialize"),
         version: 2,
@@ -5300,12 +5307,12 @@ fn test_user_joined_event_conversion() {
         room_id: room_id(),
         user_id: user_id(),
         username: "carol".to_string(),
-        permissions: PermissionBits(PermissionBits::DEFAULT_MEMBER),
+        permissions: RoomPermissionSet::default_member(),
         role: 3,
-        added_permissions: PermissionBits(PermissionBits::PLAY_CONTROL),
-        removed_permissions: PermissionBits(PermissionBits::CREATE_MEDIA_RESOURCE),
-        admin_added_permissions: PermissionBits(PermissionBits::KICK_MEMBER),
-        admin_removed_permissions: PermissionBits(PermissionBits::KICK_MEMBER),
+        added_permissions: RoomPermissionSet(RoomAdminPermissionBits::PLAY_CONTROL),
+        removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE),
+        admin_added_permissions: RoomPermissionSet(RoomAdminPermissionBits::KICK_MEMBER),
+        admin_removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::KICK_MEMBER),
         joined_at: now(),
         timestamp: now(),
     };
@@ -5319,15 +5326,21 @@ fn test_user_joined_event_conversion() {
             assert_eq!(member.user_id, public_actor_id());
             assert_eq!(member.username, "carol");
             assert_eq!(member.role, 3);
-            assert_eq!(member.added_permissions, PermissionBits::PLAY_CONTROL);
+            assert_eq!(
+                member.added_permissions,
+                RoomAdminPermissionBits::PLAY_CONTROL
+            );
             assert_eq!(
                 member.removed_permissions,
-                PermissionBits::CREATE_MEDIA_RESOURCE
+                RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
             );
-            assert_eq!(member.admin_added_permissions, PermissionBits::KICK_MEMBER);
+            assert_eq!(
+                member.admin_added_permissions,
+                RoomAdminPermissionBits::KICK_MEMBER
+            );
             assert_eq!(
                 member.admin_removed_permissions,
-                PermissionBits::KICK_MEMBER
+                RoomAdminPermissionBits::KICK_MEMBER
             );
             assert!(member.is_online);
         }
@@ -6356,7 +6369,7 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::DEFAULT_GUEST),
+        RoomPermissionSet::default_guest(),
     );
     let identity = handler
         .principal
@@ -6390,14 +6403,14 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
 }
 
 #[tokio::test]
-async fn test_guest_chat_is_rejected_even_if_permission_bits_include_send_chat() {
+async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
     let event_service = test_realtime_manager("guest_chat_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::SEND_CHAT),
+        RoomPermissionSet(RoomAdminPermissionBits::CHAT),
     );
 
     let err = handler
@@ -6418,14 +6431,14 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_send_chat()
 }
 
 #[tokio::test]
-async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_send_chat() {
+async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_chat() {
     let event_service = test_realtime_manager("guest_danmaku_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::SEND_CHAT),
+        RoomPermissionSet(RoomAdminPermissionBits::CHAT),
     );
 
     let err = handler
@@ -6454,7 +6467,7 @@ async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_inc
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::VIEW_MEDIA_RESOURCES),
+        RoomPermissionSet(RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES),
     );
 
     let err = handler
@@ -6664,7 +6677,7 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::DEFAULT_GUEST),
+        RoomPermissionSet::default_guest(),
     );
     let connection_id = handler.connection_id().to_string();
     let guest_user_id = handler.user_id;
@@ -6714,7 +6727,9 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
         FailingMessageSender::fail_after(usize::MAX),
         Arc::clone(&event_service),
         connection_service.clone(),
-        PermissionBits(PermissionBits::DEFAULT_GUEST | PermissionBits::USE_WEBRTC),
+        RoomPermissionSet(
+            RoomPermissionSet::default_guest().0 | RoomAdminPermissionBits::USE_WEBRTC,
+        ),
     );
     let connection_id = handler.connection_id().to_string();
 

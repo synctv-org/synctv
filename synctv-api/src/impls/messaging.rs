@@ -21,8 +21,8 @@ use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{
-        PermissionBits, RoomId, RoomMember, RoomPlaybackState, RoomSettings, RoomStatus, UserId,
-        UserStatus,
+        RoomId, RoomMember, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomSettings,
+        RoomStatus, UserId, UserStatus,
     },
     service::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
@@ -260,7 +260,7 @@ pub struct GuestRealtimeIdentity {
     pub session_id: String,
     pub token_jti: String,
     pub room_guest_version: i64,
-    pub permissions: PermissionBits,
+    pub permissions: RoomPermissionSet,
 }
 
 #[derive(Debug, Clone)]
@@ -1066,7 +1066,7 @@ impl ResourceWatchSession {
         }
     }
 
-    async fn check_realtime_permission(&self, permission: u64) -> Result<(), String> {
+    async fn check_realtime_permission(&self, permission: RoomPermission) -> Result<(), String> {
         if self.principal.is_guest() {
             let permissions = self
                 .room_service
@@ -1110,7 +1110,7 @@ impl ResourceWatchSession {
             }
             crate::proto::client::observe_resource::Resource::RoomMembers(_) => {
                 self.ensure_guest_admission_for_action().await?;
-                self.check_realtime_permission(PermissionBits::VIEW_MEMBER_LIST)
+                self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
                     .await
             }
             crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => Err(
@@ -1771,11 +1771,14 @@ impl StreamMessageHandler {
         self.principal.public_actor_id(&self.public_id_codec)
     }
 
-    async fn guest_permissions(&self) -> Result<PermissionBits, synctv_core::Error> {
+    async fn guest_permissions(&self) -> Result<RoomPermissionSet, synctv_core::Error> {
         self.room_service.get_guest_permissions(&self.room_id).await
     }
 
-    async fn check_realtime_permission(&self, permission: u64) -> Result<(), synctv_core::Error> {
+    async fn check_realtime_permission(
+        &self,
+        permission: RoomPermission,
+    ) -> Result<(), synctv_core::Error> {
         if self.principal.is_guest() {
             let permissions = self.guest_permissions().await?;
             if permissions.has(permission) {
@@ -1816,7 +1819,7 @@ impl StreamMessageHandler {
             }
             crate::proto::client::observe_resource::Resource::RoomMembers(_) => {
                 self.ensure_guest_admission_for_action().await?;
-                self.check_realtime_permission(PermissionBits::VIEW_MEMBER_LIST)
+                self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
                     .await
                     .map_err(|e| e.to_string())
             }
@@ -2731,7 +2734,7 @@ impl StreamMessageHandler {
                 let permissions = self
                     .principal
                     .guest_identity()
-                    .map_or(PermissionBits::DEFAULT_GUEST, |identity| {
+                    .map_or(RoomPermissionSet::default_guest().0, |identity| {
                         identity.permissions.0
                     });
                 (
@@ -2766,7 +2769,7 @@ impl StreamMessageHandler {
                         // Fallback: if we can't fetch membership, use Member defaults
                         (
                             synctv_proto::common::RoomMemberRole::Member as i32,
-                            synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                            synctv_core::models::RoomPermissionSet::default_member().0,
                             0,
                             0,
                             0,
@@ -2844,10 +2847,10 @@ impl StreamMessageHandler {
             (
                 synctv_proto::common::RoomMemberRole::Guest as i32,
                 identity.permissions,
-                synctv_core::models::PermissionBits(0),
-                synctv_core::models::PermissionBits(0),
-                synctv_core::models::PermissionBits(0),
-                synctv_core::models::PermissionBits(0),
+                synctv_core::models::RoomPermissionSet(0),
+                synctv_core::models::RoomPermissionSet(0),
+                synctv_core::models::RoomPermissionSet(0),
+                synctv_core::models::RoomPermissionSet(0),
             )
         } else {
             match member {
@@ -2863,23 +2866,21 @@ impl StreamMessageHandler {
                     (
                         role,
                         effective,
-                        synctv_core::models::PermissionBits(member.added_permissions),
-                        synctv_core::models::PermissionBits(member.removed_permissions),
-                        synctv_core::models::PermissionBits(member.admin_added_permissions),
-                        synctv_core::models::PermissionBits(member.admin_removed_permissions),
+                        synctv_core::models::RoomPermissionSet(member.added_permissions),
+                        synctv_core::models::RoomPermissionSet(member.removed_permissions),
+                        synctv_core::models::RoomPermissionSet(member.admin_added_permissions),
+                        synctv_core::models::RoomPermissionSet(member.admin_removed_permissions),
                     )
                 }
                 None => {
                     // Fallback: if we can't fetch membership, use Member defaults
                     (
                         synctv_proto::common::RoomMemberRole::Member as i32,
-                        synctv_core::models::PermissionBits(
-                            synctv_core::models::PermissionBits::DEFAULT_MEMBER,
-                        ),
-                        synctv_core::models::PermissionBits(0),
-                        synctv_core::models::PermissionBits(0),
-                        synctv_core::models::PermissionBits(0),
-                        synctv_core::models::PermissionBits(0),
+                        synctv_core::models::RoomPermissionSet::default_member(),
+                        synctv_core::models::RoomPermissionSet(0),
+                        synctv_core::models::RoomPermissionSet(0),
+                        synctv_core::models::RoomPermissionSet(0),
+                        synctv_core::models::RoomPermissionSet(0),
                     )
                 }
             }
@@ -3764,7 +3765,7 @@ impl StreamMessageHandler {
 
                 if is_danmaku {
                     // Danmaku: validate, check settings, rate limit, filter, then handle
-                    self.check_realtime_permission(PermissionBits::SEND_CHAT)
+                    self.check_realtime_permission(RoomPermission::CHAT)
                         .await
                         .map_err(|e| e.to_string())?;
 
@@ -3974,7 +3975,7 @@ impl StreamMessageHandler {
         }
 
         // Check permission
-        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -4032,7 +4033,7 @@ impl StreamMessageHandler {
         }
 
         // Check permission
-        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -4095,7 +4096,7 @@ impl StreamMessageHandler {
         }
 
         // Check permission
-        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -4145,7 +4146,7 @@ impl StreamMessageHandler {
         }
 
         // Check permission
-        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -4292,7 +4293,7 @@ impl StreamMessageHandler {
         // state via progress reports. Without this check any room member could
         // silently rewrite the server-side position by sending crafted progress
         // messages, effectively acting as an unauthorized seek.
-        self.check_realtime_permission(PermissionBits::PLAY_CONTROL)
+        self.check_realtime_permission(RoomPermission::PLAY_CONTROL)
             .await
             .map_err(|e| e.to_string())?;
         if self.principal.is_guest() {
@@ -4411,7 +4412,7 @@ impl StreamMessageHandler {
         &self,
         update: &crate::proto::client::UpdatePlayback,
     ) -> Result<(), String> {
-        self.check_realtime_permission(PermissionBits::PLAY_CONTROL)
+        self.check_realtime_permission(RoomPermission::PLAY_CONTROL)
             .await
             .map_err(|e| e.to_string())?;
         if self.principal.is_guest() {

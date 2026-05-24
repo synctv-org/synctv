@@ -157,7 +157,10 @@ pub use opaque_password::{
     OPAQUE_SERVER_SETUP_VERSION,
 };
 pub use pagination::{Page, PageParams, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
-pub use permission::{PermissionBits, Role as RoomRole};
+pub use permission::{
+    Role as RoomRole, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
+    RoomPermission, RoomPermissionSet,
+};
 pub use playback::RoomPlaybackState;
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,

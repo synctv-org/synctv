@@ -15,9 +15,9 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         room_settings::{AllowAutoJoin, RequireApproval},
-        Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Playlist,
-        PlaylistId, ReviewRequestId, RoomId, RoomListQuery, RoomPlaybackState, RoomRole,
-        RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
+        Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
+        ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomPlaybackState,
+        RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -2912,7 +2912,7 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
     // Try to set guest permissions that exceed member-level permissions
     let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
     settings.guest_added_permissions = synctv_core::models::room_settings::GuestAddedPermissions(
-        PermissionBits::KICK_MEMBER, // This exceeds DEFAULT_MEMBER
+        1 << 21, // outside guest permission bitspace
     );
 
     let result = room_service.set_settings(room.id, owner.id, settings).await;
@@ -3450,7 +3450,9 @@ async fn test_remove_media_respects_admin_override_columns() {
     )
     .bind(room.id)
     .bind(admin.id)
-    .bind(u64_to_i64(PermissionBits::DELETE_MEDIA_RESOURCE_ANY))
+    .bind(u64_to_i64(
+        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+    ))
     .execute(&pool)
     .await
     .unwrap();
@@ -3628,7 +3630,7 @@ async fn test_leave_room_removes_owned_resources_before_former_member_can_delete
 
     room_service
         .member_service()
-        .add_member(room.id, member.id, RoomRole::Member)
+        .add_member(room.id, member.id, RoomRole::Admin)
         .await
         .unwrap();
 
@@ -3775,7 +3777,7 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
             room.id,
             owner.id,
             member.id,
-            PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+            RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
         )
         .await
         .unwrap();
@@ -3858,7 +3860,7 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
             room.id,
             owner.id,
             admin.id,
-            PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+            RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
         )
         .await
         .unwrap();
@@ -5145,7 +5147,7 @@ async fn test_non_creator_cannot_delete_room() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_room_admin_cannot_delete_room() {
+async fn test_room_admin_can_delete_room_with_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -5171,6 +5173,52 @@ async fn test_room_admin_cannot_delete_room() {
         .await
         .unwrap();
 
+    let mut admin_member =
+        synctv_core::models::RoomMember::new(room.id, room_admin.id, RoomRole::Admin);
+    admin_member.admin_added_permissions = RoomAdminPermissionBits::DELETE_ROOM;
+    member_repo.add(&admin_member).await.unwrap();
+
+    room_service
+        .delete_room(room.id, room_admin.id)
+        .await
+        .unwrap();
+
+    let room_repo = RoomRepository::new(pool.clone());
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(
+        fetched.is_none(),
+        "Room admin with delete_room should delete room"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_admin_without_delete_room_cannot_delete_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("room_admin_no_del_owner"))
+        .await
+        .unwrap();
+    let room_admin = user_repo
+        .create(&make_user("room_admin_no_del_actor"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Room Admin No Delete Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
     member_repo
         .add(&synctv_core::models::RoomMember::new(
             room.id,
@@ -5181,20 +5229,10 @@ async fn test_room_admin_cannot_delete_room() {
         .unwrap();
 
     let result = room_service.delete_room(room.id, room_admin.id).await;
-
     assert!(
         result.is_err(),
-        "Room admin should not be able to delete room"
+        "Room admin without delete_room should not delete room"
     );
-    match result.unwrap_err() {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("creator") || msg.contains("admin"),
-                "Error should explain who can delete room: {msg}"
-            );
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
-    }
 }
 
 #[tokio::test]

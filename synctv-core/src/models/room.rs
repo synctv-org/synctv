@@ -5,7 +5,9 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
-use super::permission::PermissionBits;
+use super::permission::{
+    RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
+};
 use super::query::SortDirection;
 use crate::Error;
 
@@ -441,10 +443,10 @@ impl RoomSettingsJson {
     /// - `removed_permissions`: Removed permissions from room settings (Optional)
     #[must_use]
     pub const fn effective_permissions_for_role(
-        global_default: PermissionBits,
+        global_default: RoomPermissionSet,
         added_permissions: Option<u64>,
         removed_permissions: Option<u64>,
-    ) -> PermissionBits {
+    ) -> RoomPermissionSet {
         let mut result = global_default.0;
 
         // Add extra permissions
@@ -457,49 +459,55 @@ impl RoomSettingsJson {
             result &= !removed;
         }
 
-        PermissionBits(result)
+        RoomPermissionSet(result)
     }
 
     /// Get effective permissions for Admin role
     ///
     /// Requires global default admin permissions from `SettingsRegistry`
     #[must_use]
-    pub const fn admin_permissions(&self, global_default: PermissionBits) -> PermissionBits {
-        Self::effective_permissions_for_role(
-            global_default,
-            self.admin_added_permissions,
-            self.admin_removed_permissions,
-        )
+    pub const fn admin_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
+        let mut result = global_default.0;
+        if let Some(added) = self.admin_added_permissions {
+            result |= RoomAdminPermissionBits::to_permissions(added);
+        }
+        if let Some(removed) = self.admin_removed_permissions {
+            result &= !RoomAdminPermissionBits::to_permissions(removed);
+        }
+        RoomPermissionSet(result)
     }
 
     /// Get effective permissions for Member role
     ///
     /// Requires global default member permissions from `SettingsRegistry`
     #[must_use]
-    pub const fn member_permissions(&self, global_default: PermissionBits) -> PermissionBits {
-        Self::effective_permissions_for_role(
-            global_default,
-            self.member_added_permissions,
-            self.member_removed_permissions,
-        )
+    pub const fn member_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
+        let mut result = global_default.0;
+        if let Some(added) = self.member_added_permissions {
+            result |= RoomMemberPermissionBits::to_permissions(added);
+        }
+        if let Some(removed) = self.member_removed_permissions {
+            result &= !RoomMemberPermissionBits::to_permissions(removed);
+        }
+        RoomPermissionSet(result)
     }
 
     /// Get effective permissions for Guest
     ///
     /// Requires global default guest permissions from `SettingsRegistry`
     #[must_use]
-    pub const fn guest_permissions(&self, global_default: PermissionBits) -> PermissionBits {
-        let mut result = global_default.0 & PermissionBits::GUEST_ASSIGNABLE;
+    pub const fn guest_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
+        let mut result = global_default.0 & RoomPermissionSet::guest_assignable().0;
 
         if let Some(added) = self.guest_added_permissions {
-            result |= added & PermissionBits::GUEST_ASSIGNABLE;
+            result |= RoomGuestPermissionBits::to_permissions(added);
         }
 
         if let Some(removed) = self.guest_removed_permissions {
-            result &= !removed;
+            result &= !RoomGuestPermissionBits::to_permissions(removed);
         }
 
-        PermissionBits(result)
+        RoomPermissionSet(result)
     }
 }
 

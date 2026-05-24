@@ -14,8 +14,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::MaxMembers, PermissionBits, RoomId, RoomRole, User, UserId, UserRole,
-        UserStatus,
+        room_settings::MaxMembers, RoomId, RoomMemberPermissionBits, RoomPermission, RoomRole,
+        User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, UserRepository},
     service::{
@@ -344,15 +344,20 @@ async fn test_grant_permission_bitwise_or() {
 
     let member_service = room_service.member_service();
 
-    // Grant KICK_MEMBER permission
+    // Grant a member-level permission
     let updated = member_service
-        .grant_permission(room.id, creator.id, target.id, PermissionBits::KICK_MEMBER)
+        .grant_permission(
+            room.id,
+            creator.id,
+            target.id,
+            RoomMemberPermissionBits::USE_WEBRTC,
+        )
         .await
         .unwrap();
 
     assert!(
-        updated.added_permissions & PermissionBits::KICK_MEMBER != 0,
-        "KICK_MEMBER should now also be set"
+        updated.added_permissions & RoomMemberPermissionBits::USE_WEBRTC != 0,
+        "USE_WEBRTC should now also be set"
     );
 }
 
@@ -387,26 +392,31 @@ async fn test_revoke_permission() {
 
     let member_service = room_service.member_service();
 
-    // Revoke SEND_CHAT permission (which is in default member permissions)
+    // Revoke CHAT permission (which is in default member permissions)
     let updated = member_service
-        .revoke_permission(room.id, creator.id, target.id, PermissionBits::SEND_CHAT)
+        .revoke_permission(
+            room.id,
+            creator.id,
+            target.id,
+            RoomMemberPermissionBits::CHAT,
+        )
         .await
         .unwrap();
 
     assert!(
-        updated.removed_permissions & PermissionBits::SEND_CHAT != 0,
-        "SEND_CHAT should be in removed_permissions"
+        updated.removed_permissions & RoomMemberPermissionBits::CHAT != 0,
+        "CHAT should be in removed_permissions"
     );
 
-    // Verify the effective permission no longer includes SEND_CHAT
+    // Verify the effective permission no longer includes CHAT
     let perm_service = room_service.permission_service();
     let effective = perm_service
         .get_user_permissions_no_cache(&room.id, &target.id)
         .await
         .unwrap();
     assert!(
-        !effective.has(PermissionBits::SEND_CHAT),
-        "SEND_CHAT should be denied after revocation"
+        !effective.has(RoomPermission::CHAT),
+        "CHAT should be denied after revocation"
     );
 }
 

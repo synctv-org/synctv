@@ -5693,7 +5693,7 @@ fn admin_room_member_to_proto_with_settings(
 #[cfg(test)]
 fn admin_room_member_to_proto_from_role_default(
     member: &synctv_core::models::RoomMemberWithUser,
-    role_default: synctv_core::models::PermissionBits,
+    role_default: synctv_core::models::RoomPermissionSet,
     public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     admin_room_member_to_proto_with_permissions(
@@ -5705,7 +5705,7 @@ fn admin_room_member_to_proto_from_role_default(
 
 fn admin_room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
-    permissions: synctv_core::models::PermissionBits,
+    permissions: synctv_core::models::RoomPermissionSet,
     public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {
@@ -6694,7 +6694,7 @@ mod tests {
             .expect("room settings should load");
         settings.member_removed_permissions =
             synctv_core::models::room_settings::MemberRemovedPermissions(
-                synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE,
+                synctv_core::models::RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
             );
         admin_api
             .room_service
@@ -6709,7 +6709,7 @@ mod tests {
                     user_id: public_user_id(&admin_api, target.id),
                     role: synctv_proto::common::RoomMemberRole::Member as i32,
                     added_permissions: 0,
-                    removed_permissions: synctv_core::models::PermissionBits::SEND_CHAT,
+                    removed_permissions: synctv_core::models::RoomMemberPermissionBits::CHAT,
                     admin_added_permissions: 0,
                     admin_removed_permissions: 0,
                 },
@@ -6721,13 +6721,13 @@ mod tests {
 
         let member = response.member.expect("member should be returned");
         assert!(
-            synctv_core::models::PermissionBits(synctv_core::models::PermissionBits::DEFAULT_MEMBER)
-                .has(synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE),
+            synctv_core::models::RoomPermissionSet::default_member()
+                .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
             "static member defaults include CREATE_MEDIA_RESOURCE, so the response must prove it used room overrides"
         );
         assert!(
-            !synctv_core::models::PermissionBits(member.permissions)
-                .has(synctv_core::models::PermissionBits::CREATE_MEDIA_RESOURCE),
+            !synctv_core::models::RoomPermissionSet(member.permissions)
+                .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
             "admin member response must apply room-level permission removals"
         );
     }

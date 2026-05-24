@@ -27,7 +27,7 @@
 //! }
 //! ```
 
-use crate::models::{room_settings::MaxMembers, PermissionBits};
+use crate::models::{room_settings::MaxMembers, RoomAdminPermissionBits, RoomPermissionSet};
 use crate::service::{
     settings_vars::{Setting, SettingsStorage},
     SettingsService,
@@ -42,7 +42,7 @@ use std::sync::Arc;
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionSet(PermissionBits);
+pub struct PermissionSet(RoomPermissionSet);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionSetParseError(String);
@@ -58,21 +58,21 @@ impl std::error::Error for PermissionSetParseError {}
 impl PermissionSet {
     #[must_use]
     pub const fn admin_default() -> Self {
-        Self(PermissionBits(PermissionBits::DEFAULT_ADMIN))
+        Self(RoomPermissionSet::default_admin())
     }
 
     #[must_use]
     pub const fn member_default() -> Self {
-        Self(PermissionBits(PermissionBits::DEFAULT_MEMBER))
+        Self(RoomPermissionSet::default_member())
     }
 
     #[must_use]
     pub const fn guest_default() -> Self {
-        Self(PermissionBits(PermissionBits::DEFAULT_GUEST))
+        Self(RoomPermissionSet::default_guest())
     }
 
     #[must_use]
-    pub const fn bits(&self) -> PermissionBits {
+    pub const fn bits(&self) -> RoomPermissionSet {
         self.0
     }
 
@@ -84,13 +84,13 @@ impl PermissionSet {
     }
 
     pub fn validate_guest_default(&self) -> crate::Result<()> {
-        let invalid = self.bits().0 & !PermissionBits::GUEST_ASSIGNABLE;
+        let invalid = self.bits().0 & !RoomPermissionSet::guest_assignable().0;
         if invalid == 0 {
             return Ok(());
         }
 
         let invalid_names = Self::names_for_bits(invalid);
-        let allowed_names = Self::names_for_bits(PermissionBits::GUEST_ASSIGNABLE);
+        let allowed_names = Self::names_for_bits(RoomPermissionSet::guest_assignable().0);
         Err(crate::Error::InvalidInput(format!(
             "permissions.guest_default may only include guest-safe permissions: {}; invalid permissions: {}",
             allowed_names.join(", "),
@@ -100,48 +100,66 @@ impl PermissionSet {
 }
 
 const NAMED_PERMISSIONS: &[(&str, u64)] = &[
-    ("send_chat", PermissionBits::SEND_CHAT),
+    ("chat", RoomAdminPermissionBits::CHAT),
     (
         "create_media_resource",
-        PermissionBits::CREATE_MEDIA_RESOURCE,
+        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
     ),
     (
+        "view_media_resources",
+        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+    ),
+    (
+        "view_member_list",
+        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
+    ),
+    (
+        "view_chat_history",
+        RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+    ),
+    ("use_webrtc", RoomAdminPermissionBits::USE_WEBRTC),
+    (
         "delete_media_resource_any",
-        PermissionBits::DELETE_MEDIA_RESOURCE_ANY,
+        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
     ),
     (
         "reorder_media_resources",
-        PermissionBits::REORDER_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
     ),
     (
         "clear_media_resources",
-        PermissionBits::CLEAR_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES,
     ),
-    ("live_control", PermissionBits::LIVE_CONTROL),
-    ("play_control", PermissionBits::PLAY_CONTROL),
-    ("change_current_media", PermissionBits::CHANGE_CURRENT_MEDIA),
-    ("change_playback_rate", PermissionBits::CHANGE_PLAYBACK_RATE),
-    ("approve_member", PermissionBits::APPROVE_MEMBER),
-    ("kick_member", PermissionBits::KICK_MEMBER),
+    ("live_control", RoomAdminPermissionBits::LIVE_CONTROL),
+    ("play_control", RoomAdminPermissionBits::PLAY_CONTROL),
+    (
+        "change_current_media",
+        RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA,
+    ),
+    (
+        "change_playback_rate",
+        RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE,
+    ),
+    ("approve_member", RoomAdminPermissionBits::APPROVE_MEMBER),
+    ("kick_member", RoomAdminPermissionBits::KICK_MEMBER),
     (
         "set_member_permissions",
-        PermissionBits::SET_MEMBER_PERMISSIONS,
+        RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS,
     ),
-    ("add_member", PermissionBits::ADD_MEMBER),
-    ("set_room_settings", PermissionBits::SET_ROOM_SETTINGS),
-    ("delete_chat", PermissionBits::DELETE_CHAT),
-    ("delete_room", PermissionBits::DELETE_ROOM),
-    ("view_media_resources", PermissionBits::VIEW_MEDIA_RESOURCES),
-    ("view_member_list", PermissionBits::VIEW_MEMBER_LIST),
-    ("view_chat_history", PermissionBits::VIEW_CHAT_HISTORY),
-    ("use_webrtc", PermissionBits::USE_WEBRTC),
+    ("add_member", RoomAdminPermissionBits::ADD_MEMBER),
+    (
+        "set_room_settings",
+        RoomAdminPermissionBits::SET_ROOM_SETTINGS,
+    ),
+    ("delete_chat", RoomAdminPermissionBits::DELETE_CHAT),
+    ("delete_room", RoomAdminPermissionBits::DELETE_ROOM),
 ];
 
 impl fmt::Display for PermissionSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = NAMED_PERMISSIONS
             .iter()
-            .filter_map(|(name, bit)| self.0.has(*bit).then_some(*name))
+            .filter_map(|(name, bit)| ((self.0.bits() & *bit) != 0).then_some(*name))
             .collect::<Vec<_>>();
         let json = serde_json::to_string(&names).map_err(|_| fmt::Error)?;
         f.write_str(&json)
@@ -158,17 +176,18 @@ impl std::str::FromStr for PermissionSet {
             ))
         })?;
 
-        let mut bits = PermissionBits::empty();
+        let mut bits = RoomPermissionSet::empty();
         for name in names {
+            let canonical = name.replace('-', "_").to_ascii_lowercase();
             let Some((_, bit)) = NAMED_PERMISSIONS
                 .iter()
-                .find(|(permission_name, _)| *permission_name == name)
+                .find(|(permission_name, _)| *permission_name == canonical)
             else {
                 return Err(PermissionSetParseError(format!(
                     "unknown permission name '{name}'"
                 )));
             };
-            bits.grant(*bit);
+            bits |= *bit;
         }
 
         Ok(Self(bits))
@@ -632,7 +651,6 @@ impl SettingsRegistry {
             ),
 
             // Permission settings - global defaults for each room role.
-            // These must stay aligned with PermissionBits::DEFAULT_* because
             // PermissionService reads these runtime settings as its base role permissions.
             admin_default_permissions: setting!(
                 PermissionSet,
@@ -1033,23 +1051,24 @@ mod tests {
         let empty: PermissionSet = "[]".parse().unwrap();
         assert!(empty.validate_guest_default().is_ok());
 
-        let rejected: PermissionSet =
-            r#"["view_media_resources","send_chat","create_media_resource"]"#
-                .parse()
-                .unwrap();
+        let rejected: PermissionSet = r#"["view_media_resources","chat","create_media_resource"]"#
+            .parse()
+            .unwrap();
         let error = rejected
             .validate_guest_default()
             .expect_err("media-resource and chat permissions must not be guest defaults");
         assert!(error.to_string().contains("permissions.guest_default"));
         assert!(error.to_string().contains("view_media_resources"));
-        assert!(error.to_string().contains("send_chat"));
+        assert!(error.to_string().contains("chat"));
         assert!(error.to_string().contains("create_media_resource"));
     }
 
     #[test]
     fn test_permission_set_uses_live_control_name_only() {
         let parsed: PermissionSet = r#"["live_control"]"#.parse().unwrap();
-        assert!(parsed.bits().has(PermissionBits::LIVE_CONTROL));
+        assert!(parsed
+            .bits()
+            .has(crate::models::RoomPermission::LIVE_CONTROL));
         assert_eq!(parsed.to_string(), r#"["live_control"]"#);
 
         let error = r#"["start_live"]"#
@@ -1063,6 +1082,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_permission_set_accepts_chat_name() {
+        let parsed: PermissionSet = r#"["chat"]"#.parse().unwrap();
+        assert!(parsed.bits().has(crate::models::RoomPermission::CHAT));
+        assert_eq!(parsed.to_string(), r#"["chat"]"#);
+    }
+
     #[tokio::test]
     async fn test_settings_registry_rejects_unsafe_guest_default_permissions() {
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -1074,7 +1100,7 @@ mod tests {
         ));
         let registry = SettingsRegistry::new(service);
 
-        let invalid = r#"["view_media_resources","send_chat"]"#;
+        let invalid = r#"["view_media_resources","chat"]"#;
         assert!(
             !registry
                 .storage

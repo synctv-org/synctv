@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synctv_core::models::id::{MediaId, PlaylistId, RoomId, UserId};
-use synctv_core::models::permission::PermissionBits;
 use synctv_core::models::playback::RoomPlaybackState;
 use synctv_core::models::Playlist;
+use synctv_core::models::RoomPermissionSet;
 
 /// The kind of cache to invalidate in a `CacheInvalidate` realtime event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,16 +78,16 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         user_id: UserId,
         username: String,
-        permissions: PermissionBits,
+        permissions: RoomPermissionSet,
         role: i32, // RoomMemberRole as i32 for serde compatibility
         #[serde(default)]
-        added_permissions: PermissionBits,
+        added_permissions: RoomPermissionSet,
         #[serde(default)]
-        removed_permissions: PermissionBits,
+        removed_permissions: RoomPermissionSet,
         #[serde(default)]
-        admin_added_permissions: PermissionBits,
+        admin_added_permissions: RoomPermissionSet,
         #[serde(default)]
-        admin_removed_permissions: PermissionBits,
+        admin_removed_permissions: RoomPermissionSet,
         #[serde(default = "chrono::Utc::now")]
         joined_at: DateTime<Utc>,
         timestamp: DateTime<Utc>,
@@ -99,7 +99,7 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         guest_id: String,
         username: String,
-        permissions: PermissionBits,
+        permissions: RoomPermissionSet,
         role: i32,
         joined_at: DateTime<Utc>,
         timestamp: DateTime<Utc>,
@@ -215,14 +215,14 @@ pub enum RealtimeEvent {
         target_username: String,
         changed_by: UserId,
         changed_by_username: String,
-        new_permissions: PermissionBits,
+        new_permissions: RoomPermissionSet,
         role: i32, // RoomMemberRole as i32 for serde compatibility
-        added_permissions: PermissionBits,
-        removed_permissions: PermissionBits,
+        added_permissions: RoomPermissionSet,
+        removed_permissions: RoomPermissionSet,
         #[serde(default)]
-        admin_added_permissions: PermissionBits,
+        admin_added_permissions: RoomPermissionSet,
         #[serde(default)]
-        admin_removed_permissions: PermissionBits,
+        admin_removed_permissions: RoomPermissionSet,
         timestamp: DateTime<Utc>,
     },
 
@@ -832,12 +832,12 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_140),
             user_id: UserId::expect_positive(10_000_141),
             username: "testuser".to_string(),
-            permissions: PermissionBits(0),
+            permissions: RoomPermissionSet(0),
             role: 2, // Member role
-            added_permissions: PermissionBits(0),
-            removed_permissions: PermissionBits(0),
-            admin_added_permissions: PermissionBits(0),
-            admin_removed_permissions: PermissionBits(0),
+            added_permissions: RoomPermissionSet(0),
+            removed_permissions: RoomPermissionSet(0),
+            admin_added_permissions: RoomPermissionSet(0),
+            admin_removed_permissions: RoomPermissionSet(0),
             joined_at: Utc::now(),
             timestamp: Utc::now(),
         };

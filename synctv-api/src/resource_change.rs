@@ -251,9 +251,7 @@ mod tests {
             room_id: room_id(),
             guest_id: "gst_test".to_string(),
             username: "Guest".to_string(),
-            permissions: synctv_core::models::PermissionBits(
-                synctv_core::models::PermissionBits::DEFAULT_GUEST,
-            ),
+            permissions: synctv_core::models::RoomPermissionSet::default_guest(),
             role: synctv_proto::common::RoomMemberRole::Guest as i32,
             joined_at: Utc::now(),
             timestamp: Utc::now(),

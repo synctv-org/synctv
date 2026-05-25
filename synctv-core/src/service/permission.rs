@@ -13,7 +13,9 @@ use tracing::{info, warn};
 
 use crate::{
     cache::{
-        CacheDomain, CacheInvalidationRuntime, ConsistencyCoordinator, InvalidationMessage,
+        CacheDomain, CacheInvalidationRuntime, CacheL2Backend, CachedMemberPermissionSource,
+        ConsistencyCoordinator, FenceReadResult, InvalidationMessage, MemberPermissionCache,
+        MemberPermissionKey, NoopCacheL2, RoomSettingsCache, RoomSettingsSnapshot,
         VersionFenceReservation, VersionFenceStore,
     },
     models::{
@@ -21,21 +23,16 @@ use crate::{
         RoomSettings, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    service::SettingsRegistry,
+    service::{global_settings::PermissionSet, SettingsRegistry},
     Error, Result,
 };
 
-#[derive(Debug, Clone, Copy)]
-struct CachedPermissions {
-    bits: RoomPermissionSet,
-    user_version: i64,
-    room_settings_version: i64,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PermissionCacheFence {
     user_version: i64,
     room_settings_version: i64,
+    user_fence_key: Option<String>,
+    room_settings_fence_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,15 +46,6 @@ impl PermissionWriteFence {
     #[must_use]
     pub(crate) const fn version(&self) -> i64 {
         self.version
-    }
-}
-
-#[cfg(test)]
-fn cached_permissions_for_test(bits: RoomPermissionSet) -> CachedPermissions {
-    CachedPermissions {
-        bits,
-        user_version: 0,
-        room_settings_version: 0,
     }
 }
 
@@ -203,17 +191,12 @@ pub struct PermissionService {
     member_repo: RoomMemberRepository,
     room_repo: RoomRepository,
     room_settings_repo: Option<RoomSettingsRepository>,
-    cache: Arc<moka::future::Cache<String, CachedPermissions>>,
-    /// Short-term fallback cache used during degraded mode (Pub/Sub lag).
-    /// Has a much shorter TTL (30s) than the main cache to balance:
-    /// - Reducing database load during degraded periods
-    /// - Not serving stale data for too long when invalidation is unreliable
-    degraded_cache: Arc<moka::future::Cache<String, CachedPermissions>>,
+    member_permission_cache: MemberPermissionCache,
+    room_settings_cache: RoomSettingsCache,
     settings_registry: Option<Arc<SettingsRegistry>>,
     /// Optional invalidation service for cross-replica cache sync
     invalidation_service: Arc<SharedInvalidationService>,
-    /// When true, cache is considered unreliable due to Pub/Sub lag;
-    /// all permission checks use `degraded_cache` with short TTL.
+    /// When true, source caches are considered unreliable due to Pub/Sub lag.
     cache_degraded: Arc<AtomicBool>,
     /// Tracks last `invalidate_all()` time to rate-limit flushes
     last_flush_time: Arc<parking_lot::Mutex<Instant>>,
@@ -233,6 +216,10 @@ pub struct PermissionServiceRuntime {
     pub room_settings_repo: Option<RoomSettingsRepository>,
     pub invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub version_fence: Option<Arc<dyn VersionFenceStore>>,
+    pub member_permission_l2_cache: Option<Arc<dyn CacheL2Backend>>,
+    pub member_permission_cache_key_prefix: String,
+    pub room_settings_l2_cache: Option<Arc<dyn CacheL2Backend>>,
+    pub room_settings_cache_key_prefix: String,
 }
 
 impl Default for PermissionServiceRuntime {
@@ -244,6 +231,10 @@ impl Default for PermissionServiceRuntime {
             room_settings_repo: None,
             invalidation_service: None,
             version_fence: None,
+            member_permission_l2_cache: None,
+            member_permission_cache_key_prefix: "member_permission:".to_string(),
+            room_settings_l2_cache: None,
+            room_settings_cache_key_prefix: "room_settings:".to_string(),
         }
     }
 }
@@ -267,10 +258,33 @@ impl PermissionService {
     /// Maximum duration to remain in degraded mode before forcing a full cache refresh.
     /// After this timeout, both caches are flushed and the primary cache is re-enabled.
     const MAX_DEGRADATION_DURATION_SECS: u64 = 10;
-    /// TTL for the degraded cache (seconds)
-    /// Short enough to not serve stale data for too long, but long enough
-    /// to significantly reduce database load during degraded periods.
-    const DEGRADED_CACHE_TTL_SECS: u64 = 30;
+    fn build_member_permission_cache(runtime: &PermissionServiceRuntime) -> MemberPermissionCache {
+        MemberPermissionCache::new(
+            runtime
+                .member_permission_l2_cache
+                .clone()
+                .unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.cache_size,
+            runtime.cache_ttl_secs,
+            runtime.cache_ttl_secs,
+            runtime.member_permission_cache_key_prefix.clone(),
+        )
+        .expect("failed to create member permission cache")
+    }
+
+    fn build_room_settings_cache(runtime: &PermissionServiceRuntime) -> RoomSettingsCache {
+        RoomSettingsCache::new(
+            runtime
+                .room_settings_l2_cache
+                .clone()
+                .unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.cache_size,
+            runtime.cache_ttl_secs,
+            runtime.cache_ttl_secs,
+            runtime.room_settings_cache_key_prefix.clone(),
+        )
+        .expect("failed to create permission room settings cache")
+    }
 
     /// Create a new permission service with caching
     #[must_use]
@@ -281,35 +295,16 @@ impl PermissionService {
         cache_size: u64,
         cache_ttl_secs: u64,
     ) -> Self {
-        let version_fence = Arc::new(crate::cache::NoopVersionFenceStore);
-
-        Self {
+        Self::new_with_runtime(
             member_repo,
             room_repo,
-            room_settings_repo: None, // Will be set later if needed
-            cache: Arc::new(
-                moka::future::CacheBuilder::new(cache_size)
-                    .time_to_live(Duration::from_secs(cache_ttl_secs))
-                    .build(),
-            ),
-            degraded_cache: Arc::new(
-                moka::future::CacheBuilder::new(cache_size)
-                    .time_to_live(Duration::from_secs(Self::DEGRADED_CACHE_TTL_SECS))
-                    .build(),
-            ),
-            settings_registry,
-            invalidation_service: Arc::new(SharedInvalidationService::default()),
-            cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(
-                Instant::now()
-                    .checked_sub(Duration::from_secs(Self::FLUSH_RATE_LIMIT_SECS))
-                    .unwrap_or(Instant::now()),
-            )),
-            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
-            invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            version_fence: version_fence.clone(),
-            consistency: ConsistencyCoordinator::new(version_fence),
-        }
+            PermissionServiceRuntime {
+                settings_registry,
+                cache_size,
+                cache_ttl_secs,
+                ..PermissionServiceRuntime::default()
+            },
+        )
     }
 
     /// Create a permission service with all optional runtime collaborators wired
@@ -322,22 +317,17 @@ impl PermissionService {
     ) -> Self {
         let version_fence = runtime
             .version_fence
+            .clone()
             .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
+        let member_permission_cache = Self::build_member_permission_cache(&runtime);
+        let room_settings_cache = Self::build_room_settings_cache(&runtime);
 
         Self {
             member_repo,
             room_repo,
             room_settings_repo: runtime.room_settings_repo,
-            cache: Arc::new(
-                moka::future::CacheBuilder::new(runtime.cache_size)
-                    .time_to_live(Duration::from_secs(runtime.cache_ttl_secs))
-                    .build(),
-            ),
-            degraded_cache: Arc::new(
-                moka::future::CacheBuilder::new(runtime.cache_size)
-                    .time_to_live(Duration::from_secs(Self::DEGRADED_CACHE_TTL_SECS))
-                    .build(),
-            ),
+            member_permission_cache,
+            room_settings_cache,
             settings_registry: runtime.settings_registry,
             invalidation_service: Arc::new(SharedInvalidationService {
                 service: parking_lot::RwLock::new(runtime.invalidation_service),
@@ -392,57 +382,44 @@ impl PermissionService {
         room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
     ) -> Self {
-        let version_fence = Arc::new(crate::cache::NoopVersionFenceStore);
-
-        Self {
+        Self::new_with_runtime(
             member_repo,
             room_repo,
-            room_settings_repo: None,
-            cache: Arc::new(
-                moka::future::CacheBuilder::new(1)
-                    .time_to_live(Duration::from_secs(1))
-                    .build(),
-            ),
-            degraded_cache: Arc::new(
-                moka::future::CacheBuilder::new(1)
-                    .time_to_live(Duration::from_secs(1))
-                    .build(),
-            ),
-            settings_registry,
-            invalidation_service: Arc::new(SharedInvalidationService::default()),
-            cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(
-                Instant::now()
-                    .checked_sub(Duration::from_secs(Self::FLUSH_RATE_LIMIT_SECS))
-                    .unwrap_or(Instant::now()),
-            )),
-            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
-            invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            version_fence: version_fence.clone(),
-            consistency: ConsistencyCoordinator::new(version_fence),
-        }
+            PermissionServiceRuntime {
+                settings_registry,
+                cache_size: 1,
+                cache_ttl_secs: 1,
+                ..PermissionServiceRuntime::default()
+            },
+        )
     }
 
     async fn invalidate_cache_local_only(&self, room_id: &RoomId, user_id: &UserId) {
-        let cache_key = Self::cache_key(room_id, user_id);
-        self.cache.invalidate(&cache_key).await;
-        self.degraded_cache.invalidate(&cache_key).await;
+        let cache_key = MemberPermissionKey::new(*room_id, *user_id);
+        if let Err(error) = self.member_permission_cache.invalidate(&cache_key).await {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                error = %error,
+                "Failed to invalidate member permission source cache"
+            );
+        }
     }
 
-    pub(crate) fn invalidate_room_cache_local_only(&self, room_id: &RoomId) {
-        let prefix = format!("perm:room:{room_id}:user:");
-        let _ = self.cache.invalidate_entries_if({
-            let prefix = prefix.clone();
-            move |key, _| key.starts_with(&prefix)
-        });
-        let _ = self
-            .degraded_cache
-            .invalidate_entries_if(move |key, _| key.starts_with(&prefix));
+    pub(crate) async fn invalidate_room_cache_local_only(&self, room_id: &RoomId) {
+        self.member_permission_cache.clear().await;
+        if let Err(error) = self.room_settings_cache.invalidate(room_id).await {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %error,
+                "Failed to invalidate permission room settings source cache"
+            );
+        }
     }
 
-    pub(crate) fn clear_cache_local_only(&self) {
-        self.cache.invalidate_all();
-        self.degraded_cache.invalidate_all();
+    pub(crate) async fn clear_cache_local_only(&self) {
+        self.member_permission_cache.clear().await;
+        self.room_settings_cache.clear().await;
     }
 
     fn invalidation_service(&self) -> Option<Arc<dyn CacheInvalidationRuntime>> {
@@ -478,12 +455,11 @@ impl PermissionService {
             return Ok(None);
         }
 
+        let user_domain = Self::permission_domain(room_id, user_id);
+        let room_settings_domain = Self::room_settings_domain(room_id);
         let versions = self
             .consistency
-            .current_versions(&[
-                Self::permission_domain(room_id, user_id),
-                Self::room_settings_domain(room_id),
-            ])
+            .current_versions(&[user_domain.clone(), room_settings_domain.clone()])
             .await?;
         let Some(user_version) = versions.first().and_then(|version| *version) else {
             return Ok(None);
@@ -495,6 +471,8 @@ impl PermissionService {
         Ok(Some(PermissionCacheFence {
             user_version,
             room_settings_version,
+            user_fence_key: self.consistency.fence_key(&user_domain),
+            room_settings_fence_key: self.consistency.fence_key(&room_settings_domain),
         }))
     }
 
@@ -634,8 +612,8 @@ impl PermissionService {
         }
 
         let mut receiver = invalidation_service.subscribe();
-        let cache = self.cache.clone();
-        let degraded_cache = self.degraded_cache.clone();
+        let member_permission_cache = self.member_permission_cache.clone();
+        let room_settings_cache = self.room_settings_cache.clone();
         let cache_degraded = self.cache_degraded.clone();
         let last_flush_time = self.last_flush_time.clone();
         let degradation_started = self.degradation_started.clone();
@@ -660,31 +638,60 @@ impl PermissionService {
 
                                     match msg {
                                         InvalidationMessage::UserPermission { room_id, user_id } => {
-                                            let cache_key = format!("perm:room:{room_id}:user:{user_id}");
-                                            cache.invalidate(&cache_key).await;
-                                            degraded_cache.invalidate(&cache_key).await;
+                                            match (room_id.parse::<RoomId>(), user_id.parse::<UserId>()) {
+                                                (Ok(room_id), Ok(user_id)) => {
+                                                    let cache_key = MemberPermissionKey::new(room_id, user_id);
+                                                    if let Err(error) = member_permission_cache.invalidate(&cache_key).await {
+                                                        tracing::warn!(
+                                                            room_id = %room_id,
+                                                            user_id = %user_id,
+                                                            error = %error,
+                                                            "Failed to invalidate member permission source cache"
+                                                        );
+                                                    }
+                                                }
+                                                _ => {
+                                                    tracing::warn!(
+                                                        room_id = %room_id,
+                                                        user_id = %user_id,
+                                                        "Ignoring invalid member permission invalidation key"
+                                                    );
+                                                }
+                                            }
                                             tracing::debug!(
                                                 room_id = %room_id,
                                                 user_id = %user_id,
-                                                "Permission cache invalidated (cross-replica)"
+                                                "Member permission source cache invalidated (cross-replica)"
                                             );
                                         }
                                         InvalidationMessage::RoomPermission { room_id } => {
-                                            let prefix = format!("perm:room:{room_id}:user:");
-                                            let _ = cache.invalidate_entries_if({
-                                                let prefix = prefix.clone();
-                                                move |key, _| key.starts_with(&prefix)
-                                            });
-                                            let _ = degraded_cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
+                                            member_permission_cache.clear().await;
+                                            match room_id.parse::<RoomId>() {
+                                                Ok(parsed_room_id) => {
+                                                    if let Err(error) = room_settings_cache.invalidate(&parsed_room_id).await {
+                                                        tracing::warn!(
+                                                            room_id = %parsed_room_id,
+                                                            error = %error,
+                                                            "Failed to invalidate permission room settings source cache"
+                                                        );
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    tracing::warn!(
+                                                        room_id = %room_id,
+                                                        "Ignoring invalid room permission invalidation key"
+                                                    );
+                                                }
+                                            }
                                             tracing::debug!(
                                                 room_id = %room_id,
-                                                "Room permission cache invalidated (cross-replica)"
+                                                "Room permission source caches invalidated (cross-replica)"
                                             );
                                         }
                                         InvalidationMessage::All => {
-                                            cache.invalidate_all();
-                                            degraded_cache.invalidate_all();
-                                            tracing::debug!("All permission cache invalidated (cross-replica)");
+                                            member_permission_cache.clear().await;
+                                            room_settings_cache.clear().await;
+                                            tracing::debug!("All permission source caches invalidated (cross-replica)");
                                         }
                                         _ => {}
                                     }
@@ -718,10 +725,10 @@ impl PermissionService {
                                     if should_flush {
                                         tracing::warn!(
                                             lagged_messages = n,
-                                            "Invalidation listener lagged, flushing all cached permissions"
-                                        );
-                                        cache.invalidate_all();
-                                        degraded_cache.invalidate_all();
+                                        "Invalidation listener lagged, flushing all permission source caches"
+                                    );
+                                        member_permission_cache.clear().await;
+                                        room_settings_cache.clear().await;
                                     } else {
                                         tracing::debug!(
                                             lagged_messages = n,
@@ -736,8 +743,8 @@ impl PermissionService {
             },
         );
 
-        let cache_for_recovery = self.cache.clone();
-        let degraded_cache_for_recovery = self.degraded_cache.clone();
+        let member_cache_for_recovery = self.member_permission_cache.clone();
+        let room_settings_cache_for_recovery = self.room_settings_cache.clone();
         let cache_degraded_for_recovery = self.cache_degraded.clone();
         let degradation_started_for_recovery = self.degradation_started.clone();
         let recovery_cancel = self.invalidation_runtime.cancel.lock().await.child_token();
@@ -772,8 +779,8 @@ impl PermissionService {
                                 "Permission cache degraded for {} seconds, forcing cache refresh before recovery",
                                 Self::MAX_DEGRADATION_DURATION_SECS
                             );
-                            cache_for_recovery.invalidate_all();
-                            degraded_cache_for_recovery.invalidate_all();
+                            member_cache_for_recovery.clear().await;
+                            room_settings_cache_for_recovery.clear().await;
                             cache_degraded_for_recovery.store(false, Ordering::Release);
                             *degradation_started_for_recovery.lock() = None;
                             tracing::info!(
@@ -942,6 +949,57 @@ impl PermissionService {
             .effective_for_member(member, room_settings)
     }
 
+    async fn runtime_permission_defaults_strong(&self) -> RuntimePermissionDefaults {
+        async fn read_default(
+            registry: &SettingsRegistry,
+            key: &str,
+            fallback: PermissionSet,
+        ) -> RoomPermissionSet {
+            registry
+                .storage
+                .settings_service()
+                .get(key)
+                .await
+                .ok()
+                .and_then(|setting| setting.value.parse::<PermissionSet>().ok())
+                .map_or_else(|| fallback.bits(), |permissions| permissions.bits())
+        }
+
+        let Some(registry) = &self.settings_registry else {
+            return RuntimePermissionDefaults::compiled();
+        };
+
+        RuntimePermissionDefaults {
+            admin: read_default(
+                registry,
+                "permissions.admin_default",
+                PermissionSet::admin_default(),
+            )
+            .await,
+            member: read_default(
+                registry,
+                "permissions.member_default",
+                PermissionSet::member_default(),
+            )
+            .await,
+            guest: read_default(
+                registry,
+                "permissions.guest_default",
+                PermissionSet::guest_default(),
+            )
+            .await,
+        }
+    }
+
+    async fn effective_member_permissions_strong(
+        &self,
+        member: &RoomMember,
+        room_settings: &RoomSettings,
+    ) -> RoomPermissionSet {
+        EffectivePermissionCalculator::new(self.runtime_permission_defaults_strong().await)
+            .effective_for_member(member, room_settings)
+    }
+
     #[must_use]
     pub fn effective_member_with_user_permissions(
         &self,
@@ -979,15 +1037,6 @@ impl PermissionService {
             guest: global_default,
         };
         EffectivePermissionCalculator::new(defaults).role_default(role, room_settings)
-    }
-
-    /// Generate cache key for room + user with namespace prefix
-    ///
-    /// Format: `perm:room:<room_id>:user:<user_id>`
-    /// The namespace prefix prevents collisions with other cache types and
-    /// ensures room/user ID pairs are always unique even if IDs overlap.
-    fn cache_key(room_id: &RoomId, user_id: &UserId) -> String {
-        format!("perm:room:{room_id}:user:{user_id}")
     }
 
     async fn ensure_room_accepts_member_actions(&self, room_id: &RoomId) -> Result<()> {
@@ -1069,18 +1118,6 @@ impl PermissionService {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<RoomPermissionSet> {
-        Ok(self
-            .get_user_permissions_no_cache_with_versions(room_id, user_id)
-            .await?
-            .0)
-    }
-
-    async fn get_user_permissions_no_cache_with_versions(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<(RoomPermissionSet, i64, i64)> {
-        // Fetch from database directly, bypassing cache
         let member = self
             .member_repo
             .get(room_id, user_id)
@@ -1090,24 +1127,237 @@ impl PermissionService {
             })?;
 
         // Get room settings for role defaults
-        let (room_settings, settings_version) =
-            if let Some(ref settings_repo) = self.room_settings_repo {
-                settings_repo.get_with_version(room_id).await?
-            } else {
+        let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
+            settings_repo.get(room_id).await?
+        } else {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                "room_settings_repo not configured, using default RoomSettings; \
+                 room-specific permission settings will be ignored"
+            );
+            RoomSettings::default()
+        };
+
+        Ok(self
+            .effective_member_permissions_strong(&member, &room_settings)
+            .await)
+    }
+
+    async fn load_member_permission_source(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<CachedMemberPermissionSource> {
+        let member = self
+            .member_repo
+            .get(room_id, user_id)
+            .await?
+            .ok_or_else(|| {
+                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
+            })?;
+        Ok(CachedMemberPermissionSource::from(&member))
+    }
+
+    async fn refresh_member_permission_source(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<CachedMemberPermissionSource> {
+        let source = self.load_member_permission_source(room_id, user_id).await?;
+        self.consistency
+            .repair_after_db_read(&Self::permission_domain(room_id, user_id), source.version)
+            .await;
+        if let Err(error) = self
+            .seed_permission_fence_to_member_version(room_id, user_id, source.version)
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                version = source.version,
+                error = %error,
+                "Failed to seed permission fence after member source refresh"
+            );
+        }
+        let cache_key = MemberPermissionKey::new(*room_id, *user_id);
+        if let Err(error) = self
+            .member_permission_cache
+            .set_if_version_at_least(&cache_key, source.clone())
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                version = source.version,
+                error = %error,
+                "Failed to refresh member permission source cache"
+            );
+        }
+        Ok(source)
+    }
+
+    async fn get_member_permission_source_by_fence(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        fence_version: i64,
+        fence_key: Option<&str>,
+    ) -> Result<CachedMemberPermissionSource> {
+        let cache_key = MemberPermissionKey::new(*room_id, *user_id);
+        let domain = Self::permission_domain(room_id, user_id);
+        if let Some(fence_key) = fence_key {
+            match self
+                .member_permission_cache
+                .get_by_fence_key(&cache_key, fence_key)
+                .await
+            {
+                Ok(FenceReadResult::Hit(source)) => return Ok(source),
+                Ok(FenceReadResult::DbFallback) => {
+                    ConsistencyCoordinator::record_db_fallback(
+                        &domain,
+                        "stale_member_source_cache",
+                    );
+                    return self
+                        .refresh_member_permission_source(room_id, user_id)
+                        .await;
+                }
+                Ok(FenceReadResult::Unsupported) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        user_id = %user_id,
+                        error = %error,
+                        "Member permission source fence-key cache read failed; falling back to version read"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(
+                        &domain,
+                        "member_source_fence_key_read_error",
+                    );
+                }
+            }
+        }
+
+        if let Some(source) = self.member_permission_cache.get_l1(&cache_key).await {
+            if source.version >= fence_version {
+                return Ok(source);
+            }
+        }
+
+        match self.member_permission_cache.get_l2(&cache_key).await {
+            Ok(Some(source)) if source.version >= fence_version => Ok(source),
+            Ok(_) => {
+                ConsistencyCoordinator::record_db_fallback(&domain, "stale_member_source_cache");
+                self.refresh_member_permission_source(room_id, user_id)
+                    .await
+            }
+            Err(error) => {
                 tracing::warn!(
                     room_id = %room_id,
                     user_id = %user_id,
-                    "room_settings_repo not configured, using default RoomSettings; \
-                     room-specific permission settings will be ignored"
+                    error = %error,
+                    "Member permission source L2 read failed; bypassing cache"
                 );
-                (RoomSettings::default(), 0)
-            };
+                ConsistencyCoordinator::record_db_fallback(&domain, "member_source_l2_error");
+                self.refresh_member_permission_source(room_id, user_id)
+                    .await
+            }
+        }
+    }
 
-        Ok((
-            self.effective_member_permissions(&member, &room_settings),
-            member.version,
-            settings_version,
-        ))
+    async fn refresh_room_settings_source(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
+        let (settings, version) = if let Some(ref settings_repo) = self.room_settings_repo {
+            settings_repo.get_with_version(room_id).await?
+        } else {
+            tracing::warn!(
+                room_id = %room_id,
+                "room_settings_repo not configured, using default RoomSettings"
+            );
+            (RoomSettings::default(), 0)
+        };
+        let snapshot = RoomSettingsSnapshot { settings, version };
+        self.consistency
+            .repair_after_db_read(&Self::room_settings_domain(room_id), snapshot.version)
+            .await;
+        if let Err(error) = self
+            .room_settings_cache
+            .set_if_version_at_least(room_id, snapshot.clone())
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                version = snapshot.version,
+                error = %error,
+                "Failed to refresh permission room settings source cache"
+            );
+        }
+        Ok(snapshot)
+    }
+
+    async fn get_room_settings_source_by_fence(
+        &self,
+        room_id: &RoomId,
+        fence_version: i64,
+        fence_key: Option<&str>,
+    ) -> Result<RoomSettingsSnapshot> {
+        let domain = Self::room_settings_domain(room_id);
+        if let Some(fence_key) = fence_key {
+            match self
+                .room_settings_cache
+                .get_by_fence_key(room_id, fence_key)
+                .await
+            {
+                Ok(FenceReadResult::Hit(snapshot)) => return Ok(snapshot),
+                Ok(FenceReadResult::DbFallback) => {
+                    ConsistencyCoordinator::record_db_fallback(
+                        &domain,
+                        "stale_room_settings_source_cache",
+                    );
+                    return self.refresh_room_settings_source(room_id).await;
+                }
+                Ok(FenceReadResult::Unsupported) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %error,
+                        "Permission room settings source fence-key cache read failed; falling back to version read"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(
+                        &domain,
+                        "room_settings_source_fence_key_read_error",
+                    );
+                }
+            }
+        }
+
+        if let Some(snapshot) = self.room_settings_cache.get_l1(room_id).await {
+            if snapshot.version >= fence_version {
+                return Ok(snapshot);
+            }
+        }
+
+        match self.room_settings_cache.get_l2(room_id).await {
+            Ok(Some(snapshot)) if snapshot.version >= fence_version => Ok(snapshot),
+            Ok(_) => {
+                ConsistencyCoordinator::record_db_fallback(
+                    &domain,
+                    "stale_room_settings_source_cache",
+                );
+                self.refresh_room_settings_source(room_id).await
+            }
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Permission room settings source L2 read failed; bypassing cache"
+                );
+                ConsistencyCoordinator::record_db_fallback(
+                    &domain,
+                    "room_settings_source_l2_error",
+                );
+                self.refresh_room_settings_source(room_id).await
+            }
+        }
     }
 
     /// Get user's effective permissions in a room with cache-first eventual consistency.
@@ -1121,51 +1371,13 @@ impl PermissionService {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<RoomPermissionSet> {
-        let cache_key = Self::cache_key(room_id, user_id);
-
-        // Check cache first
-        if let Some(cached) = self.cache.get(&cache_key).await {
-            return Ok(cached.bits);
-        }
-
-        // Fetch from database
-        let member = self
-            .member_repo
-            .get(room_id, user_id)
-            .await?
-            .ok_or_else(|| {
-                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
-            })?;
-
-        // Get room settings for role defaults
-        let (room_settings, settings_version) =
-            if let Some(ref settings_repo) = self.room_settings_repo {
-                settings_repo.get_with_version(room_id).await?
-            } else {
-                tracing::warn!(
-                    room_id = %room_id,
-                    user_id = %user_id,
-                    "room_settings_repo not configured, using default RoomSettings; \
-                     room-specific permission settings will be ignored"
-                );
-                (RoomSettings::default(), 0)
-            };
-
-        let permissions = self.effective_member_permissions(&member, &room_settings);
-
-        // Update cache
-        self.cache
-            .insert(
-                cache_key,
-                CachedPermissions {
-                    bits: permissions,
-                    user_version: member.version,
-                    room_settings_version: settings_version,
-                },
-            )
-            .await;
-
-        Ok(permissions)
+        let source = self
+            .refresh_member_permission_source(room_id, user_id)
+            .await?;
+        let settings = self.refresh_room_settings_source(room_id).await?;
+        Ok(self
+            .effective_member_permissions_strong(&source.to_room_member(), &settings.settings)
+            .await)
     }
 
     /// Get user's effective permissions with strong-read semantics.
@@ -1178,18 +1390,36 @@ impl PermissionService {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<RoomPermissionSet> {
-        let cache_key = Self::cache_key(room_id, user_id);
         match self.current_permission_cache_fence(room_id, user_id).await {
             Ok(Some(fence)) => {
-                if let Some(cached) = self.cache.get(&cache_key).await {
-                    if cached.user_version >= fence.user_version
-                        && cached.room_settings_version >= fence.room_settings_version
-                    {
-                        return Ok(cached.bits);
-                    }
-                }
+                let source = self
+                    .get_member_permission_source_by_fence(
+                        room_id,
+                        user_id,
+                        fence.user_version,
+                        fence.user_fence_key.as_deref(),
+                    )
+                    .await?;
+                let settings = self
+                    .get_room_settings_source_by_fence(
+                        room_id,
+                        fence.room_settings_version,
+                        fence.room_settings_fence_key.as_deref(),
+                    )
+                    .await?;
+                return Ok(self
+                    .effective_member_permissions_strong(
+                        &source.to_room_member(),
+                        &settings.settings,
+                    )
+                    .await);
             }
-            Ok(None) => {}
+            Ok(None) => {
+                ConsistencyCoordinator::record_db_fallback(
+                    &Self::permission_domain(room_id, user_id),
+                    "missing_fence",
+                );
+            }
             Err(error) => {
                 tracing::warn!(
                     room_id = %room_id,
@@ -1204,21 +1434,16 @@ impl PermissionService {
             &Self::permission_domain(room_id, user_id),
             "stale_or_missing_fence",
         );
-        let (permissions, member_version, settings_version) = self
-            .get_user_permissions_no_cache_with_versions(room_id, user_id)
+        let source = self
+            .refresh_member_permission_source(room_id, user_id)
             .await?;
-        self.consistency
-            .repair_after_db_read(&Self::permission_domain(room_id, user_id), member_version)
-            .await;
-        self.consistency
-            .repair_after_db_read(&Self::room_settings_domain(room_id), settings_version)
-            .await;
+        let settings = self.refresh_room_settings_source(room_id).await?;
         if let Err(error) = self
             .seed_permission_fences_after_strong_read(
                 room_id,
                 user_id,
-                member_version,
-                settings_version,
+                source.version,
+                settings.version,
             )
             .await
         {
@@ -1229,17 +1454,9 @@ impl PermissionService {
                 "Failed to seed permission version fences after DB strong read"
             );
         }
-        self.cache
-            .insert(
-                cache_key,
-                CachedPermissions {
-                    bits: permissions,
-                    user_version: member_version,
-                    room_settings_version: settings_version,
-                },
-            )
-            .await;
-        Ok(permissions)
+        Ok(self
+            .effective_member_permissions_strong(&source.to_room_member(), &settings.settings)
+            .await)
     }
 
     /// Get user's permissions during degraded mode (Pub/Sub lag)
@@ -1256,44 +1473,7 @@ impl PermissionService {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<RoomPermissionSet> {
-        let cache_key = Self::cache_key(room_id, user_id);
-
-        // Check degraded cache first
-        if let Some(cached) = self.degraded_cache.get(&cache_key).await {
-            return Ok(cached.bits);
-        }
-
-        // Fetch from database
-        let member = self
-            .member_repo
-            .get(room_id, user_id)
-            .await?
-            .ok_or_else(|| {
-                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
-            })?;
-
-        // Get room settings for role defaults
-        let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
-            settings_repo.get(room_id).await?
-        } else {
-            RoomSettings::default()
-        };
-
-        let permissions = self.effective_member_permissions(&member, &room_settings);
-
-        // Update degraded cache with short TTL
-        self.degraded_cache
-            .insert(
-                cache_key,
-                CachedPermissions {
-                    bits: permissions,
-                    user_version: member.version,
-                    room_settings_version: 0,
-                },
-            )
-            .await;
-
-        Ok(permissions)
+        self.get_user_permissions_strong(room_id, user_id).await
     }
 
     /// Invalidate cache for a specific user in a room
@@ -1416,7 +1596,7 @@ impl PermissionService {
     /// If cache invalidation service is configured, this also broadcasts the
     /// invalidation to other replicas via Redis Pub/Sub.
     pub async fn invalidate_room_cache(&self, room_id: &RoomId) {
-        self.invalidate_room_cache_local_only(room_id);
+        self.invalidate_room_cache_local_only(room_id).await;
 
         // Broadcast to other replicas (best effort)
         // Use invalidate_and_broadcast_room_permission which broadcasts both locally
@@ -1441,7 +1621,7 @@ impl PermissionService {
     /// If cache invalidation service is configured, this also broadcasts the
     /// invalidation to other replicas via Redis Pub/Sub.
     pub async fn clear_cache(&self) {
-        self.clear_cache_local_only();
+        self.clear_cache_local_only().await;
 
         // Broadcast to other replicas (best effort)
         // Use broadcast_all which broadcasts both locally AND to Redis.
@@ -1522,6 +1702,7 @@ impl PermissionService {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use crate::cache::CacheKey;
     use crate::models::permission::Role as RoomRole;
     use crate::models::{
         room_settings::*, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMember,
@@ -1598,18 +1779,22 @@ mod tests {
             member_repo: RoomMemberRepository::new(pool.clone()),
             room_repo: RoomRepository::new(pool),
             room_settings_repo: None,
-            cache: Arc::new(
-                moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_mins(1))
-                    .build(),
-            ),
-            degraded_cache: Arc::new(
-                moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_secs(
-                        PermissionService::DEGRADED_CACHE_TTL_SECS,
-                    ))
-                    .build(),
-            ),
+            member_permission_cache: MemberPermissionCache::new(
+                Arc::new(NoopCacheL2),
+                10,
+                60,
+                60,
+                "member_permission:".to_string(),
+            )
+            .unwrap(),
+            room_settings_cache: RoomSettingsCache::new(
+                Arc::new(NoopCacheL2),
+                10,
+                60,
+                60,
+                "room_settings:".to_string(),
+            )
+            .unwrap(),
             settings_registry: None,
             invalidation_service: Arc::new(SharedInvalidationService::default()),
             cache_degraded: Arc::new(AtomicBool::new(false)),
@@ -1637,18 +1822,22 @@ mod tests {
             member_repo: RoomMemberRepository::new(pool.clone()),
             room_repo: RoomRepository::new(pool),
             room_settings_repo: None,
-            cache: Arc::new(
-                moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_mins(1))
-                    .build(),
-            ),
-            degraded_cache: Arc::new(
-                moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_secs(
-                        PermissionService::DEGRADED_CACHE_TTL_SECS,
-                    ))
-                    .build(),
-            ),
+            member_permission_cache: MemberPermissionCache::new(
+                Arc::new(NoopCacheL2),
+                10,
+                60,
+                60,
+                "member_permission:".to_string(),
+            )
+            .unwrap(),
+            room_settings_cache: RoomSettingsCache::new(
+                Arc::new(NoopCacheL2),
+                10,
+                60,
+                60,
+                "room_settings:".to_string(),
+            )
+            .unwrap(),
             settings_registry: None,
             invalidation_service: Arc::new(SharedInvalidationService::default()),
             cache_degraded: Arc::new(AtomicBool::new(false)),
@@ -1671,11 +1860,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_key_generation() {
+    fn test_member_permission_cache_key_generation() {
         let room_id = RoomId::expect_positive(123);
         let user_id = UserId::expect_positive(456);
-        let key = PermissionService::cache_key(&room_id, &user_id);
-        assert_eq!(key, "perm:room:123:user:456");
+        let key = MemberPermissionKey::new(room_id, user_id);
+        assert_eq!(key.cache_key(), "123:456");
     }
 
     #[tokio::test]
@@ -1707,13 +1896,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_key_different_for_different_users() {
+    fn test_member_permission_cache_key_different_for_different_users() {
         let room = RoomId::expect_positive(1);
         let u1 = UserId::expect_positive(1);
         let u2 = UserId::expect_positive(2);
         assert_ne!(
-            PermissionService::cache_key(&room, &u1),
-            PermissionService::cache_key(&room, &u2),
+            MemberPermissionKey::new(room, u1).cache_key(),
+            MemberPermissionKey::new(room, u2).cache_key(),
         );
     }
 
@@ -1766,13 +1955,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_key_different_for_different_rooms() {
+    fn test_member_permission_cache_key_different_for_different_rooms() {
         let r1 = RoomId::expect_positive(1);
         let r2 = RoomId::expect_positive(2);
         let user = UserId::expect_positive(1);
         assert_ne!(
-            PermissionService::cache_key(&r1, &user),
-            PermissionService::cache_key(&r2, &user),
+            MemberPermissionKey::new(r1, user).cache_key(),
+            MemberPermissionKey::new(r2, user).cache_key(),
         );
     }
 
@@ -2331,24 +2520,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_degraded_mode_auto_recovers_after_timeout_and_flushes_caches() {
         let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
-        let room_id = RoomId::expect_positive(1);
-        let user_id = UserId::expect_positive(1);
-        let cache_key = PermissionService::cache_key(&room_id, &user_id);
-
-        service
-            .cache
-            .insert(
-                cache_key.clone(),
-                cached_permissions_for_test(RoomPermissionSet::all()),
-            )
-            .await;
-        service
-            .degraded_cache
-            .insert(
-                cache_key.clone(),
-                cached_permissions_for_test(RoomPermissionSet::all()),
-            )
-            .await;
 
         service.cache_degraded.store(true, Ordering::Release);
         *service.degradation_started.lock() = Some(
@@ -2363,15 +2534,7 @@ mod tests {
 
         assert!(
             !service.cache_degraded.load(Ordering::Acquire),
-            "permission cache should leave degraded mode after the bounded recovery timeout"
-        );
-        assert!(
-            service.cache.get(&cache_key).await.is_none(),
-            "auto-recovery must clear the primary cache before re-enabling it"
-        );
-        assert!(
-            service.degraded_cache.get(&cache_key).await.is_none(),
-            "auto-recovery must clear degraded cache entries once recovery completes"
+            "permission source cache should leave degraded mode after the bounded recovery timeout"
         );
         assert!(
             service.degradation_started.lock().is_none(),
@@ -2481,87 +2644,56 @@ mod tests {
 
     #[test]
     fn test_invalidate_cache_local_clear_works() {
-        // This test verifies that when a PermissionService has an invalidation_service,
-        // calling invalidate_cache clears the local cache.
-        // The key behavior being tested is that invalidate_cache works correctly.
-
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
-
-            // Insert a value into the cache
             let room_id = RoomId::expect_positive(1);
             let user_id = UserId::expect_positive(1);
-            let cache_key = PermissionService::cache_key(&room_id, &user_id);
+            let cache_key = MemberPermissionKey::new(room_id, user_id);
+
             service
-                .cache
-                .insert(
-                    cache_key.clone(),
-                    cached_permissions_for_test(RoomPermissionSet::all()),
+                .member_permission_cache
+                .set_if_version_at_least(
+                    &cache_key,
+                    CachedMemberPermissionSource {
+                        room_id,
+                        user_id,
+                        role: RoomRole::Member,
+                        added_permissions: 0,
+                        removed_permissions: 0,
+                        admin_added_permissions: 0,
+                        admin_removed_permissions: 0,
+                        version: 1,
+                    },
                 )
-                .await;
+                .await
+                .unwrap();
+            assert!(service
+                .member_permission_cache
+                .get_l1(&cache_key)
+                .await
+                .is_some());
 
-            // Verify the cache has the value
-            assert!(service.cache.get(&cache_key).await.is_some());
-
-            // Invalidate the cache
             service.invalidate_cache(&room_id, &user_id).await;
 
-            // Verify the local cache is invalidated
-            assert!(service.cache.get(&cache_key).await.is_none());
+            assert!(service
+                .member_permission_cache
+                .get_l1(&cache_key)
+                .await
+                .is_none());
         });
     }
 
     #[test]
     fn test_invalidate_room_cache_local_clear_works() {
-        // This test verifies that invalidate_room_cache correctly invalidates
-        // cache entries for all users in a room.
-        // Note: moka's invalidate_entries_if is a background operation that may not
-        // be immediate. For local cache, verify the method doesn't panic and the
-        // broadcast is sent.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let (service, invalidation_service) = make_service_with_invalidation_no_rt();
-
-            // Subscribe to receive invalidation messages
             let mut receiver = invalidation_service.subscribe();
-
-            // Insert values into the cache for multiple users in the same room
             let room_id = RoomId::expect_positive(1);
-            let user1_id = UserId::expect_positive(1);
-            let user2_id = UserId::expect_positive(2);
 
-            service
-                .cache
-                .insert(
-                    PermissionService::cache_key(&room_id, &user1_id),
-                    cached_permissions_for_test(RoomPermissionSet::all()),
-                )
-                .await;
-            service
-                .cache
-                .insert(
-                    PermissionService::cache_key(&room_id, &user2_id),
-                    cached_permissions_for_test(RoomPermissionSet::all()),
-                )
-                .await;
-
-            // Verify the cache has the values
-            assert!(service
-                .cache
-                .get(&PermissionService::cache_key(&room_id, &user1_id))
-                .await
-                .is_some());
-            assert!(service
-                .cache
-                .get(&PermissionService::cache_key(&room_id, &user2_id))
-                .await
-                .is_some());
-
-            // Invalidate the room cache
             service.invalidate_room_cache(&room_id).await;
 
-            // Verify the broadcast was sent (this is the main fix)
             let result =
                 tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv())
                     .await;
@@ -2569,7 +2701,6 @@ mod tests {
             match result {
                 Ok(Ok(InvalidationMessage::RoomPermission { room_id: rid })) => {
                     assert_eq!(rid, "1");
-                    // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
                     panic!("Expected RoomPermission message, got {other:?}");
@@ -2589,32 +2720,38 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
-
-            // Insert values into the cache
             let room_id = RoomId::expect_positive(1);
             let user_id = UserId::expect_positive(1);
-            service
-                .cache
-                .insert(
-                    PermissionService::cache_key(&room_id, &user_id),
-                    cached_permissions_for_test(RoomPermissionSet::all()),
-                )
-                .await;
+            let cache_key = MemberPermissionKey::new(room_id, user_id);
 
-            // Verify the cache has the value
+            service
+                .member_permission_cache
+                .set_if_version_at_least(
+                    &cache_key,
+                    CachedMemberPermissionSource {
+                        room_id,
+                        user_id,
+                        role: RoomRole::Member,
+                        added_permissions: 0,
+                        removed_permissions: 0,
+                        admin_added_permissions: 0,
+                        admin_removed_permissions: 0,
+                        version: 1,
+                    },
+                )
+                .await
+                .unwrap();
             assert!(service
-                .cache
-                .get(&PermissionService::cache_key(&room_id, &user_id))
+                .member_permission_cache
+                .get_l1(&cache_key)
                 .await
                 .is_some());
 
-            // Clear the cache
             service.clear_cache().await;
 
-            // Verify the local cache is cleared
             assert!(service
-                .cache
-                .get(&PermissionService::cache_key(&room_id, &user_id))
+                .member_permission_cache
+                .get_l1(&cache_key)
                 .await
                 .is_none());
         });
@@ -2624,30 +2761,10 @@ mod tests {
     fn test_invalidate_cache_no_panic_without_invalidation_service() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            // Create a PermissionService without invalidation service
-            // Use make_service_async() because we're inside an async context
             let service = make_service_async();
-
-            // Insert a value into the cache
             let room_id = RoomId::expect_positive(1);
             let user_id = UserId::expect_positive(1);
-            let cache_key = PermissionService::cache_key(&room_id, &user_id);
-            service
-                .cache
-                .insert(
-                    cache_key.clone(),
-                    cached_permissions_for_test(RoomPermissionSet::all()),
-                )
-                .await;
-
-            // Verify the cache has the value
-            assert!(service.cache.get(&cache_key).await.is_some());
-
-            // Invalidate the cache - should not panic even without invalidation service
             service.invalidate_cache(&room_id, &user_id).await;
-
-            // Verify the local cache is invalidated
-            assert!(service.cache.get(&cache_key).await.is_none());
         });
     }
 
@@ -2683,23 +2800,11 @@ mod tests {
                 invalidation_service.clone(),
             );
 
-            // Insert a value into the cache
             let room_id = RoomId::expect_positive(1);
             let user_id = UserId::expect_positive(1);
-            let cache_key = PermissionService::cache_key(&room_id, &user_id);
-            service
-                .cache
-                .insert(
-                    cache_key.clone(),
-                    cached_permissions_for_test(RoomPermissionSet::all()),
-                )
-                .await;
 
             // Invalidate the cache - this should broadcast via invalidation_service
             service.invalidate_cache(&room_id, &user_id).await;
-
-            // Verify the local cache is invalidated
-            assert!(service.cache.get(&cache_key).await.is_none());
 
             // Try to receive the broadcast message
             // invalidate_cache broadcasts both locally and to Redis. Since there's

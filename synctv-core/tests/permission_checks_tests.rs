@@ -383,25 +383,8 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
     let cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
-        .expect("eventual permission read should populate L1 before Redis fences exist");
+        .expect("eventual permission read should populate source caches");
     assert!(cached.has(RoomPermission::CHAT));
-    assert_eq!(
-        fence
-            .current_version(&CacheDomain::Permission {
-                room_id: room.id,
-                user_id: member.id,
-            })
-            .await
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        fence
-            .current_version(&CacheDomain::RoomSettings { room_id: room.id })
-            .await
-            .unwrap(),
-        None
-    );
 
     room_service
         .set_member_permission(

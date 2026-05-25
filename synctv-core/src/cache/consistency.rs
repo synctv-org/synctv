@@ -62,6 +62,9 @@ pub enum CacheDomain {
     UserAuthSecurity {
         user_id: UserId,
     },
+    RuntimeSetting {
+        key: String,
+    },
 }
 
 impl CacheDomain {
@@ -84,6 +87,7 @@ impl CacheDomain {
                 playlist_id,
             } => format!("playlist:{room_id}:{playlist_id}"),
             Self::UserAuthSecurity { user_id } => format!("user_auth_security:{user_id}"),
+            Self::RuntimeSetting { key } => format!("runtime_setting:{key}"),
         }
     }
 
@@ -115,6 +119,9 @@ impl CacheDomain {
             ["user_auth_security", user_id] => Some(Self::UserAuthSecurity {
                 user_id: user_id.parse().ok()?,
             }),
+            ["runtime_setting", key] if !key.is_empty() => Some(Self::RuntimeSetting {
+                key: (*key).to_string(),
+            }),
             _ => None,
         }
     }
@@ -136,6 +143,7 @@ pub fn cache_domain_metric_label(domain: &CacheDomain) -> &'static str {
         CacheDomain::MediaResource { .. } => "media_resource",
         CacheDomain::Playlist { .. } => "playlist",
         CacheDomain::UserAuthSecurity { .. } => "user_auth_security",
+        CacheDomain::RuntimeSetting { .. } => "runtime_setting",
     }
 }
 
@@ -217,6 +225,10 @@ pub trait VersionFenceStore: Send + Sync {
     }
 
     fn is_authoritative(&self) -> bool;
+
+    fn fence_key(&self, _domain: &CacheDomain) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -985,6 +997,11 @@ impl ConsistencyCoordinator {
         Ok(state.map(|state| state.committed_version))
     }
 
+    #[must_use]
+    pub fn fence_key(&self, domain: &CacheDomain) -> Option<String> {
+        self.fence_store.fence_key(domain)
+    }
+
     pub async fn current_versions(&self, domains: &[CacheDomain]) -> Result<Vec<Option<i64>>> {
         let mut versions = Vec::with_capacity(domains.len());
         for domain in domains {
@@ -1512,6 +1529,20 @@ async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i6
         CacheDomain::MediaResource { .. }
         | CacheDomain::Playlist { .. }
         | CacheDomain::UserAuthSecurity { .. } => None,
+        CacheDomain::RuntimeSetting { key } => {
+            sqlx::query_scalar!("SELECT version FROM settings WHERE key = $1", key,)
+                .fetch_optional(pool)
+                .await
+                .map(|version| version.map_or(0, i64::from))
+                .map_err(|error| {
+                    tracing::warn!(
+                        key = %key,
+                        error = %error,
+                        "Failed to read runtime setting version for cache fence repair"
+                    );
+                })
+                .ok()
+        }
     }
 }
 

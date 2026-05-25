@@ -677,6 +677,24 @@ impl Role {
             Self::Guest => RoomPermissionSet::default_guest(),
         }
     }
+
+    #[must_use]
+    pub const fn override_bits_from_permissions(&self, permissions: u64) -> u64 {
+        match self {
+            Self::Creator | Self::Admin => RoomAdminPermissionBits::from_permissions(permissions),
+            Self::Member => RoomMemberPermissionBits::from_permissions(permissions),
+            Self::Guest => RoomGuestPermissionBits::from_permissions(permissions),
+        }
+    }
+
+    #[must_use]
+    pub const fn permissions_from_override_bits(&self, bits: u64) -> u64 {
+        match self {
+            Self::Creator | Self::Admin => RoomAdminPermissionBits::to_permissions(bits),
+            Self::Member => RoomMemberPermissionBits::to_permissions(bits),
+            Self::Guest => RoomGuestPermissionBits::to_permissions(bits),
+        }
+    }
 }
 
 impl FromStr for Role {

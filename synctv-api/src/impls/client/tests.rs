@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::{
-    MediaId, MemberStatus, PlaylistId, RoomGuestPermissionBits, RoomId, RoomPermissionSet,
-    RoomRole, RoomStatus, UserId, UserRole, UserStatus,
+    MediaId, MemberStatus, PlaylistId, RoomGuestPermissionBits, RoomId, RoomMemberPermissionBits,
+    RoomPermission, RoomPermissionSet, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 use synctv_core::RedisConnectionRuntime;
@@ -1280,9 +1280,11 @@ fn test_joined_rooms_permission_needs_three_layer_calculation() {
     // Using role.permissions() directly skips layers 1 (global settings) and 2 (room overrides).
 
     let mut member = make_test_member(RoomRole::Member);
-    // Give the member custom permission overrides
-    member.added_permissions = 0xFF00;
-    member.removed_permissions = 0x00;
+    // Give the member custom permission overrides. Member defaults already
+    // include every member bit, so deny a default permission to prove that
+    // role.permissions() alone is insufficient.
+    member.added_permissions = 0;
+    member.removed_permissions = RoomMemberPermissionBits::CHAT;
 
     // role.permissions() ignores member overrides completely
     let role_only = member.role.permissions();
@@ -1304,16 +1306,16 @@ fn test_effective_permissions_applies_member_overrides() {
     let base = RoomRole::Member.permissions();
 
     // Add a specific permission bit
-    member.added_permissions = 0x100;
+    member.added_permissions = RoomMemberPermissionBits::USE_WEBRTC;
     let effective = member.effective_permissions(base);
     assert!(
-        effective.0 & 0x100 != 0,
+        effective.has(RoomPermission::USE_WEBRTC),
         "Added permission bit should be present in effective permissions"
     );
 
     // Remove a specific permission bit that the role default includes
     member.added_permissions = 0;
-    member.removed_permissions = base.0; // remove ALL role defaults
+    member.removed_permissions = RoomMemberPermissionBits::ALL;
     let effective = member.effective_permissions(base);
     assert_eq!(
         effective.0 & base.0,

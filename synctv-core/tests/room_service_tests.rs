@@ -27,7 +27,8 @@ use synctv_core::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         notification::{GuestKickReason, RoomEvent},
         playback::{BroadcastResult, PlaybackBroadcaster},
-        InMemoryTokenBlacklistStore, RoomService, SettingsRegistry, SettingsService, UserService,
+        InMemoryTokenBlacklistStore, RoomPasswordPolicy, RoomService, SettingsRegistry,
+        SettingsService, UserService,
     },
     Error,
 };
@@ -2921,7 +2922,7 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
             assert!(
-                msg.contains("Guest") && msg.contains("permissions"),
+                msg.contains("guest") && msg.contains("permission bitspace"),
                 "Error should mention permission escalation: {msg}"
             );
         }
@@ -3744,6 +3745,7 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
@@ -3766,21 +3768,10 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
         .await
         .unwrap();
 
-    room_service
-        .member_service()
-        .add_member(room.id, member.id, RoomRole::Member)
-        .await
-        .unwrap();
-    room_service
-        .member_service()
-        .grant_permission(
-            room.id,
-            owner.id,
-            member.id,
-            RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
-        )
-        .await
-        .unwrap();
+    let mut admin_member =
+        synctv_core::models::RoomMember::new(room.id, member.id, RoomRole::Admin);
+    admin_member.admin_added_permissions = RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY;
+    member_repo.add(&admin_member).await.unwrap();
 
     let playlist = playlist_repo
         .create(&Playlist {
@@ -5151,7 +5142,6 @@ async fn test_room_admin_can_delete_room_with_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
         .create(&make_user("room_admin_del_owner"))
@@ -5173,10 +5163,21 @@ async fn test_room_admin_can_delete_room_with_permission() {
         .await
         .unwrap();
 
-    let mut admin_member =
-        synctv_core::models::RoomMember::new(room.id, room_admin.id, RoomRole::Admin);
-    admin_member.admin_added_permissions = RoomAdminPermissionBits::DELETE_ROOM;
-    member_repo.add(&admin_member).await.unwrap();
+    room_service
+        .member_service()
+        .add_member(room.id, room_admin.id, RoomRole::Admin)
+        .await
+        .unwrap();
+    room_service
+        .member_service()
+        .grant_permission(
+            room.id,
+            owner.id,
+            room_admin.id,
+            RoomAdminPermissionBits::DELETE_ROOM,
+        )
+        .await
+        .unwrap();
 
     room_service
         .delete_room(room.id, room_admin.id)
@@ -6885,8 +6886,7 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
 
     // Seed the settings rows that tests may need
     for (key, group, default_value) in [
-        ("room.room_must_need_pwd", "room", "false"),
-        ("room.room_must_no_need_pwd", "room", "false"),
+        ("room.password_policy", "room", "optional"),
         ("room.disable_create_room", "room", "false"),
         ("server.allow_room_creation", "server", "true"),
         ("server.max_rooms_per_user", "server", "10"),
@@ -6908,14 +6908,16 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_room_rejects_no_password_when_must_need_pwd() {
+async fn test_create_room_rejects_no_password_when_password_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
-    // Enable room_must_need_pwd
-    registry.set_room_must_need_pwd(true).await.unwrap();
+    registry
+        .set_room_password_policy(RoomPasswordPolicy::Required)
+        .await
+        .unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -6935,7 +6937,7 @@ async fn test_create_room_rejects_no_password_when_must_need_pwd() {
 
     assert!(
         result.is_err(),
-        "Should reject room without password when room_must_need_pwd is true"
+        "Should reject room without password when room password policy is required"
     );
     let err = result.unwrap_err();
     assert!(
@@ -6946,14 +6948,16 @@ async fn test_create_room_rejects_no_password_when_must_need_pwd() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_room_allows_password_when_must_need_pwd() {
+async fn test_create_room_allows_password_when_password_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
-    // Enable room_must_need_pwd
-    registry.set_room_must_need_pwd(true).await.unwrap();
+    registry
+        .set_room_password_policy(RoomPasswordPolicy::Required)
+        .await
+        .unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -6974,20 +6978,22 @@ async fn test_create_room_allows_password_when_must_need_pwd() {
 
     assert!(
         result.is_ok(),
-        "Should allow room with password when room_must_need_pwd is true"
+        "Should allow room with password when room password policy is required"
     );
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_room_rejects_password_when_must_no_need_pwd() {
+async fn test_create_room_rejects_password_when_password_policy_forbidden() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
-    // Enable room_must_no_need_pwd
-    registry.set_room_must_no_need_pwd(true).await.unwrap();
+    registry
+        .set_room_password_policy(RoomPasswordPolicy::Forbidden)
+        .await
+        .unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -7007,7 +7013,7 @@ async fn test_create_room_rejects_password_when_must_no_need_pwd() {
 
     assert!(
         result.is_err(),
-        "Should reject room with password when room_must_no_need_pwd is true"
+        "Should reject room with password when room password policy is forbidden"
     );
     let err = result.unwrap_err();
     assert!(
@@ -7018,14 +7024,16 @@ async fn test_create_room_rejects_password_when_must_no_need_pwd() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_room_allows_no_password_when_must_no_need_pwd() {
+async fn test_create_room_allows_no_password_when_password_policy_forbidden() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
-    // Enable room_must_no_need_pwd
-    registry.set_room_must_no_need_pwd(true).await.unwrap();
+    registry
+        .set_room_password_policy(RoomPasswordPolicy::Forbidden)
+        .await
+        .unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -7046,7 +7054,7 @@ async fn test_create_room_allows_no_password_when_must_no_need_pwd() {
 
     assert!(
         result.is_ok(),
-        "Should allow room without password when room_must_no_need_pwd is true"
+        "Should allow room without password when room password policy is forbidden"
     );
 }
 

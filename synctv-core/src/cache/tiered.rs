@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::cache::l2_backend::CacheL2Backend;
+use crate::cache::l2_backend::{CacheL2Backend, VersionedFenceRead};
 use crate::cache::singleflight::{CloneableError, SingleFlight};
 use crate::{Error, Result};
 
@@ -42,6 +42,13 @@ pub trait Versioned {
 pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static {
     fn cache_key(&self) -> String;
     fn try_from_id(id: &str) -> Result<Self>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FenceReadResult<V> {
+    Hit(V),
+    DbFallback,
+    Unsupported,
 }
 
 /// Generic two-tier cache with L1 (Moka in-memory) and L2 (pluggable backend).
@@ -327,6 +334,41 @@ where
         }
 
         Ok(Some(value))
+    }
+
+    fn deserialize_l2_value(&self, json: &str) -> Result<V> {
+        serde_json::from_str(json).map_err(|e| {
+            Error::Internal(format!(
+                "Failed to deserialize cached {}: {e}",
+                self.cache_type
+            ))
+        })
+    }
+
+    async fn maybe_insert_l1_after_fetch(
+        &self,
+        key: &K,
+        value: V,
+        key_epoch_before: u64,
+        global_epoch_before: u64,
+        context: &str,
+    ) {
+        let key_epoch_after = self.key_epochs.get(key).map_or(0, |v| *v);
+        let global_epoch_after = self.global_epoch.load(Ordering::Acquire);
+        if key_epoch_after == key_epoch_before && global_epoch_after == global_epoch_before {
+            self.l1_cache.insert(key.clone(), value).await;
+        } else {
+            tracing::debug!(
+                key = %key,
+                cache_type = %self.cache_type,
+                key_epoch_before,
+                key_epoch_after,
+                global_epoch_before,
+                global_epoch_after,
+                context,
+                "Skipping L1 write: invalidation arrived mid-flight"
+            );
+        }
     }
 
     /// Set a value in cache.
@@ -742,6 +784,96 @@ where
     K: CacheKey,
     V: Clone + Serialize + DeserializeOwned + Versioned + Send + Sync + 'static,
 {
+    /// Strong read using a Redis version-fence key.
+    ///
+    /// For L1 hits this performs one Redis Lua call carrying only the L1
+    /// version. Redis returns `UseL1`, `UseL2(json)`, or `DbFallback`.
+    /// For L1 misses a slimmer Lua call checks only the fence and L2 value.
+    pub async fn get_by_fence_key(&self, key: &K, fence_key: &str) -> Result<FenceReadResult<V>> {
+        let l1_value = self.l1_cache.get(key).await;
+        self.get_by_fence_key_with_l1_value(key, fence_key, l1_value)
+            .await
+    }
+
+    /// Strong read using a Redis version-fence key and an optional caller-owned
+    /// L1 value. This supports services that keep a specialized local cache
+    /// outside `TieredCache` while still using the same slim Redis scripts.
+    pub async fn get_by_fence_key_with_l1_value(
+        &self,
+        key: &K,
+        fence_key: &str,
+        l1_value: Option<V>,
+    ) -> Result<FenceReadResult<V>> {
+        if !self.l2.is_active() || fence_key.is_empty() {
+            return Ok(FenceReadResult::Unsupported);
+        }
+
+        let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
+        let key_epoch_before = self.key_epochs.get(key).map_or(0, |v| *v);
+        let global_epoch_before = self.global_epoch.load(Ordering::Acquire);
+
+        if let Some(l1_value) = l1_value {
+            match self
+                .l2
+                .read_versioned_with_l1_by_fence(fence_key, &redis_key, l1_value.cache_version())
+                .await?
+            {
+                VersionedFenceRead::UseL1 => {
+                    crate::metrics::cache::CACHE_HITS
+                        .with_label_values(&[&self.cache_type, "l1"])
+                        .inc();
+                    return Ok(FenceReadResult::Hit(l1_value));
+                }
+                VersionedFenceRead::UseL2(json) => {
+                    let value = self.deserialize_l2_value(&json)?;
+                    self.maybe_insert_l1_after_fetch(
+                        key,
+                        value.clone(),
+                        key_epoch_before,
+                        global_epoch_before,
+                        "versioned_fence_l1_path",
+                    )
+                    .await;
+                    crate::metrics::cache::CACHE_HITS
+                        .with_label_values(&[&self.cache_type, "l2"])
+                        .inc();
+                    return Ok(FenceReadResult::Hit(value));
+                }
+                VersionedFenceRead::DbFallback => {
+                    crate::metrics::cache::CACHE_MISSES
+                        .with_label_values(&[&self.cache_type, "fence"])
+                        .inc();
+                    return Ok(FenceReadResult::DbFallback);
+                }
+            }
+        }
+
+        if let Some(json) = self
+            .l2
+            .read_versioned_l2_by_fence(fence_key, &redis_key)
+            .await?
+        {
+            let value = self.deserialize_l2_value(&json)?;
+            self.maybe_insert_l1_after_fetch(
+                key,
+                value.clone(),
+                key_epoch_before,
+                global_epoch_before,
+                "versioned_fence_l2_path",
+            )
+            .await;
+            crate::metrics::cache::CACHE_HITS
+                .with_label_values(&[&self.cache_type, "l2"])
+                .inc();
+            Ok(FenceReadResult::Hit(value))
+        } else {
+            crate::metrics::cache::CACHE_MISSES
+                .with_label_values(&[&self.cache_type, "fence"])
+                .inc();
+            Ok(FenceReadResult::DbFallback)
+        }
+    }
+
     /// Set a value in cache only if its version is not older than existing data.
     ///
     /// This method uses Redis as the cross-replica arbitration point. It is the

@@ -13437,7 +13437,7 @@ mod tests {
         );
         assert_eq!(
             rendered["members"][0]["removed_permission_names"],
-            json!(["delete_media_resource_any"])
+            json!(["chat"])
         );
         assert_eq!(
             rendered["members"][0]["admin_added_permission_names"],

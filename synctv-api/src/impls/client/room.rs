@@ -989,7 +989,7 @@ impl ClientApiImpl {
             disable_create_room: s.disable_create_room,
             create_room_need_review: s.create_room_need_review,
             room_ttl: s.room_ttl,
-            room_must_need_pwd: s.room_must_need_pwd,
+            room_password_policy: s.room_password_policy.to_string(),
             enable_password_signup: s.enable_password_signup,
             password_signup_need_review: s.password_signup_need_review,
             enable_email_signup: s.enable_email_signup,

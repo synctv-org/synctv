@@ -73,7 +73,7 @@ pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::EmailTokenService;
 pub use global_settings::{
     ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-    OAuth2SignupPolicy, PublicSettings, SettingsRegistry,
+    OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy, SettingsRegistry,
 };
 pub use media::{
     MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,

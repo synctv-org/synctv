@@ -102,7 +102,7 @@ use crate::{
         playlist::PlaylistService,
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
         user::UserService,
-        ProvidersManager,
+        ProvidersManager, RoomPasswordPolicy,
     },
     Error, InternalExt, Result,
 };
@@ -675,18 +675,24 @@ impl RoomService {
                     ));
                 }
             }
-            if registry.room_must_need_pwd.get().unwrap_or(false) && !settings.require_password.0 {
-                tracing::warn!(user_id = %user_id, "Room creation rejected: password required by server policy");
-                return Err(Error::InvalidInput(
-                    "Room password is required by server policy".to_string(),
-                ));
-            }
-            if registry.room_must_no_need_pwd.get().unwrap_or(false) && settings.require_password.0
+            match registry
+                .room_password_policy
+                .get()
+                .unwrap_or(RoomPasswordPolicy::Optional)
             {
-                tracing::warn!(user_id = %user_id, "Room creation rejected: passwords not allowed by server policy");
-                return Err(Error::InvalidInput(
-                    "Room passwords are not allowed by server policy".to_string(),
-                ));
+                RoomPasswordPolicy::Required if !settings.require_password.0 => {
+                    tracing::warn!(user_id = %user_id, "Room creation rejected: password required by server policy");
+                    return Err(Error::InvalidInput(
+                        "Room password is required by server policy".to_string(),
+                    ));
+                }
+                RoomPasswordPolicy::Forbidden if settings.require_password.0 => {
+                    tracing::warn!(user_id = %user_id, "Room creation rejected: passwords not allowed by server policy");
+                    return Err(Error::InvalidInput(
+                        "Room passwords are not allowed by server policy".to_string(),
+                    ));
+                }
+                _ => {}
             }
         }
 
@@ -1196,6 +1202,13 @@ impl RoomService {
                 room_settings_repo: Some(RoomSettingsRepository::new(pool.clone())),
                 invalidation_service: options.cache_invalidation.clone(),
                 version_fence: options.version_fence.clone(),
+                member_permission_l2_cache: options.room_settings_l2_cache.clone(),
+                member_permission_cache_key_prefix: "member_permission:".to_string(),
+                room_settings_l2_cache: options.room_settings_l2_cache.clone(),
+                room_settings_cache_key_prefix: options
+                    .room_settings_cache_key_prefix
+                    .clone()
+                    .unwrap_or_else(|| "room_settings:".to_string()),
                 ..PermissionServiceRuntime::default()
             },
         );
@@ -5412,14 +5425,6 @@ impl RoomService {
         removed_permissions: u64,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<crate::models::RoomMember> {
-        if !RoomMemberPermissionBits::includes_only_defined(added_permissions)
-            || !RoomMemberPermissionBits::includes_only_defined(removed_permissions)
-        {
-            return Err(Error::InvalidInput(
-                "Permission set includes bits outside the member permission bitspace".to_string(),
-            ));
-        }
-
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
             3,
             5,
@@ -5441,6 +5446,11 @@ impl RoomService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
+                Self::validate_override_bits_for_role(
+                    member.role,
+                    added_permissions,
+                    removed_permissions,
+                )?;
                 let fence = self
                     .begin_permission_write(&room_id, &target_user_id, member.version)
                     .await?;
@@ -9439,7 +9449,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::InvalidInput(msg) => {
-                assert!(msg.contains("Guest"), "got: {msg}");
+                assert!(msg.contains("guest"), "got: {msg}");
             }
             other => panic!("Expected InvalidInput, got: {other:?}"),
         }
@@ -9455,7 +9465,7 @@ mod tests {
         match result.unwrap_err() {
             Error::InvalidInput(msg) => {
                 assert!(
-                    msg.contains("lifecycle") || msg.contains("Member"),
+                    msg.contains("lifecycle") || msg.contains("member"),
                     "got: {msg}"
                 );
             }

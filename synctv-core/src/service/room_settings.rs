@@ -30,8 +30,8 @@ use tracing::{info, warn};
 use crate::{
     cache::{
         CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
-        InvalidationMessage, NoopCacheL2, RoomSettingsCache, RoomSettingsSnapshot, SingleFlight,
-        VersionFenceReservation, VersionFenceStore,
+        FenceReadResult, InvalidationMessage, NoopCacheL2, RoomSettingsCache, RoomSettingsSnapshot,
+        SingleFlight, VersionFenceReservation, VersionFenceStore,
     },
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
@@ -372,6 +372,25 @@ impl RoomSettingsService {
         }
 
         let domain = CacheDomain::RoomSettings { room_id: *room_id };
+        if let Some(fence_key) = self.consistency.fence_key(&domain) {
+            match self.cache.get_by_fence_key(room_id, &fence_key).await {
+                Ok(FenceReadResult::Hit(snapshot)) => return Ok(snapshot),
+                Ok(FenceReadResult::DbFallback) => {
+                    ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+                    return self.get_refresh_with_version(room_id).await;
+                }
+                Ok(FenceReadResult::Unsupported) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %error,
+                        "Room settings fence-key cache read failed; falling back to version read"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(&domain, "fence_key_read_error");
+                }
+            }
+        }
+
         let fence_version = match self.consistency.current_committed_version(&domain).await {
             Ok(Some(version)) => version,
             Ok(None) => {

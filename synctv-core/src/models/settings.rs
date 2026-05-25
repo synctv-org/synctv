@@ -64,7 +64,7 @@ pub mod content_moderation {
 }
 
 /// System settings group
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SettingsGroup {
     pub key: String,
     /// Settings group name (Rust field is `group_name` to match the database column; serialized as `group` in JSON)

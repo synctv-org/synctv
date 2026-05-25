@@ -9,8 +9,8 @@ use std::time::Duration;
 use crate::{
     cache::{
         CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
-        InvalidationMessage, PlaybackStateCache, SingleFlight, VersionFenceReservation,
-        VersionFenceStore,
+        FenceReadResult, InvalidationMessage, PlaybackStateCache, SingleFlight,
+        VersionFenceReservation, VersionFenceStore,
     },
     models::{MediaId, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings, UserId},
     repository::RoomPlaybackStateRepository,
@@ -837,6 +837,35 @@ impl PlaybackService {
         if !self.consistency.is_authoritative() {
             ConsistencyCoordinator::record_db_fallback(&domain, "non_authoritative_fence");
             return self.reload_state_from_store(room_id).await;
+        }
+
+        if let Some(l2_cache) = self.playback_l2_cache() {
+            if let Some(fence_key) = self.consistency.fence_key(&domain) {
+                let cache_key = room_id.to_string();
+                let l1_value = self.playback_cache.get(&cache_key).await;
+                match l2_cache
+                    .get_by_fence_key_with_l1_value(room_id, &fence_key, l1_value)
+                    .await
+                {
+                    Ok(FenceReadResult::Hit(state)) => {
+                        self.playback_cache.insert(cache_key, state.clone()).await;
+                        return Ok(state);
+                    }
+                    Ok(FenceReadResult::DbFallback) => {
+                        ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+                        return self.reload_state_from_store(room_id).await;
+                    }
+                    Ok(FenceReadResult::Unsupported) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            error = %error,
+                            "Playback fence-key cache read failed; falling back to version read"
+                        );
+                        ConsistencyCoordinator::record_db_fallback(&domain, "fence_key_read_error");
+                    }
+                }
+            }
         }
 
         let fence_version = match self.consistency.current_committed_version(&domain).await {

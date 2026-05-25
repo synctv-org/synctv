@@ -23,8 +23,7 @@ use std::sync::Arc;
 use synctv_core::{
     models::{
         room_settings::MaxMembers, AddMemberOptions, Room, RoomAdminPermissionBits, RoomId,
-        RoomMember, RoomMemberPermissionBits, RoomRole, RoomSettings, RoomStatus, User, UserId,
-        UserRole, UserStatus,
+        RoomMember, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{member::MemberService, permission::PermissionService, NotificationService},
@@ -463,10 +462,10 @@ async fn test_concurrent_permission_grant() {
 
         // Grant different permissions to each member
         let permission = match i {
-            0 | 1 => RoomMemberPermissionBits::USE_WEBRTC,
-            2 => RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
-            3 => RoomMemberPermissionBits::CHAT,
-            _ => RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
+            0 | 1 => RoomAdminPermissionBits::USE_WEBRTC,
+            2 => RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+            3 => RoomAdminPermissionBits::CHAT,
+            _ => RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
         };
 
         let handle = tokio::spawn(async move {
@@ -545,14 +544,15 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     let permission_updates = [
         RoomAdminPermissionBits::CHAT,
         RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
-        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
-        RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
-        RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES,
-        RoomAdminPermissionBits::LIVE_CONTROL,
-        RoomAdminPermissionBits::PLAY_CONTROL,
-        RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA,
-        RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE,
         RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
+        RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+        RoomAdminPermissionBits::USE_WEBRTC,
+        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::USE_WEBRTC,
+        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
+            | RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
+        RoomAdminPermissionBits::VIEW_MEMBER_LIST | RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+        RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
     ];
     for permission in permission_updates {
         let barrier_clone = barrier.clone();

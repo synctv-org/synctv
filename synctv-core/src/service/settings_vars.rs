@@ -101,13 +101,6 @@ pub struct SettingsStorage {
 }
 
 impl SettingsStorage {
-    fn requires_transactional_cross_validation(key: &str) -> bool {
-        matches!(
-            key,
-            "room.room_must_need_pwd" | "room.room_must_no_need_pwd"
-        )
-    }
-
     #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
         let setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>> =
@@ -240,23 +233,12 @@ impl SettingsStorage {
     /// Set raw string value for a key, persisting to database before updating cache.
     pub async fn set_raw(&self, key: &str, value: String) -> Result<()> {
         // Persist to database first — fail fast if the write fails.
-        // Some settings participate in cross-key invariants and must route
-        // through the transactional batch API even for single-key writes.
-        if Self::requires_transactional_cross_validation(key) {
-            self.settings_service
-                .update_batch(vec![(key.to_string(), value.clone())])
-                .await
-                .map_err(|e| {
-                    crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
-                })?;
-        } else {
-            self.settings_service
-                .update(key, value.clone())
-                .await
-                .map_err(|e| {
-                    crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
-                })?;
-        }
+        self.settings_service
+            .update(key, value.clone())
+            .await
+            .map_err(|e| {
+                crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
+            })?;
 
         // Only update in-memory cache after successful DB write
         self.inner.write().insert(key.to_string(), value);
@@ -762,9 +744,9 @@ mod tests {
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
              ON CONFLICT (key) DO NOTHING",
         )
-        .bind("room.room_must_need_pwd")
+        .bind("room.password_policy")
         .bind("room")
-        .bind("true")
+        .bind("required")
         .execute(&pool)
         .await
         .unwrap();
@@ -774,57 +756,14 @@ mod tests {
         storage
             .inner
             .write()
-            .insert("room.room_must_need_pwd".to_string(), "false".to_string());
+            .insert("room.password_policy".to_string(), "optional".to_string());
 
         storage.reload_all_from_service().unwrap();
 
         assert_eq!(
-            storage.get_raw("room.room_must_need_pwd").as_deref(),
-            Some("true"),
+            storage.get_raw("room.password_policy").as_deref(),
+            Some("required"),
             "full snapshot reload must overwrite stale in-memory values"
         );
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_setting_set_rejects_contradictory_room_password_policies() {
-        let (_pg, pool) = synctv_core_testing::create_test_pool().await;
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = Arc::new(SettingsService::new(repo, pool.clone()));
-        let storage = Arc::new(SettingsStorage::new(service));
-
-        for (key, group, value) in [
-            ("room.room_must_need_pwd", "room", "false"),
-            ("room.room_must_no_need_pwd", "room", "false"),
-        ] {
-            sqlx::query(
-                "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
-                 ON CONFLICT (key) DO NOTHING",
-            )
-            .bind(key)
-            .bind(group)
-            .bind(value)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-
-        storage.init().unwrap();
-        let must_need = Setting::<bool>::new("room.room_must_need_pwd", storage.clone(), false);
-        let must_no_need =
-            Setting::<bool>::new("room.room_must_no_need_pwd", storage.clone(), false);
-
-        must_need.set(true).await.unwrap();
-        let err = must_no_need
-            .set(true)
-            .await
-            .expect_err("public Setting::set() must preserve the mutual exclusion invariant");
-
-        assert!(
-            matches!(err, crate::Error::Internal(ref msg) if msg.contains("cannot both be true")),
-            "expected invariant violation, got: {err:?}"
-        );
-        assert!(must_need.get().unwrap());
-        assert!(!must_no_need.get().unwrap());
     }
 }

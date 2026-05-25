@@ -2327,7 +2327,7 @@ message GetPublicSettingsResponse {
     bool disable_create_room = 5;
     bool create_room_need_review = 6;
     int64 room_ttl = 7;
-    bool room_must_need_pwd = 8;
+    string room_password_policy = 8;
 
     // User settings
     bool enable_password_signup = 10;

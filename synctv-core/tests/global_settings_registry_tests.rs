@@ -246,38 +246,27 @@ fn validate_max_chat_messages_per_room(v: u64) -> synctv_core::Result<()> {
 }
 
 #[test]
-fn test_cross_validation_room_password_settings() {
-    // Test that room_must_need_pwd and room_must_no_need_pwd cannot both be true
-    let must_need_pwd = true;
-    let must_no_need_pwd = true;
-
-    let result = validate_room_password_settings(must_need_pwd, must_no_need_pwd);
-    assert!(
-        result.is_err(),
-        "Both settings cannot be true simultaneously"
+fn test_room_password_policy_parse_and_display() {
+    assert_eq!(
+        "optional".parse::<RoomPasswordPolicy>().unwrap(),
+        RoomPasswordPolicy::Optional
     );
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("cannot both be true"));
+    assert_eq!(
+        "required".parse::<RoomPasswordPolicy>().unwrap(),
+        RoomPasswordPolicy::Required
+    );
+    assert_eq!(
+        "forbidden".parse::<RoomPasswordPolicy>().unwrap(),
+        RoomPasswordPolicy::Forbidden
+    );
 
-    // Valid combinations
-    assert!(validate_room_password_settings(true, false).is_ok());
-    assert!(validate_room_password_settings(false, true).is_ok());
-    assert!(validate_room_password_settings(false, false).is_ok());
-}
-
-fn validate_room_password_settings(
-    must_need_pwd: bool,
-    must_no_need_pwd: bool,
-) -> synctv_core::Result<()> {
-    if must_need_pwd && must_no_need_pwd {
-        Err(synctv_core::Error::InvalidInput(
-            "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
-        ))
-    } else {
-        Ok(())
-    }
+    assert_eq!(RoomPasswordPolicy::Optional.to_string(), "optional");
+    assert_eq!(RoomPasswordPolicy::Required.to_string(), "required");
+    assert_eq!(RoomPasswordPolicy::Forbidden.to_string(), "forbidden");
+    assert!("true".parse::<RoomPasswordPolicy>().is_err());
+    assert!("legacy_boolean_policy"
+        .parse::<RoomPasswordPolicy>()
+        .is_err());
 }
 
 #[test]
@@ -654,26 +643,40 @@ async fn test_registry_wires_validation_to_settings_service() {
 }
 
 #[test]
-fn test_contradictory_settings_update_batch_rejects_both_true() {
-    // This test verifies that update_batch() rejects the contradictory
-    // combination regardless of cache state. The actual DB read happens at
-    // runtime; here we verify the pre-batch validation at the SettingsService level.
+fn test_room_password_policy_has_no_contradictory_boolean_state() {
+    let policies = [
+        RoomPasswordPolicy::Optional,
+        RoomPasswordPolicy::Required,
+        RoomPasswordPolicy::Forbidden,
+    ];
 
-    // Both explicitly set to true in the batch -> must reject
-    let result = validate_room_password_settings(true, true);
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("cannot both be true"));
+    let serialized = policies
+        .into_iter()
+        .map(|policy| policy.to_string())
+        .collect::<std::collections::HashSet<_>>();
+
+    assert_eq!(
+        serialized,
+        std::collections::HashSet::from([
+            "optional".to_string(),
+            "required".to_string(),
+            "forbidden".to_string(),
+        ])
+    );
 }
 
 #[test]
-fn test_contradictory_settings_valid_combinations() {
-    // (true, false) -> ok
-    assert!(validate_room_password_settings(true, false).is_ok());
-    // (false, true) -> ok
-    assert!(validate_room_password_settings(false, true).is_ok());
-    // (false, false) -> ok
-    assert!(validate_room_password_settings(false, false).is_ok());
+fn test_room_password_policy_rejects_non_policy_values() {
+    for invalid in [
+        "true",
+        "false",
+        "required,forbidden",
+        "",
+        "optional|required",
+    ] {
+        assert!(
+            invalid.parse::<RoomPasswordPolicy>().is_err(),
+            "{invalid:?} must not parse as a room password policy"
+        );
+    }
 }

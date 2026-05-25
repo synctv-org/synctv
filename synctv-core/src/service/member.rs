@@ -64,6 +64,46 @@ impl MemberService {
             RoomRole::Creator | RoomRole::Admin => {
                 Self::validate_admin_permission_bits(permissions)
             }
+            RoomRole::Member => Self::validate_member_permission_bits(
+                RoomMemberPermissionBits::from_permissions(permissions),
+            )
+            .and_then(|()| {
+                if RoomMemberPermissionBits::to_permissions(
+                    RoomMemberPermissionBits::from_permissions(permissions),
+                ) == permissions
+                {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidInput(
+                        "Permission set includes bits outside the member permission bitspace"
+                            .to_string(),
+                    ))
+                }
+            }),
+            RoomRole::Guest => Self::validate_guest_permission_bits(
+                RoomGuestPermissionBits::from_permissions(permissions),
+            )
+            .and_then(|()| {
+                if RoomGuestPermissionBits::to_permissions(
+                    RoomGuestPermissionBits::from_permissions(permissions),
+                ) == permissions
+                {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidInput(
+                        "Permission set includes bits outside the guest permission bitspace"
+                            .to_string(),
+                    ))
+                }
+            }),
+        }
+    }
+
+    fn validate_override_bits_for_role(role: RoomRole, permissions: u64) -> Result<()> {
+        match role {
+            RoomRole::Creator | RoomRole::Admin => {
+                Self::validate_admin_permission_bits(permissions)
+            }
             RoomRole::Member => Self::validate_member_permission_bits(permissions),
             RoomRole::Guest => Self::validate_guest_permission_bits(permissions),
         }
@@ -97,6 +137,21 @@ impl MemberService {
         Err(Error::InvalidInput(
             "Permission set includes bits outside the admin permission bitspace".to_string(),
         ))
+    }
+
+    fn override_bits_from_permissions(role: RoomRole, permissions: u64) -> u64 {
+        role.override_bits_from_permissions(permissions)
+    }
+
+    fn override_pair_from_permissions(
+        role: RoomRole,
+        added_permissions: u64,
+        removed_permissions: u64,
+    ) -> (u64, u64) {
+        (
+            role.override_bits_from_permissions(added_permissions),
+            role.override_bits_from_permissions(removed_permissions),
+        )
     }
 
     /// Create a new member service
@@ -461,6 +516,12 @@ impl MemberService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
+                let (stored_added_permissions, stored_removed_permissions) =
+                    Self::override_pair_from_permissions(
+                        member.role,
+                        added_permissions,
+                        removed_permissions,
+                    );
                 Self::validate_permission_bits_for_role(member.role, added_permissions)?;
                 Self::validate_permission_bits_for_role(member.role, removed_permissions)?;
                 self.apply_permission_write(
@@ -474,8 +535,8 @@ impl MemberService {
                                     .update_admin_permissions_with_exact_version(
                                         &room_id,
                                         &target_user_id,
-                                        added_permissions,
-                                        removed_permissions,
+                                        stored_added_permissions,
+                                        stored_removed_permissions,
                                         member.version,
                                         reserved_version,
                                     )
@@ -485,8 +546,8 @@ impl MemberService {
                                     .update_admin_permissions(
                                         &room_id,
                                         &target_user_id,
-                                        added_permissions,
-                                        removed_permissions,
+                                        stored_added_permissions,
+                                        stored_removed_permissions,
                                         member.version,
                                     )
                                     .await
@@ -496,8 +557,8 @@ impl MemberService {
                                 .update_permissions_with_exact_version(
                                     &room_id,
                                     &target_user_id,
-                                    added_permissions,
-                                    removed_permissions,
+                                    stored_added_permissions,
+                                    stored_removed_permissions,
                                     member.version,
                                     reserved_version,
                                 )
@@ -507,8 +568,8 @@ impl MemberService {
                                 .update_permissions(
                                     &room_id,
                                     &target_user_id,
-                                    added_permissions,
-                                    removed_permissions,
+                                    stored_added_permissions,
+                                    stored_removed_permissions,
                                     member.version,
                                 )
                                 .await
@@ -579,8 +640,8 @@ impl MemberService {
 
         let effective_role = role.unwrap_or(target_member.role);
         let effective_is_admin = matches!(effective_role, RoomRole::Admin);
-        Self::validate_permission_bits_for_role(effective_role, added_permissions)?;
-        Self::validate_permission_bits_for_role(effective_role, removed_permissions)?;
+        Self::validate_override_bits_for_role(effective_role, added_permissions)?;
+        Self::validate_override_bits_for_role(effective_role, removed_permissions)?;
 
         if has_permission_changes {
             if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
@@ -825,6 +886,8 @@ impl MemberService {
                 let target_member = target_member.ok_or_else(|| {
                     Error::NotFound("User is not a member of this room".to_string())
                 })?;
+                let stored_permission =
+                    Self::override_bits_from_permissions(target_member.role, permission);
                 Self::validate_permission_bits_for_role(target_member.role, permission)?;
                 // Atomic grant in SQL against the override layer used by the target role.
                 self.apply_permission_write(
@@ -838,7 +901,7 @@ impl MemberService {
                                     .grant_admin_permission_atomic_for_role_with_exact_version(
                                         &room_id,
                                         &target_user_id,
-                                        permission,
+                                        stored_permission,
                                         target_member.role,
                                         target_member.version,
                                         reserved_version,
@@ -849,7 +912,7 @@ impl MemberService {
                                     .grant_admin_permission_atomic_for_role(
                                         &room_id,
                                         &target_user_id,
-                                        permission,
+                                        stored_permission,
                                         target_member.role,
                                     )
                                     .await
@@ -859,7 +922,7 @@ impl MemberService {
                                 .grant_permission_atomic_for_role_with_exact_version(
                                     &room_id,
                                     &target_user_id,
-                                    permission,
+                                    stored_permission,
                                     target_member.role,
                                     target_member.version,
                                     reserved_version,
@@ -870,7 +933,7 @@ impl MemberService {
                                 .grant_permission_atomic_for_role(
                                     &room_id,
                                     &target_user_id,
-                                    permission,
+                                    stored_permission,
                                     target_member.role,
                                 )
                                 .await
@@ -933,6 +996,8 @@ impl MemberService {
                 let target_member = target_member.ok_or_else(|| {
                     Error::NotFound("User is not a member of this room".to_string())
                 })?;
+                let stored_permission =
+                    Self::override_bits_from_permissions(target_member.role, permission);
                 Self::validate_permission_bits_for_role(target_member.role, permission)?;
                 // Atomic revoke in SQL against the override layer used by the target role.
                 self.apply_permission_write(
@@ -946,7 +1011,7 @@ impl MemberService {
                                     .revoke_admin_permission_atomic_for_role_with_exact_version(
                                         &room_id,
                                         &target_user_id,
-                                        permission,
+                                        stored_permission,
                                         target_member.role,
                                         target_member.version,
                                         reserved_version,
@@ -957,7 +1022,7 @@ impl MemberService {
                                     .revoke_admin_permission_atomic_for_role(
                                         &room_id,
                                         &target_user_id,
-                                        permission,
+                                        stored_permission,
                                         target_member.role,
                                     )
                                     .await
@@ -967,7 +1032,7 @@ impl MemberService {
                                 .revoke_permission_atomic_for_role_with_exact_version(
                                     &room_id,
                                     &target_user_id,
-                                    permission,
+                                    stored_permission,
                                     target_member.role,
                                     target_member.version,
                                     reserved_version,
@@ -978,7 +1043,7 @@ impl MemberService {
                                 .revoke_permission_atomic_for_role(
                                     &room_id,
                                     &target_user_id,
-                                    permission,
+                                    stored_permission,
                                     target_member.role,
                                 )
                                 .await

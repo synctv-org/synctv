@@ -194,6 +194,51 @@ impl std::str::FromStr for PermissionSet {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomPasswordPolicy {
+    #[default]
+    Optional,
+    Required,
+    Forbidden,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomPasswordPolicyParseError(String);
+
+impl fmt::Display for RoomPasswordPolicyParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RoomPasswordPolicyParseError {}
+
+impl fmt::Display for RoomPasswordPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Optional => "optional",
+            Self::Required => "required",
+            Self::Forbidden => "forbidden",
+        })
+    }
+}
+
+impl std::str::FromStr for RoomPasswordPolicy {
+    type Err = RoomPasswordPolicyParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "optional" => Ok(Self::Optional),
+            "required" => Ok(Self::Required),
+            "forbidden" => Ok(Self::Forbidden),
+            _ => Err(RoomPasswordPolicyParseError(format!(
+                "room.password_policy must be one of: optional, required, forbidden; got '{value}'"
+            ))),
+        }
+    }
+}
+
 /// A statically configured ICE server entry exposed to native clients.
 ///
 /// Supports STUN-only entries and TURN/TURNS entries with optional credentials.
@@ -449,8 +494,7 @@ pub struct PublicSettings {
     pub disable_create_room: bool,
     pub create_room_need_review: bool,
     pub room_ttl: i64,
-    pub room_must_need_pwd: bool,
-    pub room_must_no_need_pwd: bool,
+    pub room_password_policy: RoomPasswordPolicy,
 
     // User settings
     pub enable_password_signup: bool,
@@ -485,8 +529,7 @@ impl PublicSettings {
             disable_create_room: false,
             create_room_need_review: false,
             room_ttl: 172_800,
-            room_must_need_pwd: false,
-            room_must_no_need_pwd: false,
+            room_password_policy: RoomPasswordPolicy::Optional,
             enable_password_signup: false,
             password_signup_need_review: false,
             enable_email_signup: false,
@@ -526,8 +569,7 @@ pub struct SettingsRegistry {
     pub disable_create_room: Setting<bool>,
     pub create_room_need_review: Setting<bool>,
     pub room_ttl: Setting<i64>,
-    pub room_must_need_pwd: Setting<bool>,
-    pub room_must_no_need_pwd: Setting<bool>,
+    pub room_password_policy: Setting<RoomPasswordPolicy>,
 
     // User settings
     pub enable_password_signup: Setting<bool>,
@@ -695,12 +737,11 @@ impl SettingsRegistry {
                     }
                 }
             ),
-            room_must_need_pwd: setting!(bool, "room.room_must_need_pwd", storage.clone(), false),
-            room_must_no_need_pwd: setting!(
-                bool,
-                "room.room_must_no_need_pwd",
+            room_password_policy: setting!(
+                RoomPasswordPolicy,
+                "room.password_policy",
                 storage.clone(),
-                false
+                RoomPasswordPolicy::Optional
             ),
 
             // User settings
@@ -835,21 +876,8 @@ impl SettingsRegistry {
         Ok(())
     }
 
-    /// Set `room_must_need_pwd` with cross-validation against `room_must_no_need_pwd`.
-    ///
-    /// Routes through the typed setting so the transactional cross-validation
-    /// and the local `SettingsStorage` snapshot stay in sync immediately.
-    pub async fn set_room_must_need_pwd(&self, value: bool) -> crate::Result<()> {
-        self.room_must_need_pwd.set(value).await?;
-        Ok(())
-    }
-
-    /// Set `room_must_no_need_pwd` with cross-validation against `room_must_need_pwd`.
-    ///
-    /// Routes through the typed setting so the transactional cross-validation
-    /// and the local `SettingsStorage` snapshot stay in sync immediately.
-    pub async fn set_room_must_no_need_pwd(&self, value: bool) -> crate::Result<()> {
-        self.room_must_no_need_pwd.set(value).await?;
+    pub async fn set_room_password_policy(&self, policy: RoomPasswordPolicy) -> crate::Result<()> {
+        self.room_password_policy.set(policy).await?;
         Ok(())
     }
 
@@ -883,15 +911,10 @@ impl SettingsRegistry {
                 false,
             ),
             room_ttl: Self::get_or_warn("room_ttl", &self.room_ttl, 172_800),
-            room_must_need_pwd: Self::get_or_warn(
-                "room_must_need_pwd",
-                &self.room_must_need_pwd,
-                false,
-            ),
-            room_must_no_need_pwd: Self::get_or_warn(
-                "room_must_no_need_pwd",
-                &self.room_must_no_need_pwd,
-                false,
+            room_password_policy: Self::get_or_warn(
+                "room_password_policy",
+                &self.room_password_policy,
+                RoomPasswordPolicy::Optional,
             ),
             enable_password_signup: Self::get_or_warn(
                 "enable_password_signup",

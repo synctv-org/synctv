@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use redis::AsyncCommands;
+use synctv_core::cache::l2_backend::VersionedFenceRead;
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use synctv_core_testing::start_redis as start_test_redis;
 
@@ -258,6 +259,120 @@ async fn test_set_if_version_overwrites_unversioned_json() {
         .expect("stored value should be JSON");
     assert_eq!(value["name"], "versioned");
     assert_eq!(value["cache_version"], 1);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_versioned_fence_read_uses_l1_when_version_is_current() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+    let mut raw_conn = conn;
+
+    let fence_key = "test:vfr:l1:fence";
+    let cache_key = "test:vfr:l1:value";
+    raw_conn.set::<_, _, ()>(fence_key, 7_i64).await.unwrap();
+    raw_conn
+        .set_ex::<_, _, ()>(cache_key, r#"{"name":"l2","version":7}"#, 300)
+        .await
+        .unwrap();
+
+    let decision = l2
+        .read_versioned_with_l1_by_fence(fence_key, cache_key, 7)
+        .await
+        .unwrap();
+
+    assert_eq!(decision, VersionedFenceRead::UseL1);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_versioned_fence_read_returns_l2_when_l1_is_stale() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+    let mut raw_conn = conn;
+
+    let fence_key = "test:vfr:l2:fence";
+    let cache_key = "test:vfr:l2:value";
+    raw_conn.set::<_, _, ()>(fence_key, 8_i64).await.unwrap();
+    raw_conn
+        .set_ex::<_, _, ()>(
+            cache_key,
+            r#"{"name":"fresh-l2","version":8,"cache_version":8}"#,
+            300,
+        )
+        .await
+        .unwrap();
+
+    let decision = l2
+        .read_versioned_with_l1_by_fence(fence_key, cache_key, 7)
+        .await
+        .unwrap();
+
+    match decision {
+        VersionedFenceRead::UseL2(json) => {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value["name"], "fresh-l2");
+            assert_eq!(value["cache_version"], 8);
+        }
+        other => panic!("expected L2 decision, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_versioned_fence_l2_only_read_returns_payload_when_fresh() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+    let mut raw_conn = conn;
+
+    let fence_key = "test:vfr:l2_only:fence";
+    let cache_key = "test:vfr:l2_only:value";
+    raw_conn.set::<_, _, ()>(fence_key, 9_i64).await.unwrap();
+    raw_conn
+        .set_ex::<_, _, ()>(cache_key, r#"{"name":"l2-only","version":9}"#, 300)
+        .await
+        .unwrap();
+
+    let json = l2
+        .read_versioned_l2_by_fence(fence_key, cache_key)
+        .await
+        .unwrap()
+        .expect("fresh L2 payload should be returned");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["name"], "l2-only");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_versioned_fence_read_fails_closed_when_write_pending() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+    let mut raw_conn = conn;
+
+    let fence_key = "test:vfr:pending:fence";
+    let pending_key = format!("{fence_key}:pending");
+    let cache_key = "test:vfr:pending:value";
+    raw_conn.set::<_, _, ()>(fence_key, 10_i64).await.unwrap();
+    raw_conn
+        .hset::<_, _, _, ()>(&pending_key, "version", 11_i64)
+        .await
+        .unwrap();
+    raw_conn
+        .set_ex::<_, _, ()>(cache_key, r#"{"name":"stale","version":11}"#, 300)
+        .await
+        .unwrap();
+
+    let decision = l2
+        .read_versioned_with_l1_by_fence(fence_key, cache_key, 11)
+        .await
+        .unwrap();
+    assert_eq!(decision, VersionedFenceRead::DbFallback);
+
+    let l2_only = l2
+        .read_versioned_l2_by_fence(fence_key, cache_key)
+        .await
+        .unwrap();
+    assert!(l2_only.is_none());
 }
 
 // delete_by_prefix tests

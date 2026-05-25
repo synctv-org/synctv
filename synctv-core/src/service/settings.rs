@@ -12,6 +12,10 @@ use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::cache::{
+    CacheDomain, CacheL2Backend, ConsistencyCoordinator, FenceReadResult, NoopCacheL2,
+    RuntimeSettingKey, RuntimeSettingsCache, VersionFenceStore,
+};
 use crate::models::settings::{get_default_settings, SettingsGroup};
 use crate::repository::SettingsRepository;
 use crate::service::settings_vars::SettingProvider;
@@ -39,6 +43,31 @@ pub struct SettingsService {
     // Shared reference to registered setting providers for validation.
     // Set by `SettingsStorage` after construction via `set_providers()`.
     setting_providers: Arc<parking_lot::RwLock<Option<SettingProviders>>>,
+    consistency: ConsistencyCoordinator,
+    runtime_cache: RuntimeSettingsCache,
+}
+
+#[derive(Clone)]
+pub struct SettingsServiceRuntime {
+    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
+    pub l2_cache: Option<Arc<dyn CacheL2Backend>>,
+    pub cache_key_prefix: String,
+    pub cache_max_capacity: u64,
+    pub cache_ttl_secs: u64,
+    pub cache_l2_ttl_secs: u64,
+}
+
+impl Default for SettingsServiceRuntime {
+    fn default() -> Self {
+        Self {
+            version_fence: None,
+            l2_cache: None,
+            cache_key_prefix: "runtime_settings:".to_string(),
+            cache_max_capacity: 512,
+            cache_ttl_secs: 300,
+            cache_l2_ttl_secs: 300,
+        }
+    }
 }
 
 impl std::fmt::Debug for SettingsService {
@@ -53,7 +82,27 @@ impl std::fmt::Debug for SettingsService {
 impl SettingsService {
     #[must_use]
     pub fn new(repository: SettingsRepository, pool: PgPool) -> Self {
+        Self::new_with_runtime(repository, pool, SettingsServiceRuntime::default())
+    }
+
+    #[must_use]
+    pub fn new_with_runtime(
+        repository: SettingsRepository,
+        pool: PgPool,
+        runtime: SettingsServiceRuntime,
+    ) -> Self {
         let (reload_sender, _) = broadcast::channel(256);
+        let version_fence = runtime
+            .version_fence
+            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
+        let runtime_cache = RuntimeSettingsCache::new(
+            runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.cache_max_capacity,
+            runtime.cache_ttl_secs,
+            runtime.cache_l2_ttl_secs,
+            runtime.cache_key_prefix,
+        )
+        .expect("failed to create runtime settings cache");
         Self {
             repository,
             pool,
@@ -61,6 +110,8 @@ impl SettingsService {
             listeners: Arc::new(RwLock::new(Vec::new())),
             reload_sender,
             setting_providers: Arc::new(parking_lot::RwLock::new(None)),
+            consistency: ConsistencyCoordinator::new(version_fence),
+            runtime_cache,
         }
     }
 
@@ -151,24 +202,84 @@ impl SettingsService {
 
     /// Get a specific setting by key
     pub async fn get(&self, key: &str) -> Result<SettingsGroup, Error> {
-        // Try cache first (lock-free read via DashMap)
-        if let Some(setting) = self.cache.get(key) {
+        let cache_key = RuntimeSettingKey::new(key);
+        let domain = Self::runtime_setting_domain(key);
+
+        if self.consistency.is_authoritative() {
+            if let Some(fence_key) = self.consistency.fence_key(&domain) {
+                match self
+                    .runtime_cache
+                    .get_by_fence_key(&cache_key, &fence_key)
+                    .await
+                {
+                    Ok(FenceReadResult::Hit(setting)) => {
+                        self.cache.insert(setting.key.clone(), setting.clone());
+                        return Ok(setting);
+                    }
+                    Ok(FenceReadResult::DbFallback) => {
+                        ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+                        return self.get_refresh(key).await;
+                    }
+                    Ok(FenceReadResult::Unsupported) => {}
+                    Err(error) => {
+                        warn!(
+                            key = key,
+                            error = %error,
+                            "Runtime setting fence-key cache read failed; falling back to version read"
+                        );
+                        ConsistencyCoordinator::record_db_fallback(&domain, "fence_key_read_error");
+                    }
+                }
+            }
+
+            let fence_version = match self.consistency.current_committed_version(&domain).await {
+                Ok(Some(version)) => version,
+                Ok(None) => {
+                    ConsistencyCoordinator::record_db_fallback(&domain, "missing_fence");
+                    return self.get_refresh(key).await;
+                }
+                Err(error) => {
+                    warn!(
+                        key = key,
+                        error = %error,
+                        "Runtime setting version fence unavailable; bypassing cache"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(&domain, "fence_unavailable");
+                    return self.get_refresh(key).await;
+                }
+            };
+
+            if let Some(setting) = self.runtime_cache.get_l1(&cache_key).await {
+                if i64::from(setting.version) >= fence_version {
+                    return Ok(setting);
+                }
+            }
+
+            match self.runtime_cache.get_l2(&cache_key).await {
+                Ok(Some(setting)) if i64::from(setting.version) >= fence_version => {
+                    self.cache.insert(setting.key.clone(), setting.clone());
+                    return Ok(setting);
+                }
+                Ok(_) => {
+                    ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+                }
+                Err(error) => {
+                    warn!(
+                        key = key,
+                        error = %error,
+                        "Runtime setting L2 read failed; bypassing cache"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(&domain, "l2_error");
+                }
+            }
+        } else if let Some(setting) = self.cache.get(key) {
             return Ok(setting.value().clone());
         }
 
         // Not in cache, load from database
         debug!("Setting '{}' not in cache, loading from database", key);
 
-        let setting = self
-            .repository
-            .get(key)
-            .await
-            .internal_with_err("Failed to get setting")?;
-
-        // Update cache
-        self.cache.insert(setting.key.clone(), setting.clone());
-
-        Ok(setting)
+        self.get_refresh(key).await
     }
 
     /// Update a setting value by key
@@ -183,15 +294,55 @@ impl SettingsService {
 
         let group_name = group_name_from_setting_key(key);
 
-        // Update in database
-        let setting = self
+        let observed_version = i64::from(
+            self.repository
+                .current_version(key)
+                .await
+                .internal_with_err("Failed to read current setting version")?,
+        );
+        let domain = Self::runtime_setting_domain(key);
+        let reservation = self
+            .consistency
+            .begin_observed_write(&domain, observed_version)
+            .await?;
+        let new_version = reservation
+            .as_ref()
+            .map_or(observed_version + 1, |reservation| reservation.version);
+
+        let write_result = self
             .repository
-            .upsert(key, &group_name, &value)
+            .upsert_with_exact_version(
+                key,
+                &group_name,
+                &value,
+                i32::try_from(observed_version).map_err(|_| {
+                    Error::Internal(format!("Setting version {observed_version} exceeds i32"))
+                })?,
+                i32::try_from(new_version).map_err(|_| {
+                    Error::Internal(format!("Setting version {new_version} exceeds i32"))
+                })?,
+            )
             .await
-            .internal_with_err("Failed to update setting")?;
+            .internal_with_err("Failed to update setting");
+        let setting = match write_result {
+            Ok(setting) => setting,
+            Err(error) => {
+                self.consistency
+                    .abort_reserved_write(&domain, reservation.as_ref())
+                    .await;
+                return Err(error);
+            }
+        };
+        self.finalize_committed_write_best_effort(
+            &domain,
+            reservation.as_ref(),
+            i64::from(setting.version),
+            "update",
+        )
+        .await;
 
         // Update cache
-        self.cache.insert(setting.key.clone(), setting.clone());
+        self.store_cache_entry(setting.clone()).await;
 
         // Note: pg_notify('settings_changed', key) is handled by the database
         // trigger (settings_change_trigger on the settings table). No manual
@@ -243,88 +394,124 @@ impl SettingsService {
             self.validate_setting(key, value)?;
         }
 
+        let mut fences = Vec::with_capacity(updates.len());
+        for (key, _) in &updates {
+            let observed_version =
+                i64::from(self.repository.current_version(key).await.map_err(|e| {
+                    Error::Internal(format!("Failed to read setting '{key}': {e}"))
+                })?);
+            let domain = Self::runtime_setting_domain(key);
+            match self
+                .consistency
+                .begin_observed_write(&domain, observed_version)
+                .await
+            {
+                Ok(reservation) => {
+                    let new_version = reservation
+                        .as_ref()
+                        .map_or(observed_version + 1, |reservation| reservation.version);
+                    fences.push((
+                        key.clone(),
+                        domain,
+                        observed_version,
+                        new_version,
+                        reservation,
+                    ));
+                }
+                Err(error) => {
+                    for (_, domain, _, _, reservation) in &fences {
+                        self.consistency
+                            .abort_reserved_write(domain, reservation.as_ref())
+                            .await;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
         let mut tx =
             self.pool.begin().await.map_err(|e| {
                 Error::Internal(format!("Failed to start settings transaction: {e}"))
             })?;
 
-        // Cross-validate contradictory room password settings.
-        // Build effective values: use the batch value if present, otherwise read
-        // fresh from the database **within the transaction** to prevent stale-cache
-        // race conditions in multi-replica deployments.
-        {
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            let must_need_pwd = if let Some(v) = batch_map.get("room.room_must_need_pwd") {
-                *v == "true"
-            } else {
-                // Read from DB within the transaction for consistency
-                sqlx::query_scalar::<_, String>(
-                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE",
-                )
-                .bind("room.room_must_need_pwd")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to read room_must_need_pwd: {e}")))?
-                .is_some_and(|v| v == "true")
-            };
-
-            let must_no_need_pwd = if let Some(v) = batch_map.get("room.room_must_no_need_pwd") {
-                *v == "true"
-            } else {
-                // Read from DB within the transaction for consistency
-                sqlx::query_scalar::<_, String>(
-                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE",
-                )
-                .bind("room.room_must_no_need_pwd")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to read room_must_no_need_pwd: {e}")))?
-                .is_some_and(|v| v == "true")
-            };
-
-            if must_need_pwd && must_no_need_pwd {
-                return Err(Error::InvalidInput(
-                    "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
-                ));
-            }
-        }
-
         let mut updated = Vec::with_capacity(updates.len());
         for (key, value) in &updates {
             let group_name = group_name_from_setting_key(key);
+            let Some((_, _, observed_version, new_version, _)) = fences
+                .iter()
+                .find(|(reserved_key, _, _, _, _)| reserved_key == key)
+            else {
+                return Err(Error::Internal(format!(
+                    "Missing reserved runtime-setting fence for {key}"
+                )));
+            };
             let setting = sqlx::query_as!(
                 crate::models::settings::SettingsGroup,
                 r#"
                  INSERT INTO settings (key, group_name, value, version)
-                 VALUES ($1, $2, $3, 0)
+                 VALUES ($1, $2, $3, $5)
                  ON CONFLICT (key) DO UPDATE
                  SET group_name = EXCLUDED.group_name,
                      value = EXCLUDED.value,
-                     version = settings.version + 1,
+                     version = EXCLUDED.version,
                      updated_at = NOW()
+                 WHERE settings.version = $4
                  RETURNING key, group_name, value, version, created_at, updated_at
                 "#,
                 key.as_str(),
                 group_name,
                 value.as_str(),
+                i32::try_from(*observed_version).map_err(|_| {
+                    Error::Internal(format!("Setting version {observed_version} exceeds i32"))
+                })?,
+                i32::try_from(*new_version).map_err(|_| {
+                    Error::Internal(format!("Setting version {new_version} exceeds i32"))
+                })?,
             )
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(|e| Error::Internal(format!("Failed to update setting '{key}': {e}")))?;
+            let Some(setting) = setting else {
+                for (_, domain, _, _, reservation) in &fences {
+                    self.consistency
+                        .abort_reserved_write(domain, reservation.as_ref())
+                        .await;
+                }
+                return Err(Error::OptimisticLockConflict);
+            };
             updated.push(setting);
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to commit settings transaction: {e}")))?;
+        if let Err(error) = tx.commit().await {
+            for (_, domain, _, _, reservation) in &fences {
+                self.consistency
+                    .abort_reserved_write(domain, reservation.as_ref())
+                    .await;
+            }
+            return Err(Error::Internal(format!(
+                "Failed to commit settings transaction: {error}"
+            )));
+        }
+
+        for setting in &updated {
+            let Some((_, domain, _, _, reservation)) = fences
+                .iter()
+                .find(|(reserved_key, _, _, _, _)| reserved_key == &setting.key)
+            else {
+                continue;
+            };
+            self.finalize_committed_write_best_effort(
+                domain,
+                reservation.as_ref(),
+                i64::from(setting.version),
+                "update_batch",
+            )
+            .await;
+        }
 
         // Update cache and notify listeners only after the transaction committed.
         for setting in &updated {
-            self.cache.insert(setting.key.clone(), setting.clone());
+            self.store_cache_entry(setting.clone()).await;
 
             // Notify SettingsStorage subscribers so their inner HashMap stays in sync
             // immediately, without waiting for the PG NOTIFY round-trip.
@@ -506,7 +693,13 @@ impl SettingsService {
         match self.repository.get(key).await {
             Ok(setting) => {
                 // Update cache (lock-free via DashMap)
-                self.cache.insert(setting.key.clone(), setting.clone());
+                self.store_cache_entry(setting.clone()).await;
+                self.consistency
+                    .repair_after_db_read(
+                        &Self::runtime_setting_domain(key),
+                        i64::from(setting.version),
+                    )
+                    .await;
 
                 // Notify SettingsStorage subscribers so their inner HashMap stays in sync
                 let _ = self
@@ -534,6 +727,14 @@ impl SettingsService {
                     key
                 );
                 self.cache.remove(key);
+                let cache_key = RuntimeSettingKey::new(key);
+                if let Err(error) = self.runtime_cache.invalidate(&cache_key).await {
+                    warn!(
+                        key = key,
+                        error = %error,
+                        "Failed to invalidate deleted runtime setting cache"
+                    );
+                }
 
                 // Notify SettingsStorage subscribers about removal
                 let _ = self.reload_sender.send((key.to_string(), None));
@@ -544,6 +745,69 @@ impl SettingsService {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }
+}
+
+impl SettingsService {
+    fn runtime_setting_domain(key: &str) -> CacheDomain {
+        CacheDomain::RuntimeSetting {
+            key: key.to_string(),
+        }
+    }
+
+    async fn finalize_committed_write_best_effort(
+        &self,
+        domain: &CacheDomain,
+        reservation: Option<&crate::cache::VersionFenceReservation>,
+        version: i64,
+        operation: &'static str,
+    ) {
+        if let Err(error) = self
+            .consistency
+            .commit_reserved_write(domain, reservation, version)
+            .await
+        {
+            warn!(
+                domain = %domain,
+                version,
+                operation,
+                error = %error,
+                "Failed to finalize runtime setting version fence after committed DB write"
+            );
+        }
+    }
+
+    async fn get_refresh(&self, key: &str) -> Result<SettingsGroup, Error> {
+        let setting = self
+            .repository
+            .get(key)
+            .await
+            .internal_with_err("Failed to get setting")?;
+        self.consistency
+            .repair_after_db_read(
+                &Self::runtime_setting_domain(key),
+                i64::from(setting.version),
+            )
+            .await;
+        self.store_cache_entry(setting.clone()).await;
+        Ok(setting)
+    }
+
+    async fn store_cache_entry(&self, setting: SettingsGroup) {
+        self.cache.insert(setting.key.clone(), setting.clone());
+        let cache_key = RuntimeSettingKey::new(setting.key.clone());
+        if let Err(error) = self
+            .runtime_cache
+            .set_if_version_at_least(&cache_key, setting.clone())
+            .await
+        {
+            warn!(
+                key = %setting.key,
+                version = setting.version,
+                error = %error,
+                "Failed to write runtime setting cache"
+            );
         }
     }
 }
@@ -562,7 +826,12 @@ pub fn get_default_settings_json(group: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{
+        consistency::VersionFenceState, CacheDomain, LocalVersionFenceStore,
+        VersionFenceReservation, VersionFenceStore,
+    };
     use crate::models::settings::{get_default_settings, SettingsGroup};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_unknown_group_returns_none() {
@@ -718,6 +987,90 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct FailingCommitFenceStore {
+        state: LocalVersionFenceStore,
+        commit_attempts: AtomicUsize,
+        repair_attempts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl VersionFenceStore for FailingCommitFenceStore {
+        async fn current_version(&self, domain: &CacheDomain) -> crate::Result<Option<i64>> {
+            self.state.current_version(domain).await
+        }
+
+        async fn current_state(
+            &self,
+            domain: &CacheDomain,
+        ) -> crate::Result<Option<VersionFenceState>> {
+            self.state.current_state(domain).await
+        }
+
+        async fn current_versions(
+            &self,
+            domains: &[CacheDomain],
+        ) -> crate::Result<Vec<Option<i64>>> {
+            self.state.current_versions(domains).await
+        }
+
+        async fn bump_version(&self, domain: &CacheDomain) -> crate::Result<i64> {
+            self.state.bump_version(domain).await
+        }
+
+        async fn set_version_at_least(
+            &self,
+            _domain: &CacheDomain,
+            _version: i64,
+        ) -> crate::Result<i64> {
+            self.repair_attempts.fetch_add(1, Ordering::SeqCst);
+            Err(crate::Error::Timeout(
+                "injected runtime setting fence repair failure".to_string(),
+            ))
+        }
+
+        async fn reserve_next_after_observed_version(
+            &self,
+            domain: &CacheDomain,
+            observed_version: i64,
+        ) -> crate::Result<i64> {
+            self.state
+                .reserve_next_after_observed_version(domain, observed_version)
+                .await
+        }
+
+        async fn begin_write(
+            &self,
+            domain: &CacheDomain,
+            observed_version: i64,
+        ) -> crate::Result<VersionFenceReservation> {
+            self.state.begin_write(domain, observed_version).await
+        }
+
+        async fn commit_write(
+            &self,
+            _domain: &CacheDomain,
+            _reservation: &VersionFenceReservation,
+        ) -> crate::Result<i64> {
+            self.commit_attempts.fetch_add(1, Ordering::SeqCst);
+            Err(crate::Error::Timeout(
+                "injected runtime setting fence commit failure".to_string(),
+            ))
+        }
+
+        async fn abort_write(
+            &self,
+            domain: &CacheDomain,
+            reservation: &VersionFenceReservation,
+        ) -> crate::Result<()> {
+            self.state.abort_write(domain, reservation).await
+        }
+
+        fn is_authoritative(&self) -> bool {
+            true
+        }
+    }
+
     /// Helper to build a `SettingsService` with a mock provider registered.
     /// Uses a fake pool URL that is never actually connected (no DB needed).
     fn service_with_mock_provider(key: &str) -> SettingsService {
@@ -744,6 +1097,29 @@ mod tests {
         service
     }
 
+    fn service_with_fence_store(
+        store: Arc<dyn VersionFenceStore>,
+    ) -> (
+        SettingsService,
+        broadcast::Receiver<(String, Option<String>)>,
+    ) {
+        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
+        let pool = pool_opts
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
+        let repo = crate::repository::SettingsRepository::new(pool.clone());
+        let service = SettingsService::new_with_runtime(
+            repo,
+            pool,
+            SettingsServiceRuntime {
+                version_fence: Some(store),
+                ..SettingsServiceRuntime::default()
+            },
+        );
+        let receiver = service.subscribe_reloads();
+        (service, receiver)
+    }
+
     #[tokio::test]
     async fn test_validate_setting_rejects_invalid_value() {
         let service = service_with_mock_provider("test.key");
@@ -761,6 +1137,115 @@ mod tests {
         let service = service_with_mock_provider("test.key");
         let result = service.validate_setting("test.key", "valid");
         assert!(result.is_ok(), "Should accept valid values");
+    }
+
+    #[tokio::test]
+    async fn test_committed_runtime_setting_finalizer_failure_does_not_block_cache_refresh() {
+        let store = Arc::new(FailingCommitFenceStore::default());
+        let (service, mut reloads) = service_with_fence_store(store.clone());
+        let domain = SettingsService::runtime_setting_domain("test.key");
+        let reservation = service
+            .consistency
+            .begin_observed_write(&domain, 0)
+            .await
+            .expect("reservation should be created");
+
+        service
+            .finalize_committed_write_best_effort(&domain, reservation.as_ref(), 1, "test")
+            .await;
+
+        let mut setting = SettingsGroup::new("test".to_string(), "\"fresh\"".to_string());
+        setting.key = "test.key".to_string();
+        setting.version = 1;
+        service.store_cache_entry(setting.clone()).await;
+        let _ = service
+            .reload_sender
+            .send((setting.key.clone(), Some(setting.value.clone())));
+
+        let cached = service
+            .cache
+            .get("test.key")
+            .expect("committed setting must be cached even if fence finalization failed");
+        assert_eq!(cached.value().value, "\"fresh\"");
+        assert_eq!(store.commit_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(store.repair_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            reloads
+                .recv()
+                .await
+                .expect("reload subscriber should receive committed setting"),
+            ("test.key".to_string(), Some("\"fresh\"".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_runtime_setting_finalizer_failure_does_not_block_other_refreshes() {
+        let store = Arc::new(FailingCommitFenceStore::default());
+        let (service, mut reloads) = service_with_fence_store(store.clone());
+
+        for (key, value, version) in [
+            ("test.first", "\"one\"", 1_i32),
+            ("test.second", "\"two\"", 1_i32),
+        ] {
+            let domain = SettingsService::runtime_setting_domain(key);
+            let reservation = service
+                .consistency
+                .begin_observed_write(&domain, 0)
+                .await
+                .expect("reservation should be created");
+            service
+                .finalize_committed_write_best_effort(
+                    &domain,
+                    reservation.as_ref(),
+                    i64::from(version),
+                    "test_batch",
+                )
+                .await;
+
+            let mut setting = SettingsGroup::new("test".to_string(), value.to_string());
+            setting.key = key.to_string();
+            setting.version = version;
+            service.store_cache_entry(setting.clone()).await;
+            let _ = service
+                .reload_sender
+                .send((setting.key.clone(), Some(setting.value.clone())));
+        }
+
+        assert_eq!(
+            service
+                .cache
+                .get("test.first")
+                .expect("first committed setting should be cached")
+                .value()
+                .value,
+            "\"one\""
+        );
+        assert_eq!(
+            service
+                .cache
+                .get("test.second")
+                .expect("second committed setting should be cached")
+                .value()
+                .value,
+            "\"two\""
+        );
+        assert_eq!(store.commit_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(store.repair_attempts.load(Ordering::SeqCst), 2);
+        let first = reloads
+            .recv()
+            .await
+            .expect("first reload event should be delivered");
+        let second = reloads
+            .recv()
+            .await
+            .expect("second reload event should be delivered");
+        assert_eq!(
+            vec![first, second],
+            vec![
+                ("test.first".to_string(), Some("\"one\"".to_string())),
+                ("test.second".to_string(), Some("\"two\"".to_string())),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -817,254 +1302,5 @@ mod tests {
             .get("server.default")
             .expect("existing cache entry must be preserved on transient DB errors");
         assert_eq!(cached.value().value, existing.value);
-    }
-
-    /// Tests for the cross-validation logic in update_batch that prevents
-    /// room_must_need_pwd and room_must_no_need_pwd from both being true.
-    ///
-    /// This validation happens within a database transaction to prevent
-    /// race conditions in multi-replica deployments.
-    mod update_batch_cross_validation_tests {
-
-        /// Test: Simulate the cross-validation logic without database.
-        /// Verifies that when both settings would be true, an error is returned.
-        #[test]
-        fn test_cross_validation_rejects_both_true() {
-            // Simulate the batch_map construction
-            let updates: Vec<(String, String)> = vec![
-                ("room.room_must_need_pwd".to_string(), "true".to_string()),
-                ("room.room_must_no_need_pwd".to_string(), "true".to_string()),
-            ];
-
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            // Simulate the cross-validation check
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .is_some_and(|v| *v == "true");
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true");
-
-            assert!(must_need_pwd, "room_must_need_pwd should be true");
-            assert!(must_no_need_pwd, "room_must_no_need_pwd should be true");
-
-            // This is the condition that should trigger an error
-            let is_invalid = must_need_pwd && must_no_need_pwd;
-            assert!(
-                is_invalid,
-                "Both settings being true should be detected as invalid"
-            );
-        }
-
-        /// Test: Only room_must_need_pwd=true is valid
-        #[test]
-        fn test_cross_validation_accepts_only_must_need_pwd_true() {
-            let updates: Vec<(String, String)> = vec![
-                ("room.room_must_need_pwd".to_string(), "true".to_string()),
-                (
-                    "room.room_must_no_need_pwd".to_string(),
-                    "false".to_string(),
-                ),
-            ];
-
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .is_some_and(|v| *v == "true");
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true");
-
-            let is_valid = !(must_need_pwd && must_no_need_pwd);
-            assert!(
-                is_valid,
-                "Only must_need_pwd=true should be accepted when must_no_need_pwd=false"
-            );
-        }
-
-        /// Test: Only room_must_no_need_pwd=true is valid
-        #[test]
-        fn test_cross_validation_accepts_only_must_no_need_pwd_true() {
-            let updates: Vec<(String, String)> = vec![
-                ("room.room_must_need_pwd".to_string(), "false".to_string()),
-                ("room.room_must_no_need_pwd".to_string(), "true".to_string()),
-            ];
-
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .is_some_and(|v| *v == "true");
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true");
-
-            let is_valid = !(must_need_pwd && must_no_need_pwd);
-            assert!(
-                is_valid,
-                "Only must_no_need_pwd=true should be accepted when must_need_pwd=false"
-            );
-        }
-
-        /// Test: Both false is valid (no constraint)
-        #[test]
-        fn test_cross_validation_accepts_both_false() {
-            let updates: Vec<(String, String)> = vec![
-                ("room.room_must_need_pwd".to_string(), "false".to_string()),
-                (
-                    "room.room_must_no_need_pwd".to_string(),
-                    "false".to_string(),
-                ),
-            ];
-
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .is_some_and(|v| *v == "true");
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true");
-
-            let is_valid = !(must_need_pwd && must_no_need_pwd);
-            assert!(
-                is_valid,
-                "Both settings being false should be accepted (no constraint)"
-            );
-        }
-
-        /// Test: Missing one setting in batch should read from DB (simulated as false)
-        #[test]
-        fn test_cross_validation_with_one_setting_missing() {
-            // Only providing room_must_need_pwd, room_must_no_need_pwd would be read from DB
-            let updates: Vec<(String, String)> =
-                vec![("room.room_must_need_pwd".to_string(), "true".to_string())];
-
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            // Simulate reading from DB (DB value is false)
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .is_some_and(|v| *v == "true");
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true"); // Would read from DB as false
-
-            let is_valid = !(must_need_pwd && must_no_need_pwd);
-            assert!(
-                is_valid,
-                "Single setting without conflict should be accepted"
-            );
-        }
-
-        /// Test: Error message format for mutual exclusion violation
-        #[test]
-        fn test_cross_validation_error_message() {
-            let expected_msg = "room_must_need_pwd and room_must_no_need_pwd cannot both be true";
-
-            // This matches the error message in update_batch
-            assert!(
-                expected_msg.contains("cannot both be true"),
-                "Error message should explain the mutual exclusion"
-            );
-        }
-
-        /// Test: Other settings are not affected by cross-validation
-        #[test]
-        fn test_cross_validation_only_affects_password_settings() {
-            let updates: Vec<(String, String)> = vec![
-                (
-                    "user.enable_password_signup".to_string(),
-                    "true".to_string(),
-                ),
-                ("server.max_rooms_per_user".to_string(), "10".to_string()),
-                ("room.room_must_need_pwd".to_string(), "true".to_string()),
-            ];
-
-            // Count how many settings would go through validation
-            let settings_count = updates.len();
-
-            // All settings should pass the provider validation (assuming no provider rejects)
-            // Only the password settings cross-validation should trigger
-            assert_eq!(settings_count, 3, "All settings should be processed");
-
-            // Check that non-password settings are not involved in cross-validation
-            let password_settings: Vec<_> = updates
-                .iter()
-                .filter(|(k, _)| k.starts_with("room.room_must_"))
-                .collect();
-            assert_eq!(
-                password_settings.len(),
-                1,
-                "Only one password setting in this batch"
-            );
-        }
-
-        /// Test: Empty batch should succeed without validation errors
-        #[test]
-        fn test_cross_validation_empty_batch() {
-            let updates: Vec<(String, String)> = vec![];
-
-            let batch_map: std::collections::HashMap<&str, &str> = updates
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            // No settings means no conflicts
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .is_some_and(|v| *v == "true");
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true");
-
-            let is_valid = !(must_need_pwd && must_no_need_pwd);
-            assert!(
-                is_valid,
-                "Empty batch should not trigger cross-validation error"
-            );
-        }
-
-        /// Test: Case sensitivity of boolean values
-        #[test]
-        fn test_cross_validation_boolean_case_sensitivity() {
-            // The code checks v == "true", which is case-sensitive
-            let true_values = ["true", "TRUE", "True"];
-            let false_values = ["false", "FALSE", "False"];
-
-            for v in &true_values {
-                let is_true = *v == "true";
-                if *v == "true" {
-                    assert!(is_true, "Lowercase 'true' should be recognized as true");
-                } else {
-                    assert!(
-                        !is_true,
-                        "'{v}' should NOT be recognized as true (case-sensitive)"
-                    );
-                }
-            }
-
-            for v in &false_values {
-                let is_true = *v == "true";
-                assert!(!is_true, "'{v}' should not be recognized as true");
-            }
-        }
     }
 }

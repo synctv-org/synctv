@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use crate::cache::l2_backend::CacheL2Backend;
-use crate::cache::tiered::{TieredCache, Timestamped, Versioned};
+use crate::cache::tiered::{FenceReadResult, TieredCache, Timestamped, Versioned};
 use crate::models::{RoomId, RoomPlaybackState};
 use crate::Result;
 
@@ -79,6 +79,25 @@ impl PlaybackStateCache {
 
     pub async fn get_l2(&self, room_id: &RoomId) -> Result<Option<RoomPlaybackState>> {
         self.inner.get_l2(room_id).await
+    }
+
+    pub async fn get_by_fence_key(
+        &self,
+        room_id: &RoomId,
+        fence_key: &str,
+    ) -> Result<FenceReadResult<RoomPlaybackState>> {
+        self.inner.get_by_fence_key(room_id, fence_key).await
+    }
+
+    pub async fn get_by_fence_key_with_l1_value(
+        &self,
+        room_id: &RoomId,
+        fence_key: &str,
+        l1_value: Option<RoomPlaybackState>,
+    ) -> Result<FenceReadResult<RoomPlaybackState>> {
+        self.inner
+            .get_by_fence_key_with_l1_value(room_id, fence_key, l1_value)
+            .await
     }
 
     /// Set playback state in cache

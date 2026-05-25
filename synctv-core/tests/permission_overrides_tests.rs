@@ -5,7 +5,10 @@
 mod permission_test_support;
 
 use synctv_core::{
-    models::{RoomMemberPermissionBits, RoomPermission},
+    models::{
+        room_settings::MemberRemovedPermissions, RoomMemberPermissionBits, RoomPermission,
+        RoomSettings,
+    },
     repository::UserRepository,
 };
 use synctv_core_testing::create_test_pool;
@@ -22,13 +25,17 @@ async fn test_allow_override_role_default() {
     let creator = user_repo.create(&make_user("allow_creator")).await.unwrap();
     let member = user_repo.create(&make_user("allow_member")).await.unwrap();
 
+    let settings = RoomSettings {
+        member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
+        ..RoomSettings::default()
+    };
     let (room, _) = room_service
         .create_room(
             "Allow Override Room".to_string(),
             String::new(),
             creator.id,
             None,
-            None,
+            Some(settings),
         )
         .await
         .unwrap();
@@ -51,7 +58,7 @@ async fn test_allow_override_role_default() {
             room.id,
             creator.id,
             member.id,
-            RoomMemberPermissionBits::USE_WEBRTC,
+            synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
         )
         .await
         .unwrap();

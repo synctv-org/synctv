@@ -546,7 +546,17 @@ pub async fn init_services_with_options(
     // Initialize Settings service
     info!("Initializing Settings service...");
     let settings_repo = SettingsRepository::new(pool.clone());
-    let settings_service = SettingsService::new(settings_repo, pool.clone());
+    let settings_service = SettingsService::new_with_runtime(
+        settings_repo,
+        pool.clone(),
+        crate::service::settings::SettingsServiceRuntime {
+            version_fence: Some(version_fence.clone()),
+            l2_cache: Some(cache_l2.clone()),
+            cache_key_prefix: format!("{}runtime_settings:", config.redis.key_prefix),
+            cache_l2_ttl_secs: config.cache.l2_ttl_seconds,
+            ..crate::service::settings::SettingsServiceRuntime::default()
+        },
+    );
     settings_service.initialize().await?;
     info!("Settings service initialized with {} groups", {
         settings_service.get_all().map_or(0, |g| g.len())
@@ -668,6 +678,16 @@ pub async fn init_services_with_options(
                     room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
                     invalidation_service: Some(cache_invalidation.clone()),
                     version_fence: Some(version_fence.clone()),
+                    member_permission_l2_cache: Some(cache_l2.clone()),
+                    member_permission_cache_key_prefix: format!(
+                        "{}member_permission:",
+                        config.redis.key_prefix
+                    ),
+                    room_settings_l2_cache: room_settings_l2_cache_for_chat.clone(),
+                    room_settings_cache_key_prefix: format!(
+                        "{}room_settings:",
+                        config.redis.key_prefix
+                    ),
                     ..crate::service::permission::PermissionServiceRuntime::default()
                 },
             )),
@@ -873,6 +893,8 @@ struct RoomServiceRuntime {
     playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
     room_settings_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
     room_settings_cache_key_prefix: String,
+    member_permission_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    member_permission_cache_key_prefix: String,
 }
 
 fn build_room_service_runtime(
@@ -915,12 +937,18 @@ fn build_room_service_runtime(
         Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime))
             as Arc<dyn crate::cache::CacheL2Backend>
     });
+    let member_permission_l2_cache = profile.shared_runtime().map(|redis_runtime| {
+        Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime))
+            as Arc<dyn crate::cache::CacheL2Backend>
+    });
 
     Ok(RoomServiceRuntime {
         distributed_lock,
         playback_l2_cache,
         room_settings_l2_cache,
         room_settings_cache_key_prefix: format!("{}room_settings:", profile.key_prefix()),
+        member_permission_l2_cache,
+        member_permission_cache_key_prefix: format!("{}member_permission:", profile.key_prefix()),
     })
 }
 
@@ -949,6 +977,10 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
             room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
             invalidation_service: Some(cache_invalidation.clone()),
             version_fence: Some(version_fence.clone()),
+            member_permission_l2_cache: runtime.member_permission_l2_cache.clone(),
+            member_permission_cache_key_prefix: runtime.member_permission_cache_key_prefix.clone(),
+            room_settings_l2_cache: runtime.room_settings_l2_cache.clone(),
+            room_settings_cache_key_prefix: runtime.room_settings_cache_key_prefix.clone(),
             ..crate::service::permission::PermissionServiceRuntime::default()
         },
     );

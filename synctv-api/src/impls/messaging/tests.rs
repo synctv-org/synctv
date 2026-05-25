@@ -5349,6 +5349,47 @@ fn test_user_joined_event_conversion() {
 }
 
 #[test]
+fn test_permission_changed_event_conversion_preserves_override_bitspace() {
+    let event = RealtimeEvent::PermissionChanged {
+        event_id: "evt-permission-override-bitspace".to_string(),
+        room_id: room_id(),
+        target_user_id: user_id(),
+        target_username: "carol".to_string(),
+        changed_by: user_id(),
+        changed_by_username: "owner".to_string(),
+        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
+        role: synctv_proto::common::RoomMemberRole::Member as i32,
+        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
+        removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        admin_added_permissions: RoomPermissionSet(0),
+        admin_removed_permissions: RoomPermissionSet(0),
+        timestamp: now(),
+    };
+
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
+    assert_eq!(msgs.len(), 1);
+    match &msgs[0].message {
+        Some(Message::PermissionChanged(permission)) => {
+            assert_eq!(permission.room_id, "room_test");
+            assert_eq!(permission.user_id, public_actor_id());
+            assert_eq!(
+                permission.effective_permissions,
+                RoomAdminPermissionBits::USE_WEBRTC
+            );
+            assert_eq!(
+                permission.added_permissions,
+                RoomMemberPermissionBits::USE_WEBRTC
+            );
+            assert_eq!(
+                permission.removed_permissions,
+                RoomMemberPermissionBits::CHAT
+            );
+        }
+        other => panic!("Expected PermissionChanged, got: {other:?}"),
+    }
+}
+
+#[test]
 fn test_user_left_event_conversion() {
     let event = RealtimeEvent::UserLeft {
         event_id: "evt4".to_string(),

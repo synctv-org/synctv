@@ -118,6 +118,94 @@ static SET_IF_VERSION_AT_LEAST_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock
     )
 });
 
+static READ_VERSIONED_WITH_L1_BY_FENCE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local pending_version = redis.call('HGET', KEYS[2], 'version')
+        if pending_version ~= false then
+            return {'DB'}
+        end
+
+        local committed_raw = redis.call('GET', KEYS[1])
+        if committed_raw == false then
+            return {'DB'}
+        end
+
+        local committed = tonumber(committed_raw)
+        local l1_version = tonumber(ARGV[1])
+        if not committed or not l1_version then
+            return {'DB'}
+        end
+
+        if l1_version >= committed then
+            return {'L1'}
+        end
+
+        local cached = redis.call('GET', KEYS[3])
+        if cached == false then
+            return {'DB'}
+        end
+
+        local ok, obj = pcall(cjson.decode, cached)
+        if not ok or not obj then
+            return {'DB'}
+        end
+
+        local cached_version = tonumber(obj.cache_version or obj.version)
+        if cached_version and cached_version >= committed then
+            return {'L2', cached}
+        end
+
+        return {'DB'}
+        ",
+    )
+});
+
+static READ_VERSIONED_L2_BY_FENCE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local pending_version = redis.call('HGET', KEYS[2], 'version')
+        if pending_version ~= false then
+            return {'DB'}
+        end
+
+        local committed_raw = redis.call('GET', KEYS[1])
+        if committed_raw == false then
+            return {'DB'}
+        end
+
+        local committed = tonumber(committed_raw)
+        if not committed then
+            return {'DB'}
+        end
+
+        local cached = redis.call('GET', KEYS[3])
+        if cached == false then
+            return {'DB'}
+        end
+
+        local ok, obj = pcall(cjson.decode, cached)
+        if not ok or not obj then
+            return {'DB'}
+        end
+
+        local cached_version = tonumber(obj.cache_version or obj.version)
+        if cached_version and cached_version >= committed then
+            return {'L2', cached}
+        end
+
+        return {'DB'}
+        ",
+    )
+});
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionedFenceRead {
+    UseL1,
+    UseL2(String),
+    DbFallback,
+}
+
 fn json_with_updated_at_ms(json: &str, updated_at_ms: i64) -> Result<String> {
     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
         Error::Internal(format!(
@@ -339,6 +427,27 @@ pub trait CacheL2Backend: Send + Sync {
     ) -> Result<bool> {
         self.set_if_version_at_least(key, json, ttl_secs, version)
             .await
+    }
+
+    /// Atomically decide whether a local L1 version is fresh under the Redis
+    /// version fence, otherwise return a fresh L2 JSON payload or DB fallback.
+    async fn read_versioned_with_l1_by_fence(
+        &self,
+        _fence_key: &str,
+        _cache_key: &str,
+        _l1_version: i64,
+    ) -> Result<VersionedFenceRead> {
+        Ok(VersionedFenceRead::DbFallback)
+    }
+
+    /// Atomically read a fresh L2 JSON payload under the Redis version fence,
+    /// or request DB fallback when the fence/cache is absent, pending, or stale.
+    async fn read_versioned_l2_by_fence(
+        &self,
+        _fence_key: &str,
+        _cache_key: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
     }
 
     /// Delete all keys matching the given prefix.
@@ -896,6 +1005,66 @@ impl CacheL2Backend for RedisCacheL2 {
         .await?;
 
         Ok(result == 1)
+    }
+
+    async fn read_versioned_with_l1_by_fence(
+        &self,
+        fence_key: &str,
+        cache_key: &str,
+        l1_version: i64,
+    ) -> Result<VersionedFenceRead> {
+        let mut conn = self
+            .conn("get L2 cache connection for versioned fence read")
+            .await?;
+        let pending_key = format!("{fence_key}:pending");
+
+        let result: Vec<String> = run_l2_redis_op(
+            self.operation_timeout(),
+            "run versioned fence L1 read Lua script",
+            READ_VERSIONED_WITH_L1_BY_FENCE_SCRIPT
+                .key(fence_key)
+                .key(pending_key)
+                .key(cache_key)
+                .arg(l1_version)
+                .invoke_async(&mut conn),
+        )
+        .await?;
+
+        match result.first().map(String::as_str) {
+            Some("L1") => Ok(VersionedFenceRead::UseL1),
+            Some("L2") => match result.get(1) {
+                Some(json) => Ok(VersionedFenceRead::UseL2(json.clone())),
+                None => Ok(VersionedFenceRead::DbFallback),
+            },
+            _ => Ok(VersionedFenceRead::DbFallback),
+        }
+    }
+
+    async fn read_versioned_l2_by_fence(
+        &self,
+        fence_key: &str,
+        cache_key: &str,
+    ) -> Result<Option<String>> {
+        let mut conn = self
+            .conn("get L2 cache connection for versioned fence L2 read")
+            .await?;
+        let pending_key = format!("{fence_key}:pending");
+
+        let result: Vec<String> = run_l2_redis_op(
+            self.operation_timeout(),
+            "run versioned fence L2 read Lua script",
+            READ_VERSIONED_L2_BY_FENCE_SCRIPT
+                .key(fence_key)
+                .key(pending_key)
+                .key(cache_key)
+                .invoke_async(&mut conn),
+        )
+        .await?;
+
+        Ok(match result.first().map(String::as_str) {
+            Some("L2") => result.get(1).cloned(),
+            _ => None,
+        })
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {

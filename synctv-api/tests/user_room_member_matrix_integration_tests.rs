@@ -348,11 +348,11 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
             &room_public_id,
             synctv_proto::client::UpdateMemberPermissionsRequest {
                 user_id: moderator_public_id.clone(),
-                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
-                added_permissions: RoomAdminPermissionBits::APPROVE_MEMBER
-                    | RoomAdminPermissionBits::KICK_MEMBER,
+                role: synctv_proto::common::RoomMemberRole::Admin as i32,
+                added_permissions: 0,
                 removed_permissions: 0,
-                admin_added_permissions: 0,
+                admin_added_permissions: RoomAdminPermissionBits::APPROVE_MEMBER
+                    | RoomAdminPermissionBits::KICK_MEMBER,
                 admin_removed_permissions: 0,
             },
         )
@@ -415,7 +415,7 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
             &room_public_id,
             synctv_proto::client::UpdateMemberPermissionsRequest {
                 user_id: moderator_public_id,
-                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
                 added_permissions: 0,
                 removed_permissions: 0,
                 admin_added_permissions: 0,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::l2_backend::CacheL2Backend;
-use crate::cache::tiered::{TieredCache, Versioned};
+use crate::cache::tiered::{FenceReadResult, TieredCache, Versioned};
 use crate::models::{RoomId, RoomSettings};
 use crate::Result;
 
@@ -58,6 +58,14 @@ impl RoomSettingsCache {
 
     pub async fn get_l2(&self, room_id: &RoomId) -> Result<Option<RoomSettingsSnapshot>> {
         self.inner.get_l2(room_id).await
+    }
+
+    pub async fn get_by_fence_key(
+        &self,
+        room_id: &RoomId,
+        fence_key: &str,
+    ) -> Result<FenceReadResult<RoomSettingsSnapshot>> {
+        self.inner.get_by_fence_key(room_id, fence_key).await
     }
 
     pub async fn set(&self, room_id: &RoomId, snapshot: RoomSettingsSnapshot) -> Result<()> {

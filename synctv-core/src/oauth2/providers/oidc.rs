@@ -2,7 +2,7 @@
 
 use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
-    validate_provider_url,
+    validate_oauth2_redirect_url, validate_provider_url,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
@@ -225,6 +225,7 @@ impl OidcProvider {
     ) -> Result<Self, Error> {
         let issuer = issuer.trim_end_matches('/');
         validate_provider_url(issuer, "Invalid OIDC issuer URL", ssrf_guard)?;
+        validate_oauth2_redirect_url(&redirect_url, "Invalid OIDC redirect URL")?;
         Ok(Self {
             resolved: OnceCell::new(),
             jwks_cache: RwLock::new(None),
@@ -277,6 +278,7 @@ impl OidcProvider {
             ));
         }
         validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL", ssrf_guard)?;
+        validate_oauth2_redirect_url(&redirect_url, "Invalid OIDC redirect URL")?;
         let auth = endpoints.auth_url.ok_or_else(|| {
             Error::InvalidInput(
                 "OIDC static endpoint mode requires explicit 'auth_url'".to_string(),
@@ -705,19 +707,29 @@ impl Provider for OidcProvider {
         "oidc"
     }
 
-    async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization, Error> {
+    async fn new_auth_url(
+        &self,
+        state: &str,
+        redirect_url: Option<&str>,
+    ) -> Result<OAuth2Authorization, Error> {
         let resolved = self.get_resolved().await?;
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let nonce = synctv_common::snanoid!(32);
-        let (auth_url, _csrf_token) = resolved
+        let mut request = resolved
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .add_scope(Scope::new("openid".to_string()))
             .add_scope(Scope::new("profile".to_string()))
             .add_scope(Scope::new("email".to_string()))
             .add_extra_param("nonce", nonce.as_str())
-            .set_pkce_challenge(pkce_challenge)
-            .url();
+            .set_pkce_challenge(pkce_challenge);
+        if let Some(redirect_url) = redirect_url {
+            request = request.set_redirect_uri(std::borrow::Cow::Owned(
+                RedirectUrl::new(redirect_url.to_string())
+                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?,
+            ));
+        }
+        let (auth_url, _csrf_token) = request.url();
         Ok(
             OAuth2Authorization::new(auth_url.to_string(), pkce_verifier.secret().clone())
                 .with_nonce(nonce),
@@ -727,6 +739,7 @@ impl Provider for OidcProvider {
     async fn get_user_info(
         &self,
         code: &str,
+        redirect_url: Option<&str>,
         pkce_verifier: &str,
         nonce: Option<&str>,
     ) -> Result<OAuth2UserInfo, Error> {
@@ -739,10 +752,17 @@ impl Provider for OidcProvider {
 
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
-        let token = resolved
+        let mut request = resolved
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
-            .set_pkce_verifier(verifier)
+            .set_pkce_verifier(verifier);
+        if let Some(redirect_url) = redirect_url {
+            request = request.set_redirect_uri(std::borrow::Cow::Owned(
+                RedirectUrl::new(redirect_url.to_string())
+                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?,
+            ));
+        }
+        let token = request
             .request_async(self.oauth2_http_client.as_ref())
             .await
             .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
@@ -987,6 +1007,17 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         )
         .unwrap();
         assert_eq!(provider.init_config.issuer, "https://issuer.example.com");
+    }
+
+    #[test]
+    fn test_create_provider_rejects_custom_scheme_redirect_url() {
+        let result = OidcProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "native-app://callback".to_string(),
+            "https://issuer.example.com",
+        );
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
     }
 
     #[test]
@@ -1409,7 +1440,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         .unwrap();
 
         let state = "oidc_state_123";
-        let auth = provider.new_auth_url(state).await.unwrap();
+        let auth = provider.new_auth_url(state, None).await.unwrap();
         let auth_url = auth.auth_url;
         let pkce_verifier = auth.pkce_verifier;
 
@@ -1449,8 +1480,8 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         )
         .unwrap();
 
-        let auth1 = provider.new_auth_url("state_a").await.unwrap();
-        let auth2 = provider.new_auth_url("state_b").await.unwrap();
+        let auth1 = provider.new_auth_url("state_a", None).await.unwrap();
+        let auth2 = provider.new_auth_url("state_b", None).await.unwrap();
 
         assert_ne!(auth1.auth_url, auth2.auth_url);
         assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);

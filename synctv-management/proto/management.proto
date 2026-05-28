@@ -72,7 +72,7 @@ service ManagementService {
     rpc BilibiliParse(BilibiliParseRequest) returns (synctv.provider.bilibili.ParseResponse);
     rpc BilibiliLoginQr(BilibiliLoginQrRequest) returns (synctv.provider.bilibili.QRCodeResponse);
     rpc BilibiliCheckQr(BilibiliCheckQrRequest) returns (synctv.provider.bilibili.QRStatusResponse);
-    rpc BilibiliGetCaptcha(BilibiliGetCaptchaRequest) returns (synctv.provider.bilibili.CaptchaResponse);
+    rpc BilibiliStartSmsLogin(BilibiliStartSmsLoginRequest) returns (synctv.provider.bilibili.StartSMSLoginResponse);
     rpc BilibiliSendSms(BilibiliSendSmsRequest) returns (synctv.provider.bilibili.SendSMSResponse);
     rpc BilibiliLoginSms(BilibiliLoginSmsRequest) returns (synctv.provider.bilibili.LoginSMSResponse);
     rpc BilibiliGetUserInfo(BilibiliGetUserInfoRequest) returns (synctv.provider.bilibili.UserInfoResponse);
@@ -512,7 +512,7 @@ message GetPlaybackRequest {
 
 message UpdatePlaybackRequest {
     string room_id = 1;
-    synctv.client.UpdatePlayback update = 2;
+    synctv.client.UpdatePlaybackRequest update = 2;
 }
 
 message CreatePublishKeyRequest {
@@ -793,9 +793,9 @@ message BilibiliCheckQrRequest {
     synctv.provider.bilibili.CheckQRRequest request = 2;
 }
 
-message BilibiliGetCaptchaRequest {
+message BilibiliStartSmsLoginRequest {
     UserRef actor = 1;
-    synctv.provider.bilibili.GetCaptchaRequest request = 2;
+    synctv.provider.bilibili.StartSMSLoginRequest request = 2;
 }
 
 message BilibiliSendSmsRequest {

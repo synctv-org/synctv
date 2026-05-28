@@ -982,10 +982,13 @@ impl ClientApiImpl {
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
         Box::pin(async move {
-            let authorization = Self::required_authorization(metadata)?;
-            let token = Self::bearer_token_from_authorization(authorization)?;
+            let authorization = Self::required_authorization(metadata).ok();
+            let token = authorization
+                .map(Self::bearer_token_from_authorization)
+                .transpose()?;
 
-            if Self::is_guest_token(&token) {
+            if token.as_deref().is_some_and(Self::is_guest_token) {
+                let token = token.expect("guest token checked");
                 let executor = client_api.clone();
                 executor
                     .execute_public_endpoint(metadata, category, move || {
@@ -1002,17 +1005,39 @@ impl ClientApiImpl {
                     .await
             } else {
                 let executor = client_api.clone();
-                executor
-                    .execute_user_endpoint(metadata, category, move |authenticated| {
-                        let client_api = client_api.clone();
-                        async move {
-                            let actor = client_api
-                                .room_actor_for_user(&authenticated.user_id, &public_room_id)
-                                .await?;
-                            operation(client_api, actor).await.map_err(Into::into)
-                        }
-                    })
-                    .await
+                match token {
+                    Some(token) => {
+                        let executor = executor.request_executor()?;
+                        executor
+                            .execute_authenticated_token_with_control(
+                                metadata,
+                                category,
+                                &token,
+                                move |_, authenticated| {
+                                    let client_api = client_api.clone();
+                                    async move {
+                                        let actor = client_api
+                                            .room_actor_for_user(
+                                                &authenticated.user_id,
+                                                &public_room_id,
+                                            )
+                                            .await?;
+                                        operation(client_api, actor).await.map_err(Into::into)
+                                    }
+                                },
+                            )
+                            .await
+                    }
+                    None => {
+                        executor
+                            .execute_public_endpoint(metadata, category, || async move {
+                                Err::<T, ApiError>(ApiError::Authentication(
+                                    synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
+                                ))
+                            })
+                            .await
+                    }
+                }
             }
         })
     }
@@ -1031,10 +1056,13 @@ impl ClientApiImpl {
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
         Box::pin(async move {
-            let authorization = Self::required_authorization(metadata)?;
-            let token = Self::bearer_token_from_authorization(authorization)?;
+            let authorization = Self::required_authorization(metadata).ok();
+            let token = authorization
+                .map(Self::bearer_token_from_authorization)
+                .transpose()?;
 
-            if Self::is_guest_token(&token) {
+            if token.as_deref().is_some_and(Self::is_guest_token) {
+                let token = token.expect("guest token checked");
                 let executor = client_api.clone();
                 executor
                     .execute_public_endpoint_with_control(
@@ -1055,23 +1083,46 @@ impl ClientApiImpl {
                     .await
             } else {
                 let executor = client_api.clone();
-                executor
-                    .execute_user_endpoint_with_control(
-                        metadata,
-                        category,
-                        move |request_control, authenticated| {
-                            let client_api = client_api.clone();
-                            async move {
-                                let actor = client_api
-                                    .room_actor_for_user(&authenticated.user_id, &public_room_id)
-                                    .await?;
-                                operation(client_api, request_control, actor)
-                                    .await
-                                    .map_err(Into::into)
-                            }
-                        },
-                    )
-                    .await
+                match token {
+                    Some(token) => {
+                        let executor = executor.request_executor()?;
+                        executor
+                            .execute_authenticated_token_with_control(
+                                metadata,
+                                category,
+                                &token,
+                                move |request_control, authenticated| {
+                                    let client_api = client_api.clone();
+                                    async move {
+                                        let actor = client_api
+                                            .room_actor_for_user(
+                                                &authenticated.user_id,
+                                                &public_room_id,
+                                            )
+                                            .await?;
+                                        operation(client_api, request_control, actor)
+                                            .await
+                                            .map_err(Into::into)
+                                    }
+                                },
+                            )
+                            .await
+                    }
+                    None => {
+                        executor
+                            .execute_public_endpoint_with_control(
+                                metadata,
+                                category,
+                                |_| async move {
+                                    Err::<T, ApiError>(ApiError::Authentication(
+                                        synctv_common::messages::AUTHENTICATION_REQUIRED
+                                            .to_string(),
+                                    ))
+                                },
+                            )
+                            .await
+                    }
+                }
             }
         })
     }

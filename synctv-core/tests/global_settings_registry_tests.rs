@@ -192,33 +192,6 @@ fn validate_max_chat_messages(v: u64) -> synctv_core::Result<()> {
 }
 
 #[test]
-fn test_room_ttl_validation() {
-    // Valid range: >= 0
-    let valid_values = [0, 60, 3600, 86400, 172_800];
-    for v in valid_values {
-        let result = validate_room_ttl(v);
-        assert!(result.is_ok(), "Value {v} should be valid");
-    }
-
-    // Invalid values
-    let invalid_values = [-1, -100];
-    for v in invalid_values {
-        let result = validate_room_ttl(v);
-        assert!(result.is_err(), "Value {v} should be invalid");
-    }
-}
-
-fn validate_room_ttl(v: i64) -> synctv_core::Result<()> {
-    if v >= 0 {
-        Ok(())
-    } else {
-        Err(synctv_core::Error::InvalidInput(
-            "room_ttl must be non-negative (0 = never expire)".into(),
-        ))
-    }
-}
-
-#[test]
 fn test_max_chat_messages_per_room_validation() {
     // Valid range: 0 to 100000
     let valid_values = [0, 1, 100, 1000, 10000, 100_000];
@@ -496,15 +469,6 @@ fn test_invalid_json_for_cors_origins() {
 }
 
 #[test]
-fn test_room_ttl_boundary_values() {
-    // Test boundary values for room_ttl
-    assert!(validate_room_ttl(0).is_ok()); // Zero is valid (never expire)
-    assert!(validate_room_ttl(1).is_ok()); // Minimum positive value
-    assert!(validate_room_ttl(i64::MAX).is_ok()); // Very large value is valid
-    assert!(validate_room_ttl(-1).is_err()); // Negative is invalid
-}
-
-#[test]
 fn test_max_chat_messages_zero_means_unlimited() {
     // Zero should be valid and means "unlimited"
     assert!(validate_max_chat_messages(0).is_ok());
@@ -598,16 +562,6 @@ async fn test_registry_wires_validation_to_settings_service() {
             .validate_setting("server.max_members_per_room", "0")
             .is_err(),
         "Zero max_members_per_room should fail"
-    );
-
-    // room_ttl has a validator: >= 0
-    assert!(
-        service.validate_setting("room.room_ttl", "0").is_ok(),
-        "Zero room_ttl should pass (never expire)"
-    );
-    assert!(
-        service.validate_setting("room.room_ttl", "-1").is_err(),
-        "Negative room_ttl should fail"
     );
 
     // Boolean settings should validate parse-ability

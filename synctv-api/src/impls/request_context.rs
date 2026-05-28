@@ -582,6 +582,54 @@ impl RequestExecutor {
         })
     }
 
+    pub fn execute_authenticated_token_with_control<'a, T, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        token: &'a str,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        F: FnOnce(ExecutionControl, AuthenticatedToken) -> Fut + Send + 'a,
+        Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
+    {
+        let request_context = self.prepare_context(metadata);
+        let request_control = request_context.child_execution_control();
+        async move {
+            request_context.check_active()?;
+            request_control
+                .run(async move {
+                    let authenticated = match self.jwt_validator.validate_token(token) {
+                        Ok(claims) => self.security_check_claims(&claims).await.ok(),
+                        Err(_) => None,
+                    };
+                    self.enforce_rate_limit(
+                        metadata,
+                        category,
+                        authenticated.as_ref(),
+                        Some(request_context.control()),
+                    )
+                    .await?;
+                    let authenticated = if let Some(authenticated) = authenticated {
+                        authenticated
+                    } else {
+                        let claims = self.jwt_validator.validate_token(token).map_err(|_| {
+                            ApiError::Authentication(
+                                synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                            )
+                        })?;
+                        self.security_check_claims(&claims).await?
+                    };
+                    request_context.check_active()?;
+                    operation(request_context.child_execution_control(), authenticated).await
+                })
+                .await
+                .map_err(|err| ApiError::Timeout(err.to_string()))?
+        }
+        .boxed()
+    }
+
     async fn enforce_rate_limit(
         &self,
         metadata: &RequestMetadata,

@@ -1,7 +1,7 @@
 //! Room member management API endpoints (room-scoped, requires room-level permissions)
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     Json,
 };
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
@@ -15,11 +15,6 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
 }
 
 pub type AddMemberBody = crate::proto::client::AddMemberRequest;
-
-#[derive(Debug, serde::Deserialize)]
-pub struct KickMemberQuery {
-    kick_cooldown_seconds: i64,
-}
 
 /// Add a member to a room.
 #[cfg_attr(
@@ -220,9 +215,9 @@ pub async fn reject_room_join_review(
         tag = "Room Member",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID"),
-            ("kick_cooldown_seconds" = i64, Query, description = "Room access cooldown duration after the kick, in seconds")
+            ("user_id" = String, Path, description = "Target user ID")
         ),
+        request_body = crate::proto::client::KickMemberRequest,
         responses(
             (status = 200, description = "Member kicked", body = crate::proto::client::KickMemberResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
@@ -238,13 +233,10 @@ pub async fn kick_member(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
-    Query(query): Query<KickMemberQuery>,
+    ProtoJson(mut req): ProtoJson<crate::proto::client::KickMemberRequest>,
 ) -> AppResult<Json<crate::proto::client::KickMemberResponse>> {
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = crate::proto::client::KickMemberRequest {
-        user_id,
-        kick_cooldown_seconds: query.kick_cooldown_seconds,
-    };
+    req.user_id = user_id;
     let request_meta = request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state

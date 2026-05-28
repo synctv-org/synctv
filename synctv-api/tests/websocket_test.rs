@@ -703,11 +703,25 @@ mod websocket_e2e {
                 rate_limiter: chat_rate_limiter,
                 rate_limit_config,
                 content_filter,
-                username_cache,
             },
             synctv_core::service::chat::ChatDependencies {
                 permission_service,
                 room_settings_service,
+                user_service: Arc::new(UserService::new(
+                    pool,
+                    JwtService::new(TEST_JWT_SECRET).expect("JwtService"),
+                    username_cache,
+                    PasswordComplexityConfig::default(),
+                    Arc::new(
+                        synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                            10_000, 3600, 86400,
+                        ),
+                    ),
+                    synctv_core::cache::KeyBuilder::new("test_chat"),
+                    synctv_core::service::auth::BruteForceProtection::in_memory(
+                        "test_chat:".to_string(),
+                    ),
+                )),
                 notification_service: synctv_core::service::NotificationService::default(),
             },
         ))
@@ -4145,7 +4159,7 @@ mod websocket_e2e {
             .validate_and_consume(&ticket, &decode_test_room_id(&room_id))
             .await
             .expect("membership rejection must not consume the ticket");
-        assert_eq!(validated.user_id, outsider_id);
+        assert_eq!(validated.user_id().expect("user ticket"), outsider_id);
     }
 
     // We test the Authorization header path: a raw JWT passed via Bearer
@@ -4389,11 +4403,25 @@ mod websocket_connection_limit_timing {
                 rate_limiter: chat_rate_limiter,
                 rate_limit_config: synctv_core::service::RateLimitConfig::default(),
                 content_filter,
-                username_cache,
             },
             synctv_core::service::chat::ChatDependencies {
                 permission_service,
                 room_settings_service,
+                user_service: Arc::new(UserService::new(
+                    pool,
+                    JwtService::new(TEST_JWT_SECRET).expect("JwtService"),
+                    username_cache,
+                    PasswordComplexityConfig::default(),
+                    Arc::new(
+                        synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                            10_000, 3600, 86400,
+                        ),
+                    ),
+                    synctv_core::cache::KeyBuilder::new("test_chat"),
+                    synctv_core::service::auth::BruteForceProtection::in_memory(
+                        "test_chat:".to_string(),
+                    ),
+                )),
                 notification_service: synctv_core::service::NotificationService::default(),
             },
         ))

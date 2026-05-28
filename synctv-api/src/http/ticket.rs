@@ -75,26 +75,22 @@ pub async fn create_ticket(
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
+    let public_room_id = req.room_id.clone();
 
-    let ticket_response = executor
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Write,
-            move |request_control, authenticated| async move {
-                client_api
-                    .create_websocket_ticket_with_control(
-                        &authenticated.user_id,
-                        authenticated.claims.pv,
-                        req,
-                        Some(&request_control),
-                    )
-                    .await
-            },
-        )
-        .await
-        .map_err(super::error::map_api_error)?;
+    let ticket_response = crate::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+        client_api.clone(),
+        &request_meta,
+        public_room_id,
+        EndpointRateLimitCategory::Write,
+        move |client_api, request_control, actor| async move {
+            client_api
+                .create_websocket_ticket_for_actor_with_control(actor, req, Some(&request_control))
+                .await
+        },
+    )
+    .await
+    .map_err(super::error::map_api_error)?;
 
     Ok(Json(ticket_response))
 }

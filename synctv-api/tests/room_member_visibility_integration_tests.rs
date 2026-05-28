@@ -79,6 +79,29 @@ fn make_client_api(
     )
 }
 
+fn make_client_api_with_connections(
+    user_service: Arc<UserService>,
+    room_service: Arc<RoomService>,
+) -> (synctv_api::impls::ClientApiImpl, Arc<ConnectionManager>) {
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let client_api = synctv_api::impls::ClientApiImpl::new(
+        user_service,
+        room_service,
+        connection_manager.clone(),
+        Arc::new(Config::default()),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    );
+
+    (client_api, connection_manager)
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_get_room_members_requires_view_member_list_permission() {
@@ -343,4 +366,93 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         .unwrap();
 
     assert_ne!(first.version, third.version);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_room_members_marks_realtime_connections_online() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(&pool));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let (client_api, connection_manager) =
+        make_client_api_with_connections(user_service, room_service.clone());
+
+    let owner = user_repo
+        .create(&make_user("member_online_owner"))
+        .await
+        .unwrap();
+    let online_user = user_repo
+        .create(&make_user("member_online_user"))
+        .await
+        .unwrap();
+    let offline_user = user_repo
+        .create(&make_user("member_offline_user"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Member Online Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .add_member(room.id, owner.id, online_user.id, RoomRole::Member, false)
+        .await
+        .unwrap();
+    room_service
+        .add_member(room.id, owner.id, offline_user.id, RoomRole::Member, false)
+        .await
+        .unwrap();
+
+    connection_manager
+        .register("online-member-conn".to_string(), online_user.id)
+        .await
+        .unwrap();
+    connection_manager
+        .join_room("online-member-conn", room.id)
+        .await
+        .unwrap();
+
+    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_id = public_id_codec.encode_room_id(room.id).unwrap();
+    let online_user_id = public_id_codec.encode_user_id(online_user.id).unwrap();
+    let offline_user_id = public_id_codec.encode_user_id(offline_user.id).unwrap();
+
+    let response = client_api
+        .get_room_members(
+            &owner.id,
+            &room_id,
+            synctv_proto::client::GetRoomMembersRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                role: None,
+                sort_by: 0,
+                sort_direction: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+    let online_member = response
+        .members
+        .iter()
+        .find(|member| member.user_id == online_user_id)
+        .unwrap();
+    let offline_member = response
+        .members
+        .iter()
+        .find(|member| member.user_id == offline_user_id)
+        .unwrap();
+
+    assert!(online_member.is_online);
+    assert!(!offline_member.is_online);
 }

@@ -50,19 +50,21 @@ static REDIS_SLIDING_WINDOW_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     redis::Script::new(
         r"
         redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-        local seq = redis.call('INCR', KEYS[1] .. ':seq')
-        local member = ARGV[2] .. ':' .. seq
-        redis.call('ZADD', KEYS[1], ARGV[2], member)
         local count = redis.call('ZCARD', KEYS[1])
-        redis.call('EXPIRE', KEYS[1], ARGV[3])
-        redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
         local oldest = 0
-        if count > tonumber(ARGV[4]) then
+        if count >= tonumber(ARGV[4]) then
             local entries = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
             if #entries >= 2 then
                 oldest = tonumber(entries[2]) or 0
             end
+            return {count + 1, oldest}
         end
+        local seq = redis.call('INCR', KEYS[1] .. ':seq')
+        local member = ARGV[2] .. ':' .. seq
+        redis.call('ZADD', KEYS[1], ARGV[2], member)
+        count = count + 1
+        redis.call('EXPIRE', KEYS[1], ARGV[3])
+        redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
         return {count, oldest}
         ",
     )
@@ -728,7 +730,12 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let reset_seconds = if let Some(oldest_ts) = oldest {
             let time_since_oldest = now.saturating_sub(oldest_ts);
             let remaining_window = (window_seconds * 1000).saturating_sub(time_since_oldest);
-            remaining_window / 1000
+            let reset_seconds = remaining_window.div_ceil(1000);
+            if remaining == 0 {
+                reset_seconds.max(1)
+            } else {
+                reset_seconds
+            }
         } else {
             0
         };
@@ -1333,6 +1340,36 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         limiter.check_rate_limit(key, 5, 1).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_rejected_redis_requests_do_not_extend_window() {
+        let (_redis, conn) = start_redis().await;
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
+        let limiter = RateLimiter::from_redis_runtime(
+            crate::shared_runtime_from_conn(Some(conn)),
+            "test:".to_string(),
+        );
+
+        let key = "user:rejected_requests_do_not_extend_window:auth";
+        limiter.reset(key).await.unwrap();
+
+        limiter.check_rate_limit(key, 2, 2).await.unwrap();
+        limiter.check_rate_limit(key, 2, 2).await.unwrap();
+        assert!(matches!(
+            limiter.check_rate_limit(key, 2, 2).await,
+            Err(RateLimitError::RateLimitExceeded { .. })
+        ));
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(1_100)).await;
+        assert!(matches!(
+            limiter.check_rate_limit(key, 2, 2).await,
+            Err(RateLimitError::RateLimitExceeded { .. })
+        ));
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(1_050)).await;
+        limiter.check_rate_limit(key, 2, 2).await.unwrap();
     }
 
     #[tokio::test]

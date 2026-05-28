@@ -1,7 +1,6 @@
 //! Data cleanup service for periodic maintenance tasks
 //!
 //! Coordinates cleanup of:
-//! - Rooms past `room_ttl` threshold (soft-delete)
 //! - Soft-deleted records (users, rooms) past retention period
 //! - Expired email verification tokens
 //! - Expired media provider credentials
@@ -12,9 +11,9 @@
 //!
 //! # Dynamic Settings
 //!
-//! The `room_ttl_seconds` and `chat_max_messages_per_room` settings can be
-//! dynamically configured via `SettingsRegistry`. When a registry is provided,
-//! these values are read at runtime on each cleanup cycle, allowing admins to
+//! The `chat_max_messages_per_room` setting can be dynamically configured via
+//! `SettingsRegistry`. When a registry is provided, this value is read at
+//! runtime on each cleanup cycle, allowing admins to
 //! change settings without restarting the service.
 
 use sqlx::PgPool;
@@ -28,8 +27,6 @@ use crate::{InternalExt, Result};
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
-    /// Room TTL in seconds (0 = never expire). Rooms with `last_activity_at` older than this are soft-deleted.
-    pub room_ttl_seconds: i64,
     /// Days to retain soft-deleted users before permanent deletion (0 = never purge)
     pub soft_delete_retention_days: u32,
     /// Days to retain soft-deleted rooms before permanent deletion (0 = never purge)
@@ -49,7 +46,6 @@ pub struct CleanupConfig {
 impl Default for CleanupConfig {
     fn default() -> Self {
         Self {
-            room_ttl_seconds: 172_800, // 48 hours in seconds (matches global settings default)
             soft_delete_retention_days: 90,
             room_soft_delete_retention_days: 90,
             expired_token_retention_days: 7,
@@ -68,8 +64,6 @@ pub struct CleanupResult {
     pub users_purged: u64,
     /// Number of soft-deleted rooms permanently deleted
     pub rooms_purged: u64,
-    /// Number of rooms soft-deleted due to `room_ttl` expiration
-    pub rooms_expired: u64,
     /// Number of expired email tokens deleted
     pub tokens_deleted: u64,
     /// Number of expired credentials deleted
@@ -87,7 +81,7 @@ pub struct CleanupService {
     pool: PgPool,
     config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
-    /// Optional settings registry for dynamic `room_ttl` and `chat_max_messages_per_room`
+    /// Optional settings registry for dynamic `chat_max_messages_per_room`
     settings_registry: Option<Arc<SettingsRegistry>>,
 }
 
@@ -110,25 +104,14 @@ impl CleanupService {
         }
     }
 
-    /// Set the settings registry for dynamic `room_ttl` and `chat_max_messages_per_room`.
+    /// Set the settings registry for dynamic `chat_max_messages_per_room`.
     ///
-    /// When set, `room_ttl_seconds` and `chat_max_messages_per_room` are read from
-    /// the registry at runtime on each cleanup cycle, allowing admins to change
-    /// these settings without restarting the service.
+    /// When set, `chat_max_messages_per_room` is read from the registry at runtime
+    /// on each cleanup cycle, allowing admins to change it without restarting the service.
     #[must_use]
     pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
         self.settings_registry = Some(registry);
         self
-    }
-
-    /// Get the effective `room_ttl_seconds` value.
-    ///
-    /// Reads from `SettingsRegistry` if available, otherwise falls back to config.
-    fn room_ttl_seconds(&self) -> i64 {
-        self.settings_registry
-            .as_ref()
-            .and_then(|r| r.room_ttl.get().ok())
-            .unwrap_or(self.config.room_ttl_seconds)
     }
 
     /// Get the effective `chat_max_messages_per_room` value.
@@ -159,21 +142,7 @@ impl CleanupService {
         let mut result = CleanupResult::default();
 
         // Read dynamic settings at runtime
-        let room_ttl_seconds = self.room_ttl_seconds();
         let chat_max_messages = self.chat_max_messages_per_room();
-
-        // 0. Soft-delete rooms past room_ttl threshold
-        if room_ttl_seconds > 0 {
-            match self.soft_delete_expired_rooms(room_ttl_seconds).await {
-                Ok(count) => {
-                    result.rooms_expired = count;
-                    if count > 0 {
-                        info!(count, "Soft-deleted expired rooms (past room_ttl)");
-                    }
-                }
-                Err(e) => warn!(error = %e, "Failed to soft-delete expired rooms"),
-            }
-        }
 
         // 1. Purge soft-deleted rooms first.
         // Soft-deleted users can still be referenced by their owned room rows
@@ -283,30 +252,6 @@ impl CleanupService {
         }
 
         result
-    }
-
-    /// Soft-delete rooms that have exceeded the `room_ttl` threshold.
-    ///
-    /// Rooms with `last_activity_at` older than `ttl_seconds` ago are soft-deleted
-    /// by setting `deleted_at = CURRENT_TIMESTAMP`. This prevents unbounded room
-    /// growth and ensures inactive rooms are eventually cleaned up.
-    ///
-    /// Only affects rooms that are not already soft-deleted.
-    async fn soft_delete_expired_rooms(&self, ttl_seconds: i64) -> Result<u64> {
-        let result = sqlx::query!(
-            r"
-            UPDATE rooms
-            SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE deleted_at IS NULL
-              AND last_activity_at < CURRENT_TIMESTAMP - ($1::bigint * INTERVAL '1 second')
-            ",
-            ttl_seconds,
-        )
-        .execute(&self.pool)
-        .await
-        .internal_with_err("Failed to soft-delete expired rooms")?;
-
-        Ok(result.rows_affected())
     }
 
     /// Permanently delete users that were soft-deleted beyond the retention period
@@ -575,11 +520,9 @@ impl CleanupService {
                 }
 
                 // Read dynamic settings at runtime for logging
-                let room_ttl_seconds = service.room_ttl_seconds();
                 let chat_max_messages = service.chat_max_messages_per_room();
 
                 info!(
-                    room_ttl_seconds,
                     chat_max_messages,
                     room_retention_days = service.config.room_soft_delete_retention_days,
                     user_retention_days = service.config.soft_delete_retention_days,
@@ -589,7 +532,6 @@ impl CleanupService {
 
                 let total = result.users_purged
                     + result.rooms_purged
-                    + result.rooms_expired
                     + result.tokens_deleted
                     + result.credentials_deleted
                     + result.notifications_deleted
@@ -600,7 +542,6 @@ impl CleanupService {
                     info!(
                         users = result.users_purged,
                         rooms_purged = result.rooms_purged,
-                        rooms_expired = result.rooms_expired,
                         tokens = result.tokens_deleted,
                         credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,
@@ -619,21 +560,6 @@ impl CleanupService {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Test that `room_ttl_seconds` falls back to config when no registry is set.
-    #[tokio::test]
-    async fn test_room_ttl_seconds_fallback_to_config() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
-        let config = CleanupConfig {
-            room_ttl_seconds: 3600, // 1 hour
-            ..CleanupConfig::default()
-        };
-        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
-        let service = CleanupService::new(pool, config, leader);
-
-        // No registry set, should use config value
-        assert_eq!(service.room_ttl_seconds(), 3600);
-    }
 
     /// Test that `chat_max_messages_per_room` falls back to config when no registry is set.
     #[tokio::test]
@@ -682,7 +608,6 @@ mod tests {
         // Should work fine without registry
         assert!(service.settings_registry.is_none());
         // Should use config defaults
-        assert_eq!(service.room_ttl_seconds(), 172_800);
         assert_eq!(service.chat_max_messages_per_room(), 0);
     }
 

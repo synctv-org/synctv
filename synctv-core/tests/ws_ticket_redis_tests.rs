@@ -75,8 +75,8 @@ async fn test_redis_ticket_create_and_validate_roundtrip() {
     assert!(!ticket.is_empty());
 
     let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id, uid);
-    assert_eq!(validated.password_version, 0);
+    assert_eq!(validated.user_id().expect("user ticket"), uid);
+    assert_eq!(validated.password_version(), Some(0));
 }
 
 #[tokio::test]
@@ -285,8 +285,8 @@ async fn test_cluster_mode_with_redis_roundtrip() {
     assert!(!ticket.is_empty());
 
     let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id, uid);
-    assert_eq!(validated.password_version, 0);
+    assert_eq!(validated.user_id().expect("user ticket"), uid);
+    assert_eq!(validated.password_version(), Some(0));
 }
 
 /// Test: cluster mode with Redis custom TTL works.
@@ -334,7 +334,7 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
     let service_b = redis_ticket_service(conn_clone, &prefix, Some(30));
 
     let validated = service_b.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id, uid);
+    assert_eq!(validated.user_id().expect("user ticket"), uid);
 
     // Ticket should be consumed (one-time use)
     let result = service_a.validate_and_consume(&ticket, &rid).await;

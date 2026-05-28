@@ -171,6 +171,7 @@ synctv-media-providers = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
 synctv-core-testing.workspace = true
 synctv-xiu = { workspace = true, default-features = false }
+base64.workspace = true
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers.workspace = true

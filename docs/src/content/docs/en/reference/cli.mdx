@@ -429,9 +429,9 @@ Bilibili:
 synctv provider bilibili parse "https://www.bilibili.com/video/..."
 synctv provider bilibili login-qr --username alice --instance-name bilibili-main
 synctv provider bilibili check-qr --username alice --key <KEY> --instance-name bilibili-main
-synctv provider bilibili get-captcha --username alice --instance-name bilibili-main
-synctv provider bilibili send-sms --username alice --phone 13800000000 --token <TOKEN> --challenge <CHALLENGE> --validate <VALIDATE> --instance-name bilibili-main
-synctv provider bilibili login-sms --username alice --phone 13800000000 --code 123456 --captcha-key <CAPTCHA_KEY> --instance-name bilibili-main
+synctv provider bilibili start-sms-login --username alice --instance-name bilibili-main
+synctv provider bilibili send-sms --username alice --phone 13800000000 --session-token <SESSION_TOKEN> --validate <VALIDATE>
+synctv provider bilibili login-sms --username alice --session-token <UPDATED_SESSION_TOKEN> --code 123456
 synctv provider bilibili me --username alice --instance-name bilibili-main
 synctv provider bilibili binds --username alice
 synctv provider bilibili logout --username alice --instance-name bilibili-main

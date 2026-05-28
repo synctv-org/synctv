@@ -5,7 +5,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use std::sync::Arc;
@@ -25,6 +25,12 @@ fn require_admin_api(state: &AppState) -> Result<Arc<crate::impls::AdminApiImpl>
             "Admin service is not available on this server.",
         )
     })
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct RoomMemberTargetPath {
+    room_id: String,
+    user_id: String,
 }
 
 // Router
@@ -88,7 +94,14 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/rooms", get(list_rooms))
         .route("/rooms/{room_id}", get(get_room).delete(delete_room))
         .route("/rooms/{room_id}/password", post(set_room_password))
-        .route("/rooms/{room_id}/members", get(get_room_members))
+        .route(
+            "/rooms/{room_id}/members",
+            get(get_room_members).post(add_member),
+        )
+        .route(
+            "/rooms/{room_id}/members/{user_id}",
+            patch(update_member_permissions).delete(kick_member),
+        )
         .route("/rooms/{room_id}/ban", post(ban_room))
         .route("/rooms/{room_id}/unban", post(unban_room))
         .route(
@@ -1198,6 +1211,122 @@ pub(crate) async fn get_room_members(
         move |api, _, _| async move { api.get_room_members(req).await },
     )
     .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/members",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        request_body = admin::AddMemberRequest,
+        responses(
+            (status = 200, description = "Room member added", body = admin::AddMemberResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn add_member(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<admin::RoomPathRequest>,
+    ProtoJson(mut req): ProtoJson<admin::AddMemberRequest>,
+) -> AppResult<Json<admin::AddMemberResponse>> {
+    req.room_id = path.room_id;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, rctx| async move {
+                api.add_member(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/admin/rooms/{room_id}/members/{user_id}",
+        tag = "Admin",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("user_id" = String, Path, description = "Target user ID")
+        ),
+        request_body = admin::UpdateMemberPermissionsRequest,
+        responses(
+            (status = 200, description = "Room member permissions updated", body = admin::UpdateMemberPermissionsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_member_permissions(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomMemberTargetPath>,
+    ProtoJson(mut req): ProtoJson<admin::UpdateMemberPermissionsRequest>,
+) -> AppResult<Json<admin::UpdateMemberPermissionsResponse>> {
+    req.room_id = path.room_id;
+    req.user_id = path.user_id;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.update_member_permissions(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/rooms/{room_id}/members/{user_id}",
+        tag = "Admin",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("user_id" = String, Path, description = "Target user ID")
+        ),
+        request_body = admin::KickMemberRequest,
+        responses(
+            (status = 200, description = "Room member kicked", body = admin::KickMemberResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn kick_member(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomMemberTargetPath>,
+    ProtoJson(mut req): ProtoJson<admin::KickMemberRequest>,
+) -> AppResult<Json<admin::KickMemberResponse>> {
+    req.room_id = path.room_id;
+    req.user_id = path.user_id;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, rctx| async move {
+                api.kick_member(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 

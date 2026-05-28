@@ -106,10 +106,10 @@ pub(crate) fn build_start_playback_request(
 }
 
 pub(crate) fn build_update_playback(
-    update: crate::proto::client::UpdatePlayback,
+    update: crate::proto::client::UpdatePlaybackRequest,
 ) -> Result<PlaybackUpdateCommand, ApiError> {
     crate::impls::validate_proto_request(&update)?;
-    let crate::proto::client::UpdatePlayback {
+    let crate::proto::client::UpdatePlaybackRequest {
         r#type,
         playing,
         position,
@@ -851,7 +851,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::UpdatePlayback,
+        req: crate::proto::client::UpdatePlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -1012,8 +1012,8 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_rejects_missing_type() {
-        let err =
-            build_update_playback(crate::proto::client::UpdatePlayback::default()).unwrap_err();
+        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest::default())
+            .unwrap_err();
 
         let message = err.to_string();
         assert!(
@@ -1024,7 +1024,7 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_rejects_playing_false_for_play() {
-        let err = build_update_playback(crate::proto::client::UpdatePlayback {
+        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
             r#type: crate::proto::client::PlaybackUpdateType::Play as i32,
             playing: Some(false),
             position: None,
@@ -1038,7 +1038,7 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_play_defaults_to_playing() {
-        let parsed = build_update_playback(crate::proto::client::UpdatePlayback {
+        let parsed = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
             r#type: crate::proto::client::PlaybackUpdateType::Play as i32,
             playing: None,
             position: Some(12.5),
@@ -1064,7 +1064,7 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_pause_defaults_to_paused() {
-        let parsed = build_update_playback(crate::proto::client::UpdatePlayback {
+        let parsed = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
             r#type: crate::proto::client::PlaybackUpdateType::Pause as i32,
             playing: None,
             position: None,
@@ -1090,7 +1090,7 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_seek_requires_position() {
-        let err = build_update_playback(crate::proto::client::UpdatePlayback {
+        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
             r#type: crate::proto::client::PlaybackUpdateType::Seek as i32,
             playing: None,
             position: None,
@@ -1104,7 +1104,7 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_speed_requires_speed() {
-        let err = build_update_playback(crate::proto::client::UpdatePlayback {
+        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
             r#type: crate::proto::client::PlaybackUpdateType::Speed as i32,
             playing: Some(true),
             position: Some(5.0),
@@ -1118,7 +1118,7 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_seek_parses_full_state() {
-        let parsed = build_update_playback(crate::proto::client::UpdatePlayback {
+        let parsed = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
             r#type: crate::proto::client::PlaybackUpdateType::Seek as i32,
             playing: Some(false),
             position: Some(42.5),

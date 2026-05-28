@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn http_json_json_bytes_empty_value_serializes_as_empty_array() {
+    fn http_json_json_bytes_empty_value_serializes_as_null() {
         let response = crate::client::PlaylistBrowsePathNode {
             playlist_id: "playlist-1".to_string(),
             name: "Season 1".to_string(),
@@ -683,7 +683,7 @@ mod tests {
         let json =
             serde_json::to_value(&response).expect("empty JSON bytes should remain serializable");
 
-        assert_eq!(json["target"], serde_json::json!([]));
+        assert_eq!(json["target"], serde_json::Value::Null);
     }
 
     #[test]
@@ -1212,14 +1212,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_update_user_request_checks_optional_fields_when_present() {
-        let request = crate::client::UpdateUserRequest {
-            username: Some("bad name".into()),
+    fn validate_set_username_request_rejects_invalid_username() {
+        let request = crate::client::SetUsernameRequest {
+            new_username: "bad name".into(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
-        assert!(error.contains("username"), "{error}");
+        assert!(error.contains("new_username"), "{error}");
     }
 
     #[test]
@@ -1887,34 +1887,36 @@ mod tests {
     }
 
     #[test]
-    fn opaque_binary_fields_deserialize_http_byte_arrays_without_json_reencoding() {
+    fn opaque_binary_fields_use_base64_http_json() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
         let decoded: crate::client::StartOpaqueLoginRequest =
-            serde_json::from_str(r#"{"username":"alice","credential_request":[1,2,3,255]}"#)
-                .expect("OPAQUE login request should deserialize from byte array");
+            serde_json::from_str(r#"{"username":"alice","credential_request":"AQID/w=="}"#)
+                .expect("OPAQUE login request should deserialize from base64 bytes");
         assert_eq!(decoded.credential_request, vec![1, 2, 3, 255]);
 
         let decoded: crate::client::StartOpaquePasswordUpdateRequest = serde_json::from_str(
             r#"{
-                "credential_request":[4,5,6],
-                "registration_request":[7,8,9],
+                "credential_request":"BAUG",
+                "registration_request":"BwgJ",
                 "verification_method":1,
                 "email_token":""
             }"#,
         )
-        .expect("OPAQUE password update request should deserialize from byte arrays");
+        .expect("OPAQUE password update request should deserialize from base64 bytes");
         assert_eq!(decoded.credential_request, vec![4, 5, 6]);
         assert_eq!(decoded.registration_request, vec![7, 8, 9]);
 
         let decoded: crate::client::FinishOpaquePasswordUpdateRequest = serde_json::from_str(
             r#"{
                 "session_id":"opaque-session",
-                "credential_finalization":[10,11],
-                "registration_upload":[12,13],
+                "credential_finalization":"Cgs=",
+                "registration_upload":"DA0=",
                 "passkey_session_id":"",
-                "passkey_credential":[]
+                "passkey_credential":{}
             }"#,
         )
-        .expect("OPAQUE password update finish should deserialize from byte arrays");
+        .expect("OPAQUE password update finish should deserialize from base64 bytes");
         assert_eq!(decoded.credential_finalization, vec![10, 11]);
         assert_eq!(decoded.registration_upload, vec![12, 13]);
 
@@ -1922,19 +1924,40 @@ mod tests {
             r#"{
                 "email":"alice@example.com",
                 "token":"reset-token",
-                "registration_request":[14,15]
+                "registration_request":"Dg8="
             }"#,
         )
-        .expect("OPAQUE password reset start should deserialize from byte arrays");
+        .expect("OPAQUE password reset start should deserialize from base64 bytes");
         assert_eq!(decoded.registration_request, vec![14, 15]);
 
         let decoded: crate::client::FinishOpaquePasswordResetRequest = serde_json::from_str(
             r#"{
                 "session_id":"opaque-reset-session",
-                "registration_upload":[16,17]
+                "registration_upload":"EBE="
             }"#,
         )
-        .expect("OPAQUE password reset finish should deserialize from byte arrays");
+        .expect("OPAQUE password reset finish should deserialize from base64 bytes");
         assert_eq!(decoded.registration_upload, vec![16, 17]);
+
+        let response = crate::client::StartOpaqueLoginResponse {
+            session_id: "opaque-session".to_string(),
+            credential_response: vec![1, 2, 3],
+        };
+        let json = serde_json::to_value(response).expect("serialize OPAQUE response");
+        assert_eq!(json["credential_response"], STANDARD.encode([1, 2, 3]));
+    }
+
+    #[test]
+    fn opaque_binary_fields_reject_http_byte_arrays() {
+        let error = serde_json::from_str::<crate::client::StartOpaqueLoginRequest>(
+            r#"{"username":"alice","credential_request":[1,2,3,255]}"#,
+        )
+        .expect_err("OPAQUE binary fields should reject JSON byte arrays");
+
+        assert!(
+            error.to_string().contains("invalid type")
+                || error.to_string().contains("expected a string"),
+            "unexpected error: {error}"
+        );
     }
 }

@@ -1,3 +1,23 @@
+pub mod base64_bytes {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        STANDARD.decode(encoded).map_err(D::Error::custom)
+    }
+}
+
 pub mod json_bytes {
     use serde::{ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -6,7 +26,7 @@ pub mod json_bytes {
         S: Serializer,
     {
         if bytes.is_empty() {
-            return bytes.serialize(serializer);
+            return serializer.serialize_none();
         }
 
         let value = serde_json::from_slice::<serde_json::Value>(bytes).map_err(|error| {
@@ -20,6 +40,10 @@ pub mod json_bytes {
         D: Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
+
+        if value.is_null() {
+            return Ok(Vec::new());
+        }
 
         if matches!(value, serde_json::Value::Array(ref entries) if entries.is_empty()) {
             return Ok(Vec::new());

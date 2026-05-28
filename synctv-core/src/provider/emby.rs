@@ -1627,6 +1627,7 @@ mod tests {
                 is_folder: false,
                 media_source_info: Vec::new(),
                 collection_type: String::new(),
+                has_thumbnail: false,
             })
         }
 

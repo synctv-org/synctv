@@ -132,6 +132,11 @@ impl SettingsService {
         if let Some(providers) = providers_lock.as_ref() {
             let providers_read = providers.read();
             if let Some(provider) = providers_read.get(key) {
+                if !provider.user_writable() {
+                    return Err(Error::InvalidInput(format!(
+                        "Setting '{key}' is managed by the server runtime and cannot be updated"
+                    )));
+                }
                 provider.is_valid_raw(value)?;
                 return Ok(());
             }
@@ -538,6 +543,38 @@ impl SettingsService {
     pub async fn get_value(&self, key: &str) -> Option<String> {
         let setting = self.get(key).await.ok()?;
         Some(setting.value)
+    }
+
+    pub(crate) async fn upsert_internal_if_missing(
+        &self,
+        key: &str,
+        value: String,
+    ) -> Result<SettingsGroup, Error> {
+        let group_name = group_name_from_setting_key(key);
+        let setting = sqlx::query_as::<_, SettingsGroup>(
+            r"
+            INSERT INTO settings (key, group_name, value, version)
+            VALUES ($1, $2, $3, 0)
+            ON CONFLICT (key) DO UPDATE
+            SET updated_at = settings.updated_at
+            RETURNING key, group_name, value, version, created_at, updated_at
+            ",
+        )
+        .bind(key)
+        .bind(group_name)
+        .bind(value)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| {
+            Error::Internal(format!("Failed to initialize setting '{key}': {error}"))
+        })?;
+
+        self.store_cache_entry(setting.clone()).await;
+        let _ = self
+            .reload_sender
+            .send((setting.key.clone(), Some(setting.value.clone())));
+
+        Ok(setting)
     }
 
     /// Register a change listener

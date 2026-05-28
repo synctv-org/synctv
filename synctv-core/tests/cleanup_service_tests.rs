@@ -35,7 +35,6 @@ async fn test_zero_retention_skips_all_tasks() {
 
     // All zero retention values
     let config = CleanupConfig {
-        room_ttl_seconds: 0,
         soft_delete_retention_days: 0,
         room_soft_delete_retention_days: 0,
         expired_token_retention_days: 0,
@@ -49,10 +48,6 @@ async fn test_zero_retention_skips_all_tasks() {
     let result = service.run_all().await;
 
     // All counters should be 0 since all tasks are skipped
-    assert_eq!(
-        result.rooms_expired, 0,
-        "Zero retention should skip room TTL expiration"
-    );
     assert_eq!(
         result.users_purged, 0,
         "Zero retention should skip user purge"
@@ -116,7 +111,6 @@ async fn test_run_all_on_empty_database() {
     let result = service.run_all().await;
 
     // Empty database means nothing to clean
-    assert_eq!(result.rooms_expired, 0);
     assert_eq!(result.users_purged, 0);
     assert_eq!(result.rooms_purged, 0);
     assert_eq!(result.tokens_deleted, 0);
@@ -130,7 +124,6 @@ async fn test_partial_config_only_some_tasks_enabled() {
 
     // Only user and room purge enabled, everything else disabled
     let config = CleanupConfig {
-        room_ttl_seconds: 0, // disabled
         soft_delete_retention_days: 30,
         room_soft_delete_retention_days: 30,
         expired_token_retention_days: 0,
@@ -218,7 +211,6 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     let service = CleanupService::new(
         pool.clone(),
         CleanupConfig {
-            room_ttl_seconds: 0,
             soft_delete_retention_days: 30,
             room_soft_delete_retention_days: 30,
             expired_token_retention_days: 0,
@@ -312,170 +304,4 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
         version: 0,
         last_activity_at: updated_at.unwrap_or(now),
     }
-}
-
-/// Test that a room newer than `room_ttl` is NOT soft-deleted
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_room_ttl_new_room_not_expired() {
-    let (_container, pool) = create_test_pool().await;
-
-    let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id, None);
-
-    let room_repo = RoomRepository::new(pool.clone());
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
-
-    // Set room_ttl to 1 hour (room is newer, should NOT be expired)
-    let config = CleanupConfig {
-        room_ttl_seconds: 3600, // 1 hour
-        ..CleanupConfig::default()
-    };
-
-    let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
-    let result = service.run_all().await;
-
-    // Room should NOT be expired since it's newer than 1 hour
-    assert_eq!(result.rooms_expired, 0, "New room should not be expired");
-
-    // Verify room is still active (not soft-deleted)
-    let found = room_repo
-        .get_by_id(&room.id)
-        .await
-        .expect("Failed to find room");
-    assert!(found.is_some(), "Room should still exist");
-    let found = found.unwrap();
-    assert!(
-        found.deleted_at.is_none(),
-        "Room should not be soft-deleted"
-    );
-}
-
-/// Test that a room older than `room_ttl` IS soft-deleted
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_room_ttl_old_room_is_expired() {
-    let (_container, pool) = create_test_pool().await;
-
-    let two_hours_ago = Utc::now() - Duration::hours(2);
-    let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id, Some(two_hours_ago));
-
-    let room_repo = RoomRepository::new(pool.clone());
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
-
-    // Set room_ttl to 1 hour (room is older, should be expired)
-    let config = CleanupConfig {
-        room_ttl_seconds: 3600, // 1 hour
-        ..CleanupConfig::default()
-    };
-
-    let service = CleanupService::new(pool.clone(), config, Arc::new(AlwaysLeader));
-    let result = service.run_all().await;
-
-    // Room SHOULD be expired since it's older than 1 hour
-    assert_eq!(result.rooms_expired, 1, "Old room should be expired");
-
-    // Verify room is soft-deleted (need to query directly since get_by_id filters deleted_at)
-    let found: Option<Room> = sqlx::query_as(
-        "SELECT id, name, description, created_by, closed_at, false AS is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-         FROM rooms WHERE id = $1"
-    )
-    .bind(room.id)
-    .fetch_optional(&pool)
-    .await
-    .expect("Failed to find room");
-    assert!(found.is_some(), "Room should still exist (soft-deleted)");
-    let found = found.unwrap();
-    assert!(found.deleted_at.is_some(), "Room should be soft-deleted");
-}
-
-/// Test that already soft-deleted rooms are not affected by `room_ttl` check
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_room_ttl_skips_already_soft_deleted() {
-    let (_container, pool) = create_test_pool().await;
-
-    let two_hours_ago = Utc::now() - Duration::hours(2);
-    let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id, Some(two_hours_ago));
-
-    let room_repo = RoomRepository::new(pool.clone());
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
-
-    // Manually soft-delete the room (simulating it was deleted earlier)
-    sqlx::query("UPDATE rooms SET deleted_at = $1 WHERE id = $2")
-        .bind(Utc::now())
-        .bind(room.id)
-        .execute(&pool)
-        .await
-        .expect("Failed to soft-delete room");
-
-    // Set room_ttl to 1 hour
-    let config = CleanupConfig {
-        room_ttl_seconds: 3600, // 1 hour
-        ..CleanupConfig::default()
-    };
-
-    let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
-    let result = service.run_all().await;
-
-    // Should not count already-soft-deleted rooms
-    assert_eq!(
-        result.rooms_expired, 0,
-        "Already soft-deleted room should not be counted"
-    );
-}
-
-/// Test that `room_ttl` = 0 disables expiration
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_room_ttl_zero_disables_expiration() {
-    let (_container, pool) = create_test_pool().await;
-
-    let two_days_ago = Utc::now() - Duration::days(2);
-    let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id, Some(two_days_ago));
-
-    let room_repo = RoomRepository::new(pool.clone());
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
-
-    // Set room_ttl to 0 (disabled)
-    let config = CleanupConfig {
-        room_ttl_seconds: 0, // disabled
-        ..CleanupConfig::default()
-    };
-
-    let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
-    let result = service.run_all().await;
-
-    // Room should NOT be expired since room_ttl is disabled
-    assert_eq!(
-        result.rooms_expired, 0,
-        "room_ttl=0 should disable expiration"
-    );
-
-    // Verify room is still active (not soft-deleted)
-    let found = room_repo
-        .get_by_id(&room.id)
-        .await
-        .expect("Failed to find room");
-    assert!(found.is_some(), "Room should still exist");
-    let found = found.unwrap();
-    assert!(
-        found.deleted_at.is_none(),
-        "Room should not be soft-deleted when room_ttl=0"
-    );
 }

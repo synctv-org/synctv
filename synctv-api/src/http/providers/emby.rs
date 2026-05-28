@@ -30,8 +30,8 @@ use crate::proto::providers::common::ProviderInstanceQuery;
 use crate::proto::providers::emby::GetBindsResponse;
 
 use super::common::{
-    apply_provider_instance_name, execute_provider_user_endpoint,
-    execute_provider_user_endpoint_with_control, provider_instance_name, provider_request_metadata,
+    execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
+    provider_instance_name, provider_instance_name_from_body, provider_request_metadata,
 };
 
 const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
@@ -321,7 +321,6 @@ pub fn emby_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/emby/login",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::LoginRequest,
         responses(
             (status = 200, description = "Emby login succeeded", body = crate::proto::providers::emby::LoginResponse),
@@ -342,12 +341,11 @@ pub fn emby_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::LoginRequest>,
+    ProtoJson(req): ProtoJson<crate::proto::providers::emby::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -380,7 +378,6 @@ pub(crate) async fn login(
         post,
         path = "/api/providers/emby/list",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::ListRequest,
         responses(
             (status = 200, description = "Emby library listing", body = crate::proto::providers::emby::ListResponse),
@@ -401,12 +398,11 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::ListRequest>,
+    ProtoJson(req): ProtoJson<crate::proto::providers::emby::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -439,7 +435,6 @@ pub(crate) async fn list(
         post,
         path = "/api/providers/emby/me",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::GetMeRequest,
         responses(
             (status = 200, description = "Emby account info", body = crate::proto::providers::emby::GetMeResponse),
@@ -460,12 +455,11 @@ pub(crate) async fn list(
 pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::GetMeRequest>,
+    ProtoJson(req): ProtoJson<crate::proto::providers::emby::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -498,7 +492,6 @@ pub(crate) async fn me(
         post,
         path = "/api/providers/emby/logout",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::LogoutRequest,
         responses(
             (status = 200, description = "Emby credential removed", body = crate::proto::providers::emby::LogoutResponse),
@@ -519,12 +512,11 @@ pub(crate) async fn me(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<crate::proto::providers::emby::LogoutRequest>,
+    ProtoJson(req): ProtoJson<crate::proto::providers::emby::LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
-    apply_provider_instance_name(&mut req.instance_name, &query)?;
+    provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint(
         &state,

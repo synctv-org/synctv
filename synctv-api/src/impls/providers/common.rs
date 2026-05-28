@@ -22,10 +22,21 @@ pub struct ProviderBind {
     pub label_value: String,
     pub created_at: i64,
     pub created_at_str: String,
+    pub provider_instance_name: String,
 }
 
 const PROVIDER_BINDS_UNAVAILABLE_MESSAGE: &str =
     "Provider bind information is temporarily unavailable";
+
+fn i64_to_i32_saturating(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or_else(|_| {
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    })
+}
 
 fn filter_provider_binds(
     credentials: Vec<UserProviderCredential>,
@@ -56,6 +67,7 @@ fn filter_provider_binds(
                 label_value,
                 created_at: credential.created_at.timestamp(),
                 created_at_str: synctv_common::time::format_datetime_rfc3339(credential.created_at),
+                provider_instance_name: credential.provider_instance_name.unwrap_or_default(),
             }
         })
         .collect()
@@ -337,11 +349,20 @@ impl ProviderCommonApiImpl {
     ) -> Result<crate::proto::providers::common::ProviderInstancesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let mut instances = self
-            .provider_instance_manager
-            .list()
-            .await
-            .map_err(ApiError::from)?;
+        let mut instances = if req.provider_type.trim().is_empty() {
+            self.provider_instance_manager
+                .list()
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            self.provider_instance_manager
+                .find_instances_by_provider(&req.provider_type)
+                .await
+                .map_err(ApiError::from)?
+                .into_iter()
+                .map(|instance| instance.name)
+                .collect()
+        };
         instances.sort();
 
         Ok(crate::proto::providers::common::ProviderInstancesResponse { instances })
@@ -402,9 +423,9 @@ impl ProviderCommonApiImpl {
             sort_direction: provider_instance_sort_direction_from_proto(req.sort_direction)?,
         };
 
-        let instances = self
+        let (instances, total) = self
             .provider_instance_manager
-            .list_instances(&query)
+            .list_instances_with_total(&query)
             .await
             .map_err(ApiError::from)?;
         let health = self
@@ -424,6 +445,7 @@ impl ProviderCommonApiImpl {
                         provider_instance_to_proto(instance, status)
                     })
                     .collect(),
+                total: i64_to_i32_saturating(total),
             },
         )
     }

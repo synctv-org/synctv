@@ -5,11 +5,13 @@
 use axum::{extract::State, response::Json, routing::get, Router};
 
 use crate::http::AppState;
-use crate::proto::client::GetPublicSettingsResponse;
+use crate::proto::client::{GetPublicSettingsResponse, GetServerInfoResponse};
 
 /// Create public API router
 pub fn create_public_router() -> Router<AppState> {
-    Router::new().route("/api/public/settings", get(get_public_settings))
+    Router::new()
+        .route("/api/public/settings", get(get_public_settings))
+        .route("/api/public/server-info", get(get_server_info))
 }
 
 /// Get public server settings
@@ -38,6 +40,38 @@ pub async fn get_public_settings(
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to load public settings");
             super::AppError::internal_server_error("Failed to load public settings")
+        })?;
+    Ok(Json(response))
+}
+
+/// Get public server identity
+///
+/// This endpoint can be called without authentication and returns the stable
+/// logical server id used by native clients to group multiple endpoints that
+/// belong to the same SyncTV deployment.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/public/server-info",
+        tag = "Public",
+        responses(
+            (status = 200, description = "Public server identity", body = GetServerInfoResponse),
+            (status = 500, description = "Failed to load server identity", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn get_server_info(
+    State(state): State<AppState>,
+) -> Result<Json<GetServerInfoResponse>, super::AppError> {
+    let response = state
+        .shared_api_runtime
+        .client_api
+        .get_server_info()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to load server identity");
+            super::AppError::internal_server_error("Failed to load server identity")
         })?;
     Ok(Json(response))
 }

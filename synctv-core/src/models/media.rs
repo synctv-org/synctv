@@ -329,7 +329,7 @@ impl Media {
         name: String,
         playback_infos: &std::collections::HashMap<String, PlaybackInfo>,
         default_mode: &str,
-        metadata: &std::collections::HashMap<String, JsonValue>,
+        _metadata: &std::collections::HashMap<String, JsonValue>,
         position: f64,
     ) -> Self {
         let default_info = playback_infos
@@ -344,10 +344,6 @@ impl Media {
         let source_config = serde_json::json!({
             "url": default_url.map(|url| url.url.as_str()).unwrap_or_default(),
             "headers": default_url.map(|url| &url.headers).cloned().unwrap_or_default(),
-            "proxy": metadata
-                .get("proxy")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
         });
 
         let now = Utc::now();
@@ -396,8 +392,8 @@ impl Media {
 
 // Playback Information Structures (for all media types)
 // PlaybackResult is returned when generating playback info (at playback time)
-// For direct URL media, `source_config` stores provider input (`url`, optional
-// `headers`, and optional `proxy`). Runtime playback modes are produced by the
+// For direct URL media, `source_config` stores provider input (`url` and optional
+// `headers`). Runtime playback modes are produced by the
 // provider instead of being embedded in persisted media rows.
 
 /// Playback information generation result (returned by `generate_playback`)

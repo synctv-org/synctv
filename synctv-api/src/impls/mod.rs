@@ -702,6 +702,9 @@ pub fn classify_error(err: &str) -> ErrorKind {
     {
         ErrorKind::ServiceUnavailable
     } else if lower.contains("invalid")
+        || lower.contains("playback position")
+        || lower.contains("playback progress drift")
+        || lower.contains("drift too large")
         || lower.contains("too short")
         || lower.contains("too long")
         || lower.contains("cannot be empty")

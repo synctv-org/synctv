@@ -66,38 +66,36 @@ message QRStatusResponse {
   QRLoginStatus status = 1;
 }
 
-// Get captcha request
-message GetCaptchaRequest {
+// Start SMS login request
+message StartSMSLoginRequest {
   string instance_name = 1; // Optional provider instance name
 }
 
-// Captcha response
-message CaptchaResponse {
-  string token = 1;
+// Start SMS login response
+message StartSMSLoginResponse {
+  string session_token = 1; // Signed SMS login session token.
   string gt = 2;
   string challenge = 3;
+  int64 expires_at = 4; // Unix epoch timestamp
 }
 
 // Send SMS request
 message SendSMSRequest {
-  string phone = 1;
-  string token = 2;
-  string challenge = 3;
-  string validate = 4;
-  string instance_name = 5; // Optional provider instance name
+  string session_token = 1; // Signed session token returned by StartSMSLoginResponse.
+  string phone = 2;
+  string validate = 3; // Geetest validate result produced by the frontend captcha widget
 }
 
 // Send SMS response
 message SendSMSResponse {
-  string captcha_key = 1;
+  string session_token = 1; // Updated signed session token for LoginSMSRequest.
+  int64 expires_at = 2; // Unix epoch timestamp
 }
 
 // Login with SMS request
 message LoginSMSRequest {
-  string phone = 1;
+  string session_token = 1; // Signed session token returned by SendSMSResponse.
   string code = 2;
-  string captcha_key = 3;
-  string instance_name = 4; // Optional provider instance name
 }
 
 // Login with SMS response
@@ -141,4 +139,5 @@ message BindInfo {
   string id = 1;
   string server_id = 2;
   int64 created_at = 3; // Unix epoch timestamp
+  string provider_instance_name = 4; // Empty when the credential is not instance-scoped
 }

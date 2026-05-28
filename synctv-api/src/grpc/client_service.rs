@@ -21,29 +21,31 @@ use crate::proto::client::{
     user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
     AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
     ApproveRoomJoinReviewResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
-    ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest, ConfirmEmailResponse,
+    ClearPlaylistResponse, ClientMessage, CloseAccountRequest, CloseAccountResponse,
+    ConfirmEmailLoginRequest, ConfirmEmailRequest, ConfirmEmailResponse,
     ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
     CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
-    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
-    DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse,
-    DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
-    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest,
-    FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
-    FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest, FinishPasskeyLoginRequest,
-    FinishPasskeyRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
-    GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse,
-    GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse,
-    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
-    GetRoomSettingsRequest, GetRoomSettingsResponse, GetRoomStreamInfoRequest,
-    GetRoomStreamInfoResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
-    JoinRoomRequest, JoinRoomResponse, KickMemberRequest, KickMemberResponse,
-    KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomRequest, LeaveRoomResponse,
-    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
-    ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
-    ListPlaylistsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
-    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MoveMediaRequest,
+    CreateWebSocketTicketRequest, CreateWebSocketTicketResponse, DeleteEntriesRequest,
+    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePasskeyRequest,
+    DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
+    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, FinishMfaPasskeyRequest,
+    FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
+    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
+    GetIceServersResponse, GetMediaRequest, GetPlaybackRequest, GetPlaybackResponse,
+    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
+    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
+    GetRoomSettingsResponse, GetRoomStreamInfoRequest, GetRoomStreamInfoResponse,
+    GetServerInfoRequest, GetServerInfoResponse, GetUserPreferencesRequest,
+    GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
+    KickMemberResponse, KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomRequest,
+    LeaveRoomResponse, ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest,
+    ListPasskeysResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
+    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomJoinReviewsRequest,
+    ListRoomJoinReviewsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
+    ListRoomsResponse, LoginResponse, LogoutRequest, LogoutResponse, Media, MoveMediaRequest,
     MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, PasskeyCredentialResponse,
     RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RejectRoomJoinReviewRequest,
     RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
@@ -59,12 +61,12 @@ use crate::proto::client::{
     StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
     StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
-    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    VerifyMfaEmailCodeRequest, WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest,
-    WatchPlaybackStateEvent, WatchPlaybackStateRequest, WatchPlaylistItemsEvent,
-    WatchPlaylistItemsRequest, WatchRoomMembersEvent, WatchRoomMembersRequest,
-    WatchRoomSettingsEvent, WatchRoomSettingsRequest,
+    UpdatePlaybackRequest, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse, VerifyMfaEmailCodeRequest, WatchPlaybackSnapshotEvent,
+    WatchPlaybackSnapshotRequest, WatchPlaybackStateEvent, WatchPlaybackStateRequest,
+    WatchPlaylistItemsEvent, WatchPlaylistItemsRequest, WatchRoomMembersEvent,
+    WatchRoomMembersRequest, WatchRoomSettingsEvent, WatchRoomSettingsRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -585,9 +587,9 @@ impl AuthService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn login(
+    async fn confirm_email_login(
         &self,
-        request: Request<LoginRequest>,
+        request: Request<ConfirmEmailLoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
         let metadata = self.request_metadata(&request);
         let client_ip = metadata.client_ip;
@@ -601,7 +603,7 @@ impl AuthService for ClientServiceImpl {
                 EndpointRateLimitCategory::Auth,
                 move |request_control| async move {
                     client_api
-                        .login_request_with_control(
+                        .confirm_email_login_with_control(
                             email_api.as_deref(),
                             req,
                             client_ip,
@@ -1207,6 +1209,26 @@ impl UserService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn close_account(
+        &self,
+        request: Request<CloseAccountRequest>,
+    ) -> Result<Response<CloseAccountResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api.close_account(&authenticated.user_id).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn create_room(
         &self,
         request: Request<CreateRoomRequest>,
@@ -1719,6 +1741,34 @@ impl RoomService for ClientServiceImpl {
         >,
     >;
 
+    async fn create_web_socket_ticket(
+        &self,
+        request: Request<CreateWebSocketTicketRequest>,
+    ) -> Result<Response<CreateWebSocketTicketResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let public_room_id = req.room_id.clone();
+        let client_api = self.client_api.clone();
+        let response = crate::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+            client_api.clone(),
+            &metadata,
+            public_room_id,
+            EndpointRateLimitCategory::Write,
+            move |client_api, request_control, actor| async move {
+                client_api
+                    .create_websocket_ticket_for_actor_with_control(
+                        actor,
+                        req,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn message_stream(
         &self,
         request: Request<tonic::Streaming<ClientMessage>>,
@@ -2036,6 +2086,25 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn get_media(
+        &self,
+        request: Request<GetMediaRequest>,
+    ) -> Result<Response<Media>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Read,
+                move |client_api, actor| async move {
+                    client_api.get_media_for_actor(&actor, &req.media_id).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
     async fn delete_media(
         &self,
         request: Request<DeleteMediaRequest>,
@@ -2152,6 +2221,7 @@ impl RoomService for ClientServiceImpl {
         request: Request<ClearPlaylistRequest>,
     ) -> Result<Response<ClearPlaylistResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -2160,7 +2230,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .clear_playlist(&authenticated.user_id, room_id.as_str())
+                        .clear_playlist(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -2256,6 +2326,29 @@ impl RoomService for ClientServiceImpl {
                 },
             )
             .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_playback(
+        &self,
+        request: Request<UpdatePlaybackRequest>,
+    ) -> Result<Response<GetPlaybackResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Media,
+                move |authenticated| async move {
+                    client_api
+                        .update_playback(&authenticated.user_id, room_id.as_str(), req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2612,6 +2705,22 @@ impl PublicService for ClientServiceImpl {
         let response = executor
             .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
                 client_api.get_public_settings()
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_server_info(
+        &self,
+        request: Request<GetServerInfoRequest>,
+    ) -> Result<Response<GetServerInfoResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
+                client_api.get_server_info().await
             })
             .await
             .map_err(map_api_error)?;

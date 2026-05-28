@@ -2685,6 +2685,164 @@ impl ConnectionManager {
         Ok(counts.into_iter().next().unwrap_or(0))
     }
 
+    /// Return the requested users that have at least one active connection in the room.
+    ///
+    /// The input is expected to be a paged member set. Redis-backed managers query
+    /// each requested user's connection index and validate metadata against the room,
+    /// so the result is replica-wide without scanning every room connection.
+    pub async fn room_online_user_ids_distributed(
+        &self,
+        room_id: &RoomId,
+        user_ids: &[UserId],
+    ) -> Result<Vec<UserId>, String> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(mut conn) = self
+            .redis_conn_snapshot_required(
+                "Distributed room member presence lookup unavailable while Redis is degraded",
+            )
+            .await?
+        {
+            let mut online_user_ids = HashSet::new();
+            let mut stale_index_members: Vec<(String, String)> = Vec::new();
+
+            let user_index_keys: Vec<String> = user_ids
+                .iter()
+                .map(|user_id| self.user_index_key(user_id))
+                .collect();
+            let mut index_pipe = redis::pipe();
+            for key in &user_index_keys {
+                index_pipe.smembers(key);
+            }
+            let indexed_connection_ids: Vec<Vec<String>> = self
+                .redis_op("fetch distributed user connection indexes", async {
+                    index_pipe.query_async(&mut conn).await
+                })
+                .await?;
+
+            let mut connection_owners = HashMap::<String, Vec<(UserId, String)>>::new();
+            for ((user_id, user_index_key), conn_ids) in user_ids
+                .iter()
+                .copied()
+                .zip(user_index_keys.iter().cloned())
+                .zip(indexed_connection_ids)
+            {
+                for conn_id in conn_ids {
+                    connection_owners
+                        .entry(conn_id)
+                        .or_default()
+                        .push((user_id, user_index_key.clone()));
+                }
+            }
+
+            let conn_ids: Vec<String> = connection_owners.keys().cloned().collect();
+            if !conn_ids.is_empty() {
+                let metadata_keys: Vec<String> = conn_ids
+                    .iter()
+                    .map(|conn_id| self.conn_metadata_key(conn_id))
+                    .collect();
+                let metadata: Vec<Option<String>> = self
+                    .redis_op("fetch distributed connection metadata", async {
+                        conn.mget(metadata_keys).await
+                    })
+                    .await?;
+
+                for (conn_id, metadata_json) in conn_ids.into_iter().zip(metadata) {
+                    let Some(owners) = connection_owners.remove(&conn_id) else {
+                        continue;
+                    };
+                    match metadata_json {
+                        Some(metadata_json) => {
+                            match serde_json::from_str::<ConnectionInfoPersistent>(&metadata_json) {
+                                Ok(info) => {
+                                    let mut matched_owner = false;
+                                    for (user_id, user_index_key) in owners {
+                                        if info.user_id == user_id
+                                            && info.room_id.as_ref() == Some(room_id)
+                                        {
+                                            online_user_ids.insert(user_id);
+                                            matched_owner = true;
+                                        } else if info.user_id != user_id {
+                                            stale_index_members
+                                                .push((user_index_key, conn_id.clone()));
+                                        }
+                                    }
+                                    if !matched_owner && info.room_id.as_ref() == Some(room_id) {
+                                        debug!(
+                                            connection_id = %conn_id,
+                                            room_id = %room_id,
+                                            "Distributed connection metadata did not match requested member page"
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        connection_id = %conn_id,
+                                        error = %error,
+                                        "Failed to deserialize distributed connection metadata; pruning user index members"
+                                    );
+                                    stale_index_members.extend(owners.into_iter().map(
+                                        |(_, user_index_key)| (user_index_key, conn_id.clone()),
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            stale_index_members.extend(
+                                owners
+                                    .into_iter()
+                                    .map(|(_, user_index_key)| (user_index_key, conn_id.clone())),
+                            );
+                        }
+                    }
+                }
+            }
+
+            if !stale_index_members.is_empty() {
+                let mut pipe = redis::pipe();
+                for (index_key, connection_id) in &stale_index_members {
+                    pipe.srem(index_key, connection_id).ignore();
+                }
+                if let Err(error) = self
+                    .redis_op("prune stale distributed user index members", async {
+                        pipe.query_async::<()>(&mut conn).await
+                    })
+                    .await
+                {
+                    warn!(
+                        removed_members = stale_index_members.len(),
+                        error = %error,
+                        "Failed to prune stale distributed user index members on read"
+                    );
+                }
+            }
+
+            return Ok(user_ids
+                .iter()
+                .copied()
+                .filter(|user_id| online_user_ids.contains(user_id))
+                .collect());
+        }
+
+        let online_user_ids: HashSet<_> = user_ids
+            .iter()
+            .copied()
+            .filter(|user_id| {
+                self.get_user_connections(user_id)
+                    .into_iter()
+                    .any(|connection| connection.room_id.as_ref() == Some(room_id))
+            })
+            .collect();
+
+        Ok(user_ids
+            .iter()
+            .copied()
+            .filter(|user_id| online_user_ids.contains(user_id))
+            .collect())
+    }
+
     /// Get distinct online user counts for multiple rooms across all replicas.
     pub async fn room_online_user_count_distributed_batch(
         &self,
@@ -5093,6 +5251,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_room_online_user_ids_distributed_without_redis_checks_requested_users_only() {
+        let manager = ConnectionManager::default();
+        let online_user = UserId::expect_positive(10_000_170);
+        let other_online_user = UserId::expect_positive(10_000_171);
+        let offline_user = UserId::expect_positive(10_000_172);
+        let room_id = RoomId::expect_positive(10_000_173);
+        let other_room_id = RoomId::expect_positive(10_000_174);
+
+        manager
+            .register("presence-local-online".to_string(), online_user)
+            .await
+            .unwrap();
+        manager
+            .register("presence-local-other-user".to_string(), other_online_user)
+            .await
+            .unwrap();
+        manager
+            .register("presence-local-other-room".to_string(), offline_user)
+            .await
+            .unwrap();
+        manager
+            .join_room("presence-local-online", room_id)
+            .await
+            .unwrap();
+        manager
+            .join_room("presence-local-other-user", room_id)
+            .await
+            .unwrap();
+        manager
+            .join_room("presence-local-other-room", other_room_id)
+            .await
+            .unwrap();
+
+        let online_user_ids = manager
+            .room_online_user_ids_distributed(&room_id, &[online_user, offline_user])
+            .await
+            .expect("standalone mode should use local user indexes");
+
+        assert_eq!(
+            online_user_ids,
+            vec![online_user],
+            "presence lookup should only return requested users in the target room"
+        );
+    }
+
+    #[tokio::test]
     async fn test_user_connection_count_in_room_distributed_counts_all_connections() {
         let manager = ConnectionManager::default();
         let user_id = UserId::expect_positive(10_000_125);
@@ -5690,6 +5894,60 @@ mod tests {
             room_members,
             vec![valid.to_string()],
             "room index should retain only valid members after lazy pruning"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_room_online_user_ids_distributed_reads_other_replicas_without_room_scan() {
+        let (_container, client, conn_a, prefix) = docker_redis_connection("presence-users:").await;
+        let conn_b = redis::aio::ConnectionManager::new(client).await.unwrap();
+        let manager_a =
+            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_a, &prefix);
+        let manager_b =
+            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_b, &prefix);
+
+        let user_a = UserId::expect_positive(10_000_175);
+        let user_b = UserId::expect_positive(10_000_176);
+        let user_c = UserId::expect_positive(10_000_177);
+        let room_id = RoomId::expect_positive(10_000_178);
+        let other_room_id = RoomId::expect_positive(10_000_179);
+
+        manager_a
+            .register("presence-replica-a".to_string(), user_a)
+            .await
+            .unwrap();
+        manager_b
+            .register("presence-replica-b".to_string(), user_b)
+            .await
+            .unwrap();
+        manager_b
+            .register("presence-replica-other-room".to_string(), user_c)
+            .await
+            .unwrap();
+
+        manager_a
+            .join_room("presence-replica-a", room_id)
+            .await
+            .unwrap();
+        manager_b
+            .join_room("presence-replica-b", room_id)
+            .await
+            .unwrap();
+        manager_b
+            .join_room("presence-replica-other-room", other_room_id)
+            .await
+            .unwrap();
+
+        let online_user_ids = manager_a
+            .room_online_user_ids_distributed(&room_id, &[user_a, user_b, user_c])
+            .await
+            .expect("distributed presence lookup should read Redis user indexes");
+
+        assert_eq!(
+            online_user_ids,
+            vec![user_a, user_b],
+            "lookup from one replica should include target-room users connected to another replica"
         );
     }
 

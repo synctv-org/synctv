@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
     oauth2_provider_username VARCHAR(255),
     oauth2_avatar_url TEXT,
     oauth2_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    webauthn_credential_id BYTEA,
+    webauthn_passkey JSONB,
+    webauthn_credential_name VARCHAR(100),
     signup_method SMALLINT NOT NULL,
     status SMALLINT NOT NULL,
     requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -22,7 +25,25 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
     rejection_reason TEXT,
 
     CONSTRAINT user_registration_requests_email_not_empty
-        CHECK (email IS NULL OR length(trim(email)) > 0)
+        CHECK (email IS NULL OR length(trim(email)) > 0),
+    CONSTRAINT user_registration_requests_webauthn_name_not_empty
+        CHECK (
+            webauthn_credential_name IS NULL
+            OR length(trim(webauthn_credential_name)) > 0
+        ),
+    CONSTRAINT user_registration_requests_webauthn_material_complete
+        CHECK (
+            (
+                webauthn_credential_id IS NULL
+                AND webauthn_passkey IS NULL
+                AND webauthn_credential_name IS NULL
+            )
+            OR (
+                signup_method = 5
+                AND webauthn_credential_id IS NOT NULL
+                AND webauthn_passkey IS NOT NULL
+            )
+        )
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_registration_requests_status_requested
@@ -47,6 +68,12 @@ CREATE INDEX IF NOT EXISTS idx_user_registration_requests_pending_oauth2_type
     ON user_registration_requests(oauth2_provider_type)
     WHERE reviewed_at IS NULL
       AND oauth2_provider_type IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_pending_webauthn_credential
+    ON user_registration_requests(webauthn_credential_id)
+    WHERE reviewed_at IS NULL
+      AND status = 1
+      AND webauthn_credential_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_user_registration_requests_reviewed_by
     ON user_registration_requests(reviewed_by)

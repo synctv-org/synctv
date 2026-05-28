@@ -54,6 +54,7 @@ message MediaItem {
   string series_name = 5;
   string series_id = 6;
   string season_name = 7;
+  string thumbnail = 8; // Server-relative thumbnail URL when available
 }
 
 // Get user info request
@@ -96,4 +97,5 @@ message BindInfo {
   string host = 3;
   string user_id = 4;
   int64 created_at = 5; // Unix epoch timestamp
+  string provider_instance_name = 6; // Empty when the credential is not instance-scoped
 }

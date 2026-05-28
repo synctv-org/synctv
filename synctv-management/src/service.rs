@@ -24,13 +24,13 @@ use crate::proto::{
     ApproveRoomJoinReviewRequest, ApproveUserRegistrationReviewRequest, BanRoomRequest,
     BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
     BatchDeleteUsersRequest, BilibiliCheckQrRequest, BilibiliGetBindsRequest,
-    BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest, BilibiliLoginQrRequest,
-    BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest,
-    CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest, CreatePlaylistRequest,
-    CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
-    DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
-    EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest, EmbyLogoutRequest,
-    EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
+    BilibiliGetUserInfoRequest, BilibiliLoginQrRequest, BilibiliLoginSmsRequest,
+    BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest,
+    BilibiliStartSmsLoginRequest, CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest,
+    CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
+    DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
+    EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
+    EmbyLogoutRequest, EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
     EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
     GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
     GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
@@ -3003,10 +3003,10 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Self::proto_response(response))
     }
 
-    async fn bilibili_get_captcha(
+    async fn bilibili_start_sms_login(
         &self,
-        request: Request<BilibiliGetCaptchaRequest>,
-    ) -> Result<Response<bilibili_proto::CaptchaResponse>, Status> {
+        request: Request<BilibiliStartSmsLoginRequest>,
+    ) -> Result<Response<bilibili_proto::StartSmsLoginResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let (_actor_user_id, provider_request) = self
@@ -3015,7 +3015,7 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .get_captcha(provider_request, instance_name.as_deref())
+                .start_sms_login(provider_request, instance_name.as_deref())
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -3030,12 +3030,8 @@ impl ManagementService for ManagementServiceImpl {
         let (_actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
-            self.bilibili_api
-                .send_sms(provider_request, instance_name.as_deref())
-                .await,
-        )?;
+        let response =
+            Self::map_into_api_result(self.bilibili_api.send_sms(provider_request, None).await)?;
         Ok(Self::proto_response(response))
     }
 
@@ -3048,10 +3044,9 @@ impl ManagementService for ManagementServiceImpl {
         let (actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .login_sms(&actor_user_id, provider_request, instance_name.as_deref())
+                .login_sms(&actor_user_id, provider_request, None)
                 .await,
         )?;
         Ok(Self::proto_response(response))

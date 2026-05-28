@@ -10,9 +10,9 @@ use serde::de::DeserializeOwned;
 use super::{AppError, AppResult, AppState};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
-    CreateGuestTokenRequest, CreateGuestTokenResponse, FinishMfaPasskeyRequest,
-    FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest,
-    FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse, LogoutResponse,
+    ConfirmEmailLoginRequest, CreateGuestTokenRequest, CreateGuestTokenResponse,
+    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, LoginResponse, LogoutResponse,
     RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RequestEmailLoginRequest,
     RequestEmailLoginResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
     StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
@@ -140,23 +140,23 @@ pub async fn finish_opaque_registration(
     Ok(Json(response))
 }
 
-/// Confirm a passwordless email login token. Public client password login uses OPAQUE.
+/// Confirm a passwordless email login token. Password login uses OPAQUE.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/auth/login",
+        path = "/api/auth/email/confirm",
         tag = "Auth",
-        request_body = LoginRequest,
+        request_body = ConfirmEmailLoginRequest,
         responses(
-            (status = 200, description = "Login succeeded", body = LoginResponse),
+            (status = 200, description = "Email login confirmed", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Invalid credentials", body = crate::openapi::ErrorResponseDoc),
             (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
         )
     )
 )]
-pub async fn login(
+pub async fn confirm_email_login(
     State(state): State<AppState>,
     request: Request,
 ) -> AppResult<Json<LoginResponse>> {
@@ -171,9 +171,9 @@ pub async fn login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<LoginRequest>(request).await?;
+                let req = parse_auth_json::<ConfirmEmailLoginRequest>(request).await?;
                 client_api
-                    .login_request_with_control(
+                    .confirm_email_login_with_control(
                         email_api.as_deref(),
                         req,
                         client_ip,
@@ -805,8 +805,8 @@ mod tests {
     // Verify request types have expected fields and derive traits (Serialize, Deserialize, Clone)
 
     #[test]
-    fn test_login_request_construction() {
-        let req = LoginRequest {
+    fn test_confirm_email_login_request_construction() {
+        let req = ConfirmEmailLoginRequest {
             email: "test@example.com".to_string(),
             email_token: "login-token".to_string(),
         };
@@ -815,13 +815,14 @@ mod tests {
     }
 
     #[test]
-    fn test_login_request_json_roundtrip() {
-        let req = LoginRequest {
+    fn test_confirm_email_login_request_json_roundtrip() {
+        let req = ConfirmEmailLoginRequest {
             email: "test@example.com".to_string(),
             email_token: "login-token".to_string(),
         };
         let json = serde_json::to_string(&req).expect("serialize");
-        let deserialized: LoginRequest = serde_json::from_str(&json).expect("deserialize");
+        let deserialized: ConfirmEmailLoginRequest =
+            serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.email, req.email);
         assert_eq!(deserialized.email_token, req.email_token);
     }
@@ -884,7 +885,7 @@ mod tests {
         assert_eq!(credential["type"], "public-key");
     }
 
-    // All three auth handlers (register, login, refresh_token) now use
+    // Auth handlers use
     // map_api_error for consistent typed error classification.
 
     #[test]
@@ -902,9 +903,10 @@ mod tests {
     }
 
     #[test]
-    fn test_login_request_missing_fields_default_to_empty_strings() {
+    fn test_confirm_email_login_request_missing_fields_default_to_empty_strings() {
         let json = r#"{"email":"user@example.com"}"#;
-        let req: LoginRequest = serde_json::from_str(json).expect("deserialize with defaults");
+        let req: ConfirmEmailLoginRequest =
+            serde_json::from_str(json).expect("deserialize with defaults");
         assert_eq!(req.email, "user@example.com");
         assert!(req.email_token.is_empty());
     }

@@ -17,8 +17,8 @@ service BilibiliProviderService {
   // Check QR code login status (persists credential on success)
   rpc CheckQR(CheckQRRequest) returns (QRStatusResponse);
 
-  // Get captcha for SMS login
-  rpc GetCaptcha(GetCaptchaRequest) returns (CaptchaResponse);
+  // Start SMS login and return captcha data for frontend Geetest rendering
+  rpc StartSMSLogin(StartSMSLoginRequest) returns (StartSMSLoginResponse);
 
   // Send SMS verification code
   rpc SendSMS(SendSMSRequest) returns (SendSMSResponse);

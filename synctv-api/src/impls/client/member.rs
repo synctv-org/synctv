@@ -234,6 +234,18 @@ impl ClientApiImpl {
             .get_room_members_query(&rid, query)
             .await
             .map_err(ApiError::from)?;
+        let mut members = members;
+        let member_user_ids: Vec<_> = members.iter().map(|member| member.user_id).collect();
+        let online_user_ids: std::collections::HashSet<_> = self
+            .connection_service
+            .room_online_user_ids_distributed(&rid, &member_user_ids)
+            .await
+            .map_err(ApiError::ServiceUnavailable)?
+            .into_iter()
+            .collect();
+        for member in &mut members {
+            member.is_online = online_user_ids.contains(&member.user_id);
+        }
 
         let room_settings = self
             .room_service

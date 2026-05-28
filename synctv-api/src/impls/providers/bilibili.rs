@@ -4,13 +4,23 @@
 //! Used by both HTTP and gRPC handlers.
 
 use crate::proto::providers::bilibili::{
-    BindInfo, CaptchaResponse, CheckQrRequest, GetBindsResponse, GetCaptchaRequest, LoginQrRequest,
-    LoginSmsRequest, LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse,
-    QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse, UserInfoRequest,
+    BindInfo, CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
+    LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse, QrStatusResponse,
+    SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest,
     UserInfoResponse, VideoInfo,
 };
+use aes_gcm::aead::rand_core::RngCore;
+use aes_gcm::{
+    aead::{Aead, KeyInit as AeadKeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use hmac::{Hmac, KeyInit as HmacKeyInit, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use synctv_core::models::{
     normalize_provider_instance_name, resolve_provider_instance_binding,
     CredentialProviderInstanceName, ProviderCredential, UserId, UserProviderCredential,
@@ -30,11 +40,113 @@ pub struct BilibiliApiImpl {
     credential_repo: Arc<UserProviderCredentialRepository>,
     access_service: Option<Arc<dyn ProviderAccessService>>,
     event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+    sms_login_token_codec: Arc<BilibiliSmsLoginTokenCodec>,
+    qr_login_status_cache: Arc<moka::sync::Cache<String, BilibiliQrLoginStatusSnapshot>>,
 }
 
 struct ResolvedBilibiliCredential {
     cookies: HashMap<String, String>,
     provider_instance_name: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BilibiliSmsLoginSession {
+    token: String,
+    challenge: String,
+    phone: Option<String>,
+    captcha_key: Option<String>,
+    instance_name: Option<String>,
+    expires_at: i64,
+}
+
+#[derive(Clone)]
+struct BilibiliQrLoginStatusSnapshot {
+    status: i32,
+}
+
+const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
+const SMS_LOGIN_SESSION_VERSION: &str = "v2";
+const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
+const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
+const QR_LOGIN_STATUS_CACHE_TTL_SECONDS: u64 = 2;
+type HmacSha256 = Hmac<Sha256>;
+
+struct BilibiliSmsLoginTokenCodec {
+    cipher: Aes256Gcm,
+}
+
+impl BilibiliSmsLoginTokenCodec {
+    fn derive_from(secret: &[u8]) -> Self {
+        let mut derivation_mac =
+            HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        derivation_mac.update(SMS_LOGIN_DOMAIN_SEPARATOR);
+        let derived = derivation_mac.finalize().into_bytes();
+        let key = Key::<Aes256Gcm>::from_slice(&derived);
+        Self {
+            cipher: Aes256Gcm::new(key),
+        }
+    }
+
+    fn encode(
+        &self,
+        session: &BilibiliSmsLoginSession,
+    ) -> Result<String, synctv_core::provider::ProviderError> {
+        let payload = serde_json::to_vec(session).map_err(|e| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to serialize Bilibili SMS login session: {e}"
+            ))
+        })?;
+        let mut nonce_bytes = [0_u8; SMS_LOGIN_TOKEN_NONCE_SIZE];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = self.cipher.encrypt(nonce, payload.as_ref()).map_err(|_| {
+            synctv_core::provider::ProviderError::Internal(
+                "Failed to encrypt Bilibili SMS login session".to_string(),
+            )
+        })?;
+        let mut token = Vec::with_capacity(SMS_LOGIN_TOKEN_NONCE_SIZE + ciphertext.len());
+        token.extend_from_slice(&nonce_bytes);
+        token.extend_from_slice(&ciphertext);
+
+        Ok(format!(
+            "{SMS_LOGIN_SESSION_VERSION}.{}",
+            URL_SAFE_NO_PAD.encode(token)
+        ))
+    }
+
+    fn decode(
+        &self,
+        session_token: &str,
+    ) -> Result<BilibiliSmsLoginSession, synctv_core::provider::ProviderError> {
+        let invalid = || {
+            synctv_core::provider::ProviderError::Authentication(
+                "Bilibili SMS login session is invalid or expired".to_string(),
+            )
+        };
+        let mut parts = session_token.split('.');
+        let version = parts.next().ok_or_else(invalid)?;
+        let token = parts.next().ok_or_else(invalid)?;
+        if version != SMS_LOGIN_SESSION_VERSION || parts.next().is_some() {
+            return Err(invalid());
+        }
+
+        let token = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid())?;
+        if token.len() <= SMS_LOGIN_TOKEN_NONCE_SIZE {
+            return Err(invalid());
+        }
+        let (nonce_bytes, ciphertext) = token.split_at(SMS_LOGIN_TOKEN_NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let payload = self
+            .cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| invalid())?;
+        let session: BilibiliSmsLoginSession =
+            serde_json::from_slice(&payload).map_err(|_| invalid())?;
+        if chrono::Utc::now().timestamp() >= session.expires_at {
+            return Err(invalid());
+        }
+        Ok(session)
+    }
 }
 
 fn ensure_login_cookies_present(
@@ -51,15 +163,25 @@ fn ensure_login_cookies_present(
 
 impl BilibiliApiImpl {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         provider: Arc<BilibiliProvider>,
         credential_repo: Arc<UserProviderCredentialRepository>,
+        sms_login_secret: &[u8],
     ) -> Self {
         Self {
             provider,
             credential_repo,
             access_service: None,
             event_service: None,
+            sms_login_token_codec: Arc::new(BilibiliSmsLoginTokenCodec::derive_from(
+                sms_login_secret,
+            )),
+            qr_login_status_cache: Arc::new(
+                moka::sync::Cache::builder()
+                    .max_capacity(10_000)
+                    .time_to_live(Duration::from_secs(QR_LOGIN_STATUS_CACHE_TTL_SECONDS))
+                    .build(),
+            ),
         }
     }
 
@@ -193,6 +315,75 @@ impl BilibiliApiImpl {
         );
 
         Ok(server_id)
+    }
+
+    fn decode_sms_session(
+        &self,
+        session_token: &str,
+    ) -> Result<BilibiliSmsLoginSession, synctv_core::provider::ProviderError> {
+        self.sms_login_token_codec.decode(session_token)
+    }
+
+    fn encode_sms_session(
+        &self,
+        session: &BilibiliSmsLoginSession,
+    ) -> Result<String, synctv_core::provider::ProviderError> {
+        self.sms_login_token_codec.encode(session)
+    }
+
+    fn sanitize_sms_validate(
+        validate: &str,
+    ) -> Result<String, synctv_core::provider::ProviderError> {
+        let validate = validate.trim().to_string();
+        if validate.is_empty() {
+            return Err(synctv_core::provider::ProviderError::Authentication(
+                "Bilibili SMS verification result is empty".to_string(),
+            ));
+        }
+        Ok(validate)
+    }
+
+    fn verify_sms_instance_name(
+        requested: Option<&str>,
+        session: &BilibiliSmsLoginSession,
+    ) -> Result<(), synctv_core::provider::ProviderError> {
+        if requested.is_none() {
+            return Ok(());
+        }
+        let expected = normalize_provider_instance_name(session.instance_name.as_deref());
+        let requested = normalize_provider_instance_name(requested);
+        if expected != requested {
+            return Err(synctv_core::provider::ProviderError::Authentication(
+                "Bilibili SMS login session does not match the requested provider instance"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_sms_phone(
+        session: &BilibiliSmsLoginSession,
+    ) -> Result<String, synctv_core::provider::ProviderError> {
+        session.phone.clone().ok_or_else(|| {
+            synctv_core::provider::ProviderError::Authentication(
+                "Request a Bilibili SMS code before logging in".to_string(),
+            )
+        })
+    }
+
+    fn qr_login_status_cache_key(instance_name: Option<&str>, key: &str) -> String {
+        let instance_name = normalize_provider_instance_name(instance_name).unwrap_or_default();
+        format!("{instance_name}:{key}")
+    }
+
+    fn require_sms_captcha_key(
+        session: &BilibiliSmsLoginSession,
+    ) -> Result<String, synctv_core::provider::ProviderError> {
+        session.captcha_key.clone().ok_or_else(|| {
+            synctv_core::provider::ProviderError::Authentication(
+                "Request a Bilibili SMS code before logging in".to_string(),
+            )
+        })
     }
 
     /// Parse Bilibili URL using stored cookies
@@ -402,7 +593,16 @@ impl BilibiliApiImpl {
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<QrStatusResponse, synctv_core::provider::ProviderError> {
-        let check_req = synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq { key: req.key };
+        let cache_key = Self::qr_login_status_cache_key(instance_name, &req.key);
+        if let Some(snapshot) = self.qr_login_status_cache.get(&cache_key) {
+            return Ok(QrStatusResponse {
+                status: snapshot.status,
+            });
+        }
+
+        let check_req = synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq {
+            key: req.key.clone(),
+        };
 
         let resp = self
             .provider
@@ -414,6 +614,14 @@ impl BilibiliApiImpl {
             ensure_login_cookies_present(&resp.cookies, "QR")?;
             self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
                 .await?;
+            self.qr_login_status_cache.invalidate(&cache_key);
+        } else {
+            self.qr_login_status_cache.insert(
+                cache_key,
+                BilibiliQrLoginStatusSnapshot {
+                    status: resp.status,
+                },
+            );
         }
 
         Ok(QrStatusResponse {
@@ -421,31 +629,44 @@ impl BilibiliApiImpl {
         })
     }
 
-    /// Get captcha for SMS login
-    pub async fn get_captcha(
+    /// Start SMS login and keep captcha details server-side.
+    pub async fn start_sms_login(
         &self,
-        req: GetCaptchaRequest,
+        req: StartSmsLoginRequest,
         instance_name: Option<&str>,
-    ) -> Result<CaptchaResponse, synctv_core::provider::ProviderError> {
-        self.get_captcha_with_context(req, instance_name, None)
+    ) -> Result<StartSmsLoginResponse, synctv_core::provider::ProviderError> {
+        self.start_sms_login_with_context(req, instance_name, None)
             .await
     }
 
-    pub async fn get_captcha_with_context(
+    pub async fn start_sms_login_with_context(
         &self,
-        _req: GetCaptchaRequest,
+        _req: StartSmsLoginRequest,
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
-    ) -> Result<CaptchaResponse, synctv_core::provider::ProviderError> {
+    ) -> Result<StartSmsLoginResponse, synctv_core::provider::ProviderError> {
         let resp = self
             .provider
             .new_captcha_with_context(instance_name, request_context)
             .await?;
 
-        Ok(CaptchaResponse {
+        let now = chrono::Utc::now().timestamp();
+        let expires_at = now + SMS_LOGIN_SESSION_TTL_SECONDS;
+        let challenge = resp.challenge.clone();
+        let session = BilibiliSmsLoginSession {
             token: resp.token,
+            challenge,
+            phone: None,
+            captcha_key: None,
+            instance_name: instance_name.map(ToString::to_string),
+            expires_at,
+        };
+
+        Ok(StartSmsLoginResponse {
+            session_token: self.encode_sms_session(&session)?,
             gt: resp.gt,
             challenge: resp.challenge,
+            expires_at,
         })
     }
 
@@ -464,20 +685,27 @@ impl BilibiliApiImpl {
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<SendSmsResponse, synctv_core::provider::ProviderError> {
+        let mut session = self.decode_sms_session(&req.session_token)?;
+        Self::verify_sms_instance_name(instance_name, &session)?;
+        let validate = Self::sanitize_sms_validate(&req.validate)?;
         let sms_req = synctv_media_providers::grpc::bilibili::NewSmsReq {
-            phone: req.phone,
-            token: req.token,
-            challenge: req.challenge,
-            validate: req.validate,
+            phone: req.phone.clone(),
+            token: session.token.clone(),
+            challenge: session.challenge.clone(),
+            validate,
         };
 
         let resp = self
             .provider
-            .new_sms_with_context(sms_req, instance_name, request_context)
+            .new_sms_with_context(sms_req, session.instance_name.as_deref(), request_context)
             .await?;
 
+        session.phone = Some(req.phone);
+        session.captcha_key = Some(resp.captcha_key);
+
         Ok(SendSmsResponse {
-            captcha_key: resp.captcha_key,
+            session_token: self.encode_sms_session(&session)?,
+            expires_at: session.expires_at,
         })
     }
 
@@ -499,20 +727,30 @@ impl BilibiliApiImpl {
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<LoginSmsResponse, synctv_core::provider::ProviderError> {
+        let session = self.decode_sms_session(&req.session_token)?;
+        Self::verify_sms_instance_name(instance_name, &session)?;
         let login_req = synctv_media_providers::grpc::bilibili::LoginWithSmsReq {
-            phone: req.phone,
+            phone: Self::require_sms_phone(&session)?,
             code: req.code,
-            captcha_key: req.captcha_key,
+            captcha_key: Self::require_sms_captcha_key(&session)?,
         };
 
         let resp = self
             .provider
-            .login_with_sms_with_context(login_req, instance_name, request_context)
+            .login_with_sms_with_context(
+                login_req,
+                session.instance_name.as_deref(),
+                request_context,
+            )
             .await?;
 
         ensure_login_cookies_present(&resp.cookies, "SMS")?;
-        self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
-            .await?;
+        self.persist_cookies(
+            caller_user_id,
+            &resp.cookies,
+            session.instance_name.as_deref(),
+        )
+        .await?;
 
         Ok(LoginSmsResponse {})
     }
@@ -644,6 +882,7 @@ impl BilibiliApiImpl {
             id: credential.id.to_string(),
             server_id: credential.server_id,
             created_at: credential.created_at.timestamp(),
+            provider_instance_name: credential.provider_instance_name.unwrap_or_default(),
         })
         .collect();
 
@@ -653,7 +892,7 @@ impl BilibiliApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_login_cookies_present, BilibiliApiImpl};
+    use super::{ensure_login_cookies_present, BilibiliApiImpl, BilibiliSmsLoginSession};
     use std::collections::HashMap;
     use std::sync::Arc;
     use synctv_core::credential_encryption::CredentialEncryption;
@@ -677,6 +916,10 @@ mod tests {
 
     fn test_encryption() -> CredentialEncryption {
         CredentialEncryption::new(&[0x42; 32]).expect("test encryption should initialize")
+    }
+
+    fn test_sms_login_secret() -> &'static [u8] {
+        b"test-bilibili-sms-login-secret"
     }
 
     fn test_user(username: &str) -> User {
@@ -766,12 +1009,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sms_login_session_token_decodes_across_api_instances() {
+        let secret = test_sms_login_secret();
+        let api_one = BilibiliApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(
+                sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
+            )),
+            secret,
+        );
+        let api_two = BilibiliApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(
+                sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
+            )),
+            secret,
+        );
+        let session = BilibiliSmsLoginSession {
+            token: "captcha-token".to_string(),
+            challenge: "captcha-challenge".to_string(),
+            phone: Some("13800000000".to_string()),
+            captcha_key: Some("captcha-key".to_string()),
+            instance_name: Some("bilibili_remote".to_string()),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+
+        let encoded = api_one
+            .encode_sms_session(&session)
+            .expect("session token should encode");
+        assert!(
+            !encoded.contains("captcha-token")
+                && !encoded.contains("captcha-challenge")
+                && !encoded.contains("captcha-key")
+                && !encoded.contains("13800000000"),
+            "session token must not expose Bilibili SMS login secrets or phone number"
+        );
+        let decoded = api_two
+            .decode_sms_session(&encoded)
+            .expect("session token should decode with the same deployment secret");
+
+        assert_eq!(decoded.token, session.token);
+        assert_eq!(decoded.challenge, session.challenge);
+        assert_eq!(decoded.phone, session.phone);
+        assert_eq!(decoded.captcha_key, session.captcha_key);
+        assert_eq!(decoded.instance_name, session.instance_name);
+    }
+
+    #[tokio::test]
+    async fn sms_login_session_token_rejects_tampering_and_expiry() {
+        let api = BilibiliApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(
+                sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
+            )),
+            test_sms_login_secret(),
+        );
+        let valid = BilibiliSmsLoginSession {
+            token: "captcha-token".to_string(),
+            challenge: "captcha-challenge".to_string(),
+            phone: None,
+            captcha_key: None,
+            instance_name: None,
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        let expired = BilibiliSmsLoginSession {
+            expires_at: chrono::Utc::now().timestamp() - 1,
+            ..valid.clone()
+        };
+
+        let encoded = api
+            .encode_sms_session(&valid)
+            .expect("session token should encode");
+        let mut tampered = encoded.clone();
+        tampered.push('x');
+
+        assert!(api.decode_sms_session(&tampered).is_err());
+        assert!(api
+            .decode_sms_session(
+                &api.encode_sms_session(&expired)
+                    .expect("expired session should still encode")
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn get_user_info_without_binding_reports_logged_out() {
         let (_postgres, pool) = create_test_pool().await;
         let api = BilibiliApiImpl::new(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
+            test_sms_login_secret(),
         );
 
         let response = api
@@ -796,6 +1124,7 @@ mod tests {
         let api = BilibiliApiImpl::new(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
+            test_sms_login_secret(),
         );
 
         let response = api
@@ -820,7 +1149,8 @@ mod tests {
             pool.clone(),
             test_encryption(),
         ));
-        let api = BilibiliApiImpl::new(provider(), credential_repo.clone());
+        let api =
+            BilibiliApiImpl::new(provider(), credential_repo.clone(), test_sms_login_secret());
         let user = user_repo
             .create(&test_user("bilibili_instance_login"))
             .await
@@ -856,7 +1186,7 @@ mod tests {
             pool.clone(),
             test_encryption(),
         ));
-        let api = BilibiliApiImpl::new(provider(), credential_repo);
+        let api = BilibiliApiImpl::new(provider(), credential_repo, test_sms_login_secret());
         let user = user_repo
             .create(&test_user("bilibili_bind_filter"))
             .await

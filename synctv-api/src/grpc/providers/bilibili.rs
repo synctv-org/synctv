@@ -11,9 +11,9 @@ use synctv_core::Config;
 // Import generated proto types from synctv_proto
 use crate::proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderService;
 use crate::proto::providers::bilibili::{
-    CaptchaResponse, CheckQrRequest, GetBindsRequest, GetBindsResponse, GetCaptchaRequest,
-    LoginQrRequest, LoginSmsRequest, LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest,
-    ParseResponse, QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse,
+    CheckQrRequest, GetBindsRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest,
+    LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse,
+    QrStatusResponse, SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse,
     UserInfoRequest, UserInfoResponse,
 };
 
@@ -146,17 +146,17 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             .map_err(crate::grpc::map_api_error)
     }
 
-    async fn get_captcha(
+    async fn start_sms_login(
         &self,
-        request: Request<GetCaptchaRequest>,
-    ) -> Result<Response<CaptchaResponse>, Status> {
+        request: Request<StartSmsLoginRequest>,
+    ) -> Result<Response<StartSmsLoginResponse>, Status> {
         let metadata = crate::grpc::request_metadata(
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
         );
         let req = request.into_inner();
-        tracing::info!("gRPC Bilibili get captcha request");
+        tracing::info!("gRPC Bilibili start SMS login request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
@@ -165,7 +165,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |request_control, _| async move {
-                    api.get_captcha_with_context(
+                    api.start_sms_login_with_context(
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -195,7 +195,6 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             "****".to_string()
         };
         tracing::info!("gRPC Bilibili send SMS: phone={}", masked_phone);
-        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -203,7 +202,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |request_control, _| async move {
-                    api.send_sms_with_context(req, instance_name.as_deref(), Some(&request_control))
+                    api.send_sms_with_context(req, None, Some(&request_control))
                         .await
                         .map_err(crate::impls::ApiError::from)
                 },
@@ -223,13 +222,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             Some(crate::grpc::grpc_unary_request_timeout()),
         );
         let req = request.into_inner();
-        let masked_phone = if req.phone.len() >= 4 {
-            format!("****{}", &req.phone[req.phone.len() - 4..])
-        } else {
-            "****".to_string()
-        };
-        tracing::info!("gRPC Bilibili login SMS: phone={}", masked_phone);
-        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        tracing::info!("gRPC Bilibili login SMS");
         let api = self.api.clone();
 
         self.request_executor
@@ -240,7 +233,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                     api.login_sms_with_context(
                         &authenticated.user_id,
                         req,
-                        instance_name.as_deref(),
+                        None,
                         Some(&request_control),
                     )
                     .await

@@ -62,7 +62,6 @@ security:
 
 | 数据 | 默认策略 | 可调入口 |
 | --- | --- | --- |
-| 空闲房间 | `room.room_ttl=172800` 秒后软删除，`0` 表示不自动过期 | Runtime settings |
 | 已软删除用户 | 默认 90 天后永久清理 | 启动期清理配置，目前文档化为内部默认 |
 | 已软删除房间 | 默认 90 天后永久清理 | 启动期清理配置，目前文档化为内部默认 |
 | 过期邮箱 token | 默认过期 7 天后清理 | 内部清理配置 |
@@ -79,7 +78,7 @@ security:
 清理任务在多副本部署中由 leader-gated 后台任务执行，避免多个副本重复清理。数据库维护任务会在启动时和周期性运行时清理邮箱 token、通知、过期 Provider 凭据和旧聊天消息。
 
 <Aside type="note">
-Runtime settings 是数据库热更新设置，适合调整 `room.room_ttl`、`chat.message_retention_days` 和 `chat.max_messages_per_room`。它不替代启动配置，也不用于保存 secret。
+Runtime settings 是数据库热更新设置，适合调整 `chat.message_retention_days` 和 `chat.max_messages_per_room`。它不替代启动配置，也不用于保存 secret。
 </Aside>
 
 ## 删除用户和房间

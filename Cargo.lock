@@ -6221,6 +6221,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -6280,6 +6281,7 @@ dependencies = [
 name = "synctv-api"
 version = "1.0.0"
 dependencies = [
+ "aes-gcm",
  "ammonia",
  "anyhow",
  "async-trait",
@@ -6293,6 +6295,7 @@ dependencies = [
  "futures",
  "garde",
  "hex",
+ "hmac 0.13.0",
  "hostname",
  "http-body-util",
  "hyper",
@@ -6632,6 +6635,7 @@ dependencies = [
 name = "synctv-proto"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "prost",
  "prost-protovalidate",
  "prost-reflect",

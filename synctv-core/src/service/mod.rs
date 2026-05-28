@@ -114,9 +114,9 @@ pub use review::{
 pub use room::{
     AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
     PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
-    RealtimeOutboxMediaIdsEventFactory, RealtimeOutboxPermissionChangedEventFactory,
-    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
-    RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot,
+    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
+    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomService,
+    UserLeftOutboxSnapshot,
 };
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};
@@ -137,8 +137,9 @@ pub use user::{
 };
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{
-    web_socket_ticket_service_from_shared_state_profile, PendingValidatedTicket, TicketStore,
-    UserValidationResult, UserValidator, WebSocketTicketService, WsTicketData, WsTicketService,
+    web_socket_ticket_service_from_shared_state_profile, CreateGuestTicketRequest,
+    PendingValidatedTicket, TicketStore, UserValidationResult, UserValidator, ValidatedGuestTicket,
+    ValidatedTicket, WebSocketTicketService, WsTicketData, WsTicketService,
 };
 
 /// Trait for checking if the current node is the cluster leader.

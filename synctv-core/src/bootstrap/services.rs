@@ -756,11 +756,11 @@ pub async fn init_services_with_options(
             rate_limiter: rate_limiter.clone(),
             rate_limit_config: rate_limit_config.clone(),
             content_filter: content_filter.clone(),
-            username_cache: username_cache.clone(),
         },
         crate::service::chat::ChatDependencies {
             permission_service: permission_service_for_chat,
             room_settings_service: room_settings_service_for_chat,
+            user_service: user_service.clone(),
             notification_service: (*room_service.notification_service()).clone(),
         },
     );

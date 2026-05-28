@@ -142,6 +142,23 @@ pub(super) fn validate_provider_url(
     Ok(parsed)
 }
 
+pub(super) fn validate_oauth2_redirect_url(url: &str, context: &str) -> Result<(), Error> {
+    let parsed = Url::parse(url)
+        .map_err(|err| Error::InvalidInput(format!("{context}: invalid URL: {err}")))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(Error::InvalidInput(format!(
+            "{context}: scheme '{scheme}' is not allowed"
+        )));
+    }
+    if parsed.host().is_none() {
+        return Err(Error::InvalidInput(format!(
+            "{context}: URL must include a host"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn build_provider_http_client(
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Arc<Client>, Error> {

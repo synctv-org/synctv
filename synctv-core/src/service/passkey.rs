@@ -456,7 +456,7 @@ impl PasskeyService {
         credential_json: &[u8],
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<(User, Option<String>, Option<String>)> {
         let Some(PasskeySession::AccountRegistration {
             username,
             email,
@@ -467,7 +467,8 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
-        self.user_service
+        let registration_policy = self
+            .user_service
             .ensure_registration_review_supported(RegistrationMode::WebAuthn)?;
 
         self.user_service
@@ -495,6 +496,19 @@ impl PasskeyService {
             return Err(Error::AlreadyExists(
                 "Passkey credential is already registered".to_string(),
             ));
+        }
+
+        if registration_policy.need_review {
+            let pending_user = self
+                .user_service
+                .create_webauthn_registration_request(
+                    &username,
+                    email.as_deref(),
+                    &passkey,
+                    credential_name.as_deref(),
+                )
+                .await?;
+            return Ok((pending_user, None, None));
         }
 
         let user = User::new(
@@ -545,7 +559,7 @@ impl PasskeyService {
                 user,
                 access_token,
                 refresh_token,
-            } => Ok((user, access_token, refresh_token)),
+            } => Ok((user, Some(access_token), Some(refresh_token))),
             crate::service::AuthenticatedLogin::MfaRequired { .. } => Err(Error::Internal(
                 "New passkey registrations must not require MFA during initial token issuance"
                     .to_string(),

@@ -384,6 +384,12 @@ fn user_registration_review_row_to_proto(
         oauth2_provider_username: row.oauth2_provider_username.clone().unwrap_or_default(),
         oauth2_avatar_url: row.oauth2_avatar_url.clone().unwrap_or_default(),
         oauth2_email_verified: row.oauth2_email_verified,
+        webauthn_credential_id: row
+            .webauthn_credential_id
+            .as_deref()
+            .map(synctv_core::service::PasskeyService::encode_credential_id)
+            .unwrap_or_default(),
+        webauthn_credential_name: row.webauthn_credential_name.clone().unwrap_or_default(),
     })
 }
 
@@ -3792,7 +3798,7 @@ impl AdminApiImpl {
             ..Default::default()
         };
 
-        let (users, _) = self
+        let (users, total) = self
             .user_service
             .list_admins(&query)
             .await
@@ -3803,7 +3809,10 @@ impl AdminApiImpl {
             .map(|u| admin_user_to_proto(&u, &self.public_id_codec))
             .collect();
 
-        Ok(crate::proto::admin::ListAdminsResponse { admins })
+        Ok(crate::proto::admin::ListAdminsResponse {
+            admins,
+            total: i64_to_i32_saturating(total),
+        })
     }
 
     pub async fn get_system_stats(
@@ -4001,12 +4010,14 @@ impl AdminApiImpl {
             streams.push(stream);
         }
 
+        let total = usize_to_i32_saturating(streams.len());
+
         streams.par_sort_by(|left, right| {
             compare_active_streams(left, right, sort_by, sort_direction)
         });
         let streams = paginate_vec(streams, req.page, req.page_size);
 
-        Ok(crate::proto::admin::ListActiveStreamsResponse { streams })
+        Ok(crate::proto::admin::ListActiveStreamsResponse { streams, total })
     }
 
     /// Kick an active stream
@@ -4282,7 +4293,7 @@ impl AdminApiImpl {
     pub async fn update_playback(
         &self,
         room_id: &str,
-        req: crate::proto::client::UpdatePlayback,
+        req: crate::proto::client::UpdatePlaybackRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
@@ -6200,8 +6211,18 @@ mod tests {
         tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
     ) {
         let user_service = Arc::new(make_user_service(&pool));
-        let mut room_service =
-            synctv_core::service::RoomService::new(pool.clone(), (*user_service).clone());
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            ProviderInstanceRepository::new(pool.clone()),
+        )));
+        let providers_manager = ProvidersManager::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        );
+        let mut room_service = synctv_core::service::RoomService::new_with_providers(
+            pool.clone(),
+            (*user_service).clone(),
+            Arc::new(providers_manager),
+        );
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
             pool.clone(),
@@ -6215,9 +6236,6 @@ mod tests {
         let email_service = Arc::new(EmailService::new(None).expect("email service"));
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-            ProviderInstanceRepository::new(pool.clone()),
-        )));
         let room_service = Arc::new(room_service);
         room_service
             .media_service()
@@ -7443,6 +7461,7 @@ mod tests {
             usernames,
             vec!["admin-alpha".to_string(), "root-zeta".to_string()]
         );
+        assert_eq!(response.total, 2);
     }
 
     #[tokio::test]
@@ -7671,6 +7690,7 @@ mod tests {
 
         assert_eq!(response.admins.len(), 1);
         assert_eq!(response.admins[0].username, "alpha-admin");
+        assert_eq!(response.total, 2);
     }
 
     #[tokio::test]
@@ -10502,7 +10522,7 @@ mod tests {
         admin_api
             .update_playback(
                 &public_room_id(&admin_api, room.id),
-                crate::proto::client::UpdatePlayback {
+                crate::proto::client::UpdatePlaybackRequest {
                     r#type: crate::proto::client::PlaybackUpdateType::Pause as i32,
                     playing: None,
                     position: Some(12.5),

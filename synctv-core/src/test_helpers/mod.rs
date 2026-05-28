@@ -178,21 +178,21 @@ impl RoomFixture {
         self
     }
 
-    /// Set the `created_at` timestamp for testing `room_ttl` enforcement
+    /// Set the `created_at` timestamp.
     #[must_use]
     pub fn with_created_at(mut self, created_at: chrono::DateTime<chrono::Utc>) -> Self {
         self.created_at = Some(created_at);
         self
     }
 
-    /// Set the `updated_at` timestamp for testing `room_ttl` enforcement
+    /// Set the `updated_at` timestamp.
     #[must_use]
     pub fn with_updated_at(mut self, updated_at: chrono::DateTime<chrono::Utc>) -> Self {
         self.updated_at = Some(updated_at);
         self
     }
 
-    /// Set the `last_activity_at` timestamp for testing `room_ttl` enforcement
+    /// Set the `last_activity_at` timestamp.
     #[must_use]
     pub fn with_last_activity_at(
         mut self,

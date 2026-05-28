@@ -114,10 +114,10 @@ impl LogoutOutcome {
 }
 
 impl ClientApiImpl {
-    pub async fn login_request_with_control(
+    pub async fn confirm_email_login_with_control(
         &self,
         email_api: Option<&crate::impls::EmailApiImpl>,
-        req: crate::proto::client::LoginRequest,
+        req: crate::proto::client::ConfirmEmailLoginRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
@@ -380,8 +380,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         Ok(crate::proto::client::RegisterResponse {
             user: Some(user_to_proto(&user, &self.public_id_codec)),
-            access_token,
-            refresh_token,
+            access_token: access_token.unwrap_or_default(),
+            refresh_token: refresh_token.unwrap_or_default(),
         })
     }
 

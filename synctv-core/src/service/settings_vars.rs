@@ -56,6 +56,16 @@ pub trait SettingProvider: Send + Sync {
     /// Set raw string value (persists to database)
     async fn set_raw(&self, value: String) -> Result<()>;
 
+    /// Whether user/admin initiated settings updates may modify this key.
+    fn user_writable(&self) -> bool {
+        true
+    }
+
+    /// Whether the setting should be projected through user/admin settings APIs.
+    fn user_visible(&self) -> bool {
+        true
+    }
+
     /// Validate a raw string value
     fn is_valid_raw(&self, value: &str) -> Result<()>;
 }
@@ -246,6 +256,18 @@ impl SettingsStorage {
         Ok(())
     }
 
+    pub(crate) async fn set_raw_internal_if_missing(&self, key: &str, value: String) -> Result<()> {
+        let setting = self
+            .settings_service
+            .upsert_internal_if_missing(key, value)
+            .await
+            .map_err(|e| {
+                crate::Error::Internal(format!("Failed to initialize runtime setting '{key}': {e}"))
+            })?;
+        self.inner.write().insert(setting.key, setting.value);
+        Ok(())
+    }
+
     /// Validate a setting value by key
     #[must_use]
     pub fn validate(&self, key: &str, value: &str) -> bool {
@@ -262,10 +284,24 @@ impl SettingsStorage {
             .setting_providers
             .read()
             .values()
+            .filter(|provider| provider.user_visible())
             .map(|provider| (provider.key().to_string(), provider.default_raw()))
             .collect();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         entries
+    }
+
+    /// List all registered keys, including runtime-managed hidden settings.
+    #[must_use]
+    pub fn registered_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .setting_providers
+            .read()
+            .values()
+            .map(|provider| provider.key().to_string())
+            .collect();
+        keys.sort();
+        keys
     }
 }
 
@@ -290,6 +326,8 @@ where
     raw_cache: Arc<RwLock<Option<String>>>,
     default_value: T,
     validator: Arc<RwLock<Option<ValidatorFn<T>>>>,
+    user_writable: Arc<RwLock<bool>>,
+    user_visible: Arc<RwLock<bool>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -306,6 +344,8 @@ where
             raw_cache: self.raw_cache.clone(),
             default_value: self.default_value.clone(),
             validator: self.validator.clone(),
+            user_writable: self.user_writable.clone(),
+            user_visible: self.user_visible.clone(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -331,6 +371,8 @@ where
             raw_cache: Arc::new(RwLock::new(None)),
             default_value,
             validator: Arc::new(RwLock::new(None)),
+            user_writable: Arc::new(RwLock::new(true)),
+            user_visible: Arc::new(RwLock::new(true)),
             _phantom: std::marker::PhantomData,
         };
 
@@ -362,6 +404,20 @@ where
         F: Fn(&T) -> Result<()> + Send + Sync + 'static,
     {
         *self.validator.write() = Some(Arc::new(validator));
+        self
+    }
+
+    /// Mark the setting as writable only by runtime internals.
+    #[must_use]
+    pub fn with_user_updates_disabled(self) -> Self {
+        *self.user_writable.write() = false;
+        self
+    }
+
+    /// Hide the setting from user/admin settings projection APIs.
+    #[must_use]
+    pub fn hidden_from_user_projection(self) -> Self {
+        *self.user_visible.write() = false;
         self
     }
 
@@ -425,6 +481,33 @@ where
         Ok(())
     }
 
+    /// Return the setting value, creating and persisting it with `initializer` when absent.
+    ///
+    /// This bypasses `user_writable` because it is intended for runtime-owned
+    /// settings that are initialized by the server itself.
+    pub async fn get_or_initialize_with<F>(&self, initializer: F) -> Result<T>
+    where
+        F: FnOnce() -> T,
+    {
+        if self.storage.get_raw(self.key).is_some() {
+            let current = self.get()?;
+            if let Some(validator) = self.validator.read().as_ref() {
+                validator(&current)?;
+            }
+            return Ok(current);
+        }
+
+        let value = initializer();
+        if let Some(validator) = self.validator.read().as_ref() {
+            validator(&value)?;
+        }
+        let str_value = value.to_string();
+        self.storage
+            .set_raw_internal_if_missing(self.key, str_value)
+            .await?;
+        self.get()
+    }
+
     /// Set a value in memory without persisting.
     ///
     /// This is intended for tests that need to seed settings without a live
@@ -480,6 +563,14 @@ where
         // Validate before setting
         self.is_valid_raw(&value)?;
         self.storage.set_raw(self.key, value).await
+    }
+
+    fn user_writable(&self) -> bool {
+        *self.user_writable.read()
+    }
+
+    fn user_visible(&self) -> bool {
+        *self.user_visible.read()
     }
 
     fn is_valid_raw(&self, value: &str) -> Result<()> {

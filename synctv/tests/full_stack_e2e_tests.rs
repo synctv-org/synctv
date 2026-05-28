@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures_util::{stream, SinkExt, StreamExt};
 use opaque_ke::argon2::Argon2;
 use opaque_ke::ciphersuite::CipherSuite;
@@ -1325,7 +1326,7 @@ async fn opaque_http_register(
         json!({
             "username": username,
             "email": email,
-            "registration_request": client_start.message.serialize()
+            "registration_request": BASE64_STANDARD.encode(client_start.message.serialize())
         }),
         None,
     )
@@ -1339,13 +1340,13 @@ async fn opaque_http_register(
         .as_str()
         .expect("OPAQUE registration start should return session_id")
         .to_string();
-    let registration_response: Vec<u8> = serde_json::from_value(
-        challenge
-            .get("registration_response")
-            .cloned()
-            .expect("OPAQUE registration start should return registration_response"),
-    )
-    .expect("registration_response should decode as bytes");
+    let registration_response = BASE64_STANDARD
+        .decode(
+            challenge["registration_response"]
+                .as_str()
+                .expect("OPAQUE registration start should return base64 registration_response"),
+        )
+        .expect("registration_response should decode as base64 bytes");
     let registration_response =
         RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(&registration_response)
             .expect("server registration response should deserialize");
@@ -1367,7 +1368,7 @@ async fn opaque_http_register(
         ),
         json!({
             "session_id": session_id,
-            "registration_upload": client_finish.message.serialize()
+            "registration_upload": BASE64_STANDARD.encode(client_finish.message.serialize())
         }),
         None,
     )
@@ -1389,7 +1390,7 @@ async fn opaque_http_login_token(
         json!({
             "username": username,
             "email": "",
-            "credential_request": client_start.message.serialize()
+            "credential_request": BASE64_STANDARD.encode(client_start.message.serialize())
         }),
         None,
     )
@@ -1407,13 +1408,13 @@ async fn opaque_http_login_token(
         .as_str()
         .expect("OPAQUE login start should return session_id")
         .to_string();
-    let credential_response: Vec<u8> = serde_json::from_value(
-        challenge
-            .get("credential_response")
-            .cloned()
-            .expect("OPAQUE login start should return credential_response"),
-    )
-    .expect("credential_response should decode as bytes");
+    let credential_response = BASE64_STANDARD
+        .decode(
+            challenge["credential_response"]
+                .as_str()
+                .expect("OPAQUE login start should return base64 credential_response"),
+        )
+        .expect("credential_response should decode as base64 bytes");
     let credential_response =
         CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&credential_response)
             .expect("server credential response should deserialize");
@@ -1432,7 +1433,7 @@ async fn opaque_http_login_token(
         &format!("{}/api/auth/opaque/login/finish", server.api_base_url),
         json!({
             "session_id": session_id,
-            "credential_finalization": client_finish.message.serialize()
+            "credential_finalization": BASE64_STANDARD.encode(client_finish.message.serialize())
         }),
         None,
     )
@@ -7519,7 +7520,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     use synctv_proto::client::client_message;
     use synctv_proto::client::server_message;
     use synctv_proto::client::{
-        ChatMessageSend, ClientMessage, PlaybackUpdateType, UpdatePlayback,
+        ChatMessageSend, ClientMessage, PlaybackUpdateType, UpdatePlaybackRequest,
     };
 
     let fixture = start_room_realtime_fixture("ws-room-events").await;
@@ -7934,13 +7935,15 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
-                r#type: PlaybackUpdateType::Pause as i32,
-                playing: None,
-                position: None,
-                speed: None,
-                version: None,
-            })),
+            message: Some(client_message::Message::PlaybackUpdate(
+                UpdatePlaybackRequest {
+                    r#type: PlaybackUpdateType::Pause as i32,
+                    playing: None,
+                    position: None,
+                    speed: None,
+                    version: None,
+                },
+            )),
         },
     )
     .await;
@@ -7964,13 +7967,15 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
-                r#type: PlaybackUpdateType::Seek as i32,
-                playing: Some(false),
-                position: Some(17.5),
-                speed: None,
-                version: None,
-            })),
+            message: Some(client_message::Message::PlaybackUpdate(
+                UpdatePlaybackRequest {
+                    r#type: PlaybackUpdateType::Seek as i32,
+                    playing: Some(false),
+                    position: Some(17.5),
+                    speed: None,
+                    version: None,
+                },
+            )),
         },
     )
     .await;
@@ -7995,13 +8000,15 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
-                r#type: PlaybackUpdateType::Speed as i32,
-                playing: Some(false),
-                position: None,
-                speed: Some(1.5),
-                version: None,
-            })),
+            message: Some(client_message::Message::PlaybackUpdate(
+                UpdatePlaybackRequest {
+                    r#type: PlaybackUpdateType::Speed as i32,
+                    playing: Some(false),
+                    position: None,
+                    speed: Some(1.5),
+                    version: None,
+                },
+            )),
         },
     )
     .await;
@@ -8026,13 +8033,15 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
-                r#type: PlaybackUpdateType::Play as i32,
-                playing: None,
-                position: None,
-                speed: None,
-                version: None,
-            })),
+            message: Some(client_message::Message::PlaybackUpdate(
+                UpdatePlaybackRequest {
+                    r#type: PlaybackUpdateType::Play as i32,
+                    playing: None,
+                    position: None,
+                    speed: None,
+                    version: None,
+                },
+            )),
         },
     )
     .await;

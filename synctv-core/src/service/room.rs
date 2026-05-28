@@ -141,8 +141,6 @@ pub type RealtimeOutboxRoomEventFactory =
     Arc<dyn Fn(&Room) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxDeleteEntriesEventFactory =
     Arc<dyn Fn(&DeleteEntriesPlan) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
-pub type RealtimeOutboxMediaIdsEventFactory =
-    Arc<dyn Fn(&[MediaId]) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxPermissionChangedEventFactory =
     Arc<dyn Fn(&PermissionChangedOutboxSnapshot) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxUserLeftEventFactory =
@@ -372,6 +370,8 @@ pub struct DeleteEntriesPlan {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClearPlaylistResult {
     pub deleted_count: i64,
+    pub deleted_playlists: usize,
+    pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_state: Option<RoomPlaybackState>,
 }
@@ -6963,8 +6963,7 @@ impl RoomService {
         tx.commit().await?;
 
         if let Some(state) = impact.playback_state.clone() {
-            self.playback_service
-                .broadcast_playback_reset_after_force_delete(state)
+            self.broadcast_playback_reset_after_entry_deletion(state)
                 .await;
         }
 
@@ -7118,8 +7117,7 @@ impl RoomService {
         tx.commit().await?;
 
         if let Some(state) = impact.playback_state.clone() {
-            self.playback_service
-                .broadcast_playback_reset_after_force_delete(state)
+            self.broadcast_playback_reset_after_entry_deletion(state)
                 .await;
         }
 
@@ -7242,22 +7240,20 @@ impl RoomService {
             .await
     }
 
-    /// Clear all media directly under the room root.
+    /// Clear media and child playlists in a playlist scope.
     ///
     /// The `CLEAR_MEDIA_RESOURCES` permission check is performed inside the
     /// transaction so revocations cannot race with the clear operation.
     ///
-    /// If the currently playing media is in the room root being cleared,
-    /// the playback state is reset to stopped within the same transaction
-    /// before deleting media. Playback references are protected by `RESTRICT`
-    /// FKs, so the state must be cleared explicitly before the delete can
-    /// commit.
+    /// `playlist_id = None` clears the room-root scope. `Some(id)` clears the
+    /// given playlist's contents while keeping the playlist itself.
     pub async fn clear_playlist(
         &self,
         room_id: RoomId,
         user_id: UserId,
+        playlist_id: Option<PlaylistId>,
     ) -> Result<ClearPlaylistResult> {
-        self.clear_playlist_with_outbox(room_id, user_id, None)
+        self.clear_playlist_with_outbox(room_id, user_id, playlist_id, None)
             .await
     }
 
@@ -7265,10 +7261,9 @@ impl RoomService {
         &self,
         room_id: RoomId,
         user_id: UserId,
-        outbox_event_factory: Option<RealtimeOutboxMediaIdsEventFactory>,
+        playlist_id: Option<PlaylistId>,
+        outbox_event_factory: Option<RealtimeOutboxDeleteEntriesEventFactory>,
     ) -> Result<ClearPlaylistResult> {
-        // Atomic reset-and-clear within a transaction to prevent TOCTOU race
-        // where another user starts playing media between the check and the clear.
         let mut tx = self.pool.begin().await?;
         ensure_actor_has_room_permission_now_tx(
             &mut tx,
@@ -7279,90 +7274,54 @@ impl RoomService {
         )
         .await?;
 
-        let deleted_media_ids = sqlx::query_scalar!(
-            r#"SELECT id AS "id: MediaId"
-             FROM media
-             WHERE room_id = $1
-               AND playlist_id IS NULL
-             ORDER BY position ASC"#,
-            room_id.as_i64(),
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        // Lock the playback state row to prevent concurrent playback switches
-        let row = sqlx::query!(
-            r#"SELECT playing_media_id AS "playing_media_id?: MediaId",
-                      playing_playlist_id AS "playing_playlist_id?: PlaylistId"
-             FROM room_playback_state
-             WHERE room_id = $1
-             FOR UPDATE"#,
-            room_id.as_i64(),
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        // If the currently playing media is at the room root, reset playback state
-        let mut playback_reset = false;
-        if let Some(row) = row {
-            if let Some(ref mid) = row.playing_media_id {
-                // Check if the playing media belongs to the room root.
-                let in_playlist = sqlx::query_scalar!(
-                    r#"SELECT EXISTS(
-                        SELECT 1
-                        FROM media
-                        WHERE id = $1
-                          AND room_id = $2
-                          AND playlist_id IS NULL
-                    ) AS "exists!""#,
-                    mid.as_i64(),
-                    room_id.as_i64(),
-                )
-                .fetch_one(&mut *tx)
-                .await?;
-
-                if in_playlist {
-                    // Reset playback state to stopped within the same transaction
-                    sqlx::query!(
-                        "UPDATE room_playback_state
-                         SET playing_media_id = NULL, playing_playlist_id = NULL,
-                             \"position\" = 0, is_playing = false,
-                             version = version + 1, updated_at = NOW()
-                         WHERE room_id = $1",
-                        room_id.as_i64(),
-                    )
-                    .execute(&mut *tx)
-                    .await?;
-                    playback_reset = true;
-                }
+        if let Some(playlist_id) = playlist_id {
+            let exists = sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                    SELECT 1
+                    FROM playlists
+                    WHERE room_id = $1 AND id = $2
+                ) AS "exists!""#,
+            )
+            .bind(room_id.as_i64())
+            .bind(playlist_id.as_i64())
+            .fetch_one(&mut *tx)
+            .await?;
+            if !exists {
+                return Err(Error::NotFound("Playlist not found".to_string()));
             }
         }
 
-        // Delete all media at the room root within the transaction
-        let result = sqlx::query!(
-            "DELETE FROM media WHERE room_id = $1 AND playlist_id IS NULL",
-            room_id.as_i64(),
-        )
-        .execute(&mut *tx)
-        .await?;
-
+        let mut impact = plan_clear_playlist_scope_in_tx(&mut tx, &room_id, playlist_id).await?;
+        let plan = DeleteEntriesPlan {
+            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
+            deleted_media_ids: impact.deleted_media_ids.clone(),
+            playback_reset: impact.playback_reset,
+        };
         let outbox_events = outbox_event_factory
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&deleted_media_ids));
+            .map_or_else(Vec::new, |factory| factory(&plan));
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
             }
         }
 
-        let count = result.rows_affected().cast_signed();
         tx.commit().await?;
 
-        for media_id in &deleted_media_ids {
-            if let Err(error) = self
-                .notification_service
-                .notify_media_removed(&room_id, None, "", *media_id)
-            {
+        if let Some(state) = impact.playback_state.clone() {
+            self.broadcast_playback_reset_after_entry_deletion(state)
+                .await;
+        }
+
+        let actor_username = self.resolve_actor_username(&user_id).await;
+        for media_id in &impact.deleted_media_ids {
+            if let Err(error) = self.notification_service.notify_media_removed(
+                &room_id,
+                Some(&user_id),
+                &actor_username,
+                *media_id,
+            ) {
                 tracing::warn!(
                     error = %error,
                     room_id = %room_id,
@@ -7371,46 +7330,29 @@ impl RoomService {
                 );
             }
         }
-
-        let playback_state = if playback_reset {
-            self.playback_service
-                .invalidate_playback_cache(&room_id)
-                .await;
-
-            match self.playback_service.get_state(&room_id).await {
-                Ok(state) => {
-                    if let Err(error) = self.notification_service.notify_playback_state_changed(
-                        &room_id,
-                        state.is_playing,
-                        state.position,
-                        state.speed,
-                        state.playing_media_id,
-                    ) {
-                        tracing::warn!(
-                            error = %error,
-                            room_id = %room_id,
-                            "Failed to broadcast playback reset after clear_playlist"
-                        );
-                    }
-                    Some(state)
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %room_id,
-                        "Failed to reload playback state after clear_playlist reset"
-                    );
-                    None
-                }
+        for playlist_id in &impact.deleted_playlist_ids {
+            if let Err(error) = self.notification_service.notify_playlist_deleted(
+                &room_id,
+                Some(&user_id),
+                &actor_username,
+                *playlist_id,
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    playlist_id = %playlist_id,
+                    "Failed to broadcast playlist deleted event after clear_playlist"
+                );
             }
-        } else {
-            None
-        };
+        }
 
+        let deleted_count = i64::try_from(impact.deleted_media_ids.len()).unwrap_or(i64::MAX);
         Ok(ClearPlaylistResult {
-            deleted_count: count,
-            deleted_media_ids,
-            playback_state,
+            deleted_count,
+            deleted_playlists: impact.deleted_playlist_ids.len(),
+            deleted_playlist_ids: impact.deleted_playlist_ids,
+            deleted_media_ids: impact.deleted_media_ids,
+            playback_state: impact.playback_state,
         })
     }
 
@@ -8215,6 +8157,30 @@ impl RoomService {
         &self.notification_service
     }
 
+    async fn broadcast_playback_reset_after_entry_deletion(&self, state: RoomPlaybackState) {
+        let result = self
+            .playback_service
+            .broadcast_playback_reset_after_force_delete(state.clone())
+            .await;
+
+        if result.single_node {
+            let media_id = state.playing_media_id;
+            if let Err(error) = self.notification_service.notify_playback_state_changed(
+                &state.room_id,
+                state.is_playing,
+                state.position,
+                state.speed,
+                media_id,
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %state.room_id,
+                    "Failed to broadcast local playback reset event after entry deletion"
+                );
+            }
+        }
+    }
+
     /// Invalidate room cache locally and broadcast to other replicas.
     ///
     /// Best-effort: logs a warning on failure but does not propagate the error,
@@ -8313,8 +8279,7 @@ impl RoomService {
         self.invalidate_room_caches(room_id).await;
 
         if let Some(state) = playback_state {
-            self.playback_service
-                .broadcast_playback_reset_after_force_delete(state.clone())
+            self.broadcast_playback_reset_after_entry_deletion(state.clone())
                 .await;
         }
 
@@ -8931,6 +8896,98 @@ async fn plan_delete_entries_in_room_in_tx(
         &deleted_playlist_ids,
         &deleted_media_ids,
         force,
+    )
+    .await?;
+
+    Ok(EntryDeletionImpact {
+        playlist_nodes,
+        deleted_playlist_ids,
+        deleted_media_ids,
+        playback_reset,
+        playback_state: None,
+    })
+}
+
+async fn collect_child_playlist_nodes_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    parent_playlist_id: Option<PlaylistId>,
+) -> Result<Vec<(PlaylistId, i32)>> {
+    let rows = sqlx::query_as::<_, (PlaylistId, Option<i32>)>(
+        r#"WITH RECURSIVE child_playlists AS (
+            SELECT id, 0 AS depth
+            FROM playlists
+            WHERE room_id = $1
+              AND (
+                  ($2::BIGINT IS NULL AND parent_id IS NULL)
+                  OR parent_id = $2
+              )
+            UNION ALL
+            SELECT p.id, cp.depth + 1
+            FROM playlists p
+            JOIN child_playlists cp ON p.parent_id = cp.id
+            WHERE p.room_id = $1
+        )
+        SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
+        FROM child_playlists
+        GROUP BY id
+        ORDER BY MAX(depth) DESC, id"#,
+    )
+    .bind(room_id.as_i64())
+    .bind(parent_playlist_id.map(|playlist_id| playlist_id.as_i64()))
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut result = Vec::with_capacity(rows.len());
+    for (playlist_id, depth) in rows {
+        result.push((playlist_id, depth.unwrap_or(0)));
+    }
+    Ok(result)
+}
+
+async fn collect_direct_scope_media_ids_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    playlist_id: Option<PlaylistId>,
+) -> Result<Vec<MediaId>> {
+    let media_ids = sqlx::query_scalar::<_, MediaId>(
+        r#"SELECT id AS "id: MediaId"
+         FROM media
+         WHERE room_id = $1
+           AND (
+               ($2::BIGINT IS NULL AND playlist_id IS NULL)
+               OR playlist_id = $2
+         )
+         ORDER BY id"#,
+    )
+    .bind(room_id.as_i64())
+    .bind(playlist_id.map(|playlist_id| playlist_id.as_i64()))
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(media_ids)
+}
+
+async fn plan_clear_playlist_scope_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    playlist_id: Option<PlaylistId>,
+) -> Result<EntryDeletionImpact> {
+    let playlist_nodes = collect_child_playlist_nodes_in_tx(tx, room_id, playlist_id).await?;
+    let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
+        .iter()
+        .map(|(playlist_id, _)| *playlist_id)
+        .collect();
+    let direct_media_ids = collect_direct_scope_media_ids_in_tx(tx, room_id, playlist_id).await?;
+    let deleted_media_ids =
+        collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &direct_media_ids)
+            .await?;
+    let playback_reset = plan_playback_reset_for_deleted_entries_in_tx(
+        tx,
+        room_id,
+        &deleted_playlist_ids,
+        &deleted_media_ids,
+        true,
     )
     .await?;
 

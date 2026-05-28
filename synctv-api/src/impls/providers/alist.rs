@@ -553,6 +553,7 @@ impl AlistApiImpl {
             host: bind.host,
             username: bind.label_value,
             created_at: bind.created_at,
+            provider_instance_name: bind.provider_instance_name,
         })
         .collect();
 

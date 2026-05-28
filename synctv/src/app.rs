@@ -1164,7 +1164,6 @@ impl Application {
                     info!(
                         users_purged = cleanup_result.users_purged,
                         rooms_purged = cleanup_result.rooms_purged,
-                        rooms_expired = cleanup_result.rooms_expired,
                         tokens_deleted = cleanup_result.tokens_deleted,
                         credentials_deleted = cleanup_result.credentials_deleted,
                         notifications_deleted = cleanup_result.notifications_deleted,

@@ -64,7 +64,11 @@ pub trait Provider: Send + Sync {
     /// values that must be stored and passed back during `get_user_info`.
     ///
     /// Similar to Go's `NewAuthURL()` method, extended with PKCE (RFC 7636).
-    async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization, Error>;
+    async fn new_auth_url(
+        &self,
+        state: &str,
+        redirect_url: Option<&str>,
+    ) -> Result<OAuth2Authorization, Error>;
 
     /// Exchange authorization code for user info, verifying the PKCE challenge
     ///
@@ -77,6 +81,7 @@ pub trait Provider: Send + Sync {
     async fn get_user_info(
         &self,
         code: &str,
+        redirect_url: Option<&str>,
         pkce_verifier: &str,
         nonce: Option<&str>,
     ) -> Result<OAuth2UserInfo, Error>;

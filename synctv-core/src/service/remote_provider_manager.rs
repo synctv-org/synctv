@@ -1328,8 +1328,17 @@ impl RemoteProviderManager {
         &self,
         query: &ProviderInstanceListQuery,
     ) -> crate::Result<Vec<ProviderInstance>> {
+        self.list_instances_with_total(query)
+            .await
+            .map(|(instances, _)| instances)
+    }
+
+    pub async fn list_instances_with_total(
+        &self,
+        query: &ProviderInstanceListQuery,
+    ) -> crate::Result<(Vec<ProviderInstance>, i64)> {
         self.repository
-            .list(query)
+            .list_with_total(query)
             .await
             .map_err(|e| Self::provider_registry_unavailable("list instances", e))
     }

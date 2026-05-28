@@ -403,6 +403,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         crate::impls::BilibiliApiImpl::new(
             config.providers.bilibili.clone(),
             credential_repo.clone(),
+            config.config.jwt.secret.as_bytes(),
         )
         .with_access_service(provider_access_service.clone())
         .with_event_service(config.event_service.clone()),
@@ -508,7 +509,7 @@ fn register_auth_routes(_state: &AppState) -> Router<AppState> {
 
 fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/email/confirm", post(auth::confirm_email_login))
         .route("/api/auth/guest-token", post(auth::create_guest_token))
         .route(
             "/api/auth/passkeys/registration/start",
@@ -754,7 +755,7 @@ fn register_extracted_user_routes() -> Router<AppState> {
             "/api/user/passkeys/{credential_id}",
             axum::routing::delete(user::delete_passkey),
         )
-        .route("/api/user/me", axum::routing::delete(user::delete_me))
+        .route("/api/user/account-closure", post(user::close_account))
         .route("/api/user/logout", post(auth::logout))
 }
 
@@ -1292,7 +1293,7 @@ mod tests {
             None,
         );
         let chat_service = synctv_core::service::ChatService::new(
-            Arc::new(synctv_core::repository::ChatRepository::new(pool)),
+            Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
             synctv_core::service::chat::ChatRuntime {
                 rate_limiter: router_config.rate_limiter.clone(),
                 rate_limit_config: state
@@ -1301,11 +1302,11 @@ mod tests {
                     .as_ref()
                     .clone(),
                 content_filter: state.shared_api_runtime.content_filter.as_ref().clone(),
-                username_cache: router_config.user_service.username_cache().clone(),
             },
             synctv_core::service::chat::ChatDependencies {
                 permission_service: router_config.room_service.permission_service().clone(),
                 room_settings_service,
+                user_service: router_config.user_service.clone(),
                 notification_service: synctv_core::service::NotificationService::default(),
             },
         );
@@ -1970,7 +1971,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/auth/login")
+                    .uri("/api/auth/email/confirm")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from("{invalid json"))
                     .expect("request"),
@@ -1983,7 +1984,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/auth/login")
+                    .uri("/api/auth/email/confirm")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from("{invalid json"))
                     .expect("request"),
@@ -2329,7 +2330,7 @@ mod tests {
             .expect("read body");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("valid openapi json");
         assert_eq!(json["openapi"], "3.1.0");
-        assert!(json["paths"]["/api/auth/login"].is_object());
+        assert!(json["paths"]["/api/auth/email/confirm"].is_object());
         assert!(json["paths"]["/api/tickets"].is_object());
         assert!(json["paths"]["/api/user"].is_object());
         assert!(json["paths"]["/api/rooms/{room_id}/media"].is_object());
@@ -2366,7 +2367,7 @@ mod tests {
         assert_eq!(
             json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]
                 ["schema"]["$ref"],
-            "#/components/schemas/synctv_client_UpdateUserResponse"
+            "#/components/schemas/synctv_client_SetUsernameResponse"
         );
         assert_eq!(
             json["paths"]["/api/tickets"]["post"]["responses"]["200"]["content"]
@@ -2383,7 +2384,7 @@ mod tests {
             ["200"]["content"]["application/json"]["schema"]["$ref"]
             .as_str()
             .expect("alist login schema ref");
-        let auth_login_ref = json["paths"]["/api/auth/login"]["post"]["responses"]["200"]
+        let auth_login_ref = json["paths"]["/api/auth/email/confirm"]["post"]["responses"]["200"]
             ["content"]["application/json"]["schema"]["$ref"]
             .as_str()
             .expect("auth login schema ref");
@@ -2704,7 +2705,7 @@ mod tests {
                     .method("PATCH")
                     .uri("/api/user")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"username":"patched-name"}"#))
+                    .body(Body::from(r#"{"new_username":"patched-name"}"#))
                     .expect("request"),
             )
             .await

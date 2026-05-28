@@ -1101,6 +1101,32 @@ mod tests {
         assert_eq!(proto.name, "Test Movie");
         assert_eq!(proto.parent_id, "parent1");
         assert_eq!(proto.series_name, ""); // None -> empty
+        assert!(!proto.has_thumbnail);
+    }
+
+    #[test]
+    fn test_item_to_proto_preserves_thumbnail_presence() {
+        let item = crate::emby::types::Item {
+            id: "item1".to_string(),
+            name: "Test Movie".to_string(),
+            item_type: "Movie".to_string(),
+            is_folder: false,
+            parent_id: None,
+            series_name: None,
+            series_id: None,
+            season_name: None,
+            season_id: None,
+            collection_type: None,
+            media_sources: vec![],
+            run_time_ticks: None,
+            production_year: None,
+            image_tags: Some(crate::emby::types::ImageTags {
+                primary: Some("primary-tag".to_string()),
+                thumb: None,
+            }),
+        };
+        let proto: crate::grpc::emby::Item = item.into();
+        assert!(proto.has_thumbnail);
     }
 
     #[test]

@@ -349,9 +349,9 @@ mod tests {
         AlistSearchRequest, ApproveRoomCreationReviewRequest, ApproveRoomJoinReviewRequest,
         ApproveUserRegistrationReviewRequest, BanRoomRequest, BanUserRequest, BatchBanRoomsRequest,
         BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
-        BilibiliCheckQrRequest, BilibiliGetBindsRequest, BilibiliGetCaptchaRequest,
-        BilibiliGetUserInfoRequest, BilibiliLoginQrRequest, BilibiliLoginSmsRequest,
-        BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest,
+        BilibiliCheckQrRequest, BilibiliGetBindsRequest, BilibiliGetUserInfoRequest,
+        BilibiliLoginQrRequest, BilibiliLoginSmsRequest, BilibiliLogoutRequest,
+        BilibiliParseRequest, BilibiliSendSmsRequest, BilibiliStartSmsLoginRequest,
         CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest, CreatePlaylistRequest,
         CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
         DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
@@ -1026,10 +1026,10 @@ mod tests {
         ) -> std::result::Result<Response<bilibili_proto::QrStatusResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
-        async fn bilibili_get_captcha(
+        async fn bilibili_start_sms_login(
             &self,
-            _: Request<BilibiliGetCaptchaRequest>,
-        ) -> std::result::Result<Response<bilibili_proto::CaptchaResponse>, Status> {
+            _: Request<BilibiliStartSmsLoginRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::StartSmsLoginResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn bilibili_send_sms(

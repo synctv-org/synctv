@@ -56,7 +56,15 @@ message ProviderInstance {
   int64 updated_at = 11;
 }
 
-message ListAvailableProviderInstancesRequest {}
+message ListAvailableProviderInstancesRequest {
+  string provider_type = 1 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      pattern: "^[a-z][a-z0-9_]*$",
+      max_len: 64
+    }
+  ];
+}
 
 message ListProviderInstancesRequest {
   option (buf.validate.message).cel = {
@@ -87,6 +95,7 @@ message ListProviderInstancesRequest {
 
 message ListProviderInstancesResponse {
   repeated ProviderInstance instances = 1;
+  int32 total = 2;
 }
 
 message AddProviderInstanceRequest {

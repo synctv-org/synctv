@@ -76,13 +76,13 @@ message GetAuthorizationUrlRequest {
         pattern: "^[A-Za-z0-9_-]+$"
     }];
 
-    // Optional redirect URL for frontend after OAuth2 flow completes
-    // This is stored in state and returned after successful authentication
-    // If not provided, frontend should handle redirect itself
+    // Optional OAuth2 callback URL for this authorization flow.
+    // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
+    // URLs on desktop. Custom URL schemes are not supported.
     string redirect_url = 2 [(buf.validate.field).cel = {
         id: "oauth2.get_authorization_url.redirect_url"
-        message: "redirect_url must be empty or a valid http/https or native-app callback URL"
-        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https?://[^\\\\s]+$') || this.matches('^[A-Za-z][A-Za-z0-9+.-]+://[^\\\\s]+$')) && !this.matches('(?i)^(javascript|data|vbscript|file|ftp|mailto):.*$'))"
+        message: "redirect_url must be empty, an https URL, or a loopback http URL"
+        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
     }];
 }
 
@@ -107,11 +107,13 @@ message GetAuthorizationUrlForBindRequest {
         pattern: "^[A-Za-z0-9_-]+$"
     }];
 
-    // Optional redirect URL for frontend after bind flow completes
+    // Optional OAuth2 callback URL for this bind flow.
+    // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
+    // URLs on desktop. Custom URL schemes are not supported.
     string redirect_url = 2 [(buf.validate.field).cel = {
         id: "oauth2.get_authorization_url_for_bind.redirect_url"
-        message: "redirect_url must be empty or a valid http/https or native-app callback URL"
-        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https?://[^\\\\s]+$') || this.matches('^[A-Za-z][A-Za-z0-9+.-]+://[^\\\\s]+$')) && !this.matches('(?i)^(javascript|data|vbscript|file|ftp|mailto):.*$'))"
+        message: "redirect_url must be empty, an https URL, or a loopback http URL"
+        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
     }];
 }
 
@@ -272,6 +274,10 @@ message LinkedProvider {
 
     // Optional issuer metadata when known for OIDC-like providers.
     string provider_issuer = 5;
+
+    // External user ID in the provider instance namespace. Clients must pass
+    // this with provider_instance_name to unlink one specific OAuth2 identity.
+    string provider_user_id = 6;
 }
 
 // ==================== User Info ====================

@@ -26,6 +26,7 @@ prost-reflect.workspace = true
 prost-protovalidate.workspace = true
 
 # Serialization
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 utoipa = { workspace = true, optional = true }

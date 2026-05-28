@@ -84,7 +84,6 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | --- | --- | --- | --- | --- |
 | `room.disable_create_room` | bool | `false` | bool | 是否禁用创建房间 |
 | `room.create_room_need_review` | bool | `false` | bool | 创建房间是否需要审核 |
-| `room.room_ttl` | i64 秒 | `172800` | `>=0`，`0` 表示不过期 | 房间自动过期时间 |
 | `room.room_must_need_pwd` | bool | `false` | 与 `room.room_must_no_need_pwd` 互斥 | 是否强制房间必须设置密码 |
 | `room.room_must_no_need_pwd` | bool | `false` | 与 `room.room_must_need_pwd` 互斥 | 是否强制房间不能设置密码 |
 

@@ -24,6 +24,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
+use prost_reflect::{DynamicMessage, ReflectMessage};
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::{
@@ -46,7 +47,7 @@ use crate::runtime::RealtimeConnectionService;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::auth::{AuthErrorCategory, JwtValidator};
-use synctv_core::service::{ContentFilter, PendingValidatedTicket};
+use synctv_core::service::{ContentFilter, PendingValidatedTicket, ValidatedGuestTicket};
 
 /// Threshold for consecutive slow-client drops before disconnecting them
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
@@ -132,6 +133,20 @@ fn websocket_connect_request(query: &WsQuery) -> crate::proto::client::WebSocket
     crate::proto::client::WebSocketConnectRequest {
         ticket: query.ticket.clone(),
     }
+}
+
+fn guest_principal_from_ticket(room_id: RoomId, guest: &ValidatedGuestTicket) -> RealtimePrincipal {
+    RealtimePrincipal::guest(
+        room_id,
+        GuestRealtimeIdentity {
+            guest_id: guest.guest_id.clone(),
+            display_name: guest.display_name.clone(),
+            session_id: guest.session_id.clone(),
+            token_jti: guest.token_jti.clone(),
+            room_guest_version: guest.room_guest_version,
+            permissions: guest.permissions,
+        },
+    )
 }
 
 /// Authentication method used for WebSocket connection.
@@ -356,9 +371,17 @@ async fn extract_handshake_auth(
                     .await
                     .map_err(map_websocket_ticket_validation_api_error)?;
 
+                let principal = match &pending {
+                    PendingValidatedTicket::User { user_id, .. } => {
+                        RealtimePrincipal::user(*user_id, String::new())
+                    }
+                    PendingValidatedTicket::Guest { guest, .. } => {
+                        guest_principal_from_ticket(*room_id, guest)
+                    }
+                };
                 Ok(HandshakeAuthContext {
-                    user_id: pending.user_id,
-                    principal: RealtimePrincipal::user(pending.user_id, String::new()),
+                    user_id: principal.connection_user_id(),
+                    principal,
                     ticket_commit: Some(TicketAuthCommit {
                         ticket: query.ticket.clone(),
                         pending,
@@ -588,10 +611,7 @@ impl StreamMessage for WebSocketStream {
                 }
                 Some(Ok(axum::extract::ws::Message::Text(text))) => {
                     if self.format == RealtimeTransportFormat::Json {
-                        return Some(
-                            serde_json::from_str::<ClientMessage>(&text)
-                                .map_err(|e| format!("Failed to decode JSON message: {e}")),
-                        );
+                        return Some(decode_client_message_json(&text));
                     }
                 }
                 Some(Ok(axum::extract::ws::Message::Close(_))) => {
@@ -669,7 +689,7 @@ impl WebSocketMessageSender {
         message: &ServerMessage,
     ) -> Result<axum::extract::ws::Message, String> {
         match self.format {
-            RealtimeTransportFormat::Json => serde_json::to_string(message)
+            RealtimeTransportFormat::Json => encode_server_message_json(message)
                 .map(Into::into)
                 .map(axum::extract::ws::Message::Text)
                 .map_err(|e| format!("Failed to encode JSON message: {e}")),
@@ -678,6 +698,23 @@ impl WebSocketMessageSender {
                 .map(axum::extract::ws::Message::Binary),
         }
     }
+}
+
+fn decode_client_message_json(text: &str) -> Result<ClientMessage, String> {
+    let descriptor = ClientMessage::default().descriptor();
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let dynamic = DynamicMessage::deserialize(descriptor, &mut deserializer)
+        .map_err(|e| format!("Failed to decode JSON message: {e}"))?;
+    deserializer
+        .end()
+        .map_err(|e| format!("Failed to decode JSON message: {e}"))?;
+    dynamic
+        .transcode_to::<ClientMessage>()
+        .map_err(|e| format!("Failed to decode JSON message: {e}"))
+}
+
+fn encode_server_message_json(message: &ServerMessage) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&message.transcode_to_dynamic())
 }
 
 async fn forward_websocket_messages<S>(

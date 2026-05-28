@@ -4093,7 +4093,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
     let mut event_rx = room_service.notification_service().subscribe();
 
     let result = room_service
-        .clear_playlist(room.id, owner.id)
+        .clear_playlist(room.id, owner.id, None)
         .await
         .unwrap();
 
@@ -4178,7 +4178,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
     let mut event_rx = room_service.notification_service().subscribe();
 
     let result = room_service
-        .clear_playlist(room.id, owner.id)
+        .clear_playlist(room.id, owner.id, None)
         .await
         .unwrap();
 
@@ -4223,6 +4223,122 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         saw_playback_reset,
         "clear_playlist must broadcast a playback reset when it clears the currently playing room-root media"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("clear_playlist_scope_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Clear Playlist Scope".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let parent = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Parent".to_string(),
+            parent_id: None,
+            position: 0.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let child = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Child".to_string(),
+            parent_id: Some(parent.id),
+            position: 0.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let parent_media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(parent.id),
+            room_id: room.id,
+            name: "parent-media".to_string(),
+            position: 0.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(owner.id),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let child_media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(child.id),
+            room_id: room.id,
+            name: "child-media".to_string(),
+            position: 0.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(owner.id),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let result = room_service
+        .clear_playlist(room.id, owner.id, Some(parent.id))
+        .await
+        .unwrap();
+
+    assert_eq!(result.deleted_count, 2);
+    assert_eq!(result.deleted_playlists, 1);
+    assert_eq!(result.deleted_playlist_ids, vec![child.id]);
+    assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_some());
+    assert!(playlist_repo.get_by_id(&child.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&parent_media.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(media_repo
+        .get_by_id(&child_media.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

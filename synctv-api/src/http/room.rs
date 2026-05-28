@@ -28,19 +28,19 @@ use crate::impls::messaging::{
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomResponse,
-    ClearPlaylistResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
-    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
-    DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery, DeletePlaylistRequest,
-    DeletePlaylistResponse, DeleteRoomResponse, EditMediaResponse, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest,
-    GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse,
-    GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, JoinRoomResponse, KickRoomStreamRequest,
-    KickRoomStreamResponse, LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
-    ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
-    ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
+    ClearPlaylistRequest, ClearPlaylistResponse, CreatePlaylistRequest, CreatePlaylistResponse,
+    CreateRoomRequest, CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse,
+    DeleteMediaQuery, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery,
+    DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomResponse, EditMediaResponse,
+    GetChatHistoryRequest, GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse,
+    GetPlaybackRequest, GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse,
+    GetRoomResponse, GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, JoinRoomResponse,
+    KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomResponse, ListPlaylistItemsRequest,
+    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
+    ListRoomsRequest, ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
     ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
     StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
-    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdatePlayback,
+    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdatePlaybackRequest,
     UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, WatchOptions,
     WatchPlaybackSnapshotRequest, WatchPlaybackStateRequest, WatchPlaylistItemsRequest,
     WatchRoomMembersRequest, WatchRoomSettingsRequest,
@@ -53,6 +53,7 @@ pub type StartPlaybackBody = StartPlaybackRequest;
 pub type StopPlaybackBody = StopPlaybackRequest;
 pub type AddMediaBody = AddMediaRequest;
 pub type DeleteEntriesBody = DeleteEntriesRequest;
+pub type ClearPlaylistBody = ClearPlaylistRequest;
 #[derive(Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct KickRoomStreamBody {
@@ -1681,6 +1682,7 @@ pub async fn edit_media(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
+        request_body = ClearPlaylistRequest,
         responses(
             (status = 200, description = "Playlist cleared", body = ClearPlaylistResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
@@ -1694,6 +1696,7 @@ pub async fn clear_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ProtoJson(req): ProtoJson<ClearPlaylistRequest>,
 ) -> AppResult<Json<ClearPlaylistResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -1702,7 +1705,7 @@ pub async fn clear_playlist(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .clear_playlist(&authenticated.user_id, &room_id)
+                .clear_playlist(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1933,7 +1936,7 @@ pub async fn transfer_room_ownership(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = UpdatePlayback,
+        request_body = UpdatePlaybackRequest,
         responses(
             (status = 200, description = "Playback updated", body = GetPlaybackResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1948,7 +1951,7 @@ pub async fn update_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<UpdatePlayback>,
+    ProtoJson(req): ProtoJson<UpdatePlaybackRequest>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
@@ -2323,7 +2326,7 @@ mod tests {
     use super::{
         build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
         AddMediaBatchBody, CancelOnDropStream, CreatePlaylistBody, DeleteEntriesBody,
-        GetPlaybackQuery, UpdatePlayback,
+        GetPlaybackQuery, UpdatePlaybackRequest,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetHotRoomsRequest,
@@ -2334,7 +2337,7 @@ mod tests {
     #[test]
     fn test_update_playback_deserialize_playing_update() {
         let json = r#"{"type":1,"playing":true}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(
             req.r#type,
             crate::proto::client::PlaybackUpdateType::Play as i32
@@ -2347,7 +2350,7 @@ mod tests {
     #[test]
     fn test_update_playback_deserialize_seek_update() {
         let json = r#"{"type":3,"position": 42.5}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(
             req.r#type,
             crate::proto::client::PlaybackUpdateType::Seek as i32
@@ -2359,7 +2362,7 @@ mod tests {
     #[test]
     fn test_update_playback_deserialize_speed_update() {
         let json = r#"{"type":4,"speed": 2.0}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(
             req.r#type,
             crate::proto::client::PlaybackUpdateType::Speed as i32
@@ -2371,7 +2374,7 @@ mod tests {
     #[test]
     fn test_update_playback_deserialize_full_state() {
         let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(
             req.r#type,
             crate::proto::client::PlaybackUpdateType::Seek as i32
@@ -2711,7 +2714,7 @@ mod tests {
     #[test]
     fn test_update_playback_request_deserialize_with_version() {
         let json = r#"{"type": 1, "version": 42}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(
             req.r#type,
             crate::proto::client::PlaybackUpdateType::Play as i32

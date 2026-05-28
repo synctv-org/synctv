@@ -493,7 +493,6 @@ pub struct PublicSettings {
     // Room settings
     pub disable_create_room: bool,
     pub create_room_need_review: bool,
-    pub room_ttl: i64,
     pub room_password_policy: RoomPasswordPolicy,
 
     // User settings
@@ -528,7 +527,6 @@ impl PublicSettings {
             max_members_per_room: 100,
             disable_create_room: false,
             create_room_need_review: false,
-            room_ttl: 172_800,
             room_password_policy: RoomPasswordPolicy::Optional,
             enable_password_signup: false,
             password_signup_need_review: false,
@@ -553,6 +551,8 @@ impl PublicSettings {
 pub struct SettingsRegistry {
     /// Storage for managing all settings
     pub storage: Arc<SettingsStorage>,
+    /// Stable logical server identity, automatically initialized by the runtime.
+    pub server_identity_id: Setting<String>,
 
     // Server settings
     pub allow_room_creation: Setting<bool>,
@@ -568,7 +568,6 @@ pub struct SettingsRegistry {
     // Room settings
     pub disable_create_room: Setting<bool>,
     pub create_room_need_review: Setting<bool>,
-    pub room_ttl: Setting<i64>,
     pub room_password_policy: Setting<RoomPasswordPolicy>,
 
     // User settings
@@ -638,6 +637,28 @@ impl SettingsRegistry {
 
         Self {
             storage: storage.clone(),
+            server_identity_id: setting!(
+                String,
+                "server.identity_id",
+                storage.clone(),
+                String::new(),
+                |value: &String| -> crate::Result<()> {
+                    let value = value.trim();
+                    if value.starts_with("srv_")
+                        && value.len() == 36
+                        && value[4..].chars().all(|ch| ch.is_ascii_hexdigit())
+                    {
+                        Ok(())
+                    } else {
+                        Err(crate::Error::InvalidInput(
+                            "server.identity_id must be a generated srv_ prefixed UUID value"
+                                .into(),
+                        ))
+                    }
+                }
+            )
+            .with_user_updates_disabled()
+            .hidden_from_user_projection(),
 
             // Server settings using the setting! macro
             // Each setting auto-registers its provider to storage
@@ -721,21 +742,6 @@ impl SettingsRegistry {
                 "room.create_room_need_review",
                 storage.clone(),
                 false
-            ),
-            room_ttl: setting!(
-                i64,
-                "room.room_ttl",
-                storage.clone(),
-                172_800, // 48 hours in seconds
-                |v: &i64| -> crate::Result<()> {
-                    if *v >= 0 {
-                        Ok(())
-                    } else {
-                        Err(crate::Error::InvalidInput(
-                            "room_ttl must be non-negative (0 = never expire)".into(),
-                        ))
-                    }
-                }
             ),
             room_password_policy: setting!(
                 RoomPasswordPolicy,
@@ -881,6 +887,12 @@ impl SettingsRegistry {
         Ok(())
     }
 
+    pub async fn get_or_initialize_server_id(&self) -> crate::Result<String> {
+        self.server_identity_id
+            .get_or_initialize_with(|| format!("srv_{}", uuid::Uuid::new_v4().simple()))
+            .await
+    }
+
     /// Build a `PublicSettings` snapshot from the current registry values.
     #[must_use]
     pub fn to_public_settings(&self) -> PublicSettings {
@@ -910,7 +922,6 @@ impl SettingsRegistry {
                 &self.create_room_need_review,
                 false,
             ),
-            room_ttl: Self::get_or_warn("room_ttl", &self.room_ttl, 172_800),
             room_password_policy: Self::get_or_warn(
                 "room_password_policy",
                 &self.room_password_policy,
@@ -1049,7 +1060,6 @@ mod tests {
             settings.enable_password_signup
         );
         assert_eq!(deserialized.max_rooms_per_user, settings.max_rooms_per_user);
-        assert_eq!(deserialized.room_ttl, settings.room_ttl);
         assert_eq!(deserialized.custom_publish_host, "rtmp://live.example.com");
     }
 

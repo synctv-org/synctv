@@ -11,9 +11,8 @@ import "proto/common.proto";
 //
 service AuthService {
     // Public client local password registration/login uses OPAQUE.
-    // Legacy password mode remains available outside this public client flow
-    // for compatibility/bootstrap paths.
-    rpc Login(LoginRequest) returns (LoginResponse);
+    // Passwordless email login is confirmed through its dedicated request.
+    rpc ConfirmEmailLogin(ConfirmEmailLoginRequest) returns (LoginResponse);
     rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
     rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
     rpc FinishOpaqueRegistration(FinishOpaqueRegistrationRequest) returns (RegisterResponse);
@@ -47,6 +46,7 @@ service UserService {
     rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
     rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
     rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
+    rpc CloseAccount(CloseAccountRequest) returns (CloseAccountResponse);
 
     // User-initiated room lifecycle operations outside room-scoped context
     rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
@@ -83,6 +83,7 @@ service RoomService {
     rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
 
     // Real-time Messaging (room-scoped)
+    rpc CreateWebSocketTicket(CreateWebSocketTicketRequest) returns (CreateWebSocketTicketResponse);
     rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
     rpc WatchPlaybackState(WatchPlaybackStateRequest) returns (stream WatchPlaybackStateEvent);
     rpc WatchPlaybackSnapshot(WatchPlaybackSnapshotRequest) returns (stream WatchPlaybackSnapshotEvent);
@@ -104,6 +105,7 @@ service RoomService {
 
     // Media Management (room-scoped operations)
     rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
+    rpc GetMedia(GetMediaRequest) returns (Media);
     rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
     rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
@@ -121,17 +123,20 @@ service RoomService {
     rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a media or a dynamic-playlist item
     rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
     rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
+    rpc UpdatePlayback(UpdatePlaybackRequest) returns (GetPlaybackResponse); // Patch current playback state
 
 }
 
 // ==================== Public Service ====================
 // Authentication: None (public access)
-// HTTP routes: public room discovery uses /api/rooms/*, public settings uses /api/public/settings.
+// HTTP routes: public room discovery uses /api/rooms/*, public settings uses /api/public/settings,
+// server identity uses /api/public/server-info.
 service PublicService {
     rpc CheckRoom(CheckRoomRequest) returns (CheckRoomResponse);
     rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
     rpc GetHotRooms(GetHotRoomsRequest) returns (GetHotRoomsResponse);
     rpc GetPublicSettings(GetPublicSettingsRequest) returns (GetPublicSettingsResponse);
+    rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
 }
 
 // ==================== Email Service ====================
@@ -298,10 +303,9 @@ message FinishOpaqueRegistrationRequest {
     }];
 }
 
-// Confirm a passwordless email login token. Public client local password login
-// uses StartOpaqueLogin / FinishOpaqueLogin; legacy password mode is not exposed
-// through this request.
-message LoginRequest {
+// Confirm a passwordless email login token. Password login uses
+// StartOpaqueLogin / FinishOpaqueLogin.
+message ConfirmEmailLoginRequest {
     string email = 3 [(buf.validate.field).string = {
         min_len: 1,
         max_len: 254
@@ -639,23 +643,15 @@ message GetProfileResponse {
     User user = 1;
 }
 
-message UpdateUserRequest {
-    optional string username = 1 [(buf.validate.field).string = {
-        min_len: 3,
-        max_len: 50,
-        pattern: "^[\\p{L}\\p{N}_-]+$"
-    }];
-}
+message CloseAccountRequest {}
 
-message UpdateUserResponse {
-    string message = 1;
-    optional string username = 2;
+message CloseAccountResponse {
+    bool success = 1;
 }
 
 // Start changing the current user's password credential via OPAQUE. This is an
 // authenticated endpoint; successful finish stores the updated account
-// credential as OPAQUE material. Legacy password mode remains supported for
-// compatibility/bootstrap flows outside this public OPAQUE update path.
+// credential as OPAQUE material.
 enum OpaquePasswordUpdateVerificationMethod {
     OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED = 0;
     OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD = 1;
@@ -1418,6 +1414,14 @@ message AddMediaResponse {
     Media media = 1;
 }
 
+message GetMediaRequest {
+    string media_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^med_[A-Za-z0-9]+$"
+    }];
+}
+
 message DeleteMediaRequest {
     string media_id = 1 [(buf.validate.field).string = {
         min_len: 1,
@@ -1619,10 +1623,20 @@ message EditMediaResponse {
 }
 
 // Clear Playlist
-message ClearPlaylistRequest {}
+message ClearPlaylistRequest {
+    string playlist_id = 1 [
+        (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+        (buf.validate.field).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^pl_[A-Za-z0-9]+$"
+        }
+    ]; // Empty means room root. When set, clear the playlist contents but keep the playlist itself.
+}
 message ClearPlaylistResponse {
     bool success = 1;
     int32 deleted_count = 2;
+    int32 deleted_playlists = 3;
 }
 
 // Batch Media Operations
@@ -1647,7 +1661,7 @@ enum PlaybackUpdateType {
     PLAYBACK_UPDATE_TYPE_SPEED = 4;
 }
 
-message UpdatePlayback {
+message UpdatePlaybackRequest {
     option (buf.validate.message).cel = {
         id: "update_playback.type_required"
         message: "playback update type is required"
@@ -1852,7 +1866,7 @@ message ClientMessage {
         // Playback progress heartbeat: client periodically reports playback position
         PlaybackProgressReport playback_progress = 3;
         // Playback state update command (real-time)
-        UpdatePlayback playback_update = 4;
+        UpdatePlaybackRequest playback_update = 4;
         ObserveResource observe_resource = 5;
         UnobserveResource unobserve_resource = 6;
         // WebRTC signaling messages (P2P)
@@ -2176,7 +2190,11 @@ message LogoutResponse {
 }
 
 message SetUsernameRequest {
-    string new_username = 1; // Validation: min 3, max 32 chars, pattern: [\p{L}\p{N}_-]+
+    string new_username = 1 [(buf.validate.field).string = {
+        min_len: 3,
+        max_len: 32,
+        pattern: "^[\\p{L}\\p{N}_-]+$"
+    }];
 }
 
 message SetUsernameResponse {
@@ -2326,7 +2344,6 @@ message GetPublicSettingsResponse {
     // Room settings
     bool disable_create_room = 5;
     bool create_room_need_review = 6;
-    int64 room_ttl = 7;
     string room_password_policy = 8;
 
     // User settings
@@ -2348,6 +2365,17 @@ message GetPublicSettingsResponse {
 
     // Email settings
     bool email_whitelist_enabled = 15;
+}
+
+// ==================== Public Server Info ====================
+
+message GetServerInfoRequest {}
+
+message GetServerInfoResponse {
+    // Stable logical server identity. The server automatically initializes it
+    // in runtime settings storage; clients only read it.
+    string server_id = 1;
+    string server_name = 2;
 }
 
 // ==================== Email Verification ====================

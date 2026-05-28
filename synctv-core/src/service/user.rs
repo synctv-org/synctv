@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use synctv_common::ExecutionControl;
+use webauthn_rs::prelude::Passkey;
 
 use crate::{
     cache::{
@@ -22,6 +23,7 @@ use crate::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
         PasswordCredentialMaterial, ReviewRepository, RoomMemberRepository,
         UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
+        WebAuthnCredentialRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenAuthContext,
@@ -58,7 +60,7 @@ impl RegistrationMode {
     }
 
     const fn supports_review(self) -> bool {
-        matches!(self, Self::Password | Self::Email)
+        matches!(self, Self::Password | Self::Email | Self::WebAuthn)
     }
 }
 
@@ -104,6 +106,9 @@ struct PendingRegistrationRequest {
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
     oauth2_email_verified: bool,
+    webauthn_credential_id: Option<Vec<u8>>,
+    webauthn_passkey: Option<Passkey>,
+    webauthn_credential_name: Option<String>,
     signup_method: SignupMethod,
 }
 
@@ -123,6 +128,9 @@ struct PendingRegistrationRequestRow {
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
     oauth2_email_verified: Option<bool>,
+    webauthn_credential_id: Option<Vec<u8>>,
+    webauthn_passkey: Option<serde_json::Value>,
+    webauthn_credential_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2551,6 +2559,103 @@ impl UserService {
         Ok(request_id)
     }
 
+    pub(crate) async fn create_webauthn_registration_request(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        passkey: &Passkey,
+        credential_name: Option<&str>,
+    ) -> Result<User> {
+        let credential_id = AsRef::<[u8]>::as_ref(passkey.cred_id()).to_vec();
+        let passkey_json = serde_json::to_value(passkey)
+            .internal_with_err("Failed to serialize WebAuthn passkey")?;
+
+        let mut tx = self.repository.pool().begin().await?;
+        Self::lock_pending_registration_identity(&mut tx, username, email).await?;
+        if self
+            .has_pending_registration_request_with_executor(username, email, &mut *tx)
+            .await?
+        {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
+        }
+        if self
+            .has_pending_webauthn_registration_with_executor(&credential_id, &mut *tx)
+            .await?
+        {
+            return Err(Error::AlreadyExists(
+                "Passkey credential is already registered".to_string(),
+            ));
+        }
+
+        let request_id = sqlx::query_scalar!(
+            r#"
+            INSERT INTO user_registration_requests (
+                username, email, signup_method, status, requested_at,
+                webauthn_credential_id, webauthn_passkey, webauthn_credential_name
+            )
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7)
+            RETURNING id AS "id: UserId"
+            "#,
+            username,
+            email,
+            i16::from(SignupMethod::WebAuthn),
+            i16::from(ReviewStatus::Pending),
+            credential_id,
+            passkey_json,
+            credential_name
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
+                Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                )
+            }
+            _ => Error::Database(e),
+        })?;
+        tx.commit().await?;
+
+        let mut user = User::new_with_status(
+            username.to_string(),
+            email.map(ToOwned::to_owned),
+            String::new(),
+            SignupMethod::WebAuthn,
+            UserStatus::Active,
+        );
+        user.id = request_id;
+        Ok(user)
+    }
+
+    async fn has_pending_webauthn_registration_with_executor<'e, E>(
+        &self,
+        credential_id: &[u8],
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM user_registration_requests
+                WHERE reviewed_at IS NULL
+                  AND status = $2
+                  AND webauthn_credential_id = $1
+            ) AS "exists!"
+            "#,
+            credential_id,
+            i16::from(ReviewStatus::Pending)
+        )
+        .fetch_one(executor)
+        .await?;
+
+        Ok(exists)
+    }
+
     async fn load_pending_registration_request_for_update(
         request_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
@@ -2571,7 +2676,10 @@ impl UserService {
                    oauth2_provider_user_id,
                    oauth2_provider_username,
                    oauth2_avatar_url,
-                   oauth2_email_verified
+                   oauth2_email_verified,
+                   webauthn_credential_id,
+                   webauthn_passkey,
+                   webauthn_credential_name
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
@@ -2594,6 +2702,11 @@ impl UserService {
                     })
                 })
                 .transpose()?;
+            let webauthn_passkey = row
+                .webauthn_passkey
+                .map(serde_json::from_value)
+                .transpose()
+                .internal_with_err("Failed to deserialize pending WebAuthn passkey")?;
             Ok(PendingRegistrationRequest {
                 username: row.username,
                 email: row.email,
@@ -2609,6 +2722,9 @@ impl UserService {
                 oauth2_provider_username: row.oauth2_provider_username,
                 oauth2_avatar_url: row.oauth2_avatar_url,
                 oauth2_email_verified: row.oauth2_email_verified.unwrap_or(false),
+                webauthn_credential_id: row.webauthn_credential_id,
+                webauthn_passkey,
+                webauthn_credential_name: row.webauthn_credential_name,
                 signup_method: row.signup_method,
             })
         })
@@ -2650,97 +2766,142 @@ impl UserService {
             request.legacy_password_hash.clone().unwrap_or_default(),
             request.signup_method,
         );
-        let created = if request.signup_method == SignupMethod::OAuth2 {
-            let Some(provider) = request.oauth2_provider.as_ref() else {
-                return Err(Error::InvalidInput(
-                    "OAuth2 registration request is missing provider".to_string(),
-                ));
-            };
-            let Some(provider_user_id) = request.oauth2_provider_user_id.as_deref() else {
-                return Err(Error::InvalidInput(
-                    "OAuth2 registration request is missing provider user ID".to_string(),
-                ));
-            };
-            let Some(provider_instance_name) = request.oauth2_provider_instance_name.as_deref()
-            else {
-                return Err(Error::InvalidInput(
-                    "OAuth2 registration request is missing provider instance name".to_string(),
-                ));
-            };
+        let created = match request.signup_method {
+            SignupMethod::OAuth2 => {
+                let Some(provider) = request.oauth2_provider.as_ref() else {
+                    return Err(Error::InvalidInput(
+                        "OAuth2 registration request is missing provider".to_string(),
+                    ));
+                };
+                let Some(provider_user_id) = request.oauth2_provider_user_id.as_deref() else {
+                    return Err(Error::InvalidInput(
+                        "OAuth2 registration request is missing provider user ID".to_string(),
+                    ));
+                };
+                let Some(provider_instance_name) = request.oauth2_provider_instance_name.as_deref()
+                else {
+                    return Err(Error::InvalidInput(
+                        "OAuth2 registration request is missing provider instance name".to_string(),
+                    ));
+                };
 
-            let created = self
-                .repository
-                .create_with_password_credentials(
-                    &user,
-                    PasswordCredentialMaterial::none(),
-                    &mut *tx,
-                )
-                .await?;
-
-            let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
-                provider: provider.clone(),
-                provider_instance_name: provider_instance_name.to_string(),
-                provider_issuer: request.oauth2_provider_issuer.clone(),
-                provider_user_id: provider_user_id.to_string(),
-                username: request
-                    .oauth2_provider_username
-                    .clone()
-                    .unwrap_or_else(|| request.username.clone()),
-                email: request.email.clone(),
-                avatar: request.oauth2_avatar_url.clone(),
-            };
-            UserOAuthProviderRepository::new(self.repository.pool().clone())
-                .upsert_with_executor(
-                    &created.id,
-                    provider,
-                    provider_instance_name,
-                    provider_user_id,
-                    &oauth2_user_info,
-                    &mut *tx,
-                )
-                .await?;
-
-            if request.oauth2_email_verified && request.email.is_some() {
-                sqlx::query!(
-                    "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
-                    created.id.as_i64(),
-                )
-                .execute(&mut *tx)
-                .await
-                .internal_with_err("Failed to mark OAuth2 review email as verified")?;
-            }
-
-            created
-        } else {
-            let opaque_record = OpaquePasswordRecord {
-                record: request.opaque_record.ok_or_else(|| {
-                    Error::InvalidInput("Registration request is missing OPAQUE record".to_string())
-                })?,
-                credential_identifier: request.opaque_credential_identifier.ok_or_else(|| {
-                    Error::InvalidInput(
-                        "Registration request is missing OPAQUE credential identifier".to_string(),
+                let created = self
+                    .repository
+                    .create_with_password_credentials(
+                        &user,
+                        PasswordCredentialMaterial::none(),
+                        &mut *tx,
                     )
-                })?,
-                ciphersuite: request.opaque_ciphersuite.ok_or_else(|| {
-                    Error::InvalidInput(
-                        "Registration request is missing OPAQUE ciphersuite".to_string(),
+                    .await?;
+
+                let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
+                    provider: provider.clone(),
+                    provider_instance_name: provider_instance_name.to_string(),
+                    provider_issuer: request.oauth2_provider_issuer.clone(),
+                    provider_user_id: provider_user_id.to_string(),
+                    username: request
+                        .oauth2_provider_username
+                        .clone()
+                        .unwrap_or_else(|| request.username.clone()),
+                    email: request.email.clone(),
+                    avatar: request.oauth2_avatar_url.clone(),
+                };
+                UserOAuthProviderRepository::new(self.repository.pool().clone())
+                    .upsert_with_executor(
+                        &created.id,
+                        provider,
+                        provider_instance_name,
+                        provider_user_id,
+                        &oauth2_user_info,
+                        &mut *tx,
                     )
-                })?,
-                server_setup_version: request.opaque_server_setup_version.ok_or_else(|| {
-                    Error::InvalidInput(
-                        "Registration request is missing OPAQUE setup version".to_string(),
+                    .await?;
+
+                if request.oauth2_email_verified && request.email.is_some() {
+                    sqlx::query!(
+                        "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
+                        created.id.as_i64(),
                     )
-                })?,
-            };
-            let credential_material = match request.legacy_password_hash.as_deref() {
-                Some(password_hash) => {
-                    PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+                    .execute(&mut *tx)
+                    .await
+                    .internal_with_err("Failed to mark OAuth2 review email as verified")?;
                 }
-                None => PasswordCredentialMaterial::opaque_only(&opaque_record),
-            };
-            self.repository
-                .create_with_password_credentials(&user, credential_material, &mut *tx)
-                .await?
+
+                created
+            }
+            SignupMethod::WebAuthn => {
+                let passkey = request.webauthn_passkey.as_ref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Registration request is missing WebAuthn passkey".to_string(),
+                    )
+                })?;
+                let credential_id = request.webauthn_credential_id.as_deref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Registration request is missing WebAuthn credential ID".to_string(),
+                    )
+                })?;
+                if credential_id != AsRef::<[u8]>::as_ref(passkey.cred_id()) {
+                    return Err(Error::InvalidInput(
+                        "Registration request WebAuthn credential ID does not match passkey"
+                            .to_string(),
+                    ));
+                }
+
+                let created = self
+                    .repository
+                    .create_with_password_credentials(
+                        &user,
+                        PasswordCredentialMaterial::none(),
+                        &mut *tx,
+                    )
+                    .await?;
+                WebAuthnCredentialRepository::new(self.repository.pool().clone())
+                    .create_with_executor(
+                        &created.id,
+                        passkey,
+                        request.webauthn_credential_name.as_deref(),
+                        &mut *tx,
+                    )
+                    .await?;
+
+                created
+            }
+            _ => {
+                let opaque_record = OpaquePasswordRecord {
+                    record: request.opaque_record.ok_or_else(|| {
+                        Error::InvalidInput(
+                            "Registration request is missing OPAQUE record".to_string(),
+                        )
+                    })?,
+                    credential_identifier: request.opaque_credential_identifier.ok_or_else(
+                        || {
+                            Error::InvalidInput(
+                                "Registration request is missing OPAQUE credential identifier"
+                                    .to_string(),
+                            )
+                        },
+                    )?,
+                    ciphersuite: request.opaque_ciphersuite.ok_or_else(|| {
+                        Error::InvalidInput(
+                            "Registration request is missing OPAQUE ciphersuite".to_string(),
+                        )
+                    })?,
+                    server_setup_version: request.opaque_server_setup_version.ok_or_else(|| {
+                        Error::InvalidInput(
+                            "Registration request is missing OPAQUE setup version".to_string(),
+                        )
+                    })?,
+                };
+                let credential_material = match request.legacy_password_hash.as_deref() {
+                    Some(password_hash) => {
+                        PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+                    }
+                    None => PasswordCredentialMaterial::opaque_only(&opaque_record),
+                };
+                self.repository
+                    .create_with_password_credentials(&user, credential_material, &mut *tx)
+                    .await?
+            }
         };
 
         let approved = ReviewRepository::approve_user_registration_with_executor(
@@ -4710,8 +4871,8 @@ impl UserService {
         }
     }
 
-    /// Soft-delete the currently authenticated user's own account.
-    pub async fn delete_self(&self, user_id: &UserId) -> Result<()> {
+    /// Close the currently authenticated user's own account.
+    pub async fn close_account(&self, user_id: &UserId) -> Result<()> {
         self.delete_user(user_id).await
     }
 

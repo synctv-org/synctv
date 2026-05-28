@@ -612,6 +612,7 @@ impl OAuth2ApiImpl {
                 provider_type: mapping.provider,
                 provider_instance_name: mapping.provider_instance_name,
                 provider_issuer: mapping.provider_issuer.unwrap_or_default(),
+                provider_user_id: mapping.provider_user_id,
                 provider_username: mapping.username,
                 linked_at: mapping.created_at.timestamp(),
             })
@@ -666,6 +667,7 @@ pub struct LinkedProviderInfo {
     pub provider_type: String,
     pub provider_instance_name: String,
     pub provider_issuer: String,
+    pub provider_user_id: String,
     pub provider_username: String,
     pub linked_at: i64, // Unix timestamp (seconds)
 }
@@ -719,6 +721,7 @@ impl From<LinkedProviderInfo> for LinkedProvider {
             linked_at: info.linked_at,
             provider_instance_name: info.provider_instance_name,
             provider_issuer: info.provider_issuer,
+            provider_user_id: info.provider_user_id,
         }
     }
 }
@@ -834,12 +837,14 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth2_request_validation_accepts_structurally_valid_custom_scheme_redirect_url() {
-        crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
+    fn test_oauth2_request_validation_rejects_custom_scheme_redirect_url() {
+        let err = crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
             provider: "logto1".to_string(),
-            redirect_url: "io.github.synctv://oauth2/callback".to_string(),
+            redirect_url: "native-app://oauth2/callback".to_string(),
         })
-        .expect("structural request validation should leave redirect allowlist policy to core");
+        .expect_err("custom scheme redirect URL must be rejected");
+
+        assert!(err.to_string().contains("redirect_url"));
     }
 
     #[test]
@@ -981,5 +986,23 @@ mod tests {
 
         assert_eq!(target, 2);
         assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn test_linked_provider_proto_includes_provider_user_id() {
+        let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
+            provider_type: "github".to_string(),
+            provider_instance_name: "github-main".to_string(),
+            provider_issuer: "https://github.com".to_string(),
+            provider_user_id: "gh_123".to_string(),
+            provider_username: "alice".to_string(),
+            linked_at: 1_700_000_000,
+        }
+        .into();
+
+        assert_eq!(proto.provider_type, "github");
+        assert_eq!(proto.provider_instance_name, "github-main");
+        assert_eq!(proto.provider_user_id, "gh_123");
+        assert_eq!(proto.provider_username, "alice");
     }
 }

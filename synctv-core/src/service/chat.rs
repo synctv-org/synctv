@@ -9,12 +9,11 @@ use synctv_common::ExecutionControl;
 use tracing::{debug, error, info};
 
 use crate::{
-    cache::UsernameCache,
     models::{ChatMessage, RoomId, SendDanmakuRequest, UserId},
     repository::ChatRepository,
     service::{
         notification::NotificationService, ContentFilter, PermissionService, RateLimitConfig,
-        RequestRateLimiterService, RoomSettingsService,
+        RequestRateLimiterService, RoomSettingsService, UserService,
     },
     Error, Result,
 };
@@ -30,9 +29,9 @@ pub struct ChatService {
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: RateLimitConfig,
     content_filter: ContentFilter,
-    username_cache: UsernameCache,
     permission_service: PermissionService,
     room_settings_service: RoomSettingsService,
+    user_service: Arc<UserService>,
     /// Local room event bus for chat/domain notifications
     notification_service: NotificationService,
 }
@@ -42,13 +41,13 @@ pub struct ChatRuntime {
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
-    pub username_cache: UsernameCache,
 }
 
 #[derive(Clone)]
 pub struct ChatDependencies {
     pub permission_service: PermissionService,
     pub room_settings_service: RoomSettingsService,
+    pub user_service: Arc<UserService>,
     pub notification_service: NotificationService,
 }
 
@@ -70,11 +69,11 @@ impl ChatService {
             rate_limiter,
             rate_limit_config,
             content_filter,
-            username_cache,
         } = runtime;
         let ChatDependencies {
             permission_service,
             room_settings_service,
+            user_service,
             notification_service,
         } = dependencies;
 
@@ -83,9 +82,9 @@ impl ChatService {
             rate_limiter,
             rate_limit_config,
             content_filter,
-            username_cache,
             permission_service,
             room_settings_service,
+            user_service,
             notification_service,
         }
     }
@@ -164,11 +163,7 @@ impl ChatService {
         }
 
         // Get username
-        let username = self
-            .username_cache
-            .get(&user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
+        let username = self.username_for_user(&user_id).await?;
 
         // Filter content
         let filtered_content = self
@@ -360,11 +355,7 @@ impl ChatService {
         }
 
         // Get username for broadcast
-        let username = self
-            .username_cache
-            .get(&user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
+        let username = self.username_for_user(&user_id).await?;
 
         // Filter content
         let filtered_content = self
@@ -548,15 +539,122 @@ impl ChatService {
             }
         })
     }
+
+    async fn username_for_user(&self, user_id: &UserId) -> Result<String> {
+        let username = self
+            .user_service
+            .get_username(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
+        Ok(username)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{
+        cache::{KeyBuilder, UsernameCache},
+        config::PasswordComplexityConfig,
+        models::{SignupMethod, User},
+        repository::{
+            RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository,
+        },
+        service::{
+            auth::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore, RateLimiter,
+        },
+    };
+
+    fn test_user_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> Arc<UserService> {
+        Arc::new(UserService::new(
+            pool,
+            JwtService::new("test-secret-key-for-chat-service-tests-32-chars").expect("jwt"),
+            username_cache,
+            PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            BruteForceProtection::in_memory("test".to_string()),
+        ))
+    }
+
+    fn test_chat_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> ChatService {
+        let permission_service = PermissionService::new(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool.clone()),
+            None,
+            PermissionService::DEFAULT_CACHE_SIZE,
+            PermissionService::DEFAULT_CACHE_TTL_SECS,
+        );
+        let room_settings_service = RoomSettingsService::new(
+            RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(NotificationService::default()),
+            None,
+            None,
+        );
+
+        ChatService::new(
+            Arc::new(ChatRepository::new(pool.clone())),
+            ChatRuntime {
+                rate_limiter: Arc::new(RateLimiter::local_only("test:chat:".to_string())),
+                rate_limit_config: RateLimitConfig::default(),
+                content_filter: ContentFilter::new(),
+            },
+            ChatDependencies {
+                permission_service,
+                room_settings_service,
+                user_service: test_user_service(pool, username_cache),
+                notification_service: NotificationService::default(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn username_lookup_falls_back_to_database_and_populates_cache() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_repository = Arc::new(UserRepository::new(pool.clone()));
+        let user = user_repository
+            .create(&User::new(
+                "chat_cache_miss_user".to_string(),
+                None,
+                "hash".to_string(),
+                SignupMethod::Password,
+            ))
+            .await
+            .expect("user should be created");
+        let username_cache = UsernameCache::local_only("test:chat:username:".to_string(), 100, 60);
+        let service = test_chat_service(&pool, username_cache.clone());
+
+        assert_eq!(
+            username_cache
+                .get(&user.id)
+                .await
+                .expect("cache read should succeed"),
+            None
+        );
+
+        let username = service
+            .username_for_user(&user.id)
+            .await
+            .expect("database fallback should resolve username");
+
+        assert_eq!(username, user.username);
+        assert_eq!(
+            username_cache
+                .get(&user.id)
+                .await
+                .expect("cache read should succeed"),
+            Some(user.username)
+        );
+    }
+
     /// Test color validation logic extracted from `send_danmaku`.
     ///
     /// Uses `chars().count()` instead of `.len()` to correctly reject
     /// multi-byte UTF-8 strings that happen to have a byte-length of 7.
-    fn validate_color(color: &str) -> Result<(), &'static str> {
+    fn validate_color(color: &str) -> std::result::Result<(), &'static str> {
         if !color.starts_with('#') || color.chars().count() != 7 {
             return Err("Invalid color format");
         }

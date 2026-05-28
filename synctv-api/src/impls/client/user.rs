@@ -126,7 +126,10 @@ fn prepare_deleted_room_outbox_fanout(
 }
 
 impl ClientApiImpl {
-    pub async fn delete_current_user(&self, user_id: &UserId) -> Result<(), ApiError> {
+    pub async fn close_account(
+        &self,
+        user_id: &UserId,
+    ) -> Result<crate::proto::client::CloseAccountResponse, ApiError> {
         let uid = *user_id;
         let owned_room_ids = list_owned_room_ids(self, &uid).await?;
         let (deleted_room_outbox_events, deleted_room_fanout) =
@@ -147,7 +150,7 @@ impl ClientApiImpl {
             )
             .await;
 
-        Ok(())
+        Ok(crate::proto::client::CloseAccountResponse { success: true })
     }
 
     pub async fn update_profile(
@@ -156,11 +159,6 @@ impl ClientApiImpl {
         username: Option<String>,
     ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
         let normalized_username = username.as_ref().map(|value| value.trim().to_string());
-        let request = crate::proto::client::UpdateUserRequest {
-            username: normalized_username.clone(),
-        };
-        crate::impls::validate_proto_request(&request)?;
-
         if normalized_username.is_none() {
             return Err(ApiError::InvalidInput(
                 "No valid update fields provided (username)".to_string(),
@@ -168,6 +166,10 @@ impl ClientApiImpl {
         }
 
         if let Some(ref username) = normalized_username {
+            let request = crate::proto::client::SetUsernameRequest {
+                new_username: username.clone(),
+            };
+            crate::impls::validate_proto_request(&request)?;
             UsernameValidator::new()
                 .validate(username)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?;

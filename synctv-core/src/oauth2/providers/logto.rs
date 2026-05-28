@@ -2,7 +2,7 @@
 
 use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
-    validate_provider_url,
+    validate_oauth2_redirect_url, validate_provider_url,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
@@ -86,6 +86,7 @@ impl LogtoProvider {
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto auth URL: {e}")))?;
         let token_url = TokenUrl::new(token_url_str)
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto token URL: {e}")))?;
+        validate_oauth2_redirect_url(&redirect_url, "Invalid Logto redirect URL")?;
         let redirect = RedirectUrl::new(redirect_url)
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto redirect URL: {e}")))?;
         let client = Arc::new(
@@ -111,16 +112,26 @@ impl Provider for LogtoProvider {
         "logto"
     }
 
-    async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization, Error> {
+    async fn new_auth_url(
+        &self,
+        state: &str,
+        redirect_url: Option<&str>,
+    ) -> Result<OAuth2Authorization, Error> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-        let (auth_url, _csrf_token) = self
+        let mut request = self
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .add_scope(Scope::new("openid".to_string()))
             .add_scope(Scope::new("profile".to_string()))
             .add_scope(Scope::new("email".to_string()))
-            .set_pkce_challenge(pkce_challenge)
-            .url();
+            .set_pkce_challenge(pkce_challenge);
+        if let Some(redirect_url) = redirect_url {
+            request = request.set_redirect_uri(std::borrow::Cow::Owned(
+                RedirectUrl::new(redirect_url.to_string())
+                    .map_err(|e| Error::InvalidInput(format!("Invalid Logto redirect URL: {e}")))?,
+            ));
+        }
+        let (auth_url, _csrf_token) = request.url();
         Ok(OAuth2Authorization::new(
             auth_url.to_string(),
             pkce_verifier.secret().clone(),
@@ -130,15 +141,23 @@ impl Provider for LogtoProvider {
     async fn get_user_info(
         &self,
         code: &str,
+        redirect_url: Option<&str>,
         pkce_verifier: &str,
         _nonce: Option<&str>,
     ) -> Result<OAuth2UserInfo, Error> {
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
-        let token = self
+        let mut request = self
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
-            .set_pkce_verifier(verifier)
+            .set_pkce_verifier(verifier);
+        if let Some(redirect_url) = redirect_url {
+            request = request.set_redirect_uri(std::borrow::Cow::Owned(
+                RedirectUrl::new(redirect_url.to_string())
+                    .map_err(|e| Error::InvalidInput(format!("Invalid Logto redirect URL: {e}")))?,
+            ));
+        }
+        let token = request
             .request_async(self.oauth2_http_client.as_ref())
             .await
             .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
@@ -240,6 +259,17 @@ mod tests {
     }
 
     #[test]
+    fn test_create_provider_rejects_custom_scheme_redirect_url() {
+        let result = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "native-app://callback".to_string(),
+            "https://logto.example.com",
+        );
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
     fn test_create_provider_invalid_endpoint() {
         let result = LogtoProvider::create(
             "id".to_string(),
@@ -289,7 +319,7 @@ mod tests {
         .unwrap();
 
         let state = "logto_state_xyz";
-        let auth = provider.new_auth_url(state).await.unwrap();
+        let auth = provider.new_auth_url(state, None).await.unwrap();
         let auth_url = auth.auth_url;
         let pkce_verifier = auth.pkce_verifier;
 
@@ -321,7 +351,7 @@ mod tests {
         )
         .unwrap();
 
-        let auth_url = provider.new_auth_url("state").await.unwrap().auth_url;
+        let auth_url = provider.new_auth_url("state", None).await.unwrap().auth_url;
         // Should not have double slashes
         assert!(auth_url.starts_with("https://logto.example.com/oidc/auth"));
         assert!(!auth_url.contains("//oidc"));

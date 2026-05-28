@@ -402,6 +402,7 @@ use serde::{Deserialize, Serialize};
 
 /// Room settings composed of individual type-safe settings
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoomSettings {
     pub require_password: RequirePassword,
     pub allow_guest_join: AllowGuestJoin,

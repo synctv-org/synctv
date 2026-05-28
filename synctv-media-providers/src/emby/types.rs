@@ -463,6 +463,7 @@ impl From<Item> for crate::grpc::emby::Item {
                 .map(std::convert::Into::into)
                 .collect(),
             collection_type: item.collection_type.unwrap_or_default(),
+            has_thumbnail: item.image_tags.is_some_and(|tags| tags.has_any()),
         }
     }
 }

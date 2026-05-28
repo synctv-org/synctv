@@ -35,9 +35,18 @@ use synctv_core::{
 };
 use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: &PgPool) -> UserService {
+    make_user_service_with_username_cache(
+        pool,
+        UsernameCache::local_only("test:username:".to_string(), 100, 60),
+    )
+}
+
+fn make_user_service_with_username_cache(
+    pool: &PgPool,
+    username_cache: UsernameCache,
+) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -64,7 +73,7 @@ fn make_room_service(pool: PgPool) -> RoomService {
 }
 
 fn make_chat_service_with_config(
-    pool: PgPool,
+    pool: &PgPool,
     rate_limit_config: RateLimitConfig,
 ) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
@@ -75,7 +84,7 @@ fn make_chat_service_with_config(
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let room_settings_repo = RoomSettingsRepository::new(pool);
+    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
     let mut permission_service = PermissionService::new(
         member_repo,
@@ -101,18 +110,21 @@ fn make_chat_service_with_config(
             rate_limiter,
             rate_limit_config,
             content_filter,
-            username_cache: username_cache.clone(),
         },
         ChatDependencies {
             permission_service,
             room_settings_service,
+            user_service: Arc::new(make_user_service_with_username_cache(
+                pool,
+                username_cache.clone(),
+            )),
             notification_service,
         },
     );
     (service, username_cache)
 }
 
-fn make_chat_service(pool: PgPool) -> (ChatService, UsernameCache) {
+fn make_chat_service(pool: &PgPool) -> (ChatService, UsernameCache) {
     make_chat_service_with_config(pool, RateLimitConfig::default())
 }
 
@@ -146,7 +158,7 @@ async fn test_send_message_without_chat_permission_denied() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("chat_perm_creator"))
@@ -213,7 +225,7 @@ async fn test_send_message_chat_disabled_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("chatdis_creator"))
@@ -321,11 +333,11 @@ async fn test_send_message_rate_limit_triggers() {
             rate_limiter,
             rate_limit_config,
             content_filter,
-            username_cache,
         },
         ChatDependencies {
             permission_service,
             room_settings_service,
+            user_service: Arc::new(make_user_service_with_username_cache(&pool, username_cache)),
             notification_service: NotificationService::default(),
         },
     );
@@ -350,7 +362,7 @@ async fn test_send_danmaku_disabled_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("danmakudis_creator"))
@@ -408,7 +420,7 @@ async fn test_delete_message_owner_can_delete_own() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo.create(&make_user("delmsg_owner")).await.unwrap();
     username_cache
@@ -449,7 +461,7 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("delmsg_creator"))
@@ -508,7 +520,7 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("delmsg2_creator"))
@@ -617,7 +629,7 @@ impl NotificationObserver {
 /// Helper function to create `ChatService` with a notification observer
 #[allow(dead_code)]
 fn make_chat_service_with_observer(
-    pool: PgPool,
+    pool: &PgPool,
     _observer: Arc<NotificationObserver>,
 ) -> (ChatService, UsernameCache, NotificationService) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
@@ -629,7 +641,7 @@ fn make_chat_service_with_observer(
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let room_settings_repo = RoomSettingsRepository::new(pool);
+    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
     let mut permission_service = PermissionService::new(
         member_repo,
@@ -655,11 +667,14 @@ fn make_chat_service_with_observer(
             rate_limiter,
             rate_limit_config,
             content_filter,
-            username_cache: username_cache.clone(),
         },
         ChatDependencies {
             permission_service,
             room_settings_service,
+            user_service: Arc::new(make_user_service_with_username_cache(
+                pool,
+                username_cache.clone(),
+            )),
             notification_service: notification_service.clone(),
         },
     );
@@ -722,11 +737,11 @@ async fn test_send_message_broadcasts_to_room_members() {
             rate_limiter,
             rate_limit_config,
             content_filter,
-            username_cache,
         },
         ChatDependencies {
             permission_service,
             room_settings_service,
+            user_service: Arc::new(make_user_service_with_username_cache(&pool, username_cache)),
             notification_service,
         },
     );
@@ -789,7 +804,7 @@ async fn test_get_history_cursor_pagination_basic() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo.create(&make_user("cursor_user")).await.unwrap();
     username_cache
@@ -876,7 +891,7 @@ async fn test_get_history_empty_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, _username_cache) = make_chat_service(pool.clone());
+    let (chat_service, _username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("empty_room_user"))
@@ -913,7 +928,7 @@ async fn test_get_history_single_page() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("single_page_user"))
@@ -968,8 +983,7 @@ async fn test_get_history_limit_capped_at_100() {
         danmaku_per_second: 50,
         window_seconds: 1,
     };
-    let (chat_service, username_cache) =
-        make_chat_service_with_config(pool.clone(), rate_limit_config);
+    let (chat_service, username_cache) = make_chat_service_with_config(&pool, rate_limit_config);
 
     let creator = user_repo
         .create(&make_user("limit_cap_user"))
@@ -1017,7 +1031,7 @@ async fn test_get_history_messages_from_correct_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("room_isolation_user"))
@@ -1087,7 +1101,7 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
 
     // Build chat service with the counting broadcaster
     let (chat_service, username_cache, notification_service) =
-        make_chat_service_with_observer(pool.clone(), observer.clone());
+        make_chat_service_with_observer(&pool, observer.clone());
 
     username_cache
         .set(&creator.id, &creator.username)
@@ -1163,7 +1177,7 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("deleted_user_chat_creator"))
@@ -1232,7 +1246,7 @@ async fn test_send_message_oversized_content_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("oversized_msg_creator"))
@@ -1277,7 +1291,7 @@ async fn test_send_message_valid_content_persisted() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("valid_msg_creator"))
@@ -1321,7 +1335,7 @@ async fn test_send_message_html_xss_stripped() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("xss_strip_creator"))
@@ -1371,7 +1385,7 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
         .create(&make_user("del_msg_null_creator"))

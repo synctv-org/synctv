@@ -574,6 +574,17 @@ pub(crate) fn build_delete_media_request(
     })
 }
 
+pub(crate) fn build_clear_playlist_request(
+    req: crate::proto::client::ClearPlaylistRequest,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    if req.playlist_id.is_empty() {
+        return Ok(None);
+    }
+    crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec).map(Some)
+}
+
 pub(crate) fn build_edit_media_request(
     req: crate::proto::client::EditMediaRequest,
     public_id_codec: &crate::PublicIdCodec,
@@ -785,9 +796,11 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
+        req: crate::proto::client::ClearPlaylistRequest,
     ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
+        let playlist_id = build_clear_playlist_request(req, &self.public_id_codec)?;
 
         // Check permission
         self.room_service
@@ -805,17 +818,25 @@ impl ClientApiImpl {
             .await
             .map(|u| u.username)
             .unwrap_or_default();
-        let prepared_outbox_fanout = self
-            .media_fanout
-            .prepare_removed_batch_outbox_fanout(rid, uid, username);
+        let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
+            self.media_fanout.clone(),
+            self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
+            rid,
+            uid,
+            username,
+        );
         let result = self
             .room_service
-            .clear_playlist_with_outbox(rid, uid, Some(prepared_outbox_fanout.outbox_factory()))
+            .clear_playlist_with_outbox(
+                rid,
+                uid,
+                playlist_id,
+                Some(prepared_outbox_fanout.outbox_factory()),
+            )
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast a single MediaRemovedBatch event instead of N individual
-        // events. The distributed copy is written transactionally by core.
         prepared_outbox_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
 
@@ -837,6 +858,7 @@ impl ClientApiImpl {
         Ok(crate::proto::client::ClearPlaylistResponse {
             success: true,
             deleted_count: i64_to_i32_saturating(result.deleted_count),
+            deleted_playlists: usize_to_i32_saturating(result.deleted_playlists),
         })
     }
 

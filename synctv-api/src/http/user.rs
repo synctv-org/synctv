@@ -14,9 +14,9 @@ use super::{
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
-    DeletePasskeyRequest, DeletePasskeyResponse, FinishPasskeyBindRequest, ListMyRoomsResponse,
-    ListPasskeysResponse, PasskeyCredentialResponse, StartPasskeyBindRequest,
-    StartPasskeyBindResponse,
+    CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
+    FinishPasskeyBindRequest, ListMyRoomsResponse, ListPasskeysResponse, PasskeyCredentialResponse,
+    StartPasskeyBindRequest, StartPasskeyBindResponse,
 };
 use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
@@ -25,7 +25,7 @@ use crate::proto::client::{
 use crate::proto::client::{
     GetUserPreferencesResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
 };
-pub use crate::proto::client::{UpdateUserRequest, UpdateUserResponse};
+pub use crate::proto::client::{SetUsernameRequest, SetUsernameResponse};
 
 /// Get current user info
 #[cfg_attr(
@@ -139,16 +139,16 @@ pub async fn update_user_preferences(
     Ok(Json(response))
 }
 
-/// Update user profile fields.
+/// Set the current user's username.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         patch,
         path = "/api/user",
         tag = "User",
-        request_body = UpdateUserRequest,
+        request_body = SetUsernameRequest,
         responses(
-            (status = 200, description = "User profile updated", body = UpdateUserResponse),
+            (status = 200, description = "Username updated", body = SetUsernameResponse),
             (status = 400, description = "Invalid update request", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -160,17 +160,8 @@ pub async fn update_user_preferences(
 pub async fn update_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<UpdateUserRequest>,
-) -> AppResult<Json<UpdateUserResponse>> {
-    let UpdateUserRequest { username } = req;
-
-    let mut updated_fields = Vec::new();
-    if username.is_some() {
-        updated_fields.push("username");
-    }
-
-    let response_username = username.clone();
-    let update_username = username.clone();
+    ProtoJson(req): ProtoJson<SetUsernameRequest>,
+) -> AppResult<Json<SetUsernameResponse>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -180,24 +171,12 @@ pub async fn update_user(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move {
-                client_api
-                    .update_profile(&auth.user_id, update_username)
-                    .await
-            },
+            |auth| async move { client_api.set_username(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
 
-    let username = if let Some(user) = response.user {
-        Some(user.username)
-    } else {
-        response_username
-    };
-    Ok(Json(UpdateUserResponse {
-        message: format!("{} updated successfully", updated_fields.join(" and ")),
-        username,
-    }))
+    Ok(Json(response))
 }
 
 #[cfg_attr(
@@ -486,7 +465,7 @@ pub async fn list_my_rooms(
     Ok(Json(response))
 }
 
-/// Delete the current user's own account (soft-delete)
+/// Close the authenticated account
 ///
 /// Sets `deleted_at = NOW()` on the user row and cleans up `OAuth2` mappings.
 /// The current token will return 401 on the next request because the security
@@ -494,11 +473,12 @@ pub async fn list_my_rooms(
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
-        delete,
-        path = "/api/user/me",
+        post,
+        path = "/api/user/account-closure",
         tag = "User",
+        request_body = CloseAccountRequest,
         responses(
-            (status = 204, description = "Current user deleted"),
+            (status = 200, description = "Account closure completed", body = CloseAccountResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
@@ -506,28 +486,26 @@ pub async fn list_my_rooms(
         )
     )
 )]
-pub async fn delete_me(
+pub async fn close_account(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-) -> AppResult<axum::http::StatusCode> {
+    ProtoJson(_req): ProtoJson<CloseAccountRequest>,
+) -> AppResult<Json<CloseAccountResponse>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
-    executor
+    let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move {
-                client_api.delete_current_user(&auth.user_id).await?;
-                Ok::<(), crate::impls::ApiError>(())
-            },
+            |auth| async move { client_api.close_account(&auth.user_id).await },
         )
         .await
         .map_err(super::AppError::from)?;
 
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    Ok(Json(response))
 }
 
 #[cfg(test)]

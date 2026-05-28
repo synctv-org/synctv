@@ -2,10 +2,7 @@ use std::sync::Arc;
 use synctv_core::models::Media;
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
-use synctv_core::service::{
-    RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
-    RealtimeOutboxMediaIdsEventFactory,
-};
+use synctv_core::service::{RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 use crate::realtime_fanout::{
@@ -14,7 +11,6 @@ use crate::realtime_fanout::{
 use crate::runtime::RealtimeDeliveryRequirement;
 
 type MediaBatchEventsBuilder = Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>;
-type MediaIdsEventsBuilder = Arc<dyn Fn(&[MediaId]) -> Vec<RealtimeEvent> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct PreparedMediaRemovedFanout {
@@ -66,47 +62,6 @@ impl PreparedMediaBatchOutboxFanout {
         let prepared = self.clone();
         Arc::new(move |media: &[Media]| {
             let events = (prepared.events_builder)(media);
-            prepared
-                .events
-                .lock()
-                .expect("media fanout events mutex should not be poisoned")
-                .clone_from(&events);
-            if !prepared.realtime_fanout.is_distributed_enabled() {
-                return Vec::new();
-            }
-            events
-                .iter()
-                .filter_map(|event| prepared.realtime_fanout.outbox_event(event))
-                .collect()
-        })
-    }
-
-    pub fn publish_after_outbox_commit(&self) {
-        let events = std::mem::take(
-            &mut *self
-                .events
-                .lock()
-                .expect("media fanout events mutex should not be poisoned"),
-        );
-        for event in events {
-            self.realtime_fanout.publish_after_outbox_commit(event);
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct PreparedMediaIdsOutboxFanout {
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    events_builder: MediaIdsEventsBuilder,
-    events: Arc<std::sync::Mutex<Vec<RealtimeEvent>>>,
-}
-
-impl PreparedMediaIdsOutboxFanout {
-    #[must_use]
-    pub fn outbox_factory(&self) -> RealtimeOutboxMediaIdsEventFactory {
-        let prepared = self.clone();
-        Arc::new(move |media_ids: &[MediaId]| {
-            let events = (prepared.events_builder)(media_ids);
             prepared
                 .events
                 .lock()
@@ -214,13 +169,6 @@ pub trait MediaFanoutService: Send + Sync {
         username: String,
         plan: crate::impls::client::media::MoveMediaFanoutPlan,
     ) -> PreparedMediaBatchOutboxFanout;
-
-    fn prepare_removed_batch_outbox_fanout(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        username: String,
-    ) -> PreparedMediaIdsOutboxFanout;
 }
 
 pub struct DefaultMediaFanoutService {
@@ -424,43 +372,6 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             events: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
-
-    fn prepare_removed_batch_outbox_fanout(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        username: String,
-    ) -> PreparedMediaIdsOutboxFanout {
-        PreparedMediaIdsOutboxFanout {
-            realtime_fanout: self.realtime_fanout.clone(),
-            events_builder: Arc::new(move |media_ids: &[MediaId]| {
-                if media_ids.is_empty() {
-                    Vec::new()
-                } else {
-                    let mut events = Vec::with_capacity(media_ids.len() + 1);
-                    events.push(media_removed_batch_event(
-                        &room_id,
-                        &user_id,
-                        &username,
-                        media_ids.to_vec(),
-                    ));
-                    events.extend(
-                        media_ids
-                            .iter()
-                            .map(|media_id| RealtimeEvent::KickPublisher {
-                                event_id: synctv_common::snanoid!(16),
-                                room_id,
-                                media_id: *media_id,
-                                reason: "media_deleted".to_string(),
-                                timestamp: chrono::Utc::now(),
-                            }),
-                    );
-                    events
-                }
-            }),
-            events: Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
-    }
 }
 
 fn media_added_event(
@@ -511,22 +422,6 @@ fn media_removed_event(
         user_id: *user_id,
         username: username.to_string(),
         media_id: *media_id,
-        timestamp: chrono::Utc::now(),
-    }
-}
-
-fn media_removed_batch_event(
-    room_id: &RoomId,
-    user_id: &UserId,
-    username: &str,
-    media_ids: Vec<MediaId>,
-) -> RealtimeEvent {
-    RealtimeEvent::MediaRemovedBatch {
-        event_id: synctv_common::snanoid!(16),
-        room_id: *room_id,
-        user_id: *user_id,
-        username: username.to_string(),
-        media_ids,
         timestamp: chrono::Utc::now(),
     }
 }

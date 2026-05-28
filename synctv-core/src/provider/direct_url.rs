@@ -35,12 +35,10 @@ impl DirectUrlProvider {
 
     /// Forbidden header names that must not be set via user-supplied config.
     ///
-    /// These headers can be exploited for request smuggling, credential injection,
-    /// or SSRF amplification if user-controlled.
+    /// These headers can be exploited for request smuggling or SSRF
+    /// amplification if user-controlled.
     const FORBIDDEN_HEADERS: &[&str] = &[
         "host",
-        "authorization",
-        "cookie",
         "transfer-encoding",
         "content-length",
         "connection",
@@ -171,9 +169,6 @@ impl DirectUrlProvider {
         let mut hasher = Sha256::new();
         hasher.update(config.url.as_bytes());
         hasher.update(b"\0");
-        hasher.update(if config.proxy { b"1" } else { b"0" });
-        hasher.update(b"\0");
-
         let mut header_entries: Vec<_> = config.headers.iter().collect();
         header_entries.sort_unstable_by(|(left_name, left_value), (right_name, right_value)| {
             left_name
@@ -201,12 +196,11 @@ impl Default for DirectUrlProvider {
 
 /// `DirectUrl` source configuration
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DirectUrlSourceConfig {
     url: String,
     #[serde(default)]
     headers: HashMap<String, String>,
-    #[serde(default)]
-    proxy: bool,
 }
 
 impl TryFrom<&Value> for DirectUrlSourceConfig {
@@ -426,7 +420,6 @@ impl MediaProvider for DirectUrlProvider {
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), json!(format));
         metadata.insert("is_live".to_string(), json!(false));
-        metadata.insert("proxy".to_string(), json!(config.proxy));
 
         if let Some(filename) = config.url.split('/').next_back() {
             metadata.insert("filename".to_string(), json!(filename));
@@ -514,14 +507,6 @@ mod tests {
         assert!(DirectUrlProvider::validate_headers(&headers).is_err());
 
         let mut headers = HashMap::new();
-        headers.insert("authorization".to_string(), "Bearer token".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        let mut headers = HashMap::new();
-        headers.insert("Cookie".to_string(), "session=abc".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        let mut headers = HashMap::new();
         headers.insert("Transfer-Encoding".to_string(), "chunked".to_string());
         assert!(DirectUrlProvider::validate_headers(&headers).is_err());
     }
@@ -531,6 +516,8 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("Referer".to_string(), "https://example.com".to_string());
         headers.insert("User-Agent".to_string(), "MyPlayer/1.0".to_string());
+        headers.insert("Authorization".to_string(), "Bearer token".to_string());
+        headers.insert("Cookie".to_string(), "session=abc".to_string());
         assert!(DirectUrlProvider::validate_headers(&headers).is_ok());
     }
 
@@ -847,6 +834,27 @@ mod tests {
             err,
             ProviderError::InvalidConfig(ref msg)
                 if msg.contains("top-level provider_instance_name")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_rejects_unknown_proxy_field() {
+        let provider = DirectUrlProvider::new();
+        let err = provider
+            .validate_source_config(
+                &ProviderContext::new("synctv"),
+                SourceConfig::media(&json!({
+                    "url": "https://example.com/video.mp4",
+                    "proxy": true
+                })),
+            )
+            .await
+            .expect_err("DirectUrl source_config must not accept proxy");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg)
+                if msg.contains("unknown field `proxy`")
         ));
     }
 

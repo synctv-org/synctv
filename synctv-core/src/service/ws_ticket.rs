@@ -31,7 +31,7 @@ use synctv_common::ExecutionControl;
 use tracing::debug;
 
 use crate::cache::KeyBuilder;
-use crate::models::{RoomId, UserId};
+use crate::models::{RoomId, RoomPermissionSet, UserId};
 use crate::{Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
 
 static CLAIM_TICKET_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
@@ -91,11 +91,33 @@ const DEFAULT_TICKET_TTL_SECS: u64 = 30;
 /// Ticket length in bytes (256 bits of entropy)
 const TICKET_LENGTH: usize = 32;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WsTicketPrincipal {
+    User {
+        user_id: String,
+        password_version: i32,
+    },
+    Guest {
+        guest_id: String,
+        display_name: String,
+        session_id: String,
+        token_jti: String,
+        room_guest_version: i64,
+        permissions: u64,
+    },
+}
+
 /// WebSocket ticket data
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WsTicketData {
-    /// User ID associated with this ticket
-    pub user_id: String,
+    /// Principal associated with this ticket.
+    ///
+    /// User tickets are invalidated by password-version checks during
+    /// consumption. Guest tickets are room-bound and carry the validated guest
+    /// realtime identity so clients do not need to send long-lived guest tokens
+    /// during the WebSocket handshake.
+    pub principal: WsTicketPrincipal,
     /// Room ID the ticket is bound to.
     ///
     /// Tickets are room-scoped: a ticket created for room A cannot be used to
@@ -103,30 +125,195 @@ pub struct WsTicketData {
     pub room_id: String,
     /// When the ticket was created (Unix timestamp)
     pub created_at: u64,
-    /// Password version at ticket creation time.
-    ///
-    /// Used to invalidate tickets when the user changes their password.
-    /// This provides parity with JWT authentication's `pv` claim check.
-    pub password_version: i32,
 }
 
 /// Outcome of a successful ticket validation.
 #[derive(Debug, Clone)]
-pub struct ValidatedTicket {
-    /// User ID associated with the ticket
-    pub user_id: UserId,
-    /// Password version at ticket creation time
-    pub password_version: i32,
+pub enum ValidatedTicket {
+    User {
+        user_id: UserId,
+        password_version: i32,
+    },
+    Guest(ValidatedGuestTicket),
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatedGuestTicket {
+    pub guest_id: String,
+    pub display_name: String,
+    pub session_id: String,
+    pub token_jti: String,
+    pub room_guest_version: i64,
+    pub permissions: RoomPermissionSet,
+}
+
+pub struct CreateGuestTicketRequest {
+    pub room_id: RoomId,
+    pub guest_id: String,
+    pub display_name: String,
+    pub session_id: String,
+    pub token_jti: String,
+    pub room_guest_version: i64,
+    pub permissions: RoomPermissionSet,
 }
 
 /// Outcome of a successful pre-validation before the ticket is finally consumed.
 #[derive(Debug, Clone)]
-pub struct PendingValidatedTicket {
-    /// User ID associated with the ticket
-    pub user_id: UserId,
-    /// Password version at ticket creation time
-    pub password_version: i32,
-    ticket_data: WsTicketData,
+pub enum PendingValidatedTicket {
+    User {
+        user_id: UserId,
+        password_version: i32,
+        ticket_data: WsTicketData,
+    },
+    Guest {
+        guest: ValidatedGuestTicket,
+        ticket_data: WsTicketData,
+    },
+}
+
+impl PendingValidatedTicket {
+    pub fn ticket_data(&self) -> &WsTicketData {
+        match self {
+            Self::User { ticket_data, .. } | Self::Guest { ticket_data, .. } => ticket_data,
+        }
+    }
+
+    pub fn principal_for_log(&self) -> &str {
+        self.ticket_data().principal.user_id_for_log()
+    }
+
+    fn to_validated(&self) -> ValidatedTicket {
+        match self {
+            Self::User {
+                user_id,
+                password_version,
+                ..
+            } => ValidatedTicket::User {
+                user_id: *user_id,
+                password_version: *password_version,
+            },
+            Self::Guest { guest, .. } => ValidatedTicket::Guest(guest.clone()),
+        }
+    }
+}
+
+impl ValidatedTicket {
+    pub fn user_id(&self) -> Option<UserId> {
+        match self {
+            Self::User { user_id, .. } => Some(*user_id),
+            Self::Guest(_) => None,
+        }
+    }
+
+    pub fn password_version(&self) -> Option<i32> {
+        match self {
+            Self::User {
+                password_version, ..
+            } => Some(*password_version),
+            Self::Guest(_) => None,
+        }
+    }
+}
+
+impl WsTicketPrincipal {
+    fn user_id_for_log(&self) -> &str {
+        match self {
+            Self::User { user_id, .. } => user_id,
+            Self::Guest { guest_id, .. } => guest_id,
+        }
+    }
+
+    fn into_validated_guest(self) -> Result<ValidatedGuestTicket> {
+        match self {
+            Self::Guest {
+                guest_id,
+                display_name,
+                session_id,
+                token_jti,
+                room_guest_version,
+                permissions,
+            } => Ok(ValidatedGuestTicket {
+                guest_id,
+                display_name,
+                session_id,
+                token_jti,
+                room_guest_version,
+                permissions: RoomPermissionSet(permissions),
+            }),
+            Self::User { .. } => Err(Error::Authentication(
+                AUTHENTICATION_FAILED_MESSAGE.to_string(),
+            )),
+        }
+    }
+}
+
+impl WsTicketData {
+    fn user(user_id: &UserId, room_id: &RoomId, password_version: i32) -> Self {
+        Self {
+            principal: WsTicketPrincipal::User {
+                user_id: user_id.to_string(),
+                password_version,
+            },
+            room_id: room_id.to_string(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+
+    pub fn guest(
+        room_id: &RoomId,
+        guest_id: impl Into<String>,
+        display_name: impl Into<String>,
+        session_id: impl Into<String>,
+        token_jti: impl Into<String>,
+        room_guest_version: i64,
+        permissions: RoomPermissionSet,
+    ) -> Self {
+        Self {
+            principal: WsTicketPrincipal::Guest {
+                guest_id: guest_id.into(),
+                display_name: display_name.into(),
+                session_id: session_id.into(),
+                token_jti: token_jti.into(),
+                room_guest_version,
+                permissions: permissions.0,
+            },
+            room_id: room_id.to_string(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+
+    fn user_principal(&self) -> Result<(UserId, i32)> {
+        match &self.principal {
+            WsTicketPrincipal::User {
+                user_id,
+                password_version,
+            } => Ok((user_id.parse().map_err(Error::Internal)?, *password_version)),
+            WsTicketPrincipal::Guest { .. } => Err(Error::Authentication(
+                AUTHENTICATION_FAILED_MESSAGE.to_string(),
+            )),
+        }
+    }
+
+    fn into_validated(self) -> Result<ValidatedTicket> {
+        match self.principal {
+            WsTicketPrincipal::User {
+                user_id,
+                password_version,
+            } => Ok(ValidatedTicket::User {
+                user_id: user_id.parse().map_err(Error::Internal)?,
+                password_version,
+            }),
+            principal @ WsTicketPrincipal::Guest { .. } => {
+                Ok(ValidatedTicket::Guest(principal.into_validated_guest()?))
+            }
+        }
+    }
 }
 
 // TicketStore trait
@@ -496,6 +683,12 @@ pub trait WebSocketTicketService: Send + Sync {
         control: Option<&ExecutionControl>,
     ) -> Result<String>;
 
+    async fn create_guest_ticket_with_control(
+        &self,
+        request: CreateGuestTicketRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String>;
+
     async fn validate_and_consume(
         &self,
         ticket: &str,
@@ -683,15 +876,7 @@ impl WsTicketService {
     ) -> Result<String> {
         let ticket = Self::generate_ticket();
 
-        let ticket_data = WsTicketData {
-            user_id: user_id.to_string(),
-            room_id: room_id.to_string(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            password_version,
-        };
+        let ticket_data = WsTicketData::user(user_id, room_id, password_version);
 
         Self::run_with_control(
             control,
@@ -705,6 +890,39 @@ impl WsTicketService {
             ttl_secs = self.ticket_ttl_secs,
             cross_node_capable = self.store.supports_cluster_runtime(),
             "WebSocket ticket created"
+        );
+
+        Ok(ticket)
+    }
+
+    pub async fn create_guest_ticket_with_control(
+        &self,
+        request: CreateGuestTicketRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        let ticket = Self::generate_ticket();
+        let ticket_data = WsTicketData::guest(
+            &request.room_id,
+            request.guest_id,
+            request.display_name,
+            request.session_id,
+            request.token_jti,
+            request.room_guest_version,
+            request.permissions,
+        );
+
+        Self::run_with_control(
+            control,
+            self.store
+                .store(&ticket, &ticket_data, self.ticket_ttl_secs),
+        )
+        .await?;
+
+        debug!(
+            principal = %ticket_data.principal.user_id_for_log(),
+            ttl_secs = self.ticket_ttl_secs,
+            cross_node_capable = self.store.supports_cluster_runtime(),
+            "Guest WebSocket ticket created"
         );
 
         Ok(ticket)
@@ -769,16 +987,13 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %ticket_data.user_id,
+            principal = %ticket_data.principal.user_id_for_log(),
             room_id = %ticket_data.room_id,
             cross_node_capable,
             "WebSocket ticket validated and consumed"
         );
 
-        Ok(ValidatedTicket {
-            user_id: ticket_data.user_id.parse().map_err(Error::Internal)?,
-            password_version: ticket_data.password_version,
-        })
+        ticket_data.into_validated()
     }
 
     /// Validate and consume a ticket with user status check.
@@ -820,7 +1035,7 @@ impl WsTicketService {
         if !Self::run_with_control(
             control,
             self.store
-                .claim(ticket, expected_room_id, &pending.ticket_data),
+                .claim(ticket, expected_room_id, pending.ticket_data()),
         )
         .await?
         {
@@ -835,16 +1050,13 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %pending.user_id,
-            room_id = %pending.ticket_data.room_id,
+            principal = %pending.principal_for_log(),
+            room_id = %pending.ticket_data().room_id,
             cross_node_capable,
-            "WebSocket ticket validated and consumed with user check"
+            "WebSocket ticket validated and consumed with principal check"
         );
 
-        Ok(ValidatedTicket {
-            user_id: pending.user_id,
-            password_version: pending.password_version,
-        })
+        Ok(pending.to_validated())
     }
 
     /// Validate a ticket and user state without consuming the ticket yet.
@@ -886,7 +1098,16 @@ impl WsTicketService {
 
         Self::ensure_ticket_room_matches(&ticket_data, expected_room_id, cross_node_capable)?;
 
-        let user_id = ticket_data.user_id.parse().map_err(Error::Internal)?;
+        let Ok((user_id, ticket_password_version)) = ticket_data.user_principal() else {
+            debug!(
+                principal = %ticket_data.principal.user_id_for_log(),
+                room_id = %ticket_data.room_id,
+                cross_node_capable,
+                "Guest WebSocket ticket prevalidated without user password check"
+            );
+            let guest = ticket_data.principal.clone().into_validated_guest()?;
+            return Ok(PendingValidatedTicket::Guest { guest, ticket_data });
+        };
 
         let user_validation =
             Self::run_with_control(control, user_validator.validate_for_ticket(&user_id))
@@ -909,10 +1130,10 @@ impl WsTicketService {
                 })?;
 
         // Check password version after loading the current user state.
-        if ticket_data.password_version < user_validation.password_version {
+        if ticket_password_version < user_validation.password_version {
             debug!(
                 user_id = %user_id,
-                ticket_pv = ticket_data.password_version,
+                ticket_pv = ticket_password_version,
                 current_pv = user_validation.password_version,
                 cross_node_capable,
                 "WebSocket ticket rejected: password changed after ticket issued"
@@ -929,9 +1150,9 @@ impl WsTicketService {
             "WebSocket ticket prevalidated with user check"
         );
 
-        Ok(PendingValidatedTicket {
+        Ok(PendingValidatedTicket::User {
             user_id,
-            password_version: ticket_data.password_version,
+            password_version: ticket_password_version,
             ticket_data,
         })
     }
@@ -957,7 +1178,7 @@ impl WsTicketService {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
         Self::ensure_ticket_room_matches(
-            &pending.ticket_data,
+            pending.ticket_data(),
             expected_room_id,
             cross_node_capable,
         )?;
@@ -965,7 +1186,7 @@ impl WsTicketService {
         if !Self::run_with_control(
             control,
             self.store
-                .claim(ticket, expected_room_id, &pending.ticket_data),
+                .claim(ticket, expected_room_id, pending.ticket_data()),
         )
         .await?
         {
@@ -980,16 +1201,13 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %pending.user_id,
-            room_id = %pending.ticket_data.room_id,
+            principal = %pending.principal_for_log(),
+            room_id = %pending.ticket_data().room_id,
             cross_node_capable,
             "WebSocket ticket consumed after prevalidated handshake succeeded"
         );
 
-        Ok(ValidatedTicket {
-            user_id: pending.user_id,
-            password_version: pending.password_version,
-        })
+        Ok(pending.to_validated())
     }
 
     /// Generate a secure random ticket string
@@ -1035,6 +1253,14 @@ impl WebSocketTicketService for WsTicketService {
             control,
         )
         .await
+    }
+
+    async fn create_guest_ticket_with_control(
+        &self,
+        request: CreateGuestTicketRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        WsTicketService::create_guest_ticket_with_control(self, request, control).await
     }
 
     async fn validate_and_consume(
@@ -1183,8 +1409,8 @@ mod tests {
             .await
             .expect("trait-object service should validate ticket");
 
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 7);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 7);
         assert!(!service.supports_cluster_runtime());
         assert_eq!(service.ticket_ttl_secs(), 30);
     }
@@ -1206,8 +1432,8 @@ mod tests {
             .await
             .expect("ticket created via builder should validate");
 
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 9);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 9);
         assert!(!service.supports_cluster_runtime());
     }
 
@@ -1240,20 +1466,37 @@ mod tests {
 
     #[test]
     fn test_ticket_data_serialization() {
-        let data = WsTicketData {
-            user_id: "user123".to_string(),
-            room_id: "room456".to_string(),
-            created_at: 1_234_567_890,
-            password_version: 5,
-        };
+        let user_id = create_test_user_id(50_036);
+        let room_id = create_test_room_id(50_037);
+        let mut data = WsTicketData::user(&user_id, &room_id, 5);
+        data.created_at = 1_234_567_890;
 
         let json = serde_json::to_string(&data).unwrap();
         let decoded: WsTicketData = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(data.user_id, decoded.user_id);
         assert_eq!(data.room_id, decoded.room_id);
         assert_eq!(data.created_at, decoded.created_at);
-        assert_eq!(data.password_version, decoded.password_version);
+        assert_eq!(data.principal, decoded.principal);
+    }
+
+    #[test]
+    fn test_guest_ticket_data_serialization() {
+        let room_id = create_test_room_id(50_038);
+        let mut data = WsTicketData::guest(
+            &room_id,
+            "guest_1",
+            "Guest",
+            "session_1",
+            "jti_1",
+            12,
+            RoomPermissionSet::default_guest(),
+        );
+        data.created_at = 1_234_567_891;
+
+        let json = serde_json::to_string(&data).unwrap();
+        let decoded: WsTicketData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(data, decoded);
     }
 
     #[tokio::test]
@@ -1270,8 +1513,8 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let validated = result.unwrap();
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 0);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 0);
     }
 
     #[tokio::test]
@@ -1289,6 +1532,89 @@ mod tests {
         assert!(
             matches!(result2, Err(Error::Authentication(_))),
             "consumed ticket should be treated as failed authentication"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_guest_ticket_service_memory_mode() {
+        let service = WsTicketService::with_memory(Some(30));
+        let room_id = create_test_room_id(50_039);
+        let permissions = RoomPermissionSet::default_guest();
+
+        let ticket = service
+            .create_guest_ticket_with_control(
+                CreateGuestTicketRequest {
+                    room_id,
+                    guest_id: "guest_1".to_string(),
+                    display_name: "Guest One".to_string(),
+                    session_id: "session_1".to_string(),
+                    token_jti: "jti_1".to_string(),
+                    room_guest_version: 3,
+                    permissions,
+                },
+                None,
+            )
+            .await
+            .expect("guest ticket should be created");
+
+        let validated = service
+            .validate_and_consume(&ticket, &room_id)
+            .await
+            .expect("guest ticket should validate");
+
+        match validated {
+            ValidatedTicket::Guest(guest) => {
+                assert_eq!(guest.guest_id, "guest_1");
+                assert_eq!(guest.display_name, "Guest One");
+                assert_eq!(guest.session_id, "session_1");
+                assert_eq!(guest.token_jti, "jti_1");
+                assert_eq!(guest.room_guest_version, 3);
+                assert_eq!(guest.permissions, permissions);
+            }
+            ValidatedTicket::User { .. } => panic!("guest ticket returned user principal"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_guest_ticket_checked_validation_skips_user_validator() {
+        let service = WsTicketService::with_memory(Some(30));
+        let room_id = create_test_room_id(50_040);
+        let rejecting_validator = StaticUserValidator {
+            result: Err("user validator must not run for guests"),
+        };
+
+        let ticket = service
+            .create_guest_ticket_with_control(
+                CreateGuestTicketRequest {
+                    room_id,
+                    guest_id: "guest_2".to_string(),
+                    display_name: "Guest Two".to_string(),
+                    session_id: "session_2".to_string(),
+                    token_jti: "jti_2".to_string(),
+                    room_guest_version: 4,
+                    permissions: RoomPermissionSet::default_guest(),
+                },
+                None,
+            )
+            .await
+            .expect("guest ticket should be created");
+
+        let pending = service
+            .validate_checked(&ticket, &room_id, &rejecting_validator)
+            .await
+            .expect("guest ticket should prevalidate without user validator");
+        assert!(matches!(pending, PendingValidatedTicket::Guest { .. }));
+
+        let committed = service
+            .consume_prevalidated(&ticket, &room_id, &pending)
+            .await
+            .expect("guest ticket should consume after prevalidation");
+        assert!(matches!(committed, ValidatedTicket::Guest(_)));
+
+        let consumed_again = service.validate_and_consume(&ticket, &room_id).await;
+        assert!(
+            matches!(consumed_again, Err(Error::Authentication(_))),
+            "guest ticket must remain one-time-use"
         );
     }
 
@@ -1343,8 +1669,8 @@ mod tests {
             "room mismatch must not consume the ticket"
         );
         let validated = correct_room_result.unwrap();
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 7);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 7);
     }
 
     #[tokio::test]
@@ -1377,8 +1703,8 @@ mod tests {
             "checked room mismatch must not consume the ticket"
         );
         let validated = correct_room_result.unwrap();
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 8);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 8);
     }
 
     #[tokio::test]
@@ -1411,8 +1737,11 @@ mod tests {
             .consume_prevalidated(&ticket, &room_a, &pending)
             .await
             .expect("failed wrong-room commit must leave ticket claimable for the right room");
-        assert_eq!(correct_room_commit.user_id, user_id);
-        assert_eq!(correct_room_commit.password_version, 9);
+        assert_eq!(correct_room_commit.user_id().expect("user ticket"), user_id);
+        assert_eq!(
+            correct_room_commit.password_version().expect("user ticket"),
+            9
+        );
     }
 
     #[tokio::test]
@@ -1447,8 +1776,8 @@ mod tests {
             "user validation rejection must not consume the ticket"
         );
         let validated = second_result.unwrap();
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 4);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 4);
     }
 
     #[tokio::test]
@@ -1483,8 +1812,8 @@ mod tests {
             "backend outages must not consume the ticket"
         );
         let validated = second_result.unwrap();
-        assert_eq!(validated.user_id, user_id);
-        assert_eq!(validated.password_version, 4);
+        assert_eq!(validated.user_id().expect("user ticket"), user_id);
+        assert_eq!(validated.password_version().expect("user ticket"), 4);
     }
 
     #[tokio::test]
@@ -1539,8 +1868,8 @@ mod tests {
             .validate_and_consume(&ticket, &room_id)
             .await
             .expect("prevalidation alone must not consume the ticket");
-        assert_eq!(still_valid.user_id, user_id);
-        assert_eq!(still_valid.password_version, 5);
+        assert_eq!(still_valid.user_id().expect("user ticket"), user_id);
+        assert_eq!(still_valid.password_version().expect("user ticket"), 5);
 
         let second_ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
         let pending = service
@@ -1551,7 +1880,7 @@ mod tests {
             .consume_prevalidated(&second_ticket, &room_id, &pending)
             .await
             .expect("commit should consume the prevalidated ticket");
-        assert_eq!(committed.user_id, user_id);
+        assert_eq!(committed.user_id().expect("user ticket"), user_id);
 
         let consumed_again = service.validate_and_consume(&second_ticket, &room_id).await;
         assert!(
@@ -1603,19 +1932,12 @@ mod tests {
         let room_id = create_test_room_id(50_031);
         let ticket = "ticket-claim";
         let store = InMemoryTicketStore::new(30);
-        let original = WsTicketData {
-            user_id: "50032".to_string(),
-            room_id: room_id.to_string(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            password_version: 7,
-        };
+        let user_id = create_test_user_id(50_032);
+        let original = WsTicketData::user(&user_id, &room_id, 7);
         store.store(ticket, &original, 30).await.unwrap();
 
         let mut mismatched = original.clone();
-        mismatched.password_version += 1;
+        mismatched.created_at = mismatched.created_at.saturating_add(1);
 
         let first_claim = store.claim(ticket, &room_id, &mismatched).await.unwrap();
         assert!(

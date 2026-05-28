@@ -322,8 +322,26 @@ impl ProviderInstanceRepository {
     }
 
     pub async fn list(&self, query: &ProviderInstanceListQuery) -> Result<Vec<ProviderInstance>> {
+        self.list_with_total(query)
+            .await
+            .map(|(instances, _)| instances)
+    }
+
+    pub async fn list_with_total(
+        &self,
+        query: &ProviderInstanceListQuery,
+    ) -> Result<(Vec<ProviderInstance>, i64)> {
         let limit = i64::try_from(query.pagination.limit()).unwrap_or(i64::MAX);
         let offset = i64::try_from(query.pagination.offset()).unwrap_or(i64::MAX);
+
+        let mut count_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT COUNT(*) FROM media_provider_instances",
+        );
+        Self::push_list_filters(&mut count_builder, query)?;
+        let total = count_builder
+            .build_query_scalar::<i64>()
+            .fetch_one(&self.pool)
+            .await?;
 
         let mut builder =
             sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM media_provider_instances");
@@ -338,7 +356,7 @@ impl ProviderInstanceRepository {
             .build_query_as::<ProviderInstanceRow>()
             .fetch_all(&self.pool)
             .await?;
-        self.decrypt_instance_rows(rows)
+        Ok((self.decrypt_instance_rows(rows)?, total))
     }
 
     /// Get instances that support a specific provider type (sensitive fields decrypted)

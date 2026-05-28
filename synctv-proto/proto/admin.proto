@@ -160,6 +160,8 @@ message UserRegistrationReview {
     bool oauth2_email_verified = 14;
     string oauth2_provider_instance_name = 15;
     string oauth2_provider_issuer = 16;
+    string webauthn_credential_id = 17;
+    string webauthn_credential_name = 18;
 }
 
 message RoomCreationReview {
@@ -958,6 +960,7 @@ message ListAdminsRequest {
 
 message ListAdminsResponse {
     repeated AdminUser admins = 1;
+    int32 total = 2;
 }
 
 // =========================
@@ -1025,6 +1028,7 @@ message ActiveStreamInfo {
 
 message ListActiveStreamsResponse {
     repeated ActiveStreamInfo streams = 1;
+    int32 total = 2;
 }
 
 message KickStreamRequest {

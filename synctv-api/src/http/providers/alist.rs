@@ -22,8 +22,8 @@ use crate::proto::providers::alist::{
 use crate::proto::providers::common::ProviderInstanceQuery;
 
 use super::common::{
-    apply_provider_instance_name, execute_provider_user_endpoint,
-    execute_provider_user_endpoint_with_control, provider_instance_name,
+    execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
+    provider_instance_name, provider_instance_name_from_body,
 };
 
 /// Alist endpoints that perform authentication or credential mutation.
@@ -51,7 +51,6 @@ pub fn alist_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/alist/login",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = LoginRequest,
         responses(
             (status = 200, description = "Alist login succeeded", body = crate::proto::providers::alist::LoginResponse),
@@ -72,12 +71,11 @@ pub fn alist_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<LoginRequest>,
+    ProtoJson(req): ProtoJson<LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -113,8 +111,10 @@ pub(crate) async fn login(
         post,
         path = "/api/providers/alist/list",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = ListRequest,
+        params(
+            ("instance_name" = Option<String>, Query, description = "Optional provider instance name")
+        ),
         responses(
             (status = 200, description = "Alist directory listing", body = crate::proto::providers::alist::ListResponse),
             (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
@@ -134,12 +134,11 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<ListRequest>,
+    ProtoJson(req): ProtoJson<ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -172,7 +171,6 @@ pub(crate) async fn list(
         post,
         path = "/api/providers/alist/search",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = SearchRequest,
         responses(
             (status = 200, description = "Alist search results", body = crate::proto::providers::alist::SearchResponse),
@@ -193,12 +191,11 @@ pub(crate) async fn list(
 pub(crate) async fn search(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<SearchRequest>,
+    ProtoJson(req): ProtoJson<SearchRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -231,7 +228,6 @@ pub(crate) async fn search(
         post,
         path = "/api/providers/alist/me",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = GetMeRequest,
         responses(
             (status = 200, description = "Alist account info", body = crate::proto::providers::alist::GetMeResponse),
@@ -252,12 +248,11 @@ pub(crate) async fn search(
 pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<GetMeRequest>,
+    ProtoJson(req): ProtoJson<GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
-    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
+    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -290,7 +285,6 @@ pub(crate) async fn me(
         post,
         path = "/api/providers/alist/logout",
         tag = "Provider",
-        params(ProviderInstanceQuery),
         request_body = LogoutRequest,
         responses(
             (status = 200, description = "Alist credential removed", body = crate::proto::providers::alist::LogoutResponse),
@@ -311,12 +305,11 @@ pub(crate) async fn me(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    ProtoJson(mut req): ProtoJson<LogoutRequest>,
+    ProtoJson(req): ProtoJson<LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
-    apply_provider_instance_name(&mut req.instance_name, &query)?;
+    provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint(
         &state,

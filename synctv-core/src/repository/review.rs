@@ -26,6 +26,8 @@ pub struct UserRegistrationReviewRecord {
     pub oauth2_provider_username: Option<String>,
     pub oauth2_avatar_url: Option<String>,
     pub oauth2_email_verified: bool,
+    pub webauthn_credential_id: Option<Vec<u8>>,
+    pub webauthn_credential_name: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -113,6 +115,8 @@ struct UserRegistrationReviewRow {
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
     oauth2_email_verified: bool,
+    webauthn_credential_id: Option<Vec<u8>>,
+    webauthn_credential_name: Option<String>,
 }
 
 impl TryFrom<UserRegistrationReviewRow> for UserRegistrationReviewRecord {
@@ -140,6 +144,8 @@ impl TryFrom<UserRegistrationReviewRow> for UserRegistrationReviewRecord {
             oauth2_provider_username: row.oauth2_provider_username,
             oauth2_avatar_url: row.oauth2_avatar_url,
             oauth2_email_verified: row.oauth2_email_verified,
+            webauthn_credential_id: row.webauthn_credential_id,
+            webauthn_credential_name: row.webauthn_credential_name,
         })
     }
 }
@@ -160,7 +166,8 @@ impl ReviewRepository {
                    requested_at, reviewed_at, reviewed_by, rejection_reason,
                    oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
                    oauth2_provider_user_id, oauth2_provider_username,
-                   oauth2_avatar_url, oauth2_email_verified
+                   oauth2_avatar_url, oauth2_email_verified,
+                   webauthn_credential_id, webauthn_credential_name
             FROM user_registration_requests
             WHERE id = $1
             ",
@@ -201,7 +208,8 @@ impl ReviewRepository {
                    requested_at, reviewed_at, reviewed_by, rejection_reason,
                    oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
                    oauth2_provider_user_id, oauth2_provider_username,
-                   oauth2_avatar_url, oauth2_email_verified
+                   oauth2_avatar_url, oauth2_email_verified,
+                   webauthn_credential_id, webauthn_credential_name
             FROM user_registration_requests
             WHERE status = $1
               AND ($2 = '' OR username ILIKE $2 ESCAPE '\' OR COALESCE(email, '') ILIKE $2 ESCAPE '\')

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT username,\n                   email,\n                   legacy_password_hash,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider_type AS \"oauth2_provider: crate::models::OAuth2ProviderTypeName\",\n                   oauth2_provider_instance_name,\n                   oauth2_provider_issuer,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_verified\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
+  "query": "SELECT username,\n                   email,\n                   legacy_password_hash,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider_type AS \"oauth2_provider: crate::models::OAuth2ProviderTypeName\",\n                   oauth2_provider_instance_name,\n                   oauth2_provider_issuer,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_verified,\n                   webauthn_credential_id,\n                   webauthn_passkey,\n                   webauthn_credential_name\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,21 @@
         "ordinal": 14,
         "name": "oauth2_email_verified",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "webauthn_credential_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 16,
+        "name": "webauthn_passkey",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 17,
+        "name": "webauthn_credential_name",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -100,8 +115,11 @@
       true,
       true,
       true,
-      false
+      false,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "2c6c03e5591f1a9b756a31614630040758a24c19e34a873c4321e6732b7014c7"
+  "hash": "0cc2f8c0576397dc6b0644003e1380a74df38f4a665da50ada751e425ddad114"
 }

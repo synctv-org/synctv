@@ -424,7 +424,7 @@ pub struct OAuth2Service {
     provider_registry: crate::oauth2::ProviderRegistry,
     /// Runtime SSRF policy used when validating dynamic provider settings.
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    /// Allowlist of permitted redirect domains. Empty means relative paths only.
+    /// Allowlist of permitted non-loopback redirect domains.
     allowed_redirect_domains: Arc<Vec<String>>,
     settings_registry: Option<Arc<SettingsRegistry>>,
     providers_fingerprint: Arc<RwLock<Option<String>>>,
@@ -532,8 +532,8 @@ impl OAuth2Service {
 
     /// Set allowlist of permitted redirect domains
     ///
-    /// When set, absolute redirect URLs are only accepted if their host matches
-    /// one of the allowed domains. When empty, only relative paths are allowed.
+    /// Absolute HTTP/HTTPS redirect URLs are accepted when their host is loopback
+    /// or matches one of these domains.
     pub fn set_allowed_redirect_domains(&mut self, domains: Vec<String>) {
         self.allowed_redirect_domains = Arc::new(domains);
     }
@@ -780,9 +780,10 @@ impl OAuth2Service {
         let state_token = synctv_common::snanoid!(32);
 
         // Generate authorization URL with PKCE challenge (lock is NOT held here)
+        let auth_redirect_url = redirect_url.as_deref();
         let auth = Self::run_with_control(control, async {
             provider
-                .new_auth_url(&state_token)
+                .new_auth_url(&state_token, auth_redirect_url)
                 .await
                 .internal_with_err("Failed to generate authorization URL")
         })
@@ -812,9 +813,6 @@ impl OAuth2Service {
     /// Validate redirect URL to prevent open redirect vulnerabilities (CWE-601)
     ///
     /// Accepted forms:
-    /// - Relative paths (`/dashboard`)
-    /// - Native-app custom schemes matching the configured redirect domain allowlist
-    ///   (`com.example.app:/oauth2/callback` when `app.example.com` is allowed)
     /// - Loopback HTTP URLs for native clients (`http://127.0.0.1:34567/callback`)
     /// - Absolute HTTP/HTTPS URLs matching the configured allowlist
     fn validate_redirect_url_with_allowlist(url: &str, allowed_domains: &[String]) -> Result<()> {
@@ -825,19 +823,6 @@ impl OAuth2Service {
             ));
         }
 
-        // Allow relative paths (must start with '/')
-        if url.starts_with('/') {
-            // Reject URLs with '//' (protocol-relative URLs can be used for open redirect)
-            if url.starts_with("//") {
-                return Err(Error::InvalidInput(
-                    "Protocol-relative URLs are not allowed for security reasons".to_string(),
-                ));
-            }
-            // Valid relative path
-            return Ok(());
-        }
-
-        // For absolute URLs, parse and validate
         match url::Url::parse(url) {
             Ok(parsed_url) => {
                 let scheme = parsed_url.scheme();
@@ -850,24 +835,23 @@ impl OAuth2Service {
                 }
 
                 if scheme != "http" && scheme != "https" {
-                    if Self::is_allowed_native_custom_scheme_redirect(&parsed_url, allowed_domains)
-                    {
-                        return Ok(());
-                    }
-
                     return Err(Error::InvalidInput(format!(
-                        "Invalid URL scheme: {scheme}. Only http, https, or configured native-app custom schemes are allowed"
+                        "Invalid URL scheme: {scheme}. Only http and https are allowed"
                     )));
                 }
 
-                // Check against allowed domains allowlist
                 let host = parsed_url.host_str().unwrap_or("");
                 if Self::is_loopback_host(host) {
                     return Ok(());
                 }
+                if scheme != "https" {
+                    return Err(Error::InvalidInput(
+                        "Only HTTPS redirect URLs are allowed for non-loopback hosts".to_string(),
+                    ));
+                }
                 if allowed_domains.is_empty() {
                     return Err(Error::InvalidInput(
-                        "Absolute redirect URLs are not allowed. Use a relative path instead."
+                        "Redirect URL domain allowlist is empty and the host is not loopback."
                             .to_string(),
                     ));
                 }
@@ -886,56 +870,8 @@ impl OAuth2Service {
         }
     }
 
-    fn is_allowed_native_custom_scheme_redirect(
-        parsed_url: &url::Url,
-        allowed_domains: &[String],
-    ) -> bool {
-        let scheme = parsed_url.scheme();
-        if matches!(
-            scheme,
-            "http" | "https" | "javascript" | "data" | "file" | "ftp"
-        ) {
-            return false;
-        }
-
-        if scheme.len() < 2
-            || !scheme
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic())
-        {
-            return false;
-        }
-
-        if !scheme
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '+' || c == '.')
-        {
-            return false;
-        }
-
-        if parsed_url.path().is_empty() && parsed_url.host_str().is_none() {
-            return false;
-        }
-
-        let Some(reversed_scheme_domain) = Self::reverse_domain_from_native_scheme(scheme) else {
-            return false;
-        };
-
-        Self::redirect_host_matches_allowlist(&reversed_scheme_domain, allowed_domains)
-    }
-
     fn is_loopback_host(host: &str) -> bool {
         matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
-    }
-
-    fn reverse_domain_from_native_scheme(scheme: &str) -> Option<String> {
-        let parts = scheme.split('.').collect::<Vec<_>>();
-        if parts.len() < 3 || parts.iter().any(|part| part.is_empty()) {
-            return None;
-        }
-
-        Some(parts.into_iter().rev().collect::<Vec<_>>().join("."))
     }
 
     fn redirect_host_matches_allowlist(host: &str, allowed_domains: &[String]) -> bool {
@@ -998,6 +934,7 @@ impl OAuth2Service {
         self.exchange_code_for_user_info_with_nonce_and_control(
             instance_name,
             code,
+            None,
             pkce_verifier,
             None,
             control,
@@ -1015,6 +952,7 @@ impl OAuth2Service {
         self.exchange_code_for_user_info_with_nonce_and_control(
             instance_name,
             code,
+            oauth_state.redirect_url.as_deref(),
             &oauth_state.pkce_verifier,
             oauth_state.nonce.as_deref(),
             control,
@@ -1026,6 +964,7 @@ impl OAuth2Service {
         &self,
         instance_name: &str,
         code: &str,
+        redirect_url: Option<&str>,
         pkce_verifier: &str,
         nonce: Option<&str>,
         control: Option<&ExecutionControl>,
@@ -1039,7 +978,7 @@ impl OAuth2Service {
         // Network I/O without holding the lock
         let user_info = Self::run_with_control(control, async {
             provider
-                .get_user_info(code, pkce_verifier, nonce)
+                .get_user_info(code, redirect_url, pkce_verifier, nonce)
                 .await
                 .internal_with_err("Failed to get user info")
         })
@@ -1666,15 +1605,24 @@ mod tests {
             "mock"
         }
 
-        async fn new_auth_url(&self, state: &str) -> Result<OAuth2Authorization> {
+        async fn new_auth_url(
+            &self,
+            state: &str,
+            redirect_url: Option<&str>,
+        ) -> Result<OAuth2Authorization> {
             // Append state to URL like a real provider would
-            let url = format!("{}&state={state}", self.auth_url);
+            let mut url = format!("{}&state={state}", self.auth_url);
+            if let Some(redirect_url) = redirect_url {
+                url.push_str("&redirect_uri=");
+                url.push_str(redirect_url);
+            }
             Ok(OAuth2Authorization::new(url, self.pkce_verifier.clone()))
         }
 
         async fn get_user_info(
             &self,
             _code: &str,
+            _redirect_url: Option<&str>,
             _pkce_verifier: &str,
             _nonce: Option<&str>,
         ) -> Result<crate::oauth2::OAuth2UserInfo> {
@@ -1729,26 +1677,21 @@ mod tests {
     // Tests: Redirect URL Validation (security-critical)
 
     #[test]
-    fn test_redirect_relative_path_allowed() {
+    fn test_redirect_relative_path_rejected() {
         let result = OAuth2Service::validate_redirect_url_with_allowlist("/dashboard", &[]);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_redirect_relative_path_with_query_allowed() {
+    fn test_redirect_relative_path_with_query_rejected() {
         let result = OAuth2Service::validate_redirect_url_with_allowlist("/rooms?sort=name", &[]);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_redirect_protocol_relative_url_rejected() {
         let result = OAuth2Service::validate_redirect_url_with_allowlist("//evil.com/steal", &[]);
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(&err, Error::InvalidInput(msg) if msg.contains("Protocol-relative")),
-            "Expected protocol-relative rejection, got: {err}"
-        );
     }
 
     #[test]
@@ -1771,7 +1714,7 @@ mod tests {
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("Absolute redirect URLs")));
+        assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("allowlist")));
     }
 
     #[test]
@@ -1792,6 +1735,18 @@ mod tests {
             &domains,
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_redirect_http_url_rejected_for_non_loopback_host() {
+        let domains = vec!["example.com".to_string()];
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "http://example.com/callback",
+            &domains,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("HTTPS")));
     }
 
     #[test]
@@ -1868,30 +1823,16 @@ mod tests {
 
     #[test]
     fn test_redirect_native_custom_scheme_rejected_without_allowlist() {
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "io.github.synctv://oauth2/callback",
-            &[],
-        );
+        let result =
+            OAuth2Service::validate_redirect_url_with_allowlist("native-app://callback", &[]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_redirect_native_custom_scheme_allowed_when_reverse_domain_matches() {
+    fn test_redirect_native_custom_scheme_rejected_even_with_allowlist() {
         let domains = vec!["github.io".to_string()];
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "io.github.synctv://oauth2/callback",
-            &domains,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_redirect_native_custom_scheme_rejects_non_reverse_domain_scheme() {
-        let domains = vec!["github.io".to_string()];
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "mysynctv://oauth2/callback",
-            &domains,
-        );
+        let result =
+            OAuth2Service::validate_redirect_url_with_allowlist("native-app://callback", &domains);
         assert!(result.is_err());
     }
 
@@ -1928,7 +1869,7 @@ mod tests {
         let service = create_test_service();
         let state = OAuth2State {
             instance_name: "github".to_string(),
-            redirect_url: Some("/dashboard".to_string()),
+            redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "verifier123".to_string(),
@@ -1940,7 +1881,10 @@ mod tests {
 
         assert_eq!(retrieved.instance_name, "github");
         assert_eq!(retrieved.pkce_verifier, "verifier123");
-        assert_eq!(retrieved.redirect_url.as_deref(), Some("/dashboard"));
+        assert_eq!(
+            retrieved.redirect_url.as_deref(),
+            Some("http://127.0.0.1:34567/dashboard")
+        );
         assert!(retrieved.bind_user_id.is_none());
     }
 
@@ -2192,13 +2136,11 @@ mod tests {
             )
             .await;
 
-        let (_, state_token) = service
+        let err = service
             .get_authorization_url("github", Some("/rooms/123".to_string()))
             .await
-            .unwrap();
-
-        let state = service.verify_state(&state_token).await.unwrap();
-        assert_eq!(state.redirect_url.as_deref(), Some("/rooms/123"));
+            .expect_err("relative redirect URL must be rejected");
+        assert!(matches!(err, Error::InvalidInput(_)));
     }
 
     #[tokio::test]
@@ -2281,30 +2223,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_authorization_url_accepts_configured_native_client_redirects() {
+    async fn test_get_authorization_url_accepts_loopback_native_client_redirects() {
         let service = create_test_service_with_domains(vec!["github.io".to_string()]);
-        service
-            .register_provider(
-                "github".to_string(),
-                OAuth2Provider::GitHub,
-                Box::new(MockOAuth2Provider::new()),
-            )
-            .await;
-
-        let (_, native_state_token) = service
-            .get_authorization_url(
-                "github",
-                Some("io.github.synctv://oauth2/callback".to_string()),
-            )
-            .await
-            .expect("configured native custom scheme should be accepted");
-        let native_state = service.verify_state(&native_state_token).await.unwrap();
-        assert_eq!(
-            native_state.redirect_url.as_deref(),
-            Some("io.github.synctv://oauth2/callback")
-        );
-
-        let service = create_test_service();
         service
             .register_provider(
                 "github".to_string(),
@@ -2474,8 +2394,16 @@ mod tests {
             .await;
 
         // Step 1: Generate authorization URL
-        let (auth_url, state_token) = service
+        let err = service
             .get_authorization_url("github", Some("/dashboard".to_string()))
+            .await
+            .expect_err("relative redirect URL must be rejected");
+        assert!(matches!(err, Error::InvalidInput(_)));
+        let (auth_url, state_token) = service
+            .get_authorization_url(
+                "github",
+                Some("http://127.0.0.1:34567/dashboard".to_string()),
+            )
             .await
             .unwrap();
         assert!(auth_url.contains("state="));
@@ -2483,7 +2411,10 @@ mod tests {
         // Step 2: Verify state (simulating callback)
         let state = service.verify_state(&state_token).await.unwrap();
         assert_eq!(state.instance_name, "github");
-        assert_eq!(state.redirect_url.as_deref(), Some("/dashboard"));
+        assert_eq!(
+            state.redirect_url.as_deref(),
+            Some("http://127.0.0.1:34567/dashboard")
+        );
 
         // Step 3: Exchange code with PKCE verifier from stored state
         let user_info = service
@@ -2572,7 +2503,7 @@ mod tests {
     fn test_oauth2_state_serialization_roundtrip() {
         let state = OAuth2State {
             instance_name: "github".to_string(),
-            redirect_url: Some("/dashboard".to_string()),
+            redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
             created_at: chrono::Utc::now(),
             bind_user_id: Some(UserId::expect_positive(93_004)),
             pkce_verifier: "S256_challenge_verifier".to_string(),
@@ -3102,7 +3033,7 @@ mod tests {
         let store = InMemoryOAuthStateStore::new();
         let state = OAuth2State {
             instance_name: "test_provider".to_string(),
-            redirect_url: Some("/dashboard".to_string()),
+            redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
             created_at: chrono::Utc::now(),
             bind_user_id: None,
             pkce_verifier: "test_verifier".to_string(),

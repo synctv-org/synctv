@@ -51,6 +51,9 @@ pub fn register_common_routes() -> Router<AppState> {
         get,
         path = "/api/providers/instances/available",
         tag = "Provider",
+        params(
+            ("provider_type" = Option<String>, Query, description = "Provider type filter")
+        ),
         responses(
             (status = 200, description = "Available provider instances", body = ProviderInstancesResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
@@ -65,6 +68,7 @@ pub fn register_common_routes() -> Router<AppState> {
 )]
 pub(crate) async fn list_instances(
     request_meta: RequestMetadata,
+    ProtoQuery(req): ProtoQuery<ListAvailableProviderInstancesRequest>,
     State(state): State<AppState>,
 ) -> Result<Json<ProviderInstancesResponse>, super::super::AppError> {
     let request_meta = request_metadata(request_meta);
@@ -74,10 +78,7 @@ pub(crate) async fn list_instances(
         .execute_user_endpoint(
             &request_meta,
             crate::impls::EndpointRateLimitCategory::Read,
-            |_| async move {
-                api.list_available_provider_instances(ListAvailableProviderInstancesRequest {})
-                    .await
-            },
+            |_| async move { api.list_available_provider_instances(req).await },
         )
         .await
         .map_err(super::super::error::map_api_error)?;
@@ -411,14 +412,9 @@ pub(crate) fn provider_instance_name(
         .map_err(super::super::error::map_api_error)
 }
 
-pub(crate) fn apply_provider_instance_name(
-    body_instance_name: &mut String,
-    query: &ProviderInstanceQuery,
+pub(crate) fn provider_instance_name_from_body(
+    body_instance_name: &str,
 ) -> Result<Option<String>, super::super::AppError> {
-    if let Some(query_instance_name) = provider_instance_name(query)? {
-        *body_instance_name = query_instance_name.to_string();
-    }
-
     crate::impls::providers::common::provider_instance_name_from_value(body_instance_name)
         .map(|name| name.map(str::to_owned))
         .map_err(super::super::error::map_api_error)

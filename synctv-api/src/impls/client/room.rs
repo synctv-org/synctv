@@ -627,6 +627,87 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn create_websocket_ticket_for_actor_with_control(
+        &self,
+        actor: RoomActor,
+        req: crate::proto::client::CreateWebSocketTicketRequest,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::CreateWebSocketTicketResponse, ApiError> {
+        let room_id = build_create_websocket_ticket_request(&req, &self.public_id_codec)?;
+        let requested_room_id = req.room_id;
+        if actor.room_id() != room_id {
+            return Err(ApiError::Authorization(
+                "Cannot create a WebSocket ticket for a different room".to_string(),
+            ));
+        }
+
+        let ws_ticket_service = self
+            .ws_ticket_service
+            .as_ref()
+            .ok_or_else(websocket_ticket_service_unavailable_error)?;
+
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(|err| match err {
+                synctv_core::Error::NotFound(_) => {
+                    ApiError::NotFound(format!("Room {requested_room_id} not found"))
+                }
+                other => ApiError::from(other),
+            })?;
+
+        if room.is_banned {
+            return Err(ApiError::Authorization("Room is banned".to_string()));
+        }
+
+        let ticket = match actor {
+            RoomActor::User { user_id, .. } => {
+                let current_user = self
+                    .user_service
+                    .get_user(&user_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                ws_ticket_service
+                    .create_ticket_with_control(
+                        &user_id,
+                        &room_id,
+                        current_user.password_version,
+                        request_control,
+                    )
+                    .await
+                    .map_err(ApiError::from)?
+            }
+            RoomActor::Guest(access) => ws_ticket_service
+                .create_guest_ticket_with_control(
+                    synctv_core::service::CreateGuestTicketRequest {
+                        room_id,
+                        guest_id: access.guest_id,
+                        display_name: access.display_name,
+                        session_id: access.session_id,
+                        token_jti: access.token_jti,
+                        room_guest_version: access.room_guest_version,
+                        permissions: access.permissions,
+                    },
+                    request_control,
+                )
+                .await
+                .map_err(ApiError::from)?,
+        };
+
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(room_id)
+            .map_err(ApiError::Internal)?;
+
+        Ok(crate::proto::client::CreateWebSocketTicketResponse {
+            ticket,
+            room_id: public_room_id.clone(),
+            expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
+            usage: format!("Use in WebSocket URL: ws://host/ws/rooms/{public_room_id}?ticket=xxx"),
+        })
+    }
+
     pub async fn leave_room(
         &self,
         user_id: &UserId,
@@ -988,7 +1069,6 @@ impl ClientApiImpl {
             max_members_per_room: s.max_members_per_room,
             disable_create_room: s.disable_create_room,
             create_room_need_review: s.create_room_need_review,
-            room_ttl: s.room_ttl,
             room_password_policy: s.room_password_policy.to_string(),
             enable_password_signup: s.enable_password_signup,
             password_signup_need_review: s.password_signup_need_review,
@@ -1002,6 +1082,24 @@ impl ClientApiImpl {
             ts_disguised_as_png: s.ts_disguised_as_png,
             custom_publish_host: s.custom_publish_host,
             email_whitelist_enabled: s.email_whitelist_enabled,
+        })
+    }
+
+    pub async fn get_server_info(
+        &self,
+    ) -> Result<crate::proto::client::GetServerInfoResponse, ApiError> {
+        let reg = self
+            .settings_registry
+            .as_ref()
+            .ok_or_else(settings_registry_unavailable_error)?;
+        let server_id = reg
+            .get_or_initialize_server_id()
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::GetServerInfoResponse {
+            server_id,
+            server_name: self.config.webauthn.rp_name.clone(),
         })
     }
 

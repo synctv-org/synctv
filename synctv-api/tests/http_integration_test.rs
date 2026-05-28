@@ -927,7 +927,7 @@ mod routing_structure {
     fn minimal_router() -> Router {
         Router::new()
             .route("/health/live", get(|| async { "ok" }))
-            .route("/api/auth/login", post(|| async { "login" }))
+            .route("/api/auth/email/confirm", post(|| async { "login" }))
             .route("/api/rooms", get(|| async { "rooms" }))
     }
 
@@ -946,7 +946,9 @@ mod routing_structure {
     async fn test_wrong_method_returns_405() {
         let app = minimal_router();
         // GET on a POST-only route
-        let req = Request::get("/api/auth/login").body(Body::empty()).unwrap();
+        let req = Request::get("/api/auth/email/confirm")
+            .body(Body::empty())
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
@@ -973,14 +975,14 @@ mod routing_structure {
 
 mod request_format {
     use synctv_proto::client::{
-        CreateRoomRequest, JoinRoomRequest, LoginRequest, RefreshTokenRequest,
+        ConfirmEmailLoginRequest, CreateRoomRequest, JoinRoomRequest, RefreshTokenRequest,
         SetRoomPasswordRequest,
     };
 
     #[test]
-    fn test_login_request_deserializes() {
+    fn test_confirm_email_login_request_deserializes() {
         let json = r#"{"email":"test@example.com","email_token":"token123"}"#;
-        let req: LoginRequest = serde_json::from_str(json).unwrap();
+        let req: ConfirmEmailLoginRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.email, "test@example.com");
         assert_eq!(req.email_token, "token123");
     }
@@ -1264,11 +1266,11 @@ mod body_edge_cases {
     async fn test_empty_body_on_post() {
         // POST with empty body should return 400 from axum JSON extractor
         let app = Router::new().route(
-            "/api/auth/login",
+            "/api/auth/email/confirm",
             post(|axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" }),
         );
 
-        let req = Request::post("/api/auth/login")
+        let req = Request::post("/api/auth/email/confirm")
             .header("Content-Type", "application/json")
             .body(Body::empty())
             .unwrap();
@@ -1281,11 +1283,11 @@ mod body_edge_cases {
     #[tokio::test]
     async fn test_malformed_json_body() {
         let app = Router::new().route(
-            "/api/auth/login",
+            "/api/auth/email/confirm",
             post(|axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" }),
         );
 
-        let req = Request::post("/api/auth/login")
+        let req = Request::post("/api/auth/email/confirm")
             .header("Content-Type", "application/json")
             .body(Body::from("{invalid json"))
             .unwrap();
@@ -1297,19 +1299,21 @@ mod body_edge_cases {
     #[tokio::test]
     async fn test_valid_json_body() {
         let app = Router::new().route(
-            "/api/auth/login",
+            "/api/auth/email/confirm",
             post(|axum::Json(body): axum::Json<serde_json::Value>| async move { axum::Json(body) }),
         );
 
-        let req = Request::post("/api/auth/login")
+        let req = Request::post("/api/auth/email/confirm")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"username":"test","password":"pass"}"#))
+            .body(Body::from(
+                r#"{"email":"test@example.com","email_token":"token"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
-        assert_eq!(json["username"], "test");
+        assert_eq!(json["email"], "test@example.com");
     }
 
     #[tokio::test]
@@ -1334,12 +1338,12 @@ mod body_edge_cases {
 }
 
 mod playback_request {
-    use synctv_proto::client::{PlaybackUpdateType, UpdatePlayback};
+    use synctv_proto::client::{PlaybackUpdateType, UpdatePlaybackRequest};
 
     #[test]
     fn test_play_update() {
         let json = r#"{"type": 1, "playing": true}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.r#type, PlaybackUpdateType::Play as i32);
         assert_eq!(req.playing, Some(true));
         assert!(req.position.is_none());
@@ -1349,7 +1353,7 @@ mod playback_request {
     #[test]
     fn test_seek_update() {
         let json = r#"{"type":3,"position":42.5}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.r#type, PlaybackUpdateType::Seek as i32);
         assert!((req.position.unwrap() - 42.5).abs() < f64::EPSILON);
     }
@@ -1357,7 +1361,7 @@ mod playback_request {
     #[test]
     fn test_speed_update() {
         let json = r#"{"type":4,"speed":2.0}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.r#type, PlaybackUpdateType::Speed as i32);
         assert!((req.speed.unwrap() - 2.0).abs() < f64::EPSILON);
     }
@@ -1365,7 +1369,7 @@ mod playback_request {
     #[test]
     fn test_full_seek_update() {
         let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.r#type, PlaybackUpdateType::Seek as i32);
         assert_eq!(req.playing, Some(false));
         assert_eq!(req.position, Some(42.5));
@@ -1376,7 +1380,7 @@ mod playback_request {
     #[test]
     fn test_empty_object() {
         let json = r"{}";
-        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.r#type, PlaybackUpdateType::Unspecified as i32);
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
@@ -1483,19 +1487,12 @@ mod auth_flow {
 }
 
 mod user_request {
-    use synctv_api::http::user::UpdateUserRequest;
+    use synctv_api::http::user::SetUsernameRequest;
 
     #[test]
     fn test_username_only() {
-        let json = r#"{"username": "newname"}"#;
-        let req: UpdateUserRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.username.as_deref(), Some("newname"));
-    }
-
-    #[test]
-    fn test_empty_update() {
-        let json = r"{}";
-        let req: UpdateUserRequest = serde_json::from_str(json).unwrap();
-        assert!(req.username.is_none());
+        let json = r#"{"new_username": "newname"}"#;
+        let req: SetUsernameRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.new_username, "newname");
     }
 }

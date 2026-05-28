@@ -5,7 +5,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_core::cache::UsernameCache;
 use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
     MediaId, Playlist, PlaylistId, RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits,
@@ -531,7 +530,7 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter = create_test_request_rate_limiter("test:chat:");
     let content_filter = ContentFilter::new();
-    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
+    let user_service = Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool);
@@ -558,11 +557,11 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
             rate_limiter,
             rate_limit_config: RateLimitConfig::default(),
             content_filter,
-            username_cache,
         },
         ChatDependencies {
             permission_service,
             room_settings_service,
+            user_service,
             notification_service: NotificationService::default(),
         },
     ))

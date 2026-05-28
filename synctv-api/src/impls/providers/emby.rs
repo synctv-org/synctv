@@ -7,12 +7,22 @@ use crate::proto::providers::emby::{
     BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
 };
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
 use synctv_core::provider::{EmbyProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
+
+fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &str) -> String {
+    format!(
+        "/api/providers/emby/thumbnail/{item_id}?server_id={server_id}&credential_owner_id={credential_owner_id}&max_height=300",
+        item_id = utf8_percent_encode(item_id, NON_ALPHANUMERIC),
+        server_id = utf8_percent_encode(server_id, NON_ALPHANUMERIC),
+        credential_owner_id = utf8_percent_encode(&credential_owner_id.to_string(), NON_ALPHANUMERIC),
+    )
+}
 
 /// Emby API implementation
 ///
@@ -277,14 +287,22 @@ impl EmbyApiImpl {
         let items: Vec<MediaItem> = resp
             .items
             .into_iter()
-            .map(|item| MediaItem {
-                id: item.id,
-                name: item.name,
-                r#type: item.r#type,
-                parent_id: item.parent_id,
-                series_name: item.series_name,
-                series_id: item.series_id,
-                season_name: item.season_name,
+            .map(|item| {
+                let thumbnail = if item.has_thumbnail {
+                    emby_thumbnail_url(&req.server_id, caller_user_id, &item.id)
+                } else {
+                    String::new()
+                };
+                MediaItem {
+                    thumbnail,
+                    id: item.id,
+                    name: item.name,
+                    r#type: item.r#type,
+                    parent_id: item.parent_id,
+                    series_name: item.series_name,
+                    series_id: item.series_id,
+                    season_name: item.season_name,
+                }
             })
             .collect();
 
@@ -413,6 +431,7 @@ impl EmbyApiImpl {
             host: bind.host,
             user_id: bind.label_value,
             created_at: bind.created_at,
+            provider_instance_name: bind.provider_instance_name,
         })
         .collect();
 

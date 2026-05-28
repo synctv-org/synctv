@@ -516,7 +516,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .update_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::UpdatePlayback {
+            synctv_api::proto::client::UpdatePlaybackRequest {
                 r#type: synctv_api::proto::client::PlaybackUpdateType::Seek as i32,
                 playing: None,
                 position: Some(12.5),

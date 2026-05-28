@@ -2841,6 +2841,9 @@ pub struct SystemStreamKickArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderAvailableArgs {
+    #[arg(long)]
+    pub provider_type: Option<String>,
+
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 }
@@ -3049,8 +3052,8 @@ pub enum ProviderBilibiliSubcommand {
     LoginQr(ProviderBilibiliLoginQrArgs),
     /// Poll the QR code login status and persist the bind on success
     CheckQr(ProviderBilibiliCheckQrArgs),
-    /// Request a Bilibili SMS captcha challenge
-    GetCaptcha(ProviderBilibiliGetCaptchaArgs),
+    /// Start a Bilibili SMS login session and return Geetest parameters
+    StartSmsLogin(ProviderBilibiliStartSmsLoginArgs),
     /// Send a Bilibili SMS verification code
     SendSms(ProviderBilibiliSendSmsArgs),
     /// Log in with Bilibili SMS and persist the bind
@@ -3342,7 +3345,7 @@ pub struct ProviderBilibiliCheckQrArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ProviderBilibiliGetCaptchaArgs {
+pub struct ProviderBilibiliStartSmsLoginArgs {
     #[command(flatten)]
     pub access: ProviderServiceRemoteActorArgs,
 
@@ -3355,22 +3358,15 @@ pub struct ProviderBilibiliSendSmsArgs {
     #[command(flatten)]
     pub access: ProviderServiceRemoteActorArgs,
 
-    #[command(flatten)]
-    pub instance: ProviderServiceInstanceArgs,
-
     /// Mobile phone number in the format expected by the backend provider
     #[arg(long)]
     pub phone: String,
 
-    /// Captcha token returned by `get-captcha`
+    /// Signed SMS login session token returned by `start-sms-login`
     #[arg(long)]
-    pub token: String,
+    pub session_token: String,
 
-    /// Captcha challenge value returned by `get-captcha`
-    #[arg(long)]
-    pub challenge: String,
-
-    /// Captcha validate value produced by the frontend captcha solve
+    /// Geetest validate result produced by a frontend captcha widget
     #[arg(long)]
     pub validate: String,
 }
@@ -3380,20 +3376,13 @@ pub struct ProviderBilibiliLoginSmsArgs {
     #[command(flatten)]
     pub access: ProviderServiceRemoteActorArgs,
 
-    #[command(flatten)]
-    pub instance: ProviderServiceInstanceArgs,
-
-    /// Mobile phone number used for the SMS login flow
-    #[arg(long)]
-    pub phone: String,
-
     /// SMS verification code
     #[arg(long)]
     pub code: String,
 
-    /// Captcha key returned by `send-sms`
+    /// Signed SMS login session token returned by `send-sms`
     #[arg(long)]
-    pub captcha_key: String,
+    pub session_token: String,
 }
 
 #[derive(Debug, Args)]
@@ -4079,7 +4068,7 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
             ProviderBilibiliSubcommand::CheckQr(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
             }
-            ProviderBilibiliSubcommand::GetCaptcha(args) => {
+            ProviderBilibiliSubcommand::StartSmsLogin(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
             }
             ProviderBilibiliSubcommand::SendSms(args) => {
@@ -5559,7 +5548,7 @@ async fn execute_room_playback_update(
         update_playback,
         management_proto::UpdatePlaybackRequest {
             room_id: room.room_id,
-            update: Some(synctv_proto::client::UpdatePlayback {
+            update: Some(synctv_proto::client::UpdatePlaybackRequest {
                 r#type: update_type.to_proto(),
                 playing,
                 position,
@@ -5581,7 +5570,10 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "list available provider instances",
                 list_available_provider_instances,
-                synctv_proto::providers::common::ListAvailableProviderInstancesRequest {}
+                synctv_proto::providers::common::ListAvailableProviderInstancesRequest {
+                    provider_type: normalized_optional_cli_value(args.provider_type.as_deref())
+                        .unwrap_or_default(),
+                }
             )?;
             args.remote.print_output(&response)
         }
@@ -6157,15 +6149,15 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
             )?;
             args.access.remote.print_output(&response)
         }
-        ProviderBilibiliSubcommand::GetCaptcha(args) => {
+        ProviderBilibiliSubcommand::StartSmsLogin(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
             let response = management_unary_call!(
                 session,
-                "bilibili get captcha",
-                bilibili_get_captcha,
-                management_proto::BilibiliGetCaptchaRequest {
+                "bilibili start sms login",
+                bilibili_start_sms_login,
+                management_proto::BilibiliStartSmsLoginRequest {
                     actor: Some(actor_user_id),
-                    request: Some(synctv_proto::providers::bilibili::GetCaptchaRequest {
+                    request: Some(synctv_proto::providers::bilibili::StartSmsLoginRequest {
                         instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
@@ -6181,11 +6173,9 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
                 management_proto::BilibiliSendSmsRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::bilibili::SendSmsRequest {
+                        session_token: args.session_token,
                         phone: args.phone,
-                        token: args.token,
-                        challenge: args.challenge,
                         validate: args.validate,
-                        instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
             )?;
@@ -6200,10 +6190,8 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
                 management_proto::BilibiliLoginSmsRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::bilibili::LoginSmsRequest {
-                        phone: args.phone,
+                        session_token: args.session_token,
                         code: args.code,
-                        captcha_key: args.captcha_key,
-                        instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
             )?;
@@ -8706,7 +8694,7 @@ impl_identity_to_human!(
     synctv_proto::providers::bilibili::ParseResponse,
     synctv_proto::providers::bilibili::QrCodeResponse,
     synctv_proto::providers::bilibili::QrStatusResponse,
-    synctv_proto::providers::bilibili::CaptchaResponse,
+    synctv_proto::providers::bilibili::StartSmsLoginResponse,
     synctv_proto::providers::bilibili::SendSmsResponse,
     synctv_proto::providers::bilibili::LoginSmsResponse,
     synctv_proto::providers::bilibili::UserInfoResponse,
@@ -11851,12 +11839,12 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_provider_bilibili_get_captcha() {
+    fn cli_parses_provider_bilibili_start_sms_login() {
         let cli = Cli::parse_from([
             "synctv",
             "provider",
             "bilibili",
-            "get-captcha",
+            "start-sms-login",
             "--username",
             "alice",
             "--instance-name",
@@ -11866,7 +11854,7 @@ mod tests {
             Commands::Provider(ProviderCommand {
                 command:
                     ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
-                        command: ProviderBilibiliSubcommand::GetCaptcha(args),
+                        command: ProviderBilibiliSubcommand::StartSmsLogin(args),
                     }),
             }) => {
                 assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
@@ -11887,14 +11875,10 @@ mod tests {
             "alice",
             "--phone",
             "13800138000",
-            "--token",
-            "captcha-token",
-            "--challenge",
-            "captcha-challenge",
+            "--session-token",
+            "sms-session-token",
             "--validate",
             "captcha-validate",
-            "--instance-name",
-            "bili-main",
         ]);
         match cli.command {
             Commands::Provider(ProviderCommand {
@@ -11905,10 +11889,8 @@ mod tests {
             }) => {
                 assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.phone, "13800138000");
-                assert_eq!(args.token, "captcha-token");
-                assert_eq!(args.challenge, "captcha-challenge");
+                assert_eq!(args.session_token, "sms-session-token");
                 assert_eq!(args.validate, "captcha-validate");
-                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -11923,14 +11905,10 @@ mod tests {
             "login-sms",
             "--user-id",
             "user-1",
-            "--phone",
-            "13800138000",
+            "--session-token",
+            "sms-session-token",
             "--code",
             "123456",
-            "--captcha-key",
-            "captcha-key",
-            "--instance-name",
-            "bili-main",
         ]);
         match cli.command {
             Commands::Provider(ProviderCommand {
@@ -11940,10 +11918,8 @@ mod tests {
                     }),
             }) => {
                 assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
-                assert_eq!(args.phone, "13800138000");
+                assert_eq!(args.session_token, "sms-session-token");
                 assert_eq!(args.code, "123456");
-                assert_eq!(args.captcha_key, "captcha-key");
-                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -13420,6 +13396,7 @@ mod tests {
                     created_at: 1_775_144_583_i64,
                     updated_at: 1_775_291_071_i64,
                 }],
+                total: 1,
             },
         )
         .expect("human output should render");

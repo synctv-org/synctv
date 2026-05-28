@@ -4277,10 +4277,11 @@ impl StreamMessageHandler {
     /// (typically 3-5 seconds) is the throttle. The server accepts the report
     /// and performs a lightweight state update.
     ///
-    /// Drift bounds: rejects reports where the reported position deviates
+    /// Drift bounds: ignores reports where the reported position deviates
     /// more than 30 seconds from the expected server-side position (computed
-    /// from last known time + wall-clock elapsed). This prevents clients from
-    /// spoofing arbitrary playback positions.
+    /// from last known time + wall-clock elapsed). This keeps progress
+    /// heartbeats weak: play/pause/seek messages remain the explicit sync path,
+    /// while stale heartbeats cannot spoof arbitrary playback positions.
     async fn handle_playback_progress(
         &self,
         report: &crate::proto::client::PlaybackProgressReport,
@@ -4329,12 +4330,10 @@ impl StreamMessageHandler {
                     reported = report.position,
                     expected = expected_position,
                     drift = drift,
-                    "Playback progress report rejected: drift exceeds {} seconds",
+                    "Playback progress report ignored: drift exceeds {} seconds",
                     PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS
                 );
-                return Err(format!(
-                    "Playback progress drift too large ({drift:.1}s > {PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS}s)"
-                ));
+                return Ok(());
             }
 
             // Throttle DB writes: only persist if position changed by >1s
@@ -4410,7 +4409,7 @@ impl StreamMessageHandler {
     /// Handle playback state update command from WebSocket.
     async fn handle_playback_update(
         &self,
-        update: &crate::proto::client::UpdatePlayback,
+        update: &crate::proto::client::UpdatePlaybackRequest,
     ) -> Result<(), String> {
         self.check_realtime_permission(RoomPermission::PLAY_CONTROL)
             .await

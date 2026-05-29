@@ -9024,7 +9024,6 @@ mod tests {
         config.management.auth_token = "management-auth-token".into();
         config.metrics.auth.bearer_token = "metrics-bearer-token".into();
         config.metrics.auth.basic_password = "metrics-basic-password".into();
-        config.email.smtp_password = "smtp-secret".into();
         config.bootstrap.root_password = "RootPass12345".into();
         config
     }
@@ -13247,7 +13246,6 @@ mod tests {
             "management-auth-token",
             "metrics-bearer-token",
             "metrics-basic-password",
-            "smtp-secret",
             "RootPass12345",
             "oauth-client-secret",
         ] {

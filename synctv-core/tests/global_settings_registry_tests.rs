@@ -596,6 +596,81 @@ async fn test_registry_wires_validation_to_settings_service() {
     let _ = registry.to_public_settings();
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_email_enabled_update_requires_complete_email_config() {
+    use std::sync::Arc;
+    use synctv_core::repository::SettingsRepository;
+    use synctv_core::service::SettingsService;
+    use synctv_core_testing::create_test_pool;
+
+    let (_container, pool) = create_test_pool().await;
+    let service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool,
+    ));
+    service.initialize().await.unwrap();
+    let registry = SettingsRegistry::new(service.clone());
+    registry
+        .init(tokio_util::sync::CancellationToken::new())
+        .unwrap();
+
+    let error = service
+        .update("email.enabled", "true".to_string())
+        .await
+        .expect_err("email.enabled=true must reject incomplete SMTP settings");
+    assert!(
+        error.to_string().contains("email.smtp_host"),
+        "expected missing smtp_host validation error, got: {error:?}"
+    );
+    assert!(
+        service.get("email.enabled").await.is_err(),
+        "failed update must not persist email.enabled"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_email_enabled_batch_update_accepts_complete_email_config() {
+    use std::sync::Arc;
+    use synctv_core::repository::SettingsRepository;
+    use synctv_core::service::SettingsService;
+    use synctv_core_testing::create_test_pool;
+
+    let (_container, pool) = create_test_pool().await;
+    let service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool,
+    ));
+    service.initialize().await.unwrap();
+    let registry = SettingsRegistry::new(service.clone());
+    registry
+        .init(tokio_util::sync::CancellationToken::new())
+        .unwrap();
+
+    service
+        .update_batch([
+            ("email.enabled".to_string(), "true".to_string()),
+            (
+                "email.smtp_host".to_string(),
+                "smtp.example.com".to_string(),
+            ),
+            ("email.smtp_port".to_string(), "587".to_string()),
+            (
+                "email.from_email".to_string(),
+                "noreply@example.com".to_string(),
+            ),
+        ])
+        .await
+        .expect("complete enabled email settings should persist");
+
+    assert_eq!(
+        service.get("email.enabled").await.unwrap().value,
+        "true",
+        "email.enabled should persist after complete batch update"
+    );
+}
+
 #[test]
 fn test_room_password_policy_has_no_contradictory_boolean_state() {
     let policies = [

@@ -7,10 +7,11 @@
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
+use std::sync::Arc;
 use synctv_core::{
     models::{EmailTokenType, User, UserId, UserRole, UserStatus},
     repository::{EmailTokenRepository, UserRepository},
-    service::{email_token::EmailTokenService, EmailConfig, EmailService},
+    service::{email_token::EmailTokenService, EmailConfig, EmailConfigProvider, EmailService},
 };
 use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
@@ -35,6 +36,14 @@ fn make_user(username: &str) -> User {
         banned_at: None,
         banned_by: None,
         banned_reason: None,
+    }
+}
+
+struct StaticEmailConfigProvider(Option<EmailConfig>);
+
+impl EmailConfigProvider for StaticEmailConfigProvider {
+    fn current_config(&self) -> synctv_core::Result<Option<EmailConfig>> {
+        Ok(self.0.clone())
     }
 }
 
@@ -432,7 +441,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
         .await
         .unwrap();
     let email = user.email.clone().unwrap();
-    let email_service = EmailService::new(Some(EmailConfig {
+    let email_service = EmailService::new(Arc::new(StaticEmailConfigProvider(Some(EmailConfig {
         smtp_host: "127.0.0.1".to_string(),
         smtp_port: 9,
         smtp_username: "test".to_string(),
@@ -440,7 +449,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
         from_email: "noreply@example.com".to_string(),
         from_name: "SyncTV".to_string(),
         use_tls: false,
-    }))
+    }))))
     .unwrap();
 
     let result = email_service

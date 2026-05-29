@@ -28,7 +28,9 @@
 //! ```
 
 use crate::models::{room_settings::MaxMembers, RoomAdminPermissionBits, RoomPermissionSet};
+use crate::service::email::{EmailConfig, EmailConfigProvider};
 use crate::service::{
+    settings::SettingsValidationContext,
     settings_vars::{Setting, SettingsStorage},
     SettingsService,
 };
@@ -37,9 +39,31 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
+use tokio::sync::broadcast;
+use tracing::warn;
 
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
+
+async fn recv_email_setting_change<T>(
+    receiver: &mut crate::service::settings_vars::SettingChangeReceiver<T>,
+) -> Result<(), crate::service::settings_vars::SettingChangeError>
+where
+    T: Clone + fmt::Display + std::str::FromStr + Send + Sync + 'static,
+    <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
+{
+    match receiver.recv().await {
+        Ok(_) => Ok(()),
+        Err(crate::service::settings_vars::SettingChangeError::Lagged(count)) => {
+            warn!(
+                count,
+                "Email setting change receiver lagged; treating settings as changed"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionSet(RoomPermissionSet);
@@ -591,6 +615,14 @@ pub struct SettingsRegistry {
     pub ts_disguised_as_png: Setting<bool>,
 
     // Email settings
+    pub email_enabled: Setting<bool>,
+    pub email_smtp_host: Setting<String>,
+    pub email_smtp_port: Setting<u16>,
+    pub email_smtp_username: Setting<String>,
+    pub email_smtp_password: Setting<String>,
+    pub email_use_tls: Setting<bool>,
+    pub email_from_email: Setting<String>,
+    pub email_from_name: Setting<String>,
     pub email_whitelist_enabled: Setting<bool>,
     pub email_whitelist: Setting<String>,
 
@@ -615,6 +647,116 @@ impl std::fmt::Debug for SettingsRegistry {
     }
 }
 
+pub struct RuntimeEmailConfigProvider {
+    settings: Arc<SettingsRegistry>,
+    changes: broadcast::Sender<()>,
+}
+
+impl RuntimeEmailConfigProvider {
+    #[must_use]
+    pub fn new(settings: Arc<SettingsRegistry>) -> Self {
+        let (changes, _) = broadcast::channel(64);
+        let mut enabled_rx = settings.email_enabled.subscribe_changes();
+        let mut smtp_host_rx = settings.email_smtp_host.subscribe_changes();
+        let mut smtp_port_rx = settings.email_smtp_port.subscribe_changes();
+        let mut smtp_username_rx = settings.email_smtp_username.subscribe_changes();
+        let mut smtp_password_rx = settings.email_smtp_password.subscribe_changes();
+        let mut use_tls_rx = settings.email_use_tls.subscribe_changes();
+        let mut from_email_rx = settings.email_from_email.subscribe_changes();
+        let mut from_name_rx = settings.email_from_name.subscribe_changes();
+
+        let provider = Self {
+            settings,
+            changes: changes.clone(),
+        };
+
+        let _ = provider.current_config();
+
+        crate::spawn::spawn_monitored("runtime_email_config_provider_changes", async move {
+            loop {
+                let event = tokio::select! {
+                    event = recv_email_setting_change(&mut enabled_rx) => event,
+                    event = recv_email_setting_change(&mut smtp_host_rx) => event,
+                    event = recv_email_setting_change(&mut smtp_port_rx) => event,
+                    event = recv_email_setting_change(&mut smtp_username_rx) => event,
+                    event = recv_email_setting_change(&mut smtp_password_rx) => event,
+                    event = recv_email_setting_change(&mut use_tls_rx) => event,
+                    event = recv_email_setting_change(&mut from_email_rx) => event,
+                    event = recv_email_setting_change(&mut from_name_rx) => event,
+                };
+
+                match event {
+                    Ok(()) => {
+                        let _ = changes.send(());
+                    }
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "Email settings watcher stopped after setting change subscription error"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        provider
+    }
+}
+
+impl EmailConfigProvider for RuntimeEmailConfigProvider {
+    fn current_config(&self) -> crate::Result<Option<EmailConfig>> {
+        if !self.settings.email_enabled.get()? {
+            return Ok(None);
+        }
+
+        Ok(Some(EmailConfig {
+            smtp_host: self.settings.email_smtp_host.get()?.trim().to_string(),
+            smtp_port: self.settings.email_smtp_port.get()?,
+            smtp_username: self.settings.email_smtp_username.get()?,
+            smtp_password: self.settings.email_smtp_password.get()?,
+            from_email: self.settings.email_from_email.get()?.trim().to_string(),
+            from_name: self.settings.email_from_name.get()?.trim().to_string(),
+            use_tls: self.settings.email_use_tls.get()?,
+        }))
+    }
+
+    fn subscribe_changes(&self) -> Option<broadcast::Receiver<()>> {
+        Some(self.changes.subscribe())
+    }
+}
+
+#[derive(Clone)]
+struct EmailSettings {
+    enabled: Setting<bool>,
+    smtp_host: Setting<String>,
+    smtp_port: Setting<u16>,
+    smtp_username: Setting<String>,
+    smtp_password: Setting<String>,
+    use_tls: Setting<bool>,
+    from_email: Setting<String>,
+    from_name: Setting<String>,
+}
+
+impl EmailSettings {
+    fn validate(&self, context: &SettingsValidationContext) -> crate::Result<()> {
+        if !context.get(&self.enabled)? {
+            return Ok(());
+        }
+
+        EmailConfig {
+            smtp_host: context.get(&self.smtp_host)?.trim().to_string(),
+            smtp_port: context.get(&self.smtp_port)?,
+            smtp_username: context.get(&self.smtp_username)?,
+            smtp_password: context.get(&self.smtp_password)?,
+            from_email: context.get(&self.from_email)?.trim().to_string(),
+            from_name: context.get(&self.from_name)?.trim().to_string(),
+            use_tls: context.get(&self.use_tls)?,
+        }
+        .validate()
+    }
+}
+
 impl SettingsRegistry {
     /// Create a new settings registry with all setting instances
     #[must_use]
@@ -635,7 +777,62 @@ impl SettingsRegistry {
         let storage = Arc::new(SettingsStorage::new(settings_service));
         let oauth2_ssrf_guard = ssrf_guard.clone();
 
-        Self {
+        let email_smtp_host = setting!(String, "email.smtp_host", storage.clone(), String::new());
+        let email_smtp_port = setting!(
+            u16,
+            "email.smtp_port",
+            storage.clone(),
+            587,
+            |port: &u16| -> crate::Result<()> {
+                if *port > 0 {
+                    Ok(())
+                } else {
+                    Err(crate::Error::InvalidInput(
+                        "email.smtp_port must be between 1 and 65535".into(),
+                    ))
+                }
+            }
+        );
+        let email_smtp_username = setting!(
+            String,
+            "email.smtp_username",
+            storage.clone(),
+            String::new()
+        );
+        let email_smtp_password = setting!(
+            String,
+            "email.smtp_password",
+            storage.clone(),
+            String::new()
+        )
+        .hidden_from_user_projection();
+        let email_use_tls = setting!(bool, "email.use_tls", storage.clone(), true);
+        let email_from_email = setting!(
+            String,
+            "email.from_email",
+            storage.clone(),
+            String::new(),
+            |value: &String| -> crate::Result<()> {
+                if value.is_empty()
+                    || (value.contains('@') && !value.starts_with('@') && !value.ends_with('@'))
+                {
+                    Ok(())
+                } else {
+                    Err(crate::Error::InvalidInput(
+                        "email.from_email must be empty or a valid email address".into(),
+                    ))
+                }
+            }
+        );
+        let email_from_name = setting!(
+            String,
+            "email.from_name",
+            storage.clone(),
+            "SyncTV".to_string()
+        );
+        let email_enabled = setting!(bool, "email.enabled", storage.clone(), false);
+
+        let registry = Self {
             storage: storage.clone(),
             server_identity_id: setting!(
                 String,
@@ -808,6 +1005,14 @@ impl SettingsRegistry {
             ts_disguised_as_png: setting!(bool, "rtmp.ts_disguised_as_png", storage.clone(), false),
 
             // Email settings
+            email_enabled,
+            email_smtp_host,
+            email_smtp_port,
+            email_smtp_username,
+            email_smtp_password,
+            email_use_tls,
+            email_from_email,
+            email_from_name,
             email_whitelist_enabled: setting!(
                 bool,
                 "email.whitelist_enabled",
@@ -863,6 +1068,26 @@ impl SettingsRegistry {
                 storage,
                 CorsAllowedOrigins::new()
             ),
+        };
+
+        let email_settings = registry.email_settings();
+        registry
+            .storage
+            .settings_service()
+            .add_batch_validator(move |context| email_settings.validate(context));
+        registry
+    }
+
+    fn email_settings(&self) -> EmailSettings {
+        EmailSettings {
+            enabled: self.email_enabled.clone(),
+            smtp_host: self.email_smtp_host.clone(),
+            smtp_port: self.email_smtp_port.clone(),
+            smtp_username: self.email_smtp_username.clone(),
+            smtp_password: self.email_smtp_password.clone(),
+            use_tls: self.email_use_tls.clone(),
+            from_email: self.email_from_email.clone(),
+            from_name: self.email_from_name.clone(),
         }
     }
 

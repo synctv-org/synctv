@@ -21,7 +21,7 @@ use crate::{
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
-        PasswordCredentialMaterial, ReviewRepository, RoomMemberRepository,
+        EmailBindRepository, PasswordCredentialMaterial, ReviewRepository, RoomMemberRepository,
         UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
         WebAuthnCredentialRepository,
     },
@@ -854,6 +854,7 @@ struct UserOwnedRoomEntries {
 #[derive(Clone)]
 pub struct UserService {
     pub(crate) repository: UserRepository,
+    email_bind_repository: EmailBindRepository,
     pub(crate) user_preferences_repository: UserPreferencesRepository,
     jwt_service: JwtService,
     username_cache: UsernameCache,
@@ -2203,6 +2204,7 @@ impl UserService {
 
         Self {
             repository: UserRepository::new(pool.clone()),
+            email_bind_repository: EmailBindRepository::new(pool.clone()),
             user_preferences_repository: UserPreferencesRepository::new(pool.clone()),
             jwt_service,
             username_cache,
@@ -2269,6 +2271,13 @@ impl UserService {
     /// Enable email verification requirement for login (call when email service is configured)
     pub const fn set_email_verification_required(&mut self, required: bool) {
         self.email_verification_required = required;
+    }
+
+    fn email_verification_required(&self) -> bool {
+        self.settings_registry
+            .as_ref()
+            .and_then(|settings| settings.email_enabled.get().ok())
+            .unwrap_or(self.email_verification_required)
     }
 
     pub fn set_refresh_rate_limiter_for_tests<T>(&mut self, limiter: T)
@@ -2978,7 +2987,9 @@ impl UserService {
             user.signup_method,
             crate::models::SignupMethod::OAuth2 | crate::models::SignupMethod::WebAuthn
         );
-        if self.email_verification_required && !user.email_verified && !is_external_credential_user
+        if self.email_verification_required()
+            && !user.email_verified
+            && !is_external_credential_user
         {
             return Err(Error::EmailNotVerified);
         }
@@ -3367,7 +3378,7 @@ impl UserService {
 
         // When email verification is required, the user row exists so email
         // tokens can target it, but no session is issued until verification.
-        if self.email_verification_required {
+        if self.email_verification_required() {
             return Ok((created_user, None, None));
         }
 
@@ -3512,7 +3523,7 @@ impl UserService {
         self.cache_username_best_effort(&created_user.id, &username, "opaque_register")
             .await;
 
-        if self.email_verification_required {
+        if self.email_verification_required() {
             return Ok((created_user, None, None));
         }
 
@@ -4325,17 +4336,22 @@ impl UserService {
         let mut candidate = user.clone();
         candidate.username = Self::normalize_username_for_storage(&candidate.username)?;
 
-        if current.signup_method == SignupMethod::Email {
-            if candidate.email.is_none() {
-                return Err(Error::InvalidInput(
-                    "Email signup users cannot unbind email; rebind to another email instead"
-                        .to_string(),
-                ));
-            }
+        if current.signup_method == SignupMethod::Email && candidate.email.is_none() {
+            return Err(Error::InvalidInput(
+                "Email signup users cannot unbind email".to_string(),
+            ));
+        }
 
-            if current.email != candidate.email {
-                candidate.email_verified = false;
-            }
+        if current.email != candidate.email {
+            return Err(Error::InvalidInput(
+                "Email changes must be confirmed with an email bind verification token".to_string(),
+            ));
+        }
+
+        if current.email_verified != candidate.email_verified {
+            return Err(Error::InvalidInput(
+                "Email verification changes must use the email verification flow".to_string(),
+            ));
         }
 
         let updated = self.repository.update(&candidate, old_version).await?;
@@ -4798,6 +4814,85 @@ impl UserService {
         );
 
         Ok(updated_user)
+    }
+
+    pub async fn start_email_bind(&self, user_id: &UserId, email: &str) -> Result<String> {
+        let email = self.validate_email_bind_target(user_id, email).await?;
+        let token = synctv_common::snanoid!(64);
+        let expires_at = chrono::Utc::now()
+            + crate::models::EmailTokenType::EmailVerification.expiration_duration();
+
+        self.email_bind_repository
+            .create_or_replace_unused(user_id, &email, &token, expires_at)
+            .await?;
+
+        Ok(token)
+    }
+
+    pub async fn delete_pending_email_bind(
+        &self,
+        user_id: &UserId,
+        email: &str,
+        token: &str,
+    ) -> Result<u64> {
+        let email = email.trim().to_ascii_lowercase();
+        self.email_bind_repository
+            .delete_unused(token, user_id, &email)
+            .await
+    }
+
+    pub async fn confirm_email_bind(
+        &self,
+        user_id: &UserId,
+        email: &str,
+        token: &str,
+    ) -> Result<User> {
+        let email = self.validate_email_bind_target(user_id, email).await?;
+        let updated_user = self
+            .email_bind_repository
+            .consume_and_bind_email(user_id, &email, token)
+            .await?;
+        self.notify_user_invalidation(user_id).await;
+
+        Ok(updated_user)
+    }
+
+    async fn validate_email_bind_target(&self, user_id: &UserId, email: &str) -> Result<String> {
+        let email = email.trim().to_ascii_lowercase();
+        Self::validate_email(&email)?;
+
+        if let Some(ref registry) = self.settings_registry {
+            let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
+            if whitelist_enabled {
+                let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
+                let domain = email
+                    .rsplit_once('@')
+                    .map(|(_, domain)| domain.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let allowed: Vec<&str> = whitelist_str
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .collect();
+                if !allowed.is_empty()
+                    && !allowed
+                        .iter()
+                        .any(|domain_value| domain_value.eq_ignore_ascii_case(&domain))
+                {
+                    return Err(Error::InvalidInput(
+                        "Email domain is not allowed for registration".to_string(),
+                    ));
+                }
+            }
+        }
+
+        if let Some(existing) = self.repository.get_by_email(&email).await? {
+            if existing.id != *user_id {
+                return Err(Error::AlreadyExists("Email already taken".to_string()));
+            }
+        }
+
+        Ok(email)
     }
 
     /// List users with query (admin function)

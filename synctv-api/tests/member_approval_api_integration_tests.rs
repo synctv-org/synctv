@@ -14,12 +14,21 @@ use synctv_core::{
     repository::{ProviderInstanceRepository, SettingsRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        AuditService, EmailService, InMemoryTokenBlacklistStore, PublishKeyService,
-        RemoteProviderManager, RoomService, SettingsRegistry, SettingsService, UserService,
+        AuditService, EmailConfig, EmailConfigProvider, EmailService, InMemoryTokenBlacklistStore,
+        PublishKeyService, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
+        UserService,
     },
     Config,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
+
+struct DisabledEmailConfigProvider;
+
+impl EmailConfigProvider for DisabledEmailConfigProvider {
+    fn current_config(&self) -> synctv_core::Result<Option<EmailConfig>> {
+        Ok(None)
+    }
+}
 
 fn make_user(username: &str, role: UserRole) -> User {
     let now = Utc::now();
@@ -106,7 +115,8 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         .expect("settings initialized");
     let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
     room_service.set_settings_registry(settings_registry.clone());
-    let email_service = Arc::new(EmailService::new(None).expect("email service"));
+    let email_service =
+        Arc::new(EmailService::new(Arc::new(DisabledEmailConfigProvider)).expect("email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(

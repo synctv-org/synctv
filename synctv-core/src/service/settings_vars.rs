@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use super::SettingsService;
@@ -38,6 +39,68 @@ use crate::Result;
 
 /// Type alias for validator function to reduce type complexity
 type ValidatorFn<T> = Arc<dyn Fn(&T) -> Result<()> + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingChange<T> {
+    pub key: &'static str,
+    pub raw_value: Option<String>,
+    pub value: Option<T>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SettingChangeError {
+    #[error("setting change subscription lagged by {0} messages")]
+    Lagged(u64),
+    #[error("setting change subscription closed")]
+    Closed,
+    #[error("failed to parse setting '{key}' value: {error}")]
+    Parse { key: &'static str, error: String },
+}
+
+pub struct SettingChangeReceiver<T>
+where
+    T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
+    <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
+{
+    key: &'static str,
+    receiver: broadcast::Receiver<(String, Option<String>)>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T> SettingChangeReceiver<T>
+where
+    T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
+    <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
+{
+    pub async fn recv(&mut self) -> std::result::Result<SettingChange<T>, SettingChangeError> {
+        loop {
+            match self.receiver.recv().await {
+                Ok((key, raw_value)) if key == self.key => {
+                    let value = raw_value
+                        .as_deref()
+                        .map(str::parse::<T>)
+                        .transpose()
+                        .map_err(|error| SettingChangeError::Parse {
+                            key: self.key,
+                            error: error.to_string(),
+                        })?;
+                    return Ok(SettingChange {
+                        key: self.key,
+                        raw_value,
+                        value,
+                    });
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    return Err(SettingChangeError::Lagged(count));
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(SettingChangeError::Closed);
+                }
+            }
+        }
+    }
+}
 
 /// Trait for setting operations (type-erased)
 ///
@@ -229,6 +292,18 @@ impl SettingsStorage {
     #[must_use]
     pub fn get_raw(&self, key: &str) -> Option<String> {
         self.inner.read().get(key).cloned()
+    }
+
+    pub fn subscribe_changes<T>(&self, key: &'static str) -> SettingChangeReceiver<T>
+    where
+        T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
+        <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
+    {
+        SettingChangeReceiver {
+            key,
+            receiver: self.settings_service.subscribe_reloads(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Set a raw string value in memory without persisting.
@@ -538,6 +613,15 @@ where
     /// Get the setting key
     pub const fn key(&self) -> &str {
         self.key
+    }
+
+    /// Subscribe to typed changes for this concrete setting.
+    ///
+    /// Call this before reading the initial value when the caller needs a
+    /// race-free watch: the subscription receives every later write while the
+    /// initial read establishes the current snapshot.
+    pub fn subscribe_changes(&self) -> SettingChangeReceiver<T> {
+        self.storage.subscribe_changes(self.key)
     }
 }
 

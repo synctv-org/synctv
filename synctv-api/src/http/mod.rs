@@ -335,9 +335,15 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
 
     let admin_api = config.settings_service.as_ref().map(|settings_svc| {
         let email_svc = config.email_service.clone().unwrap_or_else(|| {
+            let settings_registry = config
+                .settings_registry
+                .clone()
+                .expect("settings registry is required when building admin email service");
             Arc::new(
-                synctv_core::service::EmailService::new(None)
-                    .expect("EmailService::new(None) should not fail"),
+                synctv_core::service::EmailService::new(Arc::new(
+                    synctv_core::service::RuntimeEmailConfigProvider::new(settings_registry),
+                ))
+                .expect("runtime email service should initialize"),
             )
         });
         let admin_api = crate::impls::AdminApiImpl::new(
@@ -730,6 +736,11 @@ fn register_extracted_user_routes() -> Router<AppState> {
         .route("/api/user", get(user::get_me))
         .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/user", axum::routing::patch(user::update_user))
+        .route("/api/user/email/bind/start", post(user::start_email_bind))
+        .route(
+            "/api/user/email/bind/confirm",
+            post(user::confirm_email_bind),
+        )
         .route(
             "/api/user/preferences",
             get(user::get_user_preferences).patch(user::update_user_preferences),

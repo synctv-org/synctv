@@ -22,14 +22,15 @@ use crate::proto::client::{
     AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
     ApproveRoomJoinReviewResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
     ClearPlaylistResponse, ClientMessage, CloseAccountRequest, CloseAccountResponse,
-    ConfirmEmailLoginRequest, ConfirmEmailRequest, ConfirmEmailResponse,
-    ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
-    CreateWebSocketTicketRequest, CreateWebSocketTicketResponse, DeleteEntriesRequest,
-    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePasskeyRequest,
-    DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
-    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, FinishMfaPasskeyRequest,
-    FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
+    ConfirmEmailBindRequest, ConfirmEmailBindResponse, ConfirmEmailLoginRequest,
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
+    CreateGuestTokenRequest, CreateGuestTokenResponse, CreatePlaylistRequest,
+    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, CreateWebSocketTicketRequest,
+    CreateWebSocketTicketResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
+    DeleteMediaResponse, DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest,
+    DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
+    EditMediaResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
+    FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
     FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
     GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
@@ -53,13 +54,14 @@ use crate::proto::client::{
     RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
     SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage,
     SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
-    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
-    StartOpaqueLoginResponse, StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse,
-    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
-    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
-    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
-    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
-    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    StartEmailBindRequest, StartEmailBindResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse, StartOpaquePasswordUpdateRequest,
+    StartOpaquePasswordUpdateResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
+    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
+    StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
+    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
     UpdatePlaybackRequest, UpdatePlaylistRequest, UpdatePlaylistResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateUserPreferencesRequest,
@@ -1024,6 +1026,52 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.set_username(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_email_bind(
+        &self,
+        request: Request<StartEmailBindRequest>,
+    ) -> Result<Response<StartEmailBindResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .start_email_bind(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn confirm_email_bind(
+        &self,
+        request: Request<ConfirmEmailBindRequest>,
+    ) -> Result<Response<ConfirmEmailBindResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .confirm_email_bind(&authenticated.user_id, req)
+                        .await
                 },
             )
             .await

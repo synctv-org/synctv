@@ -38,6 +38,8 @@ service UserService {
     rpc Logout(LogoutRequest) returns (LogoutResponse);
     rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
     rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
+    rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
+    rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (ConfirmEmailBindResponse);
     rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
     rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (FinishOpaquePasswordUpdateResponse);
     rpc StartPasskeyBind(StartPasskeyBindRequest) returns (StartPasskeyBindResponse);
@@ -2198,6 +2200,34 @@ message SetUsernameRequest {
 }
 
 message SetUsernameResponse {
+    User user = 1;
+}
+
+message StartEmailBindRequest {
+    string email = 1 [(buf.validate.field).string = {
+        min_len: 3,
+        max_len: 254,
+        email: true
+    }];
+}
+
+message StartEmailBindResponse {
+    string masked_email = 1;
+}
+
+message ConfirmEmailBindRequest {
+    string email = 1 [(buf.validate.field).string = {
+        min_len: 3,
+        max_len: 254,
+        email: true
+    }];
+    string token = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 255
+    }];
+}
+
+message ConfirmEmailBindResponse {
     User user = 1;
 }
 

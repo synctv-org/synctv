@@ -3,7 +3,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use sqlx::PgPool;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     cache::{
@@ -20,10 +20,10 @@ use crate::{
     },
     service::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
-        AuditService, ChatService, ContentFilter, EmailConfig, EmailService, EmailTokenService,
-        JwtService, OAuth2Service, PasskeyService, PermissionService, ProvidersManager,
-        RateLimitConfig, RemoteProviderManager, RequestRateLimiterService, RoomService,
-        RoomSettingsService, SettingsRegistry, SettingsService, StreamingPublishKeyService,
+        AuditService, ChatService, ContentFilter, EmailService, EmailTokenService, JwtService,
+        OAuth2Service, PasskeyService, PermissionService, ProvidersManager, RateLimitConfig,
+        RemoteProviderManager, RequestRateLimiterService, RoomService, RoomSettingsService,
+        RuntimeEmailConfigProvider, SettingsRegistry, SettingsService, StreamingPublishKeyService,
         UserNotificationService, UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
@@ -73,9 +73,9 @@ pub struct Services {
     pub settings_service: Arc<SettingsService>,
     /// Settings registry with type-safe setting variables
     pub settings_registry: Arc<SettingsRegistry>,
-    /// Email service (optional, requires SMTP configuration)
+    /// Email service backed by runtime SMTP settings.
     pub email_service: Option<Arc<EmailService>>,
-    /// Email token service for verification codes (optional, requires SMTP configuration)
+    /// Email token service for verification codes.
     pub email_token_service: Option<Arc<EmailTokenService>>,
     /// Shared WebSocket ticket service reused across transports.
     pub ws_ticket_service: Arc<dyn crate::service::WebSocketTicketService>,
@@ -175,24 +175,15 @@ impl Services {
     }
 }
 
-const fn should_require_email_verification(email_service_available: bool) -> bool {
-    email_service_available
-}
-
 fn build_email_token_service(
     pool: PgPool,
-    email_service_available: bool,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
-) -> Option<Arc<EmailTokenService>> {
-    if !email_service_available {
-        return None;
-    }
-
-    Some(Arc::new(EmailTokenService::with_rate_limiter(
+) -> Arc<EmailTokenService> {
+    Arc::new(EmailTokenService::with_rate_limiter(
         pool,
         rate_limiter,
         None,
-    )))
+    ))
 }
 
 fn build_brute_force_protection(
@@ -578,25 +569,24 @@ pub async fn init_services_with_options(
     );
     settings_registry.init(settings_cancel.clone())?;
     info!("Settings registry initialized");
+    let settings_registry = Arc::new(settings_registry);
 
-    // Initialize Email service (optional - requires SMTP configuration)
-    let email_service = init_email_service(config)?;
-    if email_service.is_some() {
-        info!("Email service initialized");
-    } else {
-        info!("Email service not configured (set SYNCTV_EMAIL_SMTP_HOST)");
-    }
+    // Initialize Email service. SMTP connection details live in runtime settings
+    // and are read lazily when mail is sent.
+    let email_config_provider = RuntimeEmailConfigProvider::new(Arc::clone(&settings_registry));
+    let email_service = Some(Arc::new(EmailService::new(Arc::new(
+        email_config_provider,
+    ))?));
+    info!("Email service initialized with runtime settings");
 
-    let email_verification_required = should_require_email_verification(email_service.is_some());
+    let email_verification_required = settings_registry.email_enabled.get()?;
 
-    // Initialize Email Token service (optional - requires email service)
-    let email_token_service =
-        build_email_token_service(pool.clone(), email_service.is_some(), rate_limiter.clone());
-    if email_token_service.is_some() {
-        info!("Email token service initialized");
-    } else {
-        info!("Email token service not configured (requires email service)");
-    }
+    // Initialize Email Token service. Delivery is gated by EmailService runtime settings when mail is sent.
+    let email_token_service = Some(build_email_token_service(
+        pool.clone(),
+        rate_limiter.clone(),
+    ));
+    info!("Email token service initialized");
 
     let ws_ticket_service = build_ws_ticket_service(&shared_state_profile)?;
     info!(
@@ -621,8 +611,6 @@ pub async fn init_services_with_options(
     info!("Audit service initialized with async buffering");
 
     let notification_service = Arc::new(notification_service);
-
-    let settings_registry = Arc::new(settings_registry);
 
     let oauth2_service = init_oauth2_service(
         &pool,
@@ -1082,34 +1070,6 @@ fn init_credential_encryption(
     }
 }
 
-/// Initialize Email service (optional - requires SMTP configuration).
-fn init_email_service(config: &Config) -> Result<Option<Arc<EmailService>>, anyhow::Error> {
-    // Check if SMTP host is configured
-    if config.email.smtp_host.is_empty() {
-        return Ok(None);
-    }
-
-    let email_config = EmailConfig {
-        smtp_host: config.email.smtp_host.clone(),
-        smtp_port: config.email.smtp_port,
-        smtp_username: config.email.smtp_username.clone(),
-        smtp_password: config.email.smtp_password.clone(),
-        from_email: config.email.from_email.clone(),
-        from_name: config.email.from_name.clone(),
-        use_tls: config.email.use_tls,
-    };
-
-    match EmailService::new(Some(email_config)) {
-        Ok(service) => Ok(Some(Arc::new(service))),
-        Err(e) => {
-            error!("Failed to initialize email service: {}", e);
-            Err(anyhow::anyhow!(
-                "email.smtp_host is configured but EmailService initialization failed: {e}"
-            ))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1320,22 +1280,6 @@ mod tests {
     #[test]
     fn test_provider_manager_init_success_passthrough() {
         handle_provider_manager_init_result(Ok(())).expect("successful provider init should pass");
-    }
-
-    #[test]
-    fn test_init_email_service_is_independent_of_redis_backend_choice() {
-        let mut config = Config::default();
-        config.email.smtp_host = "smtp.example.com".to_string();
-        config.email.smtp_port = 587;
-        config.email.smtp_username = "user".to_string();
-        config.email.smtp_password = "password".to_string();
-        config.email.from_email = "noreply@example.com".to_string();
-        config.email.from_name = "SyncTV".to_string();
-        config.email.use_tls = true;
-
-        let standalone = init_email_service(&config).expect("standalone email service");
-        let standalone = standalone.expect("email service");
-        assert!(standalone.is_configured());
     }
 
     #[tokio::test]
@@ -1803,31 +1747,13 @@ mod tests {
         assert_eq!(rate_limit_config.window_seconds, 5);
     }
 
-    #[test]
-    fn test_email_verification_requirement_tracks_email_service_availability() {
-        assert!(
-            should_require_email_verification(true),
-            "email verification must be enabled when email delivery is configured"
-        );
-        assert!(
-            !should_require_email_verification(false),
-            "email verification must stay disabled when email delivery is unavailable"
-        );
-    }
-
     #[tokio::test]
-    async fn test_build_email_token_service_requires_email_service() {
+    async fn test_build_email_token_service_uses_shared_rate_limiter() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let limiter: Arc<dyn RequestRateLimiterService> =
             Arc::new(RateLimiter::local_only("test-email-token:".to_string()));
 
-        assert!(
-            build_email_token_service(pool.clone(), false, limiter.clone()).is_none(),
-            "email token service must not start without email delivery"
-        );
-
-        let service = build_email_token_service(pool, true, limiter)
-            .expect("email token service should be built when email delivery is configured");
+        let service = build_email_token_service(pool, limiter);
         assert!(
             service.has_rate_limiter(),
             "email token service should inherit the shared rate limiter by default"

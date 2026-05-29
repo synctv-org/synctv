@@ -321,7 +321,6 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "redis.password"
             | "redis.url"
             | "jwt.secret"
-            | "email.smtp_password"
             | "livestream.hls_oss.access_key_id"
             | "livestream.hls_oss.secret_access_key"
             | "bootstrap.root_password"
@@ -520,7 +519,6 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub livestream: LivestreamConfig,
     pub webauthn: WebAuthnConfig,
-    pub email: EmailConfig,
     pub media_providers: MediaProvidersConfig,
     pub webrtc: WebRTCConfig,
     pub connection_limits: ConnectionLimitsConfig,
@@ -551,7 +549,6 @@ impl std::fmt::Debug for Config {
             .field("logging", &self.logging)
             .field("livestream", &self.livestream)
             .field("webauthn", &self.webauthn)
-            .field("email", &"<redacted>")
             .field("media_providers", &self.media_providers)
             .field("webrtc", &self.webrtc)
             .field("connection_limits", &self.connection_limits)
@@ -584,7 +581,6 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             webauthn: WebAuthnConfig::default(),
-            email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
             connection_limits: ConnectionLimitsConfig::default(),
@@ -1536,47 +1532,6 @@ impl Default for WebRTCConfig {
             stun_external_addr: String::new(),
 
             filter_private_ice_candidates: true,
-        }
-    }
-}
-
-/// Email configuration for SMTP
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EmailConfig {
-    pub smtp_host: String,
-    pub smtp_port: u16,
-    pub smtp_username: String,
-    pub smtp_password: String,
-    pub from_email: String,
-    pub from_name: String,
-    pub use_tls: bool,
-}
-
-impl std::fmt::Debug for EmailConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EmailConfig")
-            .field("smtp_host", &self.smtp_host)
-            .field("smtp_port", &self.smtp_port)
-            .field("smtp_username", &self.smtp_username)
-            .field("smtp_password", &"<redacted>")
-            .field("from_email", &self.from_email)
-            .field("from_name", &self.from_name)
-            .field("use_tls", &self.use_tls)
-            .finish()
-    }
-}
-
-impl Default for EmailConfig {
-    fn default() -> Self {
-        Self {
-            smtp_host: String::new(),
-            smtp_port: 587,
-            smtp_username: String::new(),
-            smtp_password: String::new(),
-            from_email: String::new(),
-            from_name: "SyncTV".to_string(),
-            use_tls: true,
         }
     }
 }
@@ -2626,19 +2581,6 @@ impl Config {
             "SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS",
             &mut self.livestream.flv_write_timeout_seconds,
         )?;
-
-        env_override_str("SYNCTV_EMAIL_SMTP_HOST", &mut self.email.smtp_host);
-        env_override_parse("SYNCTV_EMAIL_SMTP_PORT", &mut self.email.smtp_port)?;
-        env_override_str("SYNCTV_EMAIL_SMTP_USERNAME", &mut self.email.smtp_username);
-        env_override_str("SYNCTV_EMAIL_SMTP_PASSWORD", &mut self.email.smtp_password);
-        env_override_str_file(
-            "SYNCTV_EMAIL_SMTP_PASSWORD_FILE",
-            "email.smtp_password",
-            &mut self.email.smtp_password,
-        )?;
-        env_override_str("SYNCTV_EMAIL_FROM_EMAIL", &mut self.email.from_email);
-        env_override_str("SYNCTV_EMAIL_FROM_NAME", &mut self.email.from_name);
-        env_override_bool("SYNCTV_EMAIL_USE_TLS", &mut self.email.use_tls)?;
 
         env_override_parse(
             "SYNCTV_MEDIA_PROVIDERS_ALIST_REQUEST_TIMEOUT_SECONDS",
@@ -3782,27 +3724,6 @@ impl Config {
             );
         }
 
-        // Validate email config (only when SMTP is configured)
-        if !self.email.smtp_host.is_empty() {
-            if self.email.smtp_port == 0 {
-                errors.push(
-                    "email.smtp_port must be between 1 and 65535 when smtp_host is set".to_string(),
-                );
-            }
-            if self.email.from_email.is_empty() {
-                errors
-                    .push("email.from_email must be set when smtp_host is configured".to_string());
-            } else if !self.email.from_email.contains('@')
-                || self.email.from_email.starts_with('@')
-                || self.email.from_email.ends_with('@')
-            {
-                errors.push(format!(
-                    "email.from_email '{}' is not a valid email address",
-                    self.email.from_email
-                ));
-            }
-        }
-
         Self::validate_local_provider_http_config(
             "media_providers.alist",
             &self.media_providers.alist,
@@ -4835,7 +4756,6 @@ mod tests {
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             webauthn: WebAuthnConfig::default(),
-            email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
             connection_limits: ConnectionLimitsConfig::default(),
@@ -4878,7 +4798,6 @@ mod tests {
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             webauthn: WebAuthnConfig::default(),
-            email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
             connection_limits: ConnectionLimitsConfig::default(),
@@ -5255,7 +5174,6 @@ mod tests {
                 ..LivestreamConfig::default()
             },
             webauthn: WebAuthnConfig::default(),
-            email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
                 // Keep a valid external STUN address so cluster-mode tests can opt in by
@@ -5579,11 +5497,6 @@ media_providers:
         .expect("redis url file should be written");
         std::fs::write(config_dir.join("redis.password"), "redis-password\n")
             .expect("redis password file should be written");
-        std::fs::write(
-            config_dir.join("smtp.password"),
-            "smtp-password-from-file\n",
-        )
-        .expect("smtp password file should be written");
         std::fs::write(config_dir.join("root.password"), "StrongPwd12345!\n")
             .expect("root password file should be written");
         std::fs::write(
@@ -5624,9 +5537,6 @@ jwt:
 security:
   credential_encryption_key_file: "./credential.key"
   opaque_server_setup_secret_file: "./opaque.secret"
-email:
-  smtp_host: "smtp.example.com"
-  smtp_password_file: "./smtp.password"
 bootstrap:
   create_root_user: true
   root_username: "admin"
@@ -5669,7 +5579,6 @@ bootstrap:
             config.security.opaque_server_setup_secret,
             "opaque-server-setup-secret-from-file"
         );
-        assert_eq!(config.email.smtp_password, "smtp-password-from-file");
         assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
     }
 
@@ -6626,7 +6535,6 @@ jwt:
             write_secret("database.password", "database-password-from-env-file");
         let redis_url = write_secret("redis.url", "redis://:secret@redis.example.com:6379/0");
         let redis_password = write_secret("redis.password", "redis-password-from-env-file");
-        let smtp_password = write_secret("smtp.password", "smtp-password-from-env-file");
         let root_password = write_secret("root.password", "RootPassword12345");
 
         let config = Config::from_env_map(&env_map(&[
@@ -6671,10 +6579,6 @@ jwt:
                 redis_password.to_str().expect("utf-8 path"),
             ),
             (
-                "SYNCTV_EMAIL_SMTP_PASSWORD_FILE",
-                smtp_password.to_str().expect("utf-8 path"),
-            ),
-            (
                 "SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE",
                 root_password.to_str().expect("utf-8 path"),
             ),
@@ -6706,7 +6610,6 @@ jwt:
         assert_eq!(config.database.password, "database-password-from-env-file");
         assert_eq!(config.redis.url, "redis://:secret@redis.example.com:6379/0");
         assert_eq!(config.redis.password, "redis-password-from-env-file");
-        assert_eq!(config.email.smtp_password, "smtp-password-from-env-file");
         assert_eq!(config.bootstrap.root_password, "RootPassword12345");
     }
 
@@ -7155,28 +7058,6 @@ jwt:
         config.livestream.public_rtmp_host.clear();
 
         assert_eq!(config.public_rtmp_host(), "[::1]");
-    }
-
-    #[test]
-    fn test_validate_email_config_partial() {
-        let mut config = valid_prod_config();
-        config.email.smtp_host = "smtp.example.com".to_string();
-        config.email.smtp_port = 0;
-        config.email.from_email = String::new();
-        let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("smtp_port")));
-        assert!(errors.iter().any(|e| e.contains("from_email")));
-    }
-
-    #[test]
-    fn test_validate_email_invalid_from_email() {
-        let mut config = valid_prod_config();
-        config.email.smtp_host = "smtp.example.com".to_string();
-        config.email.from_email = "@invalid".to_string();
-        let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("from_email") && e.contains("not a valid")));
     }
 
     #[test]

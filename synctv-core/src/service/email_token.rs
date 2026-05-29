@@ -105,6 +105,72 @@ impl EmailTokenService {
         &self.rate_limit_config
     }
 
+    async fn check_generation_rate_limit(
+        &self,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        let Some(ref limiter) = self.rate_limiter else {
+            return Ok(());
+        };
+
+        let rate_limit_key = format!("email:{token_type}:{user_id}");
+
+        match limiter
+            .check_rate_limit_with_control(
+                &rate_limit_key,
+                self.rate_limit_config.max_tokens_per_user,
+                self.rate_limit_config.window_seconds,
+                control,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(RateLimitError::RateLimitExceeded {
+                retry_after_seconds,
+            }) => {
+                warn!(
+                    user_id = %user_id,
+                    token_type = %token_type.as_str(),
+                    retry_after_seconds,
+                    "Email token rate limit exceeded"
+                );
+                Err(Error::RateLimited(format!(
+                    "Too many {} requests. Please try again in {} seconds.",
+                    token_type.as_str(),
+                    retry_after_seconds
+                )))
+            }
+            Err(RateLimitError::Control(error)) => Err(Error::Timeout(error.to_string())),
+            Err(RateLimitError::BackendUnavailable(message)) => {
+                Err(Error::ServiceUnavailable(message))
+            }
+            Err(RateLimitError::RedisError(error)) => Err(Error::ServiceUnavailable(format!(
+                "Email token rate limit service unavailable: {error}"
+            ))),
+        }
+    }
+
+    pub async fn check_generate_token_rate_limit(
+        &self,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+    ) -> Result<()> {
+        self.check_generate_token_rate_limit_with_control(user_id, token_type, None)
+            .await
+    }
+
+    pub async fn check_generate_token_rate_limit_with_control(
+        &self,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.check_generation_rate_limit(user_id, token_type, control)
+            .await
+    }
+
     /// Generate a new email token
     ///
     /// # Rate Limiting
@@ -133,48 +199,8 @@ impl EmailTokenService {
         token_type: EmailTokenType,
         control: Option<&ExecutionControl>,
     ) -> Result<String> {
-        // Check rate limit if configured
-        if let Some(ref limiter) = self.rate_limiter {
-            let rate_limit_key = format!("email:{token_type}:{user_id}");
-
-            match limiter
-                .check_rate_limit_with_control(
-                    &rate_limit_key,
-                    self.rate_limit_config.max_tokens_per_user,
-                    self.rate_limit_config.window_seconds,
-                    control,
-                )
-                .await
-            {
-                Ok(()) => {}
-                Err(RateLimitError::RateLimitExceeded {
-                    retry_after_seconds,
-                }) => {
-                    warn!(
-                        user_id = %user_id,
-                        token_type = %token_type.as_str(),
-                        retry_after_seconds,
-                        "Email token rate limit exceeded"
-                    );
-                    return Err(Error::RateLimited(format!(
-                        "Too many {} requests. Please try again in {} seconds.",
-                        token_type.as_str(),
-                        retry_after_seconds
-                    )));
-                }
-                Err(RateLimitError::Control(error)) => {
-                    return Err(Error::Timeout(error.to_string()));
-                }
-                Err(RateLimitError::BackendUnavailable(message)) => {
-                    return Err(Error::ServiceUnavailable(message));
-                }
-                Err(RateLimitError::RedisError(error)) => {
-                    return Err(Error::ServiceUnavailable(format!(
-                        "Email token rate limit service unavailable: {error}"
-                    )));
-                }
-            }
-        }
+        self.check_generation_rate_limit(user_id, token_type, control)
+            .await?;
 
         // Generate random token
         let token = synctv_common::snanoid!(64);
@@ -400,5 +426,36 @@ mod tests {
         limiter.check_rate_limit(&key, 2, 60).await.unwrap();
         let result = limiter.check_rate_limit(&key, 2, 60).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_check_generate_token_rate_limit_blocks_without_database_write() {
+        let limiter = Arc::new(crate::service::rate_limit::RateLimiter::local_only(
+            "email_token_check:".to_string(),
+        ));
+        let pool = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1/db").unwrap();
+        let service = EmailTokenService::with_rate_limiter(
+            pool,
+            limiter,
+            Some(EmailTokenRateLimitConfig {
+                max_tokens_per_user: 2,
+                window_seconds: 60,
+            }),
+        );
+        let user_id = UserId::new();
+
+        service
+            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailVerification)
+            .await
+            .unwrap();
+        service
+            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailVerification)
+            .await
+            .unwrap();
+
+        let result = service
+            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailVerification)
+            .await;
+        assert!(matches!(result, Err(Error::RateLimited(_))));
     }
 }

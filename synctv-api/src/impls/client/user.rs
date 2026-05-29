@@ -257,6 +257,74 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn start_email_bind(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::StartEmailBindRequest,
+    ) -> Result<crate::proto::client::StartEmailBindResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let email_api = self.email_api.as_ref().ok_or_else(|| {
+            ApiError::ServiceUnavailable(
+                synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
+            )
+        })?;
+        let email = crate::impls::validation::validate_email(&req.email)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        email_api
+            .check_email_delivery_rate_limits(
+                &email,
+                user_id,
+                synctv_core::models::EmailTokenType::EmailVerification,
+                None,
+            )
+            .await?;
+        let token = self
+            .user_service
+            .start_email_bind(user_id, &email)
+            .await
+            .map_err(ApiError::from)?;
+
+        if let Err(error) = email_api
+            .email_service
+            .send_verification_token_email_with_control(&email, &token, None)
+            .await
+        {
+            self.user_service
+                .delete_pending_email_bind(user_id, &email, &token)
+                .await
+                .map_err(ApiError::from)?;
+            return Err(ApiError::from(error));
+        }
+
+        Ok(crate::proto::client::StartEmailBindResponse {
+            masked_email: synctv_core::service::mask_email(&email),
+        })
+    }
+
+    pub async fn confirm_email_bind(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::ConfirmEmailBindRequest,
+    ) -> Result<crate::proto::client::ConfirmEmailBindResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let email = crate::impls::validation::validate_email(&req.email)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let updated_user = self
+            .user_service
+            .confirm_email_bind(user_id, &email, &req.token)
+            .await
+            .map_err(|error| match error {
+                synctv_core::Error::InvalidInput(_) => {
+                    ApiError::InvalidInput("Invalid or expired verification token".to_string())
+                }
+                other => ApiError::from(other),
+            })?;
+
+        Ok(crate::proto::client::ConfirmEmailBindResponse {
+            user: Some(user_to_proto(&updated_user, &self.public_id_codec)),
+        })
+    }
+
     pub async fn start_opaque_password_update(
         &self,
         user_id: &UserId,

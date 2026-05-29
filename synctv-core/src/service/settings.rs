@@ -7,6 +7,7 @@
 
 use dashmap::DashMap;
 use sqlx::PgPool;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -18,7 +19,7 @@ use crate::cache::{
 };
 use crate::models::settings::{get_default_settings, SettingsGroup};
 use crate::repository::SettingsRepository;
-use crate::service::settings_vars::SettingProvider;
+use crate::service::settings_vars::{Setting, SettingProvider};
 use crate::{Error, InternalExt};
 
 /// Change listener callback type
@@ -27,6 +28,38 @@ pub type SettingsChangeListener = Arc<dyn Fn(&str, &serde_json::Value) + Send + 
 /// Type alias for the shared setting providers map
 pub(crate) type SettingProviders =
     Arc<parking_lot::RwLock<std::collections::HashMap<String, Arc<dyn SettingProvider>>>>;
+
+type SettingsBatchValidator =
+    Arc<dyn Fn(&SettingsValidationContext) -> Result<(), Error> + Send + Sync>;
+
+pub(crate) struct SettingsValidationContext {
+    values: BTreeMap<String, String>,
+}
+
+impl SettingsValidationContext {
+    fn new(values: BTreeMap<String, String>) -> Self {
+        Self { values }
+    }
+
+    pub(crate) fn get<T>(&self, setting: &Setting<T>) -> Result<T, Error>
+    where
+        T: Clone + std::fmt::Display + std::str::FromStr + Send + Sync + 'static,
+        T::Err: std::fmt::Display + std::error::Error + Send + Sync,
+    {
+        let raw = self.values.get(setting.key()).ok_or_else(|| {
+            Error::Internal(format!(
+                "Missing registered setting '{}' during validation",
+                setting.key()
+            ))
+        })?;
+        raw.parse::<T>().map_err(|error| {
+            Error::InvalidInput(format!(
+                "Invalid value for setting '{}': {error}",
+                setting.key()
+            ))
+        })
+    }
+}
 
 /// System settings service
 #[derive(Clone)]
@@ -43,6 +76,7 @@ pub struct SettingsService {
     // Shared reference to registered setting providers for validation.
     // Set by `SettingsStorage` after construction via `set_providers()`.
     setting_providers: Arc<parking_lot::RwLock<Option<SettingProviders>>>,
+    batch_validators: Arc<parking_lot::RwLock<Vec<SettingsBatchValidator>>>,
     consistency: ConsistencyCoordinator,
     runtime_cache: RuntimeSettingsCache,
 }
@@ -110,6 +144,7 @@ impl SettingsService {
             listeners: Arc::new(RwLock::new(Vec::new())),
             reload_sender,
             setting_providers: Arc::new(parking_lot::RwLock::new(None)),
+            batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
             consistency: ConsistencyCoordinator::new(version_fence),
             runtime_cache,
         }
@@ -121,6 +156,13 @@ impl SettingsService {
     /// validate values before persisting them to the database.
     pub(crate) fn set_providers(&self, providers: SettingProviders) {
         *self.setting_providers.write() = Some(providers);
+    }
+
+    pub(crate) fn add_batch_validator<F>(&self, validator: F)
+    where
+        F: Fn(&SettingsValidationContext) -> Result<(), Error> + Send + Sync + 'static,
+    {
+        self.batch_validators.write().push(Arc::new(validator));
     }
 
     /// Validate a setting value using the registered provider for its key.
@@ -145,6 +187,42 @@ impl SettingsService {
         Err(Error::Internal(
             "Settings providers are not initialized; refusing to validate update".to_string(),
         ))
+    }
+
+    fn registered_default_snapshot(&self) -> Result<BTreeMap<String, String>, Error> {
+        let providers_lock = self.setting_providers.read();
+        let Some(providers) = providers_lock.as_ref() else {
+            return Err(Error::Internal(
+                "Settings providers are not initialized; refusing to validate update".to_string(),
+            ));
+        };
+
+        let defaults = providers
+            .read()
+            .values()
+            .map(|provider| (provider.key().to_string(), provider.default_raw()))
+            .collect();
+        Ok(defaults)
+    }
+
+    fn validate_setting_update_snapshot(&self, updates: &[(String, String)]) -> Result<(), Error> {
+        let validators = self.batch_validators.read().clone();
+        if validators.is_empty() {
+            return Ok(());
+        }
+
+        let mut snapshot = self.registered_default_snapshot()?;
+        for setting in self.get_all()? {
+            snapshot.insert(setting.key, setting.value);
+        }
+        for (key, value) in updates {
+            snapshot.insert(key.clone(), value.clone());
+        }
+        let context = SettingsValidationContext::new(snapshot);
+        for validator in validators {
+            validator(&context)?;
+        }
+        Ok(())
     }
 
     /// Subscribe to reload events triggered by remote replicas.
@@ -296,6 +374,7 @@ impl SettingsService {
 
         // Validate before writing to database
         self.validate_setting(key, &value)?;
+        self.validate_setting_update_snapshot(&[(key.to_string(), value.clone())])?;
 
         let group_name = group_name_from_setting_key(key);
 
@@ -398,6 +477,7 @@ impl SettingsService {
         for (key, value) in &updates {
             self.validate_setting(key, value)?;
         }
+        self.validate_setting_update_snapshot(&updates)?;
 
         let mut fences = Vec::with_capacity(updates.len());
         for (key, _) in &updates {

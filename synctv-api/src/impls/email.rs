@@ -36,10 +36,107 @@ fn map_email_mutation_error(err: synctv_core::Error) -> ApiError {
     ApiError::from(err)
 }
 
+#[async_trait::async_trait]
+pub trait EmailDeliveryService: Send + Sync {
+    async fn send_verification_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &synctv_core::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<String>;
+
+    async fn send_verification_token_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<()>;
+
+    async fn send_password_reset_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &synctv_core::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<String>;
+
+    async fn send_email_login_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &synctv_core::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<String>;
+}
+
+#[async_trait::async_trait]
+impl EmailDeliveryService for EmailService {
+    async fn send_verification_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &synctv_core::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<String> {
+        EmailService::send_verification_email_with_control(
+            self,
+            email,
+            token_service,
+            user_id,
+            control,
+        )
+        .await
+    }
+
+    async fn send_verification_token_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<()> {
+        EmailService::send_verification_token_email_with_control(self, email, token, control).await
+    }
+
+    async fn send_password_reset_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &synctv_core::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<String> {
+        EmailService::send_password_reset_email_with_control(
+            self,
+            email,
+            token_service,
+            user_id,
+            control,
+        )
+        .await
+    }
+
+    async fn send_email_login_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &synctv_core::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<String> {
+        EmailService::send_email_login_email_with_control(
+            self,
+            email,
+            token_service,
+            user_id,
+            control,
+        )
+        .await
+    }
+}
+
 /// Shared email operations implementation.
 pub struct EmailApiImpl {
     pub user_service: Arc<UserService>,
-    pub email_service: Arc<EmailService>,
+    pub email_service: Arc<dyn EmailDeliveryService>,
     pub email_token_service: Arc<EmailTokenService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     public_id_codec: Arc<crate::PublicIdCodec>,
@@ -161,10 +258,24 @@ impl EmailApiImpl {
         }
     }
 
+    pub async fn check_email_delivery_rate_limits(
+        &self,
+        email: &str,
+        user_id: &synctv_core::models::UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), ApiError> {
+        self.check_email_rate_limit(email, control).await?;
+        self.email_token_service
+            .check_generate_token_rate_limit_with_control(user_id, token_type, control)
+            .await
+            .map_err(ApiError::from)
+    }
+
     #[must_use]
     pub fn new(
         user_service: Arc<UserService>,
-        email_service: Arc<EmailService>,
+        email_service: Arc<dyn EmailDeliveryService>,
         email_token_service: Arc<EmailTokenService>,
         rate_limiter: impl RequestRateLimiterService + 'static,
         public_id_codec: Arc<crate::PublicIdCodec>,
@@ -761,17 +872,68 @@ impl EmailApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        map_email_mutation_error, map_email_user_lookup_error, EmailApiImpl,
+        map_email_mutation_error, map_email_user_lookup_error, EmailApiImpl, EmailDeliveryService,
         GENERIC_EMAIL_LOGIN_MESSAGE, GENERIC_PASSWORD_RESET_MESSAGE,
     };
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
-    use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
+    use synctv_core::models::{EmailTokenType, SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::service::AuthenticatedLogin;
     use synctv_core::service::{
-        auth::BruteForceProtection, EmailService, EmailTokenService, InMemoryTokenBlacklistStore,
-        JwtService, RateLimiter, UserService,
+        auth::BruteForceProtection, EmailTokenService, InMemoryTokenBlacklistStore, JwtService,
+        RateLimiter, UserService,
     };
+
+    #[derive(Clone)]
+    struct TestEmailDeliveryService;
+
+    #[async_trait::async_trait]
+    impl EmailDeliveryService for TestEmailDeliveryService {
+        async fn send_verification_email_with_control(
+            &self,
+            _email: &str,
+            token_service: &EmailTokenService,
+            user_id: &UserId,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<String> {
+            token_service
+                .generate_token(user_id, EmailTokenType::EmailVerification)
+                .await
+        }
+
+        async fn send_verification_token_email_with_control(
+            &self,
+            _email: &str,
+            _token: &str,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
+
+        async fn send_password_reset_email_with_control(
+            &self,
+            _email: &str,
+            token_service: &EmailTokenService,
+            user_id: &UserId,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<String> {
+            token_service
+                .generate_token(user_id, EmailTokenType::PasswordReset)
+                .await
+        }
+
+        async fn send_email_login_email_with_control(
+            &self,
+            _email: &str,
+            token_service: &EmailTokenService,
+            user_id: &UserId,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<String> {
+            token_service
+                .generate_token(user_id, EmailTokenType::EmailLogin)
+                .await
+        }
+    }
 
     fn make_user(username: &str) -> User {
         let now = chrono::Utc::now();
@@ -817,7 +979,7 @@ mod tests {
 
         EmailApiImpl::new(
             user_service,
-            Arc::new(EmailService::new(None).unwrap()),
+            Arc::new(TestEmailDeliveryService),
             Arc::new(EmailTokenService::new(pool)),
             RateLimiter::local_only("email-api-tests:".to_string()),
             Arc::new(crate::PublicIdCodec::default_for_tests()),

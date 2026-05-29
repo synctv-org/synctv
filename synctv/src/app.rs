@@ -1477,10 +1477,10 @@ mod tests {
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
-        HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-        PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig, RedisConfig,
-        ServerConfig, WebAuthnConfig, WebRTCConfig,
+        ConnectionLimitsConfig, DatabaseConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
+        JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, PasswordComplexityConfig,
+        ProxySliceCacheConfig, PublicIdsConfig, RedisConfig, ServerConfig, WebAuthnConfig,
+        WebRTCConfig,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
@@ -1607,7 +1607,6 @@ mod tests {
                 ..LivestreamConfig::default()
             },
             webauthn: WebAuthnConfig::default(),
-            email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
                 stun_external_addr: "203.0.113.1:3478".to_string(),

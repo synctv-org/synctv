@@ -33,8 +33,9 @@ pub mod email {
     pub const SMTP_HOST: &str = "smtp_host";
     pub const SMTP_PORT: &str = "smtp_port";
     pub const SMTP_USERNAME: &str = "smtp_username";
+    pub const SMTP_PASSWORD: &str = "smtp_password";
     pub const USE_TLS: &str = "use_tls";
-    pub const FROM_ADDRESS: &str = "from_address";
+    pub const FROM_EMAIL: &str = "from_email";
     pub const FROM_NAME: &str = "from_name";
 }
 
@@ -147,8 +148,9 @@ pub fn default_email_settings() -> JsonValue {
         "smtp_host": "",
         "smtp_port": 587,
         "smtp_username": "",
+        "smtp_password": "",
         "use_tls": true,
-        "from_address": "noreply@synctv.example.com",
+        "from_email": "",
         "from_name": "SyncTV"
     })
 }

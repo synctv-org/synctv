@@ -911,12 +911,12 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
     );
 }
 
-async fn assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool: PgPool) {
+async fn assert_update_user_rejects_direct_email_changes(pool: PgPool) {
     let service = create_user_service(&pool);
     let user_repo = UserRepository::new(pool);
 
     let created = user_repo
-        .create(&make_user("email_bound_user"))
+        .create(&make_user("email_update_guard_user"))
         .await
         .expect("create email signup user");
 
@@ -941,21 +941,111 @@ async fn assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool: PgPoo
     assert_eq!(unchanged.email, original_email);
     assert!(unchanged.email_verified);
 
-    let mut rebind_attempt = unchanged.clone();
-    rebind_attempt.email = Some("email_bound_user_new@example.com".to_string());
-    rebind_attempt.email_verified = true;
+    let mut email_change_attempt = unchanged.clone();
+    email_change_attempt.email = Some("email_update_guard_new@example.com".to_string());
     let updated = service
-        .update_user(&rebind_attempt, unchanged.version)
+        .update_user(&email_change_attempt, unchanged.version)
         .await
-        .expect("email signup users should be allowed to rebind email");
+        .expect_err("direct email changes must use email bind confirmation");
 
-    assert_eq!(
-        updated.email.as_deref(),
-        Some("email_bound_user_new@example.com")
-    );
     assert!(
-        !updated.email_verified,
-        "rebinding email must require verifying the new address"
+        matches!(&updated, Error::InvalidInput(message) if message.contains("email bind verification token")),
+        "expected InvalidInput for direct email change, got {updated:?}"
+    );
+
+    let mut verification_change_attempt = unchanged;
+    verification_change_attempt.email_verified = false;
+    let result = service
+        .update_user(
+            &verification_change_attempt,
+            verification_change_attempt.version,
+        )
+        .await
+        .expect_err("direct email verification changes must use the verification flow");
+    assert!(
+        matches!(&result, Error::InvalidInput(message) if message.contains("verification flow")),
+        "expected InvalidInput for direct verification change, got {result:?}"
+    );
+}
+
+async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let user_repo = UserRepository::new(pool.clone());
+
+    let created = user_repo
+        .create(&make_user("email_bind_flow_user"))
+        .await
+        .expect("create email bind flow user");
+    let original_email = created.email.clone();
+    let new_email = "email_bind_flow_new@example.com";
+
+    let token = service
+        .start_email_bind(&created.id, new_email)
+        .await
+        .expect("start email bind");
+
+    let after_start = user_repo
+        .get_by_id(&created.id)
+        .await
+        .expect("fetch user after bind start")
+        .expect("user exists after bind start");
+    assert_eq!(after_start.email, original_email);
+    assert!(after_start.email_verified);
+
+    let mismatch_result = service
+        .confirm_email_bind(&created.id, "email_bind_flow_other@example.com", &token)
+        .await
+        .expect_err("email mismatch must reject pending bind request");
+    assert!(
+        matches!(mismatch_result, Error::InvalidInput(_)),
+        "expected InvalidInput for email mismatch"
+    );
+
+    let after_mismatch = user_repo
+        .get_by_id(&created.id)
+        .await
+        .expect("fetch user after bind mismatch")
+        .expect("user exists after bind mismatch");
+    assert_eq!(after_mismatch.email, original_email);
+    assert!(after_mismatch.email_verified);
+
+    let updated = service
+        .confirm_email_bind(&created.id, new_email, &token)
+        .await
+        .expect("confirm email bind");
+    assert_eq!(updated.email.as_deref(), Some(new_email));
+    assert!(updated.email_verified);
+
+    let consumed_result = service
+        .confirm_email_bind(&created.id, new_email, &token)
+        .await
+        .expect_err("consumed bind token must be rejected");
+    assert!(
+        matches!(consumed_result, Error::InvalidInput(_)),
+        "expected InvalidInput for consumed token"
+    );
+}
+
+async fn assert_email_bind_rejects_taken_email(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let user_repo = UserRepository::new(pool);
+
+    let owner = user_repo
+        .create(&make_user("email_bind_taken_owner"))
+        .await
+        .expect("create owner user");
+    let requester = user_repo
+        .create(&make_user("email_bind_taken_requester"))
+        .await
+        .expect("create requester user");
+
+    let result = service
+        .start_email_bind(&requester.id, owner.email.as_deref().expect("owner email"))
+        .await
+        .expect_err("taken email must be rejected");
+    assert!(
+        matches!(result, Error::AlreadyExists(_)),
+        "expected AlreadyExists for taken email"
     );
 }
 
@@ -1292,7 +1382,9 @@ async fn test_user_service_registration_login_and_delete_flows() {
 
     assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool.clone()).await;
 
-    assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool.clone()).await;
+    assert_update_user_rejects_direct_email_changes(pool.clone()).await;
+    assert_email_bind_writes_email_only_after_confirm(pool.clone()).await;
+    assert_email_bind_rejects_taken_email(pool.clone()).await;
 
     assert_two_factor_requires_two_usable_methods(pool.clone()).await;
     assert_two_factor_blocks_deleting_required_passkey(pool.clone()).await;

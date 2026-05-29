@@ -19,13 +19,16 @@ use crate::proto::client::{
     StartPasskeyBindRequest, StartPasskeyBindResponse,
 };
 use crate::proto::client::{
+    ConfirmEmailBindRequest, ConfirmEmailBindResponse, GetUserPreferencesResponse,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+};
+use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
     StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
 };
-use crate::proto::client::{
-    GetUserPreferencesResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+pub use crate::proto::client::{
+    SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse,
 };
-pub use crate::proto::client::{SetUsernameRequest, SetUsernameResponse};
 
 /// Get current user info
 #[cfg_attr(
@@ -172,6 +175,84 @@ pub async fn update_user(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move { client_api.set_username(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/email/bind/start",
+        tag = "User",
+        request_body = StartEmailBindRequest,
+        responses(
+            (status = 200, description = "Email bind verification sent", body = StartEmailBindResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn start_email_bind(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoJson(req): ProtoJson<StartEmailBindRequest>,
+) -> AppResult<Json<StartEmailBindResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.start_email_bind(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/email/bind/confirm",
+        tag = "User",
+        request_body = ConfirmEmailBindRequest,
+        responses(
+            (status = 200, description = "Email bind confirmed", body = ConfirmEmailBindResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn confirm_email_bind(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoJson(req): ProtoJson<ConfirmEmailBindRequest>,
+) -> AppResult<Json<ConfirmEmailBindResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.confirm_email_bind(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;

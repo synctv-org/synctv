@@ -5814,7 +5814,8 @@ mod tests {
         service::{
             auth::{BruteForceProtection, JwtService, TestPasswordHasher},
             AuditService, EmailService, InMemoryTokenBlacklistStore, PublishKeyService,
-            RemoteProviderManager, SettingsRegistry, SettingsService, UserService,
+            RemoteProviderManager, RuntimeEmailConfigProvider, SettingsRegistry, SettingsService,
+            UserService,
         },
     };
     use synctv_core::{
@@ -6233,7 +6234,12 @@ mod tests {
             .expect("settings initialized");
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
         room_service.set_settings_registry(settings_registry.clone());
-        let email_service = Arc::new(EmailService::new(None).expect("email service"));
+        let email_service = Arc::new(
+            EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
+                settings_registry.clone(),
+            )))
+            .expect("email service"),
+        );
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
         let room_service = Arc::new(room_service);
@@ -6298,7 +6304,12 @@ mod tests {
             .await
             .expect("settings initialized");
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-        let email_service = Arc::new(EmailService::new(None).expect("email service"));
+        let email_service = Arc::new(
+            EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
+                settings_registry.clone(),
+            )))
+            .expect("email service"),
+        );
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
@@ -7960,6 +7971,39 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
+    async fn test_get_email_settings_group_does_not_project_smtp_password() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+
+        admin_api
+            .settings_service
+            .update("email.smtp_password", "smtp-secret".to_string())
+            .await
+            .expect("smtp password should be persisted internally");
+
+        let response = admin_api
+            .get_settings_group(
+                crate::proto::admin::GetSettingsGroupRequest {
+                    group: "email".to_string(),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("get_settings_group should project email settings");
+
+        let group = response.group.expect("settings group response");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
+        assert_eq!(payload["enabled"], false);
+        assert!(
+            payload.get("smtp_password").is_none(),
+            "smtp password must not be returned in settings projection: {payload}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_update_settings_maps_group_entries_to_flat_keys_and_upserts_missing_rows() {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
@@ -8002,6 +8046,72 @@ mod tests {
             serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
         assert_eq!(payload["max_rooms_per_user"], 42);
         assert_eq!(payload["allow_room_creation"], true);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_email_settings_rejects_enabled_incomplete_config() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+
+        let error = admin_api
+            .update_settings(
+                crate::proto::admin::UpdateSettingsRequest {
+                    group: "email".to_string(),
+                    settings: std::collections::HashMap::from([(
+                        "enabled".to_string(),
+                        "true".to_string(),
+                    )]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await
+            .expect_err("enabling incomplete email settings should fail");
+
+        assert!(
+            matches!(error, ApiError::InvalidInput(ref message) if message.contains("email.smtp_host")),
+            "expected missing smtp_host validation error, got: {error:?}"
+        );
+        assert!(
+            admin_api
+                .settings_service
+                .get("email.enabled")
+                .await
+                .is_err(),
+            "failed email settings update must not persist email.enabled"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_email_settings_accepts_enabled_complete_config() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+
+        admin_api
+            .update_settings(
+                crate::proto::admin::UpdateSettingsRequest {
+                    group: "email".to_string(),
+                    settings: std::collections::HashMap::from([
+                        ("enabled".to_string(), "true".to_string()),
+                        ("smtp_host".to_string(), "smtp.example.com".to_string()),
+                        ("smtp_port".to_string(), "587".to_string()),
+                        ("from_email".to_string(), "noreply@example.com".to_string()),
+                    ]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("complete enabled email settings should update");
+
+        let enabled = admin_api
+            .settings_service
+            .get("email.enabled")
+            .await
+            .expect("email.enabled should be persisted");
+        assert_eq!(enabled.value, "true");
     }
 
     #[tokio::test]
@@ -10393,7 +10503,12 @@ mod tests {
             .await
             .expect("settings initialized");
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-        let email_service = Arc::new(EmailService::new(None).expect("email service"));
+        let email_service = Arc::new(
+            EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
+                settings_registry.clone(),
+            )))
+            .expect("email service"),
+        );
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
         let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));

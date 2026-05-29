@@ -653,6 +653,15 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    #[derive(Clone)]
+    struct TestEmailConfigProvider(Option<synctv_core::service::EmailConfig>);
+
+    impl synctv_core::service::EmailConfigProvider for TestEmailConfigProvider {
+        fn current_config(&self) -> synctv_core::Result<Option<synctv_core::service::EmailConfig>> {
+            Ok(self.0.clone())
+        }
+    }
+
     struct SharedMockTicketStore;
 
     #[async_trait]
@@ -1114,11 +1123,13 @@ mod tests {
 
     #[test]
     fn test_email_health_reports_configuration_only() {
-        let unconfigured = synctv_core::service::EmailService::new(None).expect("email service");
+        let unconfigured =
+            synctv_core::service::EmailService::new(Arc::new(TestEmailConfigProvider(None)))
+                .expect("email service");
         assert_eq!(check_email_health(&unconfigured), "not configured");
 
-        let configured =
-            synctv_core::service::EmailService::new(Some(synctv_core::service::EmailConfig {
+        let configured = synctv_core::service::EmailService::new(Arc::new(
+            TestEmailConfigProvider(Some(synctv_core::service::EmailConfig {
                 smtp_host: "smtp.example.com".to_string(),
                 smtp_port: 587,
                 smtp_username: "user".to_string(),
@@ -1126,8 +1137,9 @@ mod tests {
                 from_email: "noreply@example.com".to_string(),
                 from_name: "SyncTV".to_string(),
                 use_tls: true,
-            }))
-            .expect("email service");
+            })),
+        ))
+        .expect("email service");
         assert_eq!(check_email_health(&configured), "configured");
     }
 

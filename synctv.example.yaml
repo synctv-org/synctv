@@ -342,27 +342,6 @@ livestream:
   flv_write_timeout_seconds: 30
 
 # ============================================================================
-# Email Configuration (SMTP)
-# ============================================================================
-#
-# Configure SMTP to enable email features (verification, notifications).
-# Leave smtp_host empty to disable email functionality.
-
-email:
-  smtp_host: ""
-  smtp_port: 587
-  smtp_username: ""
-  # Environment variables:
-  #   SYNCTV_EMAIL_SMTP_PASSWORD
-  #   SYNCTV_EMAIL_SMTP_PASSWORD_FILE
-  smtp_password: ""
-  # smtp_password_file is a static config input. Relative paths stay relative to this config file.
-  # smtp_password_file: "/run/secrets/smtp_password"
-  from_email: ""
-  from_name: "SyncTV"
-  use_tls: true
-
-# ============================================================================
 # Password Complexity Requirements
 # ============================================================================
 #

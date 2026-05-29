@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod ban;
 pub mod chat;
+pub mod email_bind;
 pub mod email_token;
 pub mod media;
 pub mod notification;
@@ -27,6 +28,7 @@ pub use ban::{
     BanRecordListQuery, BanRecordPage, BanRecordRepository, BanRecordRow, BanRecordTargetType,
 };
 pub use chat::ChatRepository;
+pub use email_bind::EmailBindRepository;
 pub use email_token::EmailTokenRepository;
 pub use media::MediaRepository;
 pub use notification::NotificationRepository;

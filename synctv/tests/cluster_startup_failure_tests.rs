@@ -9,7 +9,7 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HlsStorageBackend,
+    ConnectionLimitsConfig, DatabaseConfig, GrpcRateLimitConfig, HlsStorageBackend,
     HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
     MessagingRateLimitConfig, PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig,
     RedisConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
@@ -47,7 +47,6 @@ fn standalone_test_config() -> Config {
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig::default(),
         webauthn: WebAuthnConfig::default(),
-        email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),
         webrtc: WebRTCConfig::default(),
         connection_limits: ConnectionLimitsConfig::default(),
@@ -144,7 +143,6 @@ fn cluster_test_config() -> Config {
             ..LivestreamConfig::default()
         },
         webauthn: WebAuthnConfig::default(),
-        email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),
         webrtc: WebRTCConfig {
             stun_external_addr: "203.0.113.1:3478".to_string(),

@@ -68,12 +68,13 @@ pub use cleanup::{CleanupConfig, CleanupResult, CleanupService};
 pub use content_filter::{ContentFilter, ContentFilterError};
 pub use db_maintenance::DatabaseMaintenanceService;
 pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock, LockGuard};
-pub use email::{mask_email, EmailConfig, EmailService};
+pub use email::{mask_email, EmailConfig, EmailConfigProvider, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::EmailTokenService;
 pub use global_settings::{
     ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-    OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy, SettingsRegistry,
+    OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy, RuntimeEmailConfigProvider,
+    SettingsRegistry,
 };
 pub use media::{
     MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,

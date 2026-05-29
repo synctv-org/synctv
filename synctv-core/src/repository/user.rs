@@ -7,7 +7,7 @@ use crate::{
     Error, Result,
 };
 
-const USER_SELECT_COLUMNS: &str = "
+pub(crate) const USER_SELECT_COLUMNS: &str = "
     u.id, u.username, aei.email,
     COALESCE(apc.legacy_password_hash, '') AS password_hash,
     u.signup_method, u.role,
@@ -92,7 +92,7 @@ const AUTH_PASSWORD_CREDENTIAL_JOIN: &str =
     "LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
      LEFT JOIN auth_email_identities aei ON aei.user_id = u.id";
 
-const USER_ROW_RETURNING_COLUMNS: &str = "
+pub(crate) const USER_ROW_RETURNING_COLUMNS: &str = "
     id, username, signup_method, role, created_at, updated_at,
     version, deleted_at";
 

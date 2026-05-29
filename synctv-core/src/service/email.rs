@@ -7,9 +7,11 @@ use lettre::{
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use synctv_common::ExecutionControl;
+use tokio::sync::broadcast;
 
 use super::email_templates::EmailTemplateManager;
 use super::email_token::EmailTokenService;
@@ -41,7 +43,7 @@ pub enum EmailError {
 }
 
 /// Email configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmailConfig {
     pub smtp_host: String,
     pub smtp_port: u16,
@@ -52,18 +54,53 @@ pub struct EmailConfig {
     pub use_tls: bool,
 }
 
+impl EmailConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.smtp_host.is_empty() {
+            return Err(Error::InvalidInput(
+                "email.smtp_host is required when email.enabled is true".to_string(),
+            ));
+        }
+        if self.smtp_port == 0 {
+            return Err(Error::InvalidInput(
+                "email.smtp_port must be between 1 and 65535".to_string(),
+            ));
+        }
+        if self.from_email.is_empty() {
+            return Err(Error::InvalidInput(
+                "email.from_email is required when email.enabled is true".to_string(),
+            ));
+        }
+        EmailService::validate_email(&self.from_email)?;
+        Ok(())
+    }
+}
+
+pub trait EmailConfigProvider: Send + Sync {
+    fn current_config(&self) -> Result<Option<EmailConfig>>;
+
+    fn subscribe_changes(&self) -> Option<broadcast::Receiver<()>> {
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct EmailService {
-    config: Option<EmailConfig>,
+    config_provider: Arc<dyn EmailConfigProvider>,
     template_manager: Arc<EmailTemplateManager>,
-    /// Reusable SMTP transport (connection-pooled by lettre).
-    smtp_transport: OnceLock<std::result::Result<AsyncSmtpTransport<Tokio1Executor>, String>>,
+    /// Reusable SMTP transport for the current runtime config snapshot.
+    smtp_transport: Arc<RwLock<Option<CachedSmtpTransport>>>,
+}
+
+struct CachedSmtpTransport {
+    config: EmailConfig,
+    transport: std::result::Result<AsyncSmtpTransport<Tokio1Executor>, String>,
 }
 
 impl std::fmt::Debug for EmailService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EmailService")
-            .field("configured", &self.config.is_some())
+            .field("configured", &self.is_configured())
             .finish()
     }
 }
@@ -106,18 +143,18 @@ impl EmailService {
             .generate_token_with_control(user_id, token_type, control)
             .await?;
 
-        if let Some(config) = &self.config {
+        if let Some(config) = self.current_config()? {
             let send_result = match token_type {
                 EmailTokenType::EmailVerification => {
-                    self.send_verification_email_impl(config, email, &token, control)
+                    self.send_verification_email_impl(&config, email, &token, control)
                         .await
                 }
                 EmailTokenType::PasswordReset => {
-                    self.send_password_reset_email_impl(config, email, &token, control)
+                    self.send_password_reset_email_impl(&config, email, &token, control)
                         .await
                 }
                 EmailTokenType::EmailLogin => {
-                    self.send_email_login_email_impl(config, email, &token, control)
+                    self.send_email_login_email_impl(&config, email, &token, control)
                         .await
                 }
             };
@@ -138,9 +175,13 @@ impl EmailService {
             tracing::info!(message = success_log_message, email = %mask_email(email));
             Ok(String::new())
         } else {
-            tracing::warn!("Email service not configured, returning token directly");
-            tracing::info!(message = success_log_message, email = %mask_email(email));
-            Ok(token)
+            tracing::warn!("Email service is disabled or not configured");
+            token_service
+                .invalidate_specific_token(&token, user_id, token_type)
+                .await?;
+            Err(Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            ))
         }
     }
 
@@ -166,14 +207,54 @@ impl EmailService {
         Ok(transport)
     }
 
-    /// Create a new email service.
-    pub fn new(config: Option<EmailConfig>) -> Result<Self> {
+    /// Create a new email service backed by a runtime config provider.
+    pub fn new(config_provider: Arc<dyn EmailConfigProvider>) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
-        Ok(Self {
-            config,
+        let config_changes = config_provider.subscribe_changes();
+        let service = Self {
+            config_provider,
             template_manager: Arc::new(template_manager),
-            smtp_transport: OnceLock::new(),
-        })
+            smtp_transport: Arc::new(RwLock::new(None)),
+        };
+        service.current_config()?;
+        service.start_config_change_listener(config_changes);
+        Ok(service)
+    }
+
+    fn current_config(&self) -> Result<Option<EmailConfig>> {
+        let config = self.config_provider.current_config()?;
+        if let Some(config) = &config {
+            config.validate()?;
+        }
+        Ok(config)
+    }
+
+    fn start_config_change_listener(&self, receiver: Option<broadcast::Receiver<()>>) {
+        let Some(mut receiver) = receiver else {
+            return;
+        };
+
+        let smtp_transport = Arc::clone(&self.smtp_transport);
+        crate::spawn::spawn_monitored("email_config_change_listener", async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(()) => {
+                        *smtp_transport.write() = None;
+                        tracing::debug!(
+                            "SMTP transport cache invalidated by email settings change"
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        *smtp_transport.write() = None;
+                        tracing::warn!(
+                            count,
+                            "Email settings change listener lagged; SMTP transport cache invalidated"
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
     }
 
     /// Validate email format (RFC 5322 compliant)
@@ -327,6 +408,34 @@ impl EmailService {
         .await
     }
 
+    pub async fn send_verification_token_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::validate_email(email)?;
+
+        if let Some(control) = control {
+            control
+                .check_active()
+                .map_err(|error| Error::Timeout(error.to_string()))?;
+        }
+
+        let config = self.current_config()?.ok_or_else(|| {
+            Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            )
+        })?;
+
+        self.send_verification_email_impl(&config, email, token, control)
+            .await
+            .map_err(map_email_send_failure)?;
+
+        tracing::info!("Sent verification email to {}", mask_email(email));
+        Ok(())
+    }
+
     /// Send password reset email
     pub async fn send_password_reset_email(
         &self,
@@ -397,10 +506,11 @@ impl EmailService {
     ) -> Result<()> {
         Self::validate_email(to)?;
 
-        let config = self
-            .config
-            .as_ref()
-            .ok_or_else(|| Error::Internal("Email service not configured".to_string()))?;
+        let config = self.current_config()?.ok_or_else(|| {
+            Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            )
+        })?;
 
         let sent_at = synctv_common::time::format_datetime_display(chrono::Utc::now());
         let (html_body, plain_text_body) = self
@@ -409,7 +519,7 @@ impl EmailService {
             .internal_with_err("Failed to render template")?;
 
         let subject = "SyncTV Email Test";
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
+        self.send_html_email(&config, to, subject, &html_body, &plain_text_body, control)
             .await
             .internal_with_err("Failed to send test email")?;
 
@@ -520,12 +630,7 @@ impl EmailService {
             .ok_or_else(|| EmailError::SendError("No recipients in email envelope".to_string()))?
             .clone();
 
-        let transport = self
-            .smtp_transport
-            .get_or_init(|| Self::build_smtp_transport(config).map_err(|error| error.to_string()));
-        let transport = transport
-            .as_ref()
-            .map_err(|error| EmailError::SendError(error.clone()))?;
+        let transport = self.smtp_transport_for_config(config)?;
 
         Self::run_with_control(control, async {
             transport
@@ -545,22 +650,54 @@ impl EmailService {
         Ok(())
     }
 
+    fn smtp_transport_for_config(
+        &self,
+        config: &EmailConfig,
+    ) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
+        let mut cached = self.smtp_transport.write();
+        let should_rebuild = cached
+            .as_ref()
+            .is_none_or(|cached| cached.config != *config);
+
+        if should_rebuild {
+            let transport = Self::build_smtp_transport(config).map_err(|error| error.to_string());
+            *cached = Some(CachedSmtpTransport {
+                config: config.clone(),
+                transport,
+            });
+        }
+
+        cached
+            .as_ref()
+            .expect("SMTP transport cache must be populated")
+            .transport
+            .clone()
+            .map_err(EmailError::SendError)
+    }
+
     /// Check if email service is configured
     #[must_use]
-    pub const fn is_configured(&self) -> bool {
-        self.config.is_some()
-    }
-}
-
-impl Default for EmailService {
-    fn default() -> Self {
-        Self::new(None).expect("Failed to create default EmailService")
+    pub fn is_configured(&self) -> bool {
+        matches!(self.current_config(), Ok(Some(_)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct TestEmailConfigProvider(Option<EmailConfig>);
+
+    impl EmailConfigProvider for TestEmailConfigProvider {
+        fn current_config(&self) -> Result<Option<EmailConfig>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn test_service(config: Option<EmailConfig>) -> EmailService {
+        EmailService::new(Arc::new(TestEmailConfigProvider(config))).unwrap()
+    }
 
     #[test]
     fn test_validate_email_valid() {
@@ -577,38 +714,33 @@ mod tests {
         assert!(EmailService::validate_email("test@.com").is_err());
     }
 
-    #[tokio::test]
-    async fn test_send_verification_email_returns_empty_when_email_configured() {
-        // Verify that send_verification_email does not leak the token when email is configured.
-        // We can only test the dev mode path (no config) since the configured path needs SMTP.
-        let service = EmailService::new(None).unwrap();
-        // In dev mode (no config), token should be returned
-        // We can't call send_verification_email without a real EmailTokenService,
-        // but we verify the contract: configured -> empty, unconfigured -> token.
+    #[test]
+    fn test_configured_state_uses_config_provider() {
+        let service = test_service(None);
         assert!(
             !service.is_configured(),
-            "Service with None config should not be configured"
+            "Service without runtime config should not be configured"
         );
 
         let configured_config = EmailConfig {
             smtp_host: "localhost".to_string(),
-            smtp_port: 0,
+            smtp_port: 25,
             smtp_username: "test".to_string(),
             smtp_password: "test".to_string(),
             from_email: "noreply@example.com".to_string(),
             from_name: "SyncTV".to_string(),
             use_tls: false,
         };
-        let configured_service = EmailService::new(Some(configured_config)).unwrap();
+        let configured_service = test_service(Some(configured_config));
         assert!(
             configured_service.is_configured(),
-            "Service with Some config should be configured"
+            "Service with runtime config should be configured"
         );
     }
 
     #[test]
     fn test_configured_service_initializes_without_building_transport() {
-        let configured_service = EmailService::new(Some(EmailConfig {
+        let configured_service = test_service(Some(EmailConfig {
             smtp_host: "smtp.example.com".to_string(),
             smtp_port: 587,
             smtp_username: "user".to_string(),
@@ -616,13 +748,69 @@ mod tests {
             from_email: "noreply@example.com".to_string(),
             from_name: "SyncTV".to_string(),
             use_tls: true,
-        }))
-        .expect("configured service should initialize without creating transport eagerly");
+        }));
 
         assert!(configured_service.is_configured());
         assert!(
-            configured_service.smtp_transport.get().is_none(),
+            configured_service.smtp_transport.read().is_none(),
             "SMTP transport should be created lazily on first send"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_smtp_transport_cache_rebuilds_when_config_changes() {
+        let service = test_service(Some(EmailConfig {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_username: "user".to_string(),
+            smtp_password: "password".to_string(),
+            from_email: "noreply@example.com".to_string(),
+            from_name: "SyncTV".to_string(),
+            use_tls: false,
+        }));
+
+        let first = EmailConfig {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_username: "user".to_string(),
+            smtp_password: "password".to_string(),
+            from_email: "noreply@example.com".to_string(),
+            from_name: "SyncTV".to_string(),
+            use_tls: false,
+        };
+        service
+            .smtp_transport_for_config(&first)
+            .expect("first SMTP transport should build");
+        assert_eq!(
+            service
+                .smtp_transport
+                .read()
+                .as_ref()
+                .expect("transport should be cached")
+                .config,
+            first
+        );
+
+        let second = EmailConfig {
+            smtp_host: "smtp2.example.com".to_string(),
+            smtp_port: 465,
+            smtp_username: "next-user".to_string(),
+            smtp_password: "next-password".to_string(),
+            from_email: "mailer@example.com".to_string(),
+            from_name: "SyncTV Mail".to_string(),
+            use_tls: false,
+        };
+        service
+            .smtp_transport_for_config(&second)
+            .expect("second SMTP transport should build");
+        assert_eq!(
+            service
+                .smtp_transport
+                .read()
+                .as_ref()
+                .expect("transport should stay cached")
+                .config,
+            second
         );
     }
 

@@ -1158,7 +1158,10 @@ impl OAuth2Service {
             &user_info.provider_user_id,
             &user_info.username,
         )?;
-        let user_email = user_info.email.clone();
+        let user_email = user_info
+            .email_verified
+            .then(|| user_info.email.clone())
+            .flatten();
 
         if signup_policy.signup_need_review {
             if let Some(email) = user_email.as_deref() {
@@ -1379,17 +1382,6 @@ impl OAuth2Service {
                 });
             }
             Err(err) => return Err(err),
-        }
-
-        // Set email_verified if the provider confirmed the email.
-        if user_info.email_verified && user_info.email.is_some() {
-            sqlx::query!(
-                "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
-                new_user.id.as_i64(),
-            )
-                .execute(&mut *tx)
-                .await
-                .internal_with_err("Failed to set email_verified in transaction")?;
         }
 
         tx.commit().await?;

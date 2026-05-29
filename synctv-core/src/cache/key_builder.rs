@@ -206,7 +206,7 @@ impl KeyBuilder {
         self.prefixed_key(&format!("oauth2:state:{state_token}"))
     }
 
-    /// Email verification code
+    /// Email token code
     ///
     /// Type: String + TTL (configurable)
     /// Value: JSON with code + attempts

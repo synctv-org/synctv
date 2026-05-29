@@ -14,7 +14,7 @@ pub(crate) const USER_SELECT_COLUMNS: &str = "
     u.created_at, u.updated_at,
     COALESCE(apc.password_changed_at, u.created_at) AS password_changed_at,
     COALESCE(apc.password_version, 0) AS password_version,
-    u.version, u.deleted_at, COALESCE(aei.email_verified, false) AS email_verified,
+    u.version, u.deleted_at,
     EXISTS (
         SELECT 1 FROM user_bans ub
         WHERE ub.user_id = u.id
@@ -56,7 +56,7 @@ const USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL: &str = "
     u.created_at, u.updated_at,
     COALESCE(updated_apc.password_changed_at, existing_apc.password_changed_at, u.created_at) AS password_changed_at,
     COALESCE(updated_apc.password_version, existing_apc.password_version, 0) AS password_version,
-    u.version, u.deleted_at, COALESCE(aei.email_verified, false) AS email_verified,
+    u.version, u.deleted_at,
     EXISTS (
         SELECT 1 FROM user_bans ub
         WHERE ub.user_id = u.id
@@ -265,9 +265,9 @@ impl UserRepository {
             ),
             inserted_email_identity AS (
                 INSERT INTO auth_email_identities (
-                    user_id, email, email_verified, created_at, updated_at
+                    user_id, email, created_at, updated_at
                 )
-                SELECT id, $6, $7, $4, $5
+                SELECT id, $6, $4, $5
                 FROM inserted_user
                 WHERE NULLIF($6::TEXT, '') IS NOT NULL
                 RETURNING *
@@ -279,10 +279,10 @@ impl UserRepository {
                     opaque_server_setup_version, password_changed_at, password_version,
                     created_at, updated_at
                 )
-                SELECT id, $8, CASE WHEN $8::TEXT IS NULL THEN NULL ELSE 'argon2id' END,
-                       $9, $10, $11, $12, $5, 0, $4, $5
+                SELECT id, $7, CASE WHEN $7::TEXT IS NULL THEN NULL ELSE 'argon2id' END,
+                       $8, $9, $10, $11, $5, 0, $4, $5
                 FROM inserted_user
-                WHERE NULLIF($8::TEXT, '') IS NOT NULL OR $9::BYTEA IS NOT NULL
+                WHERE NULLIF($7::TEXT, '') IS NOT NULL OR $8::BYTEA IS NOT NULL
                 RETURNING *
             )
             SELECT {USER_SELECT_COLUMNS}
@@ -298,7 +298,6 @@ impl UserRepository {
             .bind(user.created_at)
             .bind(user.updated_at)
             .bind(user.email.as_ref())
-            .bind(user.email_verified)
             .bind(credentials.legacy_password_hash)
             .bind(opaque_record_bytes)
             .bind(opaque_identifier)
@@ -562,8 +561,8 @@ impl UserRepository {
             WITH updated_user AS (
                 UPDATE users
                 SET username = $2, role = $4,
-                    updated_at = $6, version = version + 1
-                WHERE id = $1 AND deleted_at IS NULL AND version = $7
+                    updated_at = $5, version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL AND version = $6
                 RETURNING {USER_ROW_RETURNING_COLUMNS}
             ),
             deleted_email_identity AS (
@@ -574,17 +573,16 @@ impl UserRepository {
             ),
             aei AS (
                 INSERT INTO auth_email_identities (
-                    user_id, email, email_verified, created_at, updated_at
+                    user_id, email, created_at, updated_at
                 )
-                SELECT id, $3, $5, $6, $6
+                SELECT id, $3, $5, $5
                 FROM updated_user
                 WHERE $3::TEXT IS NOT NULL
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     email = EXCLUDED.email,
-                    email_verified = EXCLUDED.email_verified,
                     updated_at = EXCLUDED.updated_at
-                RETURNING user_id, email, email_verified
+                RETURNING user_id, email
             )
             SELECT {USER_SELECT_COLUMNS}
             FROM updated_user u
@@ -597,7 +595,6 @@ impl UserRepository {
             .bind(&user.username)
             .bind(user.email.as_ref())
             .bind(user.role)
-            .bind(user.email_verified)
             .bind(Utc::now())
             .bind(old_version)
             .fetch_optional(executor)
@@ -797,44 +794,6 @@ impl UserRepository {
             .bind(opaque_server_setup_version)
             .bind(now)
             .fetch_optional(executor)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
-
-        Ok(u)
-    }
-
-    /// Update user email verification status
-    pub async fn update_email_verified(
-        &self,
-        user_id: &UserId,
-        email_verified: bool,
-    ) -> Result<User> {
-        let sql = format!(
-            r"
-            WITH aei AS (
-                UPDATE auth_email_identities
-                SET email_verified = $2, updated_at = $3
-                WHERE user_id = $1
-                RETURNING user_id, email, email_verified
-            ),
-            updated_user AS (
-                UPDATE users u
-                SET updated_at = $3, version = version + 1
-                FROM aei
-                WHERE u.id = aei.user_id AND u.deleted_at IS NULL
-                RETURNING u.{USER_ROW_RETURNING_COLUMNS}
-            )
-            SELECT {USER_SELECT_COLUMNS}
-            FROM updated_user u
-            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
-            LEFT JOIN aei ON aei.user_id = u.id
-            "
-        );
-        let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user_id)
-            .bind(email_verified)
-            .bind(Utc::now())
-            .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 

@@ -133,7 +133,6 @@ mod tests {
             role: crate::common::UserRole::Admin.into(),
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
-            email_verified: true,
             is_banned: false,
         };
         let bytes = user.encode_to_vec();
@@ -329,7 +328,7 @@ mod tests {
         assert_eq!(user.role, 0); // UNSPECIFIED
         assert_eq!(user.status, 0); // UNSPECIFIED
         assert_eq!(user.created_at, 0);
-        assert!(!user.email_verified);
+        assert!(!user.is_banned);
     }
 
     #[test]
@@ -396,7 +395,6 @@ mod tests {
             role: crate::common::UserRole::Admin.into(),
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
-            email_verified: true,
             is_banned: false,
         };
         let json = serde_json::to_string(&user).unwrap();

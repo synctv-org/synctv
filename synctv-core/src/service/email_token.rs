@@ -1,4 +1,4 @@
-//! Email token service for email verification and password reset
+//! Email token service for email bind, login, and password reset
 //!
 //! Manages generation, validation, and cleanup of email tokens.
 //!
@@ -36,7 +36,7 @@ pub struct EmailTokenRateLimitConfig {
 impl Default for EmailTokenRateLimitConfig {
     fn default() -> Self {
         Self {
-            // 5 tokens per hour per user - reasonable for email verification/password reset
+            // 5 tokens per hour per user is reasonable for email bind and password reset flows.
             max_tokens_per_user: 5,
             window_seconds: 3600, // 1 hour
         }
@@ -376,18 +376,18 @@ mod tests {
 
     #[test]
     fn test_token_type_expiration() {
-        let email_verify = EmailTokenType::EmailVerification;
+        let email_verify = EmailTokenType::EmailBind;
         let password_reset = EmailTokenType::PasswordReset;
         let email_login = EmailTokenType::EmailLogin;
 
-        assert_eq!(email_verify.as_str(), "email_verification");
+        assert_eq!(email_verify.as_str(), "email_bind");
         assert_eq!(password_reset.as_str(), "password_reset");
         assert_eq!(email_login.as_str(), "email_login");
         assert_eq!(i16::from(email_verify), 1);
         assert_eq!(i16::from(password_reset), 2);
         assert_eq!(i16::from(email_login), 3);
 
-        // Email verification: 24 hours
+        // Email bind: 24 hours
         assert_eq!(email_verify.expiration_duration(), Duration::hours(24));
 
         // Password reset: 1 hour
@@ -416,9 +416,9 @@ mod tests {
         // but we can verify the rate limit key format and limiter behavior
 
         // Test rate limit key format
-        let key = format!("email:{}:{}", "email_verification", "user123");
+        let key = format!("email:{}:{}", "email_bind", "user123");
         assert!(key.contains("email"));
-        assert!(key.contains("email_verification"));
+        assert!(key.contains("email_bind"));
         assert!(key.contains("user123"));
 
         // Test that rate limiter blocks after limit
@@ -445,16 +445,16 @@ mod tests {
         let user_id = UserId::new();
 
         service
-            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailVerification)
+            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailBind)
             .await
             .unwrap();
         service
-            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailVerification)
+            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailBind)
             .await
             .unwrap();
 
         let result = service
-            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailVerification)
+            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailBind)
             .await;
         assert!(matches!(result, Err(Error::RateLimited(_))));
     }

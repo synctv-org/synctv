@@ -24,7 +24,6 @@ fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
@@ -60,12 +59,7 @@ async fn test_create_and_get_token() {
     let expires_at = Utc::now() + Duration::hours(24);
 
     let created = token_repo
-        .create(
-            &token_str,
-            &user.id,
-            EmailTokenType::EmailVerification,
-            expires_at,
-        )
+        .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
         .unwrap();
 
@@ -74,10 +68,7 @@ async fn test_create_and_get_token() {
         "email tokens must never be stored in plaintext"
     );
     assert_eq!(created.user_id, user.id);
-    assert_eq!(
-        created.token_type,
-        i16::from(EmailTokenType::EmailVerification)
-    );
+    assert_eq!(created.token_type, i16::from(EmailTokenType::EmailBind));
     assert!(created.used_at.is_none());
 
     // Get the token
@@ -104,12 +95,7 @@ async fn test_mark_token_as_used() {
     let expires_at = Utc::now() + Duration::hours(24);
 
     token_repo
-        .create(
-            &token_str,
-            &user.id,
-            EmailTokenType::EmailVerification,
-            expires_at,
-        )
+        .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
         .unwrap();
 
@@ -176,12 +162,7 @@ async fn test_validate_wrong_type_fails() {
     let expires_at = Utc::now() + Duration::hours(24);
 
     token_repo
-        .create(
-            &token_str,
-            &user.id,
-            EmailTokenType::EmailVerification,
-            expires_at,
-        )
+        .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
         .unwrap();
 
@@ -197,7 +178,7 @@ async fn test_validate_wrong_type_fails() {
 
     // The original type should still work
     let result = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::EmailVerification)
+        .validate_and_consume(&token_str, EmailTokenType::EmailBind)
         .await
         .unwrap();
     assert!(result.is_some());
@@ -217,18 +198,13 @@ async fn test_expired_token_not_consumable() {
     let expires_at = Utc::now() - Duration::hours(1);
 
     token_repo
-        .create(
-            &token_str,
-            &user.id,
-            EmailTokenType::EmailVerification,
-            expires_at,
-        )
+        .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
         .unwrap();
 
     // Should not be consumable (expired)
     let result = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::EmailVerification)
+        .validate_and_consume(&token_str, EmailTokenType::EmailBind)
         .await
         .unwrap();
     assert!(result.is_none(), "Expired token should not be consumable");
@@ -250,12 +226,7 @@ async fn test_cleanup_expired_tokens() {
         let token_str = synctv_common::snanoid!(32);
         let expires_at = Utc::now() - Duration::hours(i + 1);
         token_repo
-            .create(
-                &token_str,
-                &user.id,
-                EmailTokenType::EmailVerification,
-                expires_at,
-            )
+            .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
             .await
             .unwrap();
     }
@@ -271,7 +242,7 @@ async fn test_cleanup_expired_tokens() {
         .create(
             &valid_token,
             &valid_user.id,
-            EmailTokenType::EmailVerification,
+            EmailTokenType::EmailBind,
             valid_expires,
         )
         .await
@@ -301,7 +272,7 @@ async fn test_delete_user_tokens() {
         .create(
             &used_verification_token,
             &user.id,
-            EmailTokenType::EmailVerification,
+            EmailTokenType::EmailBind,
             expires_at,
         )
         .await
@@ -316,7 +287,7 @@ async fn test_delete_user_tokens() {
         .create(
             &active_verification_token,
             &user.id,
-            EmailTokenType::EmailVerification,
+            EmailTokenType::EmailBind,
             expires_at,
         )
         .await
@@ -333,9 +304,9 @@ async fn test_delete_user_tokens() {
         .await
         .unwrap();
 
-    // Delete current unused verification tokens for the user.
+    // Delete current unused email bind tokens for the user.
     let deleted = token_repo
-        .delete_user_tokens(&user.id, EmailTokenType::EmailVerification)
+        .delete_user_tokens(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
     assert_eq!(deleted, 1);
@@ -393,7 +364,7 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
         .create(
             "first-raw-token",
             &user.id,
-            EmailTokenType::EmailVerification,
+            EmailTokenType::EmailBind,
             expires_at,
         )
         .await
@@ -403,23 +374,20 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
         .create(
             "second-raw-token",
             &user.id,
-            EmailTokenType::EmailVerification,
+            EmailTokenType::EmailBind,
             expires_at,
         )
         .await
         .unwrap();
 
     assert_eq!(second.user_id, user.id);
-    assert_eq!(
-        second.token_type,
-        i16::from(EmailTokenType::EmailVerification)
-    );
+    assert_eq!(second.token_type, i16::from(EmailTokenType::EmailBind));
 
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
     .bind(user.id)
-    .bind(i16::from(EmailTokenType::EmailVerification))
+    .bind(i16::from(EmailTokenType::EmailBind))
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -453,7 +421,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     .unwrap();
 
     let result = email_service
-        .send_verification_email(&email, &token_service, &user.id)
+        .send_email_bind_email(&email, &token_service, &user.id)
         .await;
     assert!(result.is_err(), "SMTP failure should surface as an error");
 
@@ -461,13 +429,13 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
         "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
     .bind(user.id)
-    .bind(i16::from(EmailTokenType::EmailVerification))
+    .bind(i16::from(EmailTokenType::EmailBind))
     .fetch_one(user_repo.pool())
     .await
     .unwrap();
     assert_eq!(
         remaining, 0,
-        "failed email delivery must not leave an unused verification token behind"
+        "failed email delivery must not leave an unused email bind token behind"
     );
 }
 
@@ -484,29 +452,29 @@ async fn test_invalidating_old_token_does_not_remove_newer_replacement() {
         .unwrap();
 
     let first_token = token_service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
     let second_token = token_service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
     token_service
-        .invalidate_specific_token(&first_token, &user.id, EmailTokenType::EmailVerification)
+        .invalidate_specific_token(&first_token, &user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
     assert!(
         token_service
-            .validate_token(&second_token, EmailTokenType::EmailVerification)
+            .validate_token(&second_token, EmailTokenType::EmailBind)
             .await
             .is_ok(),
         "cleaning up a superseded token must not remove the current replacement",
     );
     assert!(
         token_service
-            .validate_token(&first_token, EmailTokenType::EmailVerification)
+            .validate_token(&first_token, EmailTokenType::EmailBind)
             .await
             .is_err(),
         "the superseded token should stay invalid",
@@ -576,9 +544,9 @@ async fn test_different_token_types_are_independent() {
         .await
         .unwrap();
 
-    // Generate email verification token
+    // Generate email bind token
     let email_token = token_service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
@@ -590,7 +558,7 @@ async fn test_different_token_types_are_independent() {
 
     // Both should be valid (different types)
     let result = token_service
-        .validate_token(&email_token, EmailTokenType::EmailVerification)
+        .validate_token(&email_token, EmailTokenType::EmailBind)
         .await;
     assert!(result.is_ok(), "Email token should still be valid");
 
@@ -600,7 +568,7 @@ async fn test_different_token_types_are_independent() {
     assert!(result.is_ok(), "Password reset token should be valid");
 }
 
-/// Test that generating new password reset token doesn't affect email verification token
+/// Test that generating new password reset token doesn't affect email bind token
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_password_reset_regeneration_preserves_email_token() {
@@ -613,9 +581,9 @@ async fn test_password_reset_regeneration_preserves_email_token() {
         .await
         .unwrap();
 
-    // Generate email verification token
+    // Generate email bind token
     let email_token = token_service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
@@ -645,7 +613,7 @@ async fn test_password_reset_regeneration_preserves_email_token() {
 
     // Email token should still be valid
     let result = token_service
-        .validate_token(&email_token, EmailTokenType::EmailVerification)
+        .validate_token(&email_token, EmailTokenType::EmailBind)
         .await;
     assert!(
         result.is_ok(),
@@ -771,24 +739,24 @@ async fn test_manual_token_invalidation() {
 
     // Generate token
     let token = token_service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
     let result = token_service
-        .validate_token(&token, EmailTokenType::EmailVerification)
+        .validate_token(&token, EmailTokenType::EmailBind)
         .await;
     assert!(result.is_ok());
 
     // Manually invalidate
     token_service
-        .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
+        .invalidate_user_tokens(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
     // Should now be invalid
     let result = token_service
-        .validate_token(&token, EmailTokenType::EmailVerification)
+        .validate_token(&token, EmailTokenType::EmailBind)
         .await;
     assert!(
         result.is_err(),

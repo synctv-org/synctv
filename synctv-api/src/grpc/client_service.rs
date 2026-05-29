@@ -23,14 +23,13 @@ use crate::proto::client::{
     ApproveRoomJoinReviewResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
     ClearPlaylistResponse, ClientMessage, CloseAccountRequest, CloseAccountResponse,
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, ConfirmEmailLoginRequest,
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
-    CreateGuestTokenRequest, CreateGuestTokenResponse, CreatePlaylistRequest,
-    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, CreateWebSocketTicketRequest,
-    CreateWebSocketTicketResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
-    DeleteMediaResponse, DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest,
-    DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
-    EditMediaResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
-    FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
+    ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
+    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
+    CreateWebSocketTicketRequest, CreateWebSocketTicketResponse, DeleteEntriesRequest,
+    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePasskeyRequest,
+    DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
+    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, FinishMfaPasskeyRequest,
+    FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
     FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
     GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
@@ -52,16 +51,15 @@ use crate::proto::client::{
     RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
     RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse, RequestPasswordResetRequest,
     RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage,
-    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
-    StartEmailBindRequest, StartEmailBindResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
-    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
-    StartOpaquePasswordResetResponse, StartOpaquePasswordUpdateRequest,
-    StartOpaquePasswordUpdateResponse, StartOpaqueRegistrationRequest,
-    StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
-    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
-    StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    ServerMessage, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
+    SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse, StartMfaPasskeyRequest,
+    StartMfaPasskeyResponse, StartOpaqueLoginRequest, StartOpaqueLoginResponse,
+    StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse,
+    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
+    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
     UpdatePlaybackRequest, UpdatePlaylistRequest, UpdatePlaylistResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateUserPreferencesRequest,
@@ -2780,56 +2778,6 @@ impl PublicService for ClientServiceImpl {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl EmailService for ClientServiceImpl {
-    async fn send_verification_email(
-        &self,
-        request: Request<SendVerificationEmailRequest>,
-    ) -> Result<Response<SendVerificationEmailResponse>, Status> {
-        let metadata = self.request_metadata(&request);
-        let email_api = self.email_api().map_err(map_api_error)?;
-        let req = request.into_inner();
-        let email_api = email_api.clone();
-        let executor = self.client_api.clone();
-        let result = executor
-            .execute_public_endpoint_with_control(
-                &metadata,
-                EndpointRateLimitCategory::Email,
-                move |request_control| async move {
-                    email_api
-                        .send_verification_email_response_with_control(req, Some(&request_control))
-                        .await
-                },
-            )
-            .await
-            .map_err(map_email_flow_error)?;
-
-        Ok(Response::new(result))
-    }
-
-    async fn confirm_email(
-        &self,
-        request: Request<ConfirmEmailRequest>,
-    ) -> Result<Response<ConfirmEmailResponse>, Status> {
-        let metadata = self.request_metadata(&request);
-        let email_api = self.email_api().map_err(map_api_error)?;
-        let req = request.into_inner();
-        let email_api = email_api.clone();
-        let executor = self.client_api.clone();
-        let result = executor
-            .execute_public_endpoint_with_control(
-                &metadata,
-                EndpointRateLimitCategory::Email,
-                move |request_control| async move {
-                    email_api
-                        .confirm_email_response_with_control(req, Some(&request_control))
-                        .await
-                },
-            )
-            .await
-            .map_err(map_email_flow_error)?;
-
-        Ok(Response::new(result))
-    }
-
     async fn request_password_reset(
         &self,
         request: Request<RequestPasswordResetRequest>,
@@ -2995,14 +2943,6 @@ mod tests {
         let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(status.message(), "livestream registry unavailable");
-    }
-
-    #[test]
-    fn test_send_verification_email_grpc_maps_service_unavailable() {
-        let err = crate::impls::ApiError::ServiceUnavailable("email backend unavailable".into());
-        let status = map_email_flow_error(err);
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(status.message(), "email backend unavailable");
     }
 
     #[test]

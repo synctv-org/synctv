@@ -10,17 +10,13 @@ use synctv_core::service::{
     EmailTokenService, RequestRateLimiterService, UserService,
 };
 use synctv_proto::client::{
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
-    FinishOpaquePasswordResetRequest, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
-    RequestPasswordResetRequest, RequestPasswordResetResponse, SendVerificationEmailRequest,
-    SendVerificationEmailResponse, StartOpaquePasswordResetRequest,
-    StartOpaquePasswordResetResponse, VerifyMfaEmailCodeRequest,
+    ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest, RequestMfaEmailCodeRequest,
+    RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse, VerifyMfaEmailCodeRequest,
 };
 
 use crate::impls::ApiError;
 
-const GENERIC_VERIFICATION_MESSAGE: &str =
-    "If an account exists with this email, a verification code will be sent.";
 const GENERIC_PASSWORD_RESET_MESSAGE: &str =
     "If an account exists with this email, a password reset code will be sent.";
 const GENERIC_EMAIL_LOGIN_MESSAGE: &str =
@@ -38,15 +34,7 @@ fn map_email_mutation_error(err: synctv_core::Error) -> ApiError {
 
 #[async_trait::async_trait]
 pub trait EmailDeliveryService: Send + Sync {
-    async fn send_verification_email_with_control(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &synctv_core::models::UserId,
-        control: Option<&ExecutionControl>,
-    ) -> synctv_core::Result<String>;
-
-    async fn send_verification_token_email_with_control(
+    async fn send_email_bind_token_email_with_control(
         &self,
         email: &str,
         token: &str,
@@ -72,30 +60,13 @@ pub trait EmailDeliveryService: Send + Sync {
 
 #[async_trait::async_trait]
 impl EmailDeliveryService for EmailService {
-    async fn send_verification_email_with_control(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &synctv_core::models::UserId,
-        control: Option<&ExecutionControl>,
-    ) -> synctv_core::Result<String> {
-        EmailService::send_verification_email_with_control(
-            self,
-            email,
-            token_service,
-            user_id,
-            control,
-        )
-        .await
-    }
-
-    async fn send_verification_token_email_with_control(
+    async fn send_email_bind_token_email_with_control(
         &self,
         email: &str,
         token: &str,
         control: Option<&ExecutionControl>,
     ) -> synctv_core::Result<()> {
-        EmailService::send_verification_token_email_with_control(self, email, token, control).await
+        EmailService::send_email_bind_token_email_with_control(self, email, token, control).await
     }
 
     async fn send_password_reset_email_with_control(
@@ -140,17 +111,6 @@ pub struct EmailApiImpl {
     pub email_token_service: Arc<EmailTokenService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     public_id_codec: Arc<crate::PublicIdCodec>,
-}
-
-/// Send verification email result
-pub struct SendVerificationResult {
-    pub message: String,
-}
-
-/// Confirm email result
-pub struct ConfirmEmailResult {
-    pub message: String,
-    pub user_id: String,
 }
 
 /// Request password reset result
@@ -293,159 +253,6 @@ impl EmailApiImpl {
         self.public_id_codec
             .encode_user_id(user_id)
             .expect("positive user ID must encode")
-    }
-
-    /// Send a verification email.
-    /// Returns generic message regardless of whether user exists (anti-enumeration).
-    pub async fn send_verification_email(
-        &self,
-        email: &str,
-    ) -> Result<SendVerificationResult, ApiError> {
-        self.send_verification_email_with_control(email, None).await
-    }
-
-    pub async fn send_verification_email_with_control(
-        &self,
-        email: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<SendVerificationResult, ApiError> {
-        self.check_email_rate_limit(email, control).await?;
-
-        let user = self
-            .user_service
-            .get_by_email(email)
-            .await
-            .map_err(map_email_user_lookup_error)?;
-
-        let Some(user) = user else {
-            // Add random delay to prevent timing side-channel that leaks
-            // whether an account exists based on response time differences.
-            let delay_ms = rand::random_range(100u64..500u64);
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            return Ok(SendVerificationResult {
-                message: GENERIC_VERIFICATION_MESSAGE.to_string(),
-            });
-        };
-
-        let _token = self
-            .email_service
-            .send_verification_email_with_control(
-                email,
-                &self.email_token_service,
-                &user.id,
-                control,
-            )
-            .await
-            .map_err(ApiError::from)?;
-
-        tracing::info!(
-            "Sent verification email to {}",
-            synctv_core::service::mask_email(email)
-        );
-
-        Ok(SendVerificationResult {
-            message: GENERIC_VERIFICATION_MESSAGE.to_string(),
-        })
-    }
-
-    pub async fn send_verification_email_response_with_control(
-        &self,
-        req: SendVerificationEmailRequest,
-        control: Option<&ExecutionControl>,
-    ) -> Result<SendVerificationEmailResponse, ApiError> {
-        let result = self
-            .send_verification_email_with_control(&req.email, control)
-            .await?;
-        Ok(SendVerificationEmailResponse {
-            message: result.message,
-        })
-    }
-
-    /// Confirm an email verification token.
-    pub async fn confirm_email(
-        &self,
-        email: &str,
-        token: &str,
-    ) -> Result<ConfirmEmailResult, ApiError> {
-        self.confirm_email_with_control(email, token, None).await
-    }
-
-    pub async fn confirm_email_with_control(
-        &self,
-        email: &str,
-        token: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<ConfirmEmailResult, ApiError> {
-        let user = self
-            .user_service
-            .get_by_email(email)
-            .await
-            .map_err(map_email_user_lookup_error)?
-            .ok_or_else(|| {
-                ApiError::InvalidInput("Invalid or expired verification token".to_string())
-            })?;
-
-        let validated_user_id = self
-            .email_token_service
-            .validate_token_for_user_with_control(
-                token,
-                EmailTokenType::EmailVerification,
-                &user.id,
-                control,
-            )
-            .await
-            .map_err(|_| {
-                ApiError::InvalidInput("Invalid or expired verification token".to_string())
-            })?;
-
-        if validated_user_id != user.id {
-            return Err(ApiError::InvalidInput(
-                "Invalid or expired verification token".to_string(),
-            ));
-        }
-
-        // Reject banned or soft-deleted users
-        if user.is_deleted() || user.status == synctv_core::models::UserStatus::Banned {
-            return Err(ApiError::InvalidInput(
-                "Invalid or expired verification token".to_string(),
-            ));
-        }
-
-        self.user_service
-            .set_email_verified(&user.id, true)
-            .await
-            .map_err(map_email_mutation_error)?;
-
-        // Invalidate all remaining email verification tokens for this user
-        self.email_token_service
-            .invalidate_user_tokens_with_control(
-                &user.id,
-                EmailTokenType::EmailVerification,
-                control,
-            )
-            .await
-            .map_err(map_email_mutation_error)?;
-
-        tracing::info!("Email verified for user {}", user.id);
-
-        Ok(ConfirmEmailResult {
-            message: "Email verified successfully".to_string(),
-            user_id: self.public_user_id(user.id),
-        })
-    }
-
-    pub async fn confirm_email_response_with_control(
-        &self,
-        req: ConfirmEmailRequest,
-        control: Option<&ExecutionControl>,
-    ) -> Result<ConfirmEmailResponse, ApiError> {
-        let result = self
-            .confirm_email_with_control(&req.email, &req.token, control)
-            .await?;
-        Ok(ConfirmEmailResponse {
-            message: result.message,
-            user_id: result.user_id,
-        })
     }
 
     /// Request a password reset email.
@@ -753,13 +560,6 @@ impl EmailApiImpl {
             ));
         }
 
-        if !user.email_verified {
-            self.user_service
-                .set_email_verified(&user.id, true)
-                .await
-                .map_err(map_email_mutation_error)?;
-        }
-
         let login_key = format!("email:{}", Self::normalize_rate_limited_email(email));
         let login = self
             .user_service
@@ -889,19 +689,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EmailDeliveryService for TestEmailDeliveryService {
-        async fn send_verification_email_with_control(
-            &self,
-            _email: &str,
-            token_service: &EmailTokenService,
-            user_id: &UserId,
-            _control: Option<&synctv_core::provider::ExecutionControl>,
-        ) -> synctv_core::Result<String> {
-            token_service
-                .generate_token(user_id, EmailTokenType::EmailVerification)
-                .await
-        }
-
-        async fn send_verification_token_email_with_control(
+        async fn send_email_bind_token_email_with_control(
             &self,
             _email: &str,
             _token: &str,
@@ -948,7 +736,6 @@ mod tests {
             banned_at: None,
             banned_by: None,
             banned_reason: None,
-            email_verified: true,
             signup_method: SignupMethod::Email,
             created_at: now,
             updated_at: now,
@@ -1004,37 +791,6 @@ mod tests {
 
         assert_eq!(existing.message, GENERIC_PASSWORD_RESET_MESSAGE);
         assert_eq!(missing.message, GENERIC_PASSWORD_RESET_MESSAGE);
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn send_verification_email_rate_limits_per_normalized_email_across_calls() {
-        let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let api = build_test_email_api(pool);
-
-        for email in [
-            "Target@example.com",
-            " target@example.com ",
-            "TARGET@example.com",
-        ] {
-            let result = api.send_verification_email(email).await.unwrap();
-            assert_eq!(result.message, super::GENERIC_VERIFICATION_MESSAGE);
-        }
-
-        let err = match api.send_verification_email("target@example.com").await {
-            Ok(result) => panic!("expected rate limiting, got success: {}", result.message),
-            Err(err) => err,
-        };
-        assert!(
-            matches!(
-                err,
-                crate::impls::ApiError::RateLimitedWithRetry {
-                    message: ref msg,
-                    retry_after_seconds,
-                } if msg.contains("Please try again in") && retry_after_seconds > 0
-            ),
-            "expected rate limited error, got: {err:?}"
-        );
     }
 
     #[tokio::test]
@@ -1105,18 +861,14 @@ mod tests {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool);
         let email = format!("mfa_{}@example.com", synctv_common::snanoid!(8));
-        let (user, _, _) = api
+        let user = api
             .user_service
-            .register(
+            .create_user_with_role(
                 "mfa_email_user".to_string(),
                 Some(email.clone()),
                 "StrongPass1".to_string(),
                 None,
             )
-            .await
-            .unwrap();
-        api.user_service
-            .set_email_verified(&user.id, true)
             .await
             .unwrap();
         api.user_service

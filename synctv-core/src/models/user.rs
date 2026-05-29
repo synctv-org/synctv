@@ -233,9 +233,9 @@ pub enum SignupMethod {
     /// Unknown or unspecified signup method (default)
     #[default]
     Unknown = 0,
-    /// Registered via email verification flow
+    /// Registered with local email/password credentials
     Email = 1,
-    /// Registered via username + password (no email verification)
+    /// Registered via username + password
     Password = 2,
     /// Registered via OAuth2 provider
     OAuth2 = 3,
@@ -324,7 +324,6 @@ pub struct User {
     pub banned_reason: Option<String>,
 
     pub signup_method: SignupMethod,
-    pub email_verified: bool, // Whether email has been verified
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub password_changed_at: DateTime<Utc>, // Timestamp of last password change (for token invalidation)
@@ -368,7 +367,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
             banned_by,
             banned_reason,
             signup_method: row.try_get("signup_method")?,
-            email_verified: row.try_get("email_verified")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             password_changed_at: row.try_get("password_changed_at")?,
@@ -400,7 +398,6 @@ impl User {
             banned_by: None,
             banned_reason: None,
             signup_method,
-            email_verified: false, // Default to not verified
             created_at: now,
             updated_at: now,
             password_changed_at: now, // Initialize to creation time
@@ -578,7 +575,6 @@ mod tests {
             password_hash: password_hash.to_string(),
             role: UserRole::User,
             signup_method,
-            email_verified: true,
             created_at: now,
             updated_at: now,
             password_changed_at: now,

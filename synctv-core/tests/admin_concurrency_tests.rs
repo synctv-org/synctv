@@ -43,7 +43,6 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
         password_hash: "hash".to_string(),
         role,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,

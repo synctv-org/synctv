@@ -1,5 +1,5 @@
 //! Authentication flow integration tests //!
-//! Tests the complete authentication flow: register → verify → login
+//! Tests the complete authentication flow: register → login
 //!
 //! Run with: cargo test --test `auth_flow_integration_tests`
 #![allow(clippy::unwrap_used)]
@@ -36,7 +36,6 @@ async fn test_complete_registration_flow() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: false,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -55,18 +54,6 @@ async fn test_complete_registration_flow() {
         .await
         .expect("Failed to create user");
     assert_eq!(created_user.status, UserStatus::Active);
-    assert!(!created_user.email_verified);
-
-    let mut verified_user = created_user.clone();
-    verified_user.email_verified = true;
-
-    let old_version = verified_user.version;
-    let updated_user = user_repo
-        .update(&verified_user, old_version)
-        .await
-        .expect("Failed to update user");
-    assert_eq!(updated_user.status, UserStatus::Active);
-    assert!(updated_user.email_verified);
 
     let fetched_user = user_repo
         .get_by_username(&username)
@@ -118,7 +105,6 @@ async fn test_login_with_wrong_password() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -170,7 +156,6 @@ async fn test_login_unverified_user_rejected() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: false,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -198,10 +183,6 @@ async fn test_login_unverified_user_rejected() {
 
     // Check status
     assert_eq!(fetched_user.status, UserStatus::Active);
-    assert!(!fetched_user.email_verified);
-
-    // Application should reject login for unverified users
-    // (This would be enforced in the service layer)
 }
 
 #[tokio::test]
@@ -256,7 +237,6 @@ async fn test_password_credential_update_clears_legacy_hash() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -363,7 +343,6 @@ async fn test_concurrent_login_attempts() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -440,7 +419,6 @@ async fn test_banned_user_login_rejected() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -496,7 +474,6 @@ async fn test_username_case_insensitive_login() {
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

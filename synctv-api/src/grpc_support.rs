@@ -55,9 +55,6 @@ pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
         synctv_core::Error::Authorization(message) => {
             tonic::Status::permission_denied(message.clone())
         }
-        synctv_core::Error::EmailNotVerified => tonic::Status::permission_denied(
-            "Email not verified. Please verify your email to continue.",
-        ),
         other => {
             tracing::error!(error = %other, "Unexpected authorization-classified auth error");
             tonic::Status::permission_denied("You do not have permission to perform this action")

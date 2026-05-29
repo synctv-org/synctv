@@ -1,4 +1,4 @@
-//! Email templates for verification, password reset, and notifications
+//! Email templates for email binding, password reset, login, and notifications
 //!
 //! Uses Handlebars for template rendering with variable substitution
 
@@ -8,10 +8,8 @@ use std::sync::Arc;
 
 use crate::{Error, InternalExt, Result};
 
-const EMAIL_VERIFICATION_TEMPLATE: &str =
-    include_str!("email_templates/email_verification.html.hbs");
-const EMAIL_VERIFICATION_TEXT_TEMPLATE: &str =
-    include_str!("email_templates/email_verification.txt.hbs");
+const EMAIL_BIND_TEMPLATE: &str = include_str!("email_templates/email_bind.html.hbs");
+const EMAIL_BIND_TEXT_TEMPLATE: &str = include_str!("email_templates/email_bind.txt.hbs");
 const PASSWORD_RESET_TEMPLATE: &str = include_str!("email_templates/password_reset.html.hbs");
 const PASSWORD_RESET_TEXT_TEMPLATE: &str = include_str!("email_templates/password_reset.txt.hbs");
 const EMAIL_LOGIN_TEMPLATE: &str = include_str!("email_templates/email_login.html.hbs");
@@ -23,14 +21,14 @@ const NOTIFICATION_TEXT_TEMPLATE: &str = include_str!("email_templates/notificat
 
 const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 10] = [
     (
-        "email_verification",
-        EMAIL_VERIFICATION_TEMPLATE,
-        "Failed to register email verification template",
+        "email_bind",
+        EMAIL_BIND_TEMPLATE,
+        "Failed to register email bind template",
     ),
     (
-        "email_verification_text",
-        EMAIL_VERIFICATION_TEXT_TEMPLATE,
-        "Failed to register email verification text template",
+        "email_bind_text",
+        EMAIL_BIND_TEXT_TEMPLATE,
+        "Failed to register email bind text template",
     ),
     (
         "password_reset",
@@ -77,8 +75,8 @@ const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 10] = [
 /// Email template type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmailTemplateType {
-    /// Email verification template
-    EmailVerification,
+    /// Email bind template
+    EmailBind,
     /// Password reset template
     PasswordReset,
     /// Passwordless email login template
@@ -115,12 +113,12 @@ impl EmailTemplateManager {
         })
     }
 
-    /// Render email verification template
+    /// Render email bind template
     ///
     /// # Arguments
-    /// * `token` - Verification token
+    /// * `token` - Email bind token
     /// * `expires_in` - Token expiration time (human readable, e.g., "24 hours")
-    pub fn render_verification_email(
+    pub fn render_email_bind_email(
         &self,
         token: &str,
         expires_in: &str,
@@ -132,12 +130,12 @@ impl EmailTemplateManager {
 
         let html = self
             .handlebars
-            .render("email_verification", &data)
+            .render("email_bind", &data)
             .internal_with_err("Failed to render template")?;
 
         let plain_text = self
             .handlebars
-            .render("email_verification_text", &data)
+            .render("email_bind_text", &data)
             .internal_with_err("Failed to render template")?;
 
         Ok((html, plain_text))
@@ -289,9 +287,9 @@ mod tests {
     }
 
     #[test]
-    fn test_render_verification_email() {
+    fn test_render_email_bind_email() {
         let manager = EmailTemplateManager::new().unwrap();
-        let result = manager.render_verification_email("123456", "24 hours");
+        let result = manager.render_email_bind_email("123456", "24 hours");
         assert!(result.is_ok());
 
         let (html, plain_text) = result.unwrap();

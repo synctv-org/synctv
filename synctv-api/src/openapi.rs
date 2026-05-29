@@ -4,8 +4,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::providers::{alist, bilibili, common, emby, rtmp};
 use crate::http::{
-    admin, auth, email_verification, health, notifications, oauth2, public, room, room_extra,
-    ticket, user, webrtc, websocket, AppState,
+    admin, auth, email, health, notifications, oauth2, public, room, room_extra, ticket, user,
+    webrtc, websocket, AppState,
 };
 use crate::proto::client;
 
@@ -48,11 +48,9 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         user::delete_passkey,
         user::list_my_rooms,
         user::close_account,
-        email_verification::send_verification_email,
-        email_verification::confirm_email,
-        email_verification::request_password_reset,
-        email_verification::start_opaque_password_reset,
-        email_verification::finish_opaque_password_reset,
+        email::request_password_reset,
+        email::start_opaque_password_reset,
+        email::finish_opaque_password_reset,
         notifications::list_notifications,
         notifications::get_notification,
         notifications::mark_as_read,
@@ -231,10 +229,6 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
             client::RefreshTokenResponse,
             client::LogoutResponse,
             crate::proto::providers::rtmp::CreatePublishKeyResponse,
-            client::SendVerificationEmailRequest,
-            client::SendVerificationEmailResponse,
-            client::ConfirmEmailRequest,
-            client::ConfirmEmailResponse,
             client::RequestPasswordResetRequest,
             client::RequestPasswordResetResponse,
             client::StartOpaquePasswordResetRequest,
@@ -485,7 +479,7 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         (name = "WebSocket", description = "WebSocket handshake and ticket bootstrap endpoints"),
         (name = "WebRTC", description = "WebRTC transport bootstrap endpoints"),
         (name = "Streaming", description = "Publish-key and live-stream bootstrap endpoints"),
-        (name = "Email", description = "Email verification and password reset endpoints"),
+        (name = "Email", description = "Email bind, login, and password reset endpoints"),
         (name = "Notification", description = "Authenticated user notification endpoints"),
         (name = "OAuth2", description = "OAuth2 login and account-link endpoints"),
         (name = "Provider", description = "Provider discovery and backend selection endpoints"),

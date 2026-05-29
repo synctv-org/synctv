@@ -129,9 +129,6 @@ pub(crate) fn map_management_user_lookup_error(err: synctv_core::Error) -> Statu
             Status::aborted("management actor user was modified concurrently")
         }
         synctv_core::Error::LockConflict(message) => Status::aborted(message),
-        synctv_core::Error::EmailNotVerified => {
-            Status::permission_denied("management actor user email is not verified")
-        }
         other => {
             tracing::error!("Management user lookup failed: {other}");
             Status::internal("Internal error")
@@ -152,7 +149,6 @@ mod tests {
             SignupMethod::Email,
             status,
         );
-        user.email_verified = true;
         user
     }
 

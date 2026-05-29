@@ -39,7 +39,6 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         password_version: 0,
         version: 0,
         deleted_at: None,
-        email_verified: true,
         is_banned: false,
         banned_at: None,
         banned_by: None,
@@ -67,14 +66,13 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     sqlx::query(
         r"
         INSERT INTO auth_email_identities (
-            user_id, email, email_verified, created_at, updated_at
+            user_id, email, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4)
         ",
     )
     .bind(user.id)
     .bind(user.email.as_ref())
-    .bind(user.email_verified)
     .bind(user.created_at)
     .bind(user.updated_at)
     .execute(pool)

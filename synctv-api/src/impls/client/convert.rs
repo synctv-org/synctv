@@ -264,7 +264,6 @@ pub(crate) fn user_to_proto(
         role: user_role_to_proto(user.role),
         status: user_status_to_proto(user.status),
         created_at: user.created_at.timestamp(),
-        email_verified: user.email_verified,
         is_banned: user.is_banned,
     }
 }

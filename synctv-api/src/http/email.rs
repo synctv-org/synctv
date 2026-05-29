@@ -1,6 +1,6 @@
-//! Email verification and password reset endpoints
+//! Email bind and password reset endpoints
 //!
-//! Public endpoints for email verification and password recovery.
+//! Public endpoints for password recovery plus shared email runtime helpers.
 //! Delegates to shared `EmailApiImpl` to avoid duplicating logic with gRPC handlers.
 //!
 //! Uses proto-generated types for request/response to ensure type consistency
@@ -27,9 +27,8 @@ use crate::http::{
 };
 use crate::impls::{EmailApiImpl, EndpointRateLimitCategory};
 use crate::proto::client::{
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetResponse,
-    FinishOpaquePasswordResetRequest, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse, StartOpaquePasswordResetRequest,
+    ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest, RequestPasswordResetRequest,
+    RequestPasswordResetResponse, StartOpaquePasswordResetRequest,
     StartOpaquePasswordResetResponse,
 };
 
@@ -43,7 +42,7 @@ fn email_api_unavailable_error() -> AppError {
 fn email_token_service_unavailable_error() -> AppError {
     AppError::new(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "Email verification service is not available on this server.",
+        "Email token service is not available on this server.",
     )
 }
 
@@ -93,8 +92,6 @@ where
 /// Create email-related routes.
 pub fn create_email_router() -> Router<AppState> {
     Router::new()
-        .route("/api/email/verify/send", post(send_verification_email))
-        .route("/api/email/verify/confirm", post(confirm_email))
         .route("/api/email/password/reset", post(request_password_reset))
         .route(
             "/api/email/password/opaque/start",
@@ -104,81 +101,6 @@ pub fn create_email_router() -> Router<AppState> {
             "/api/email/password/opaque/finish",
             post(finish_opaque_password_reset),
         )
-}
-
-/// Send verification email
-///
-/// POST /api/email/verify/send
-/// Public endpoint - no authentication required
-///
-/// Rate limited per-email in `EmailApiImpl` and per-client via `RequestExecutor`.
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/email/verify/send",
-        tag = "Email",
-        request_body = SendVerificationEmailRequest,
-        responses(
-            (status = 200, description = "Verification email accepted", body = SendVerificationEmailResponse),
-            (status = 400, description = "Invalid email request", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
-        )
-    )
-)]
-pub async fn send_verification_email(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<SendVerificationEmailRequest>,
-) -> AppResult<Json<SendVerificationEmailResponse>> {
-    let result = execute_email_endpoint(
-        &state,
-        request_meta,
-        move |email_api, request_control| async move {
-            email_api
-                .send_verification_email_response_with_control(req, Some(&request_control))
-                .await
-        },
-    )
-    .await?;
-
-    Ok(Json(result))
-}
-
-/// Confirm email verification
-///
-/// POST /api/email/verify/confirm
-/// Public endpoint - no authentication required
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/email/verify/confirm",
-        tag = "Email",
-        request_body = ConfirmEmailRequest,
-        responses(
-            (status = 200, description = "Email confirmed", body = ConfirmEmailResponse),
-            (status = 400, description = "Invalid confirmation request", body = crate::openapi::ErrorResponseDoc)
-        )
-    )
-)]
-pub async fn confirm_email(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<ConfirmEmailRequest>,
-) -> AppResult<Json<ConfirmEmailResponse>> {
-    let result = execute_email_endpoint(
-        &state,
-        request_meta,
-        move |email_api, request_control| async move {
-            email_api
-                .confirm_email_response_with_control(req, Some(&request_control))
-                .await
-        },
-    )
-    .await?;
-
-    Ok(Json(result))
 }
 
 /// Request password reset
@@ -313,7 +235,7 @@ mod tests {
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             err.message,
-            "Email verification service is not available on this server."
+            "Email token service is not available on this server."
         );
     }
 }

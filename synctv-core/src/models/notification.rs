@@ -30,8 +30,8 @@ pub enum NotificationType {
     RoomEvent = 3,
     /// Password reset notification
     PasswordReset = 4,
-    /// Email verification reminder
-    EmailVerification = 5,
+    /// Email bind notification
+    EmailBind = 5,
 }
 
 impl NotificationType {
@@ -42,7 +42,7 @@ impl NotificationType {
             Self::SystemAnnouncement => "system_announcement",
             Self::RoomEvent => "room_event",
             Self::PasswordReset => "password_reset",
-            Self::EmailVerification => "email_verification",
+            Self::EmailBind => "email_bind",
         }
     }
 }
@@ -62,7 +62,7 @@ impl std::str::FromStr for NotificationType {
             "system_announcement" => Ok(Self::SystemAnnouncement),
             "room_event" => Ok(Self::RoomEvent),
             "password_reset" => Ok(Self::PasswordReset),
-            "email_verification" => Ok(Self::EmailVerification),
+            "email_bind" => Ok(Self::EmailBind),
             _ => Err(anyhow::anyhow!("Invalid notification type: {s}")),
         }
     }
@@ -73,7 +73,7 @@ sqlx_i16_enum!(NotificationType, "Invalid notification type", {
     SystemAnnouncement = 2,
     RoomEvent = 3,
     PasswordReset = 4,
-    EmailVerification = 5,
+    EmailBind = 5,
 });
 
 /// Notification model
@@ -150,10 +150,7 @@ mod tests {
             NotificationType::PasswordReset.to_string(),
             "password_reset"
         );
-        assert_eq!(
-            NotificationType::EmailVerification.to_string(),
-            "email_verification"
-        );
+        assert_eq!(NotificationType::EmailBind.to_string(), "email_bind");
     }
 
     #[test]
@@ -175,8 +172,8 @@ mod tests {
             NotificationType::PasswordReset
         );
         assert_eq!(
-            "email_verification".parse::<NotificationType>().unwrap(),
-            NotificationType::EmailVerification
+            "email_bind".parse::<NotificationType>().unwrap(),
+            NotificationType::EmailBind
         );
     }
 
@@ -197,7 +194,7 @@ mod tests {
             NotificationType::SystemAnnouncement,
             NotificationType::RoomEvent,
             NotificationType::PasswordReset,
-            NotificationType::EmailVerification,
+            NotificationType::EmailBind,
         ];
         for nt in types {
             let s = nt.to_string();

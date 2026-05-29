@@ -783,7 +783,6 @@ mod tests {
             banned_by: None,
             banned_reason: None,
             signup_method: SignupMethod::OAuth2,
-            email_verified: false,
             created_at: now,
             updated_at: now,
             password_changed_at: now,

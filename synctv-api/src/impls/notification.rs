@@ -37,7 +37,7 @@ pub fn notification_to_proto(
         CoreNotificationType::SystemAnnouncement => ProtoNotificationType::SystemAnnouncement,
         CoreNotificationType::RoomEvent => ProtoNotificationType::RoomEvent,
         CoreNotificationType::PasswordReset => ProtoNotificationType::PasswordReset,
-        CoreNotificationType::EmailVerification => ProtoNotificationType::EmailVerification,
+        CoreNotificationType::EmailBind => ProtoNotificationType::EmailBind,
     };
 
     NotificationProto {
@@ -98,7 +98,7 @@ pub fn proto_notification_type_to_core(
         }
         Ok(ProtoNotificationType::RoomEvent) => Ok(CoreNotificationType::RoomEvent),
         Ok(ProtoNotificationType::PasswordReset) => Ok(CoreNotificationType::PasswordReset),
-        Ok(ProtoNotificationType::EmailVerification) => Ok(CoreNotificationType::EmailVerification),
+        Ok(ProtoNotificationType::EmailBind) => Ok(CoreNotificationType::EmailBind),
         Ok(ProtoNotificationType::Unspecified) | Err(_) => Err(NotificationTypeParseError {
             invalid_value: value,
         }),
@@ -462,7 +462,7 @@ mod tests {
         );
         assert_eq!(
             proto_notification_type_to_core(5),
-            Ok(CoreNotificationType::EmailVerification)
+            Ok(CoreNotificationType::EmailBind)
         );
     }
 
@@ -507,7 +507,7 @@ mod tests {
             CoreNotificationType::SystemAnnouncement,
             CoreNotificationType::RoomEvent,
             CoreNotificationType::PasswordReset,
-            CoreNotificationType::EmailVerification,
+            CoreNotificationType::EmailBind,
         ];
 
         for core_type in types {
@@ -516,7 +516,7 @@ mod tests {
                 CoreNotificationType::SystemAnnouncement => 2,
                 CoreNotificationType::RoomEvent => 3,
                 CoreNotificationType::PasswordReset => 4,
-                CoreNotificationType::EmailVerification => 5,
+                CoreNotificationType::EmailBind => 5,
             };
             let converted_back = proto_notification_type_to_core(proto_value).unwrap();
             assert_eq!(converted_back, core_type);

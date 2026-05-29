@@ -517,10 +517,7 @@ mod tests {
             NotificationType::PasswordReset.to_string(),
             "password_reset"
         );
-        assert_eq!(
-            NotificationType::EmailVerification.to_string(),
-            "email_verification"
-        );
+        assert_eq!(NotificationType::EmailBind.to_string(), "email_bind");
     }
 
     /// Test NotificationType parsing
@@ -559,7 +556,7 @@ mod tests {
             NotificationType::SystemAnnouncement,
             NotificationType::RoomEvent,
             NotificationType::PasswordReset,
-            NotificationType::EmailVerification,
+            NotificationType::EmailBind,
         ];
 
         for nt in types {

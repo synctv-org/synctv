@@ -105,7 +105,7 @@ struct PendingRegistrationRequest {
     oauth2_provider_user_id: Option<String>,
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
-    oauth2_email_verified: bool,
+    oauth2_email_trusted: bool,
     webauthn_credential_id: Option<Vec<u8>>,
     webauthn_passkey: Option<Passkey>,
     webauthn_credential_name: Option<String>,
@@ -127,7 +127,7 @@ struct PendingRegistrationRequestRow {
     oauth2_provider_user_id: Option<String>,
     oauth2_provider_username: Option<String>,
     oauth2_avatar_url: Option<String>,
-    oauth2_email_verified: Option<bool>,
+    oauth2_email_trusted: Option<bool>,
     webauthn_credential_id: Option<Vec<u8>>,
     webauthn_passkey: Option<serde_json::Value>,
     webauthn_credential_name: Option<String>,
@@ -864,8 +864,6 @@ pub struct UserService {
     password_complexity: PasswordComplexityConfig,
     /// Brute-force protection for login attempts
     brute_force: Arc<dyn BruteForceProtectionService>,
-    /// Whether email verification is required for login (true when email service is configured)
-    email_verification_required: bool,
     /// Token blacklist store for refresh token rotation (Redis or in-memory)
     token_blacklist: Arc<dyn TokenBlacklistStore>,
     /// Key builder for Redis keys
@@ -894,7 +892,6 @@ pub struct UserService {
 pub struct UserServiceRuntimeOptions {
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub refresh_rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
-    pub email_verification_required: bool,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
@@ -2211,7 +2208,6 @@ impl UserService {
             cache_invalidation: runtime.cache_invalidation,
             password_complexity,
             brute_force,
-            email_verification_required: runtime.email_verification_required,
             token_blacklist,
             key_builder,
             refresh_rate_limiter,
@@ -2267,18 +2263,6 @@ impl UserService {
     /// Legacy password registration is a product-supported compatibility/bootstrap
     /// mode and is enabled by default.
     pub const fn enable_legacy_password_registration_for_tests(&mut self) {}
-
-    /// Enable email verification requirement for login (call when email service is configured)
-    pub const fn set_email_verification_required(&mut self, required: bool) {
-        self.email_verification_required = required;
-    }
-
-    fn email_verification_required(&self) -> bool {
-        self.settings_registry
-            .as_ref()
-            .and_then(|settings| settings.email_enabled.get().ok())
-            .unwrap_or(self.email_verification_required)
-    }
 
     pub fn set_refresh_rate_limiter_for_tests<T>(&mut self, limiter: T)
     where
@@ -2467,9 +2451,9 @@ impl UserService {
         signup_method: SignupMethod,
     ) -> Result<User> {
         let mut tx = self.repository.pool().begin().await?;
-        Self::lock_pending_registration_identity(&mut tx, username, email).await?;
+        Self::lock_pending_registration_identity(&mut tx, username, None).await?;
         if self
-            .has_pending_registration_request_with_executor(username, email, &mut *tx)
+            .has_pending_registration_request_with_executor(username, None, &mut *tx)
             .await?
         {
             return Err(Error::AlreadyExists(
@@ -2511,7 +2495,7 @@ impl UserService {
 
         let mut user = User::new_with_status(
             username.to_string(),
-            email.map(ToOwned::to_owned),
+            None,
             String::new(),
             signup_method,
             UserStatus::Active,
@@ -2537,7 +2521,7 @@ impl UserService {
                 username, email, signup_method, status, requested_at,
                 oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
                 oauth2_provider_user_id, oauth2_provider_username, oauth2_avatar_url,
-                oauth2_email_verified
+                oauth2_email_trusted
             )
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id AS "id: UserId"
@@ -2580,9 +2564,9 @@ impl UserService {
             .internal_with_err("Failed to serialize WebAuthn passkey")?;
 
         let mut tx = self.repository.pool().begin().await?;
-        Self::lock_pending_registration_identity(&mut tx, username, email).await?;
+        Self::lock_pending_registration_identity(&mut tx, username, None).await?;
         if self
-            .has_pending_registration_request_with_executor(username, email, &mut *tx)
+            .has_pending_registration_request_with_executor(username, None, &mut *tx)
             .await?
         {
             return Err(Error::AlreadyExists(
@@ -2629,7 +2613,7 @@ impl UserService {
 
         let mut user = User::new_with_status(
             username.to_string(),
-            email.map(ToOwned::to_owned),
+            None,
             String::new(),
             SignupMethod::WebAuthn,
             UserStatus::Active,
@@ -2685,7 +2669,7 @@ impl UserService {
                    oauth2_provider_user_id,
                    oauth2_provider_username,
                    oauth2_avatar_url,
-                   oauth2_email_verified,
+                   oauth2_email_trusted,
                    webauthn_credential_id,
                    webauthn_passkey,
                    webauthn_credential_name
@@ -2730,7 +2714,7 @@ impl UserService {
                 oauth2_provider_user_id: row.oauth2_provider_user_id,
                 oauth2_provider_username: row.oauth2_provider_username,
                 oauth2_avatar_url: row.oauth2_avatar_url,
-                oauth2_email_verified: row.oauth2_email_verified.unwrap_or(false),
+                oauth2_email_trusted: row.oauth2_email_trusted.unwrap_or(false),
                 webauthn_credential_id: row.webauthn_credential_id,
                 webauthn_passkey,
                 webauthn_credential_name: row.webauthn_credential_name,
@@ -2754,12 +2738,17 @@ impl UserService {
                 ))
             })?;
 
+        let trusted_email = (request.signup_method == SignupMethod::OAuth2
+            && request.oauth2_email_trusted)
+            .then(|| request.email.clone())
+            .flatten();
+
         if self
             .repository
             .get_by_username(&request.username)
             .await?
             .is_some()
-            || match request.email.as_deref() {
+            || match trusted_email.as_deref() {
                 Some(email) => self.repository.get_by_email(email).await?.is_some(),
                 None => false,
             }
@@ -2771,7 +2760,7 @@ impl UserService {
 
         let user = User::new(
             request.username.clone(),
-            request.email.clone(),
+            trusted_email,
             request.legacy_password_hash.clone().unwrap_or_default(),
             request.signup_method,
         );
@@ -2825,16 +2814,6 @@ impl UserService {
                         &mut *tx,
                     )
                     .await?;
-
-                if request.oauth2_email_verified && request.email.is_some() {
-                    sqlx::query!(
-                        "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
-                        created.id.as_i64(),
-                    )
-                    .execute(&mut *tx)
-                    .await
-                    .internal_with_err("Failed to mark OAuth2 review email as verified")?;
-                }
 
                 created
             }
@@ -2963,9 +2942,8 @@ impl UserService {
 
     /// Validate that a user is allowed to access the system.
     ///
-    /// Checks for banned or soft-deleted accounts, and optionally email
-    /// verification. Returns a generic error message to prevent user
-    /// enumeration.
+    /// Checks for banned or soft-deleted accounts. Returns a generic error
+    /// message to prevent user enumeration.
     ///
     /// This is shared between `login()`, `refresh_token()`, and other
     /// authentication flows to avoid duplicating the same checks.
@@ -2973,25 +2951,6 @@ impl UserService {
         // Reject inactive or soft-deleted users with a generic message to prevent enumeration.
         if user.is_banned || user.status == UserStatus::Banned || user.deleted_at.is_some() {
             return Err(Error::Authentication("Authentication failed".to_string()));
-        }
-
-        // Check email verification when required.
-        // OAuth2 users are exempt: they authenticated via an external provider,
-        // so requiring email verification would lock them out if the provider
-        // didn't confirm their email.
-        // Returns a specific EmailNotVerified error (not a generic Authentication error)
-        // so the client can prompt the user to verify their email. This is safe because
-        // the user has already authenticated successfully (correct credentials), so
-        // revealing that their email is unverified does not leak information.
-        let is_external_credential_user = matches!(
-            user.signup_method,
-            crate::models::SignupMethod::OAuth2 | crate::models::SignupMethod::WebAuthn
-        );
-        if self.email_verification_required()
-            && !user.email_verified
-            && !is_external_credential_user
-        {
-            return Err(Error::EmailNotVerified);
         }
 
         Ok(())
@@ -3079,15 +3038,8 @@ impl UserService {
                 synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
             ));
         }
-        if let Some(email_addr) = email {
-            if self.repository.get_by_email(email_addr).await?.is_some() {
-                return Err(Error::AlreadyExists(
-                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                ));
-            }
-        }
         if self
-            .has_pending_registration_request(&username, email)
+            .has_pending_registration_request(&username, None)
             .await?
         {
             return Err(Error::AlreadyExists(
@@ -3156,10 +3108,6 @@ impl UserService {
     ///
     /// Uniqueness of username/email is enforced atomically by the database
     /// UNIQUE constraints, avoiding any check-then-act (TOCTOU) race condition.
-    ///
-    /// When email verification is required (email service is configured), tokens
-    /// are NOT returned -- the user must verify their email first. When email
-    /// verification is not required, tokens are returned immediately.
     ///
     /// Per-IP brute-force protection is applied before processing: repeated failed
     /// registration attempts (e.g., validation errors, username conflicts) from the
@@ -3286,15 +3234,8 @@ impl UserService {
                 synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
             ));
         }
-        if let Some(ref email_addr) = email {
-            if self.repository.get_by_email(email_addr).await?.is_some() {
-                return Err(Error::AlreadyExists(
-                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                ));
-            }
-        }
         if self
-            .has_pending_registration_request(&username, email.as_deref())
+            .has_pending_registration_request(&username, None)
             .await?
         {
             return Err(Error::AlreadyExists(
@@ -3307,16 +3248,14 @@ impl UserService {
             .await?;
         let legacy_password_hash = Some(password_hash);
 
-        // Signup review is an approval workflow, not an account lifecycle state.
-        // Pending registrations live in `user_registration_requests` and do not
-        // create a `users` row until an admin approves them. Email verification
-        // remains an account fact (`email_verified=false`) on an otherwise active
-        // user so verification tokens can reference the user row.
+        // Signup review is an approval workflow. Pending registrations live in
+        // `user_registration_requests` and create a `users` row after approval.
+        // A login email identity is written by a trusted provider or bind confirm.
         if registration_policy.need_review {
             let pending_user = self
                 .create_registration_request(
                     &username,
-                    email.as_deref(),
+                    None,
                     legacy_password_hash.as_deref(),
                     &opaque_record,
                     SignupMethod::Email,
@@ -3325,15 +3264,15 @@ impl UserService {
             return Ok((pending_user, None, None));
         }
 
-        // Create user with email signup method.
-        // The database UNIQUE constraints on username and email will reject
-        // duplicates atomically -- no separate existence check needed.
+        // Create the account without an email identity. Email becomes an account
+        // login factor only after the bind confirmation flow proves ownership.
+        // The database UNIQUE constraint on username rejects duplicates atomically.
         // IMPORTANT: AlreadyExists errors (username/email taken) are NOT recorded
         // as brute-force failures. A legitimate user trying to register with a
         // common username shouldn't be locked out - they just need to pick another.
         let user = User::new(
             username.clone(),
-            email.clone(),
+            None,
             legacy_password_hash.clone().unwrap_or_default(),
             SignupMethod::Email,
         );
@@ -3375,12 +3314,6 @@ impl UserService {
         // Populate username cache
         self.cache_username_best_effort(&created_user.id, &username, "register")
             .await;
-
-        // When email verification is required, the user row exists so email
-        // tokens can target it, but no session is issued until verification.
-        if self.email_verification_required() {
-            return Ok((created_user, None, None));
-        }
 
         // Generate JWT tokens (role will be fetched from DB on each request)
         let session_id = synctv_common::snanoid!(32);
@@ -3483,7 +3416,7 @@ impl UserService {
             let pending_user = self
                 .create_registration_request(
                     &username,
-                    email.as_deref(),
+                    None,
                     None,
                     &opaque_record,
                     SignupMethod::Email,
@@ -3492,12 +3425,7 @@ impl UserService {
             return Ok((pending_user, None, None));
         }
 
-        let user = User::new(
-            username.clone(),
-            email.clone(),
-            String::new(),
-            SignupMethod::Email,
-        );
+        let user = User::new(username.clone(), None, String::new(), SignupMethod::Email);
         let created_user = match self
             .repository
             .create_with_password_credentials(
@@ -3522,10 +3450,6 @@ impl UserService {
 
         self.cache_username_best_effort(&created_user.id, &username, "opaque_register")
             .await;
-
-        if self.email_verification_required() {
-            return Ok((created_user, None, None));
-        }
 
         let session_id = synctv_common::snanoid!(32);
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
@@ -4099,7 +4023,7 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        // Check user status and email verification (shared with login)
+        // Check user status using the same access gate as login.
         self.validate_user_access(&user)?;
         if self
             .user_preferences_repository
@@ -4344,13 +4268,7 @@ impl UserService {
 
         if current.email != candidate.email {
             return Err(Error::InvalidInput(
-                "Email changes must be confirmed with an email bind verification token".to_string(),
-            ));
-        }
-
-        if current.email_verified != candidate.email_verified {
-            return Err(Error::InvalidInput(
-                "Email verification changes must use the email verification flow".to_string(),
+                "Email changes must be confirmed with an email bind token".to_string(),
             ));
         }
 
@@ -4797,30 +4715,11 @@ impl UserService {
         Ok(updated_user)
     }
 
-    /// Set user email verification status
-    pub async fn set_email_verified(&self, user_id: &UserId, email_verified: bool) -> Result<User> {
-        let updated_user = self
-            .repository
-            .update_email_verified(user_id, email_verified)
-            .await?;
-
-        // Invalidate user cache across all replicas
-        self.notify_user_invalidation(user_id).await;
-
-        tracing::info!(
-            "Email verification status set to {} for user {}",
-            email_verified,
-            user_id
-        );
-
-        Ok(updated_user)
-    }
-
     pub async fn start_email_bind(&self, user_id: &UserId, email: &str) -> Result<String> {
         let email = self.validate_email_bind_target(user_id, email).await?;
         let token = synctv_common::snanoid!(64);
-        let expires_at = chrono::Utc::now()
-            + crate::models::EmailTokenType::EmailVerification.expiration_duration();
+        let expires_at =
+            chrono::Utc::now() + crate::models::EmailTokenType::EmailBind.expiration_duration();
 
         self.email_bind_repository
             .create_or_replace_unused(user_id, &email, &token, expires_at)
@@ -5810,136 +5709,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "non-strict mode should allow normal in-memory checks"
-        );
-    }
-
-    /// OAuth2 users should not be blocked by email_verification_required.
-    /// This test verifies the logic that exempts OAuth2 signup method users.
-    #[test]
-    fn test_oauth2_user_bypasses_email_verification_check() {
-        let now = chrono::Utc::now();
-
-        // Simulate an OAuth2 user with email_verified=false
-        let oauth2_user = crate::models::User {
-            id: crate::models::UserId::new(),
-            username: "oauth2user".to_string(),
-            email: None,
-            password_hash: "hash".to_string(),
-            role: crate::models::UserRole::User,
-            status: crate::models::UserStatus::Active,
-            signup_method: crate::models::SignupMethod::OAuth2,
-            email_verified: false,
-            created_at: now,
-            updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
-            version: 0,
-            deleted_at: None,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        };
-
-        // The check in login(): email_verification_required && !email_verified && !is_oauth2
-        let email_verification_required = true;
-        let is_oauth2_user = oauth2_user.signup_method == crate::models::SignupMethod::OAuth2;
-
-        // OAuth2 user should NOT be blocked
-        let would_block =
-            email_verification_required && !oauth2_user.email_verified && !is_oauth2_user;
-        assert!(
-            !would_block,
-            "OAuth2 user should bypass email verification check"
-        );
-    }
-
-    /// Non-OAuth2 users with email_verified=false should still be blocked.
-    #[test]
-    fn test_email_user_still_blocked_by_email_verification() {
-        let now = chrono::Utc::now();
-
-        let email_user = crate::models::User {
-            id: crate::models::UserId::new(),
-            username: "emailuser".to_string(),
-            email: Some("user@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: crate::models::UserRole::User,
-            status: crate::models::UserStatus::Active,
-            signup_method: crate::models::SignupMethod::Email,
-            email_verified: false,
-            created_at: now,
-            updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
-            version: 0,
-            deleted_at: None,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        };
-
-        let email_verification_required = true;
-        let is_oauth2_user = email_user.signup_method == crate::models::SignupMethod::OAuth2;
-
-        // Email user should still be blocked
-        let would_block =
-            email_verification_required && !email_user.email_verified && !is_oauth2_user;
-        assert!(
-            would_block,
-            "Email user with unverified email should be blocked"
-        );
-    }
-
-    /// OAuth2 user with email_verified=true should also pass (no regression).
-    #[test]
-    fn test_oauth2_user_with_verified_email_passes() {
-        let now = chrono::Utc::now();
-
-        let oauth2_user = crate::models::User {
-            id: crate::models::UserId::new(),
-            username: "oauth2verified".to_string(),
-            email: Some("verified@example.com".to_string()),
-            password_hash: "hash".to_string(),
-            role: crate::models::UserRole::User,
-            status: crate::models::UserStatus::Active,
-            signup_method: crate::models::SignupMethod::OAuth2,
-            email_verified: true,
-            created_at: now,
-            updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
-            version: 0,
-            deleted_at: None,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        };
-
-        let email_verification_required = true;
-        let is_oauth2_user = oauth2_user.signup_method == crate::models::SignupMethod::OAuth2;
-
-        let would_block =
-            email_verification_required && !oauth2_user.email_verified && !is_oauth2_user;
-        assert!(
-            !would_block,
-            "OAuth2 user with verified email should not be blocked"
-        );
-    }
-
-    /// When email_verification_required=false, nobody should be blocked.
-    #[test]
-    fn test_no_email_verification_required_passes_all() {
-        let email_verification_required = false;
-        let email_verified = false;
-        let is_oauth2_user = false;
-
-        let would_block = email_verification_required && !email_verified && !is_oauth2_user;
-        assert!(
-            !would_block,
-            "No one should be blocked when email verification is not required"
         );
     }
 

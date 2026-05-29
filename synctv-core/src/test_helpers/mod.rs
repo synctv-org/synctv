@@ -108,7 +108,6 @@ impl UserFixture {
             role: self.role,
             status: self.status,
             signup_method: crate::models::SignupMethod::Email,
-            email_verified: true,
             created_at: now,
             updated_at: now,
             password_changed_at: now,

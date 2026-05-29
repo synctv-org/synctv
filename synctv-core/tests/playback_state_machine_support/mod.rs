@@ -46,7 +46,6 @@ pub fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,

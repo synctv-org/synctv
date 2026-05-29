@@ -157,9 +157,6 @@ impl AppError {
 pub fn map_auth_authorization_error(err: &synctv_core::Error) -> AppError {
     match err {
         synctv_core::Error::Authorization(message) => AppError::forbidden(message.clone()),
-        synctv_core::Error::EmailNotVerified => {
-            AppError::forbidden("Email not verified. Please verify your email to continue.")
-        }
         other => {
             tracing::error!(error = %other, "Unexpected authorization-classified auth error");
             AppError::forbidden("You do not have permission to perform this action")
@@ -547,17 +544,6 @@ mod tests {
     }
 
     #[test]
-    fn test_map_auth_authorization_error_maps_email_not_verified() {
-        let err = map_auth_authorization_error(&synctv_core::Error::EmailNotVerified);
-
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert_eq!(
-            err.message,
-            "Email not verified. Please verify your email to continue."
-        );
-    }
-
-    #[test]
     fn test_invalid_credentials() {
         let err = AppError::invalid_credentials();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
@@ -776,35 +762,6 @@ mod tests {
         assert_eq!(
             app_err.error_code,
             Some(crate::impls::error_codes::CONFLICT)
-        );
-    }
-
-    #[test]
-    fn test_from_core_email_not_verified() {
-        let core_err = synctv_core::Error::EmailNotVerified;
-        let app_err = AppError::from(core_err);
-        // Should be 403 Forbidden (not 401 Unauthorized) because the user
-        // has authenticated successfully but is missing email verification
-        assert_eq!(app_err.status, StatusCode::FORBIDDEN);
-        assert!(
-            app_err.message.contains("verify your email"),
-            "Error message should tell the user to verify their email, got: {}",
-            app_err.message
-        );
-    }
-
-    #[test]
-    fn test_email_not_verified_distinct_from_auth_failure() {
-        let auth_err = synctv_core::Error::Authentication("Authentication failed".to_string());
-        let email_err = synctv_core::Error::EmailNotVerified;
-
-        let auth_app = AppError::from(auth_err);
-        let email_app = AppError::from(email_err);
-
-        // Different HTTP status codes: 401 vs 403
-        assert_ne!(
-            auth_app.status, email_app.status,
-            "EmailNotVerified (403) must be distinguishable from Authentication (401)"
         );
     }
 

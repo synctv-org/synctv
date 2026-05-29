@@ -2,7 +2,7 @@
 //!
 //! Coordinates cleanup of:
 //! - Soft-deleted records (users, rooms) past retention period
-//! - Expired email verification tokens
+//! - Expired email bind tokens
 //! - Expired media provider credentials
 //! - Old notifications
 //! - Old chat messages (per-room cap)

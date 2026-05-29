@@ -75,7 +75,7 @@ pub struct Services {
     pub settings_registry: Arc<SettingsRegistry>,
     /// Email service backed by runtime SMTP settings.
     pub email_service: Option<Arc<EmailService>>,
-    /// Email token service for verification codes.
+    /// Email token service for bind, login, and password reset codes.
     pub email_token_service: Option<Arc<EmailTokenService>>,
     /// Shared WebSocket ticket service reused across transports.
     pub ws_ticket_service: Arc<dyn crate::service::WebSocketTicketService>,
@@ -579,8 +579,6 @@ pub async fn init_services_with_options(
     ))?));
     info!("Email service initialized with runtime settings");
 
-    let email_verification_required = settings_registry.email_enabled.get()?;
-
     // Initialize Email Token service. Delivery is gated by EmailService runtime settings when mail is sent.
     let email_token_service = Some(build_email_token_service(
         pool.clone(),
@@ -633,7 +631,6 @@ pub async fn init_services_with_options(
         crate::service::user::UserServiceRuntimeOptions {
             cache_invalidation: Some(cache_invalidation.clone()),
             refresh_rate_limiter: Some(refresh_rate_limiter),
-            email_verification_required,
             settings_registry: Some(Arc::clone(&settings_registry)),
             password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
             realtime_outbox: options.realtime_outbox.clone(),

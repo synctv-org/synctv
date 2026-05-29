@@ -297,12 +297,6 @@ fn create_user_service_with_failing_username_cache(pool: &PgPool) -> UserService
     create_user_service_with_components(pool, username_cache, token_blacklist)
 }
 
-fn create_user_service_with_email_verification(pool: &PgPool) -> UserService {
-    let mut service = create_user_service(pool);
-    service.set_email_verification_required(true);
-    service
-}
-
 async fn opaque_register(
     service: &UserService,
     username: String,
@@ -1130,44 +1124,6 @@ async fn test_login_banned_user_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_login_pending_user_rejected() {
-    let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(&pool);
-    service.set_email_verification_required(true);
-
-    let username = format!("pending_login_{}", synctv_common::snanoid!(6));
-    let (_user, access, refresh) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "pending_login_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    assert!(
-        access.is_none() && refresh.is_none(),
-        "Registration awaiting verification/review must not issue tokens"
-    );
-
-    let result = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
-    assert!(
-        matches!(
-            result,
-            Err(Error::EmailNotVerified | Error::Authentication(_))
-        ),
-        "Pending registration should not be able to login before activation"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_login_rejected_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
@@ -1268,236 +1224,9 @@ async fn test_login_soft_deleted_user_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_login_unverified_email_blocked_when_verification_required() {
-    let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(&pool);
-    // First register without email verification to get the user created
-    let username = format!("unverified_{}", synctv_common::snanoid!(6));
-    let email = format!("unverified_{}@test.com", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(email.clone()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    // Set email_verified = false
-    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .expect("Failed to set unverified");
-
-    // Now enable email verification requirement
-    service.set_email_verification_required(true);
-
-    let result = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
-    assert!(
-        result.is_err(),
-        "Unverified email user should be blocked when verification is required"
-    );
-    assert!(matches!(result.unwrap_err(), Error::EmailNotVerified));
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_unverified_email_allowed_when_not_required() {
+async fn test_login_email_and_oauth2_user_types_allowed() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
-
-    // Register (no email verification required)
-    let username = format!("norev_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!("norev_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    // Set email_verified = false
-    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .expect("Failed to set unverified");
-
-    // Login should succeed because email verification is NOT required
-    let result = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
-    assert!(
-        result.is_ok(),
-        "Unverified email should be allowed when verification is not required: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_accepts_email_identifier_with_password() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-
-    let username = format!("email_login_user_{}", synctv_common::snanoid!(6));
-    let email = format!("{username}@example.com");
-
-    let (_user, access, refresh) = service
-        .register(
-            username.clone(),
-            Some(email.clone()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    assert!(access.is_some(), "registration should issue access token");
-    assert!(refresh.is_some(), "registration should issue refresh token");
-
-    let (logged_in_user, access_token, refresh_token) = expect_complete_login(
-        service
-            .login(email, "StrongPass1".to_string(), None)
-            .await
-            .expect("Email identifier login should succeed"),
-    );
-
-    assert_eq!(logged_in_user.username, username.to_lowercase());
-    assert!(!access_token.is_empty());
-    assert!(!refresh_token.is_empty());
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_email_identifier_uses_same_brute_force_bucket_for_failures_and_checks() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-
-    let username = format!("email_lockout_user_{}", synctv_common::snanoid!(6));
-    let email = format!("{username}@example.com");
-
-    service
-        .register(
-            username,
-            Some(email.clone()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    for _ in 0..5 {
-        let error = service
-            .login(email.clone(), "WrongPass1".to_string(), None)
-            .await
-            .expect_err("wrong password should fail");
-        assert!(
-            matches!(error, Error::Authentication(ref message) if message == "Authentication failed"),
-            "unexpected error after wrong password attempt: {error:?}"
-        );
-    }
-
-    let error = service
-        .login(email, "StrongPass1".to_string(), None)
-        .await
-        .expect_err("account bucket should be locked after repeated failures");
-    assert!(
-        matches!(error, Error::Authentication(ref message) if message.contains("Too many failed login attempts")),
-        "expected brute-force lockout, got: {error:?}"
-    );
-}
-
-// S2.5: Account enumeration prevention tests (HIGH #13)
-
-/// Test that email-based users and OAuth2-only users receive identical
-/// error messages when email verification is required but not satisfied.
-///
-/// This prevents account enumeration where attackers could determine
-/// which accounts have emails configured based on different error responses.
-///
-/// VULNERABILITY DEMONSTRATION:
-/// When `email_verification_required=true`, the code checks:
-///   `user.email.is_some() && !user.email_verified`
-///
-/// This means:
-/// - User WITH email (unverified): blocked (`email.is_some()` = true)
-/// - User WITHOUT email (OAuth2-only): PASSES (`email.is_some()` = false)
-///
-/// An attacker can enumerate accounts by attempting login with correct password:
-/// - Blocked → account has email configured
-/// - Success → account is OAuth2-only (no email)
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_email_verification_no_account_enumeration() {
-    let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(&pool);
-    service.set_email_verification_required(true);
-
-    let email_user = format!("email_user_{}", synctv_common::snanoid!(6));
-    let (user_with_email, _, _) = service
-        .register(
-            email_user.clone(),
-            Some(format!("{email_user}@test.com")),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
-
-    // Mark email as unverified (but user is Active because verification was not required during registration)
-    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
-        .bind(user_with_email.id)
-        .execute(&pool)
-        .await
-        .expect("Failed to set unverified");
-
-    let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
-    let oauth_user = service
-        .create_or_load_by_oauth2(&provider, "oauth123", "oauthuser", None)
-        .await
-        .expect("OAuth2 user creation should succeed");
-
-    // Set a password for the OAuth2 user so they can login
-    service
-        .set_password(&oauth_user.id, "StrongPass1")
-        .await
-        .expect("Setting password should succeed");
-
-    // Email user with unverified email should be blocked
-    let email_result = service
-        .login(email_user, "StrongPass1".to_string(), None)
-        .await;
-
-    // OAuth2 user should bypass email verification (pre-verified by provider).
-    // Admin set-password stores OPAQUE-only credentials, so verify through the
-    // OPAQUE login flow rather than legacy password verification.
-    let oauth_result = opaque_login(&service, oauth_user.username.clone(), "StrongPass1").await;
-
-    assert!(
-        email_result.is_err(),
-        "Email user with unverified email should be blocked"
-    );
-    assert!(
-        oauth_result.is_ok(),
-        "OAuth2 user should bypass email verification (authenticated by provider)"
-    );
-}
-
-/// Test that when email verification is NOT required, both email and `OAuth2`
-/// users can login regardless of `email_verified` status.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_no_verification_required_both_user_types_allowed() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(&pool);
-    // email_verification_required is false by default
 
     let email_user = format!("email_allowed_{}", synctv_common::snanoid!(6));
     let (_user_with_email, _, _) = service
@@ -1521,7 +1250,6 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
         .await
         .expect("Setting password should succeed");
 
-    // Both should be able to login when verification is not required
     let email_result = service
         .login(email_user, "StrongPass1".to_string(), None)
         .await;
@@ -1682,7 +1410,7 @@ async fn test_opaque_registration_creates_opaque_only_password_credential() {
 
     assert!(
         access_token.is_some() && refresh_token.is_some(),
-        "OPAQUE registration should issue tokens when email verification is not required"
+        "OPAQUE registration should issue tokens"
     );
 
     let row = load_password_credential_row(&pool, user.id).await;
@@ -1727,13 +1455,15 @@ async fn test_opaque_only_password_counts_as_first_factor_without_plaintext_mfa(
     let service = create_user_service(&pool);
     let username = format!("opaque_mfa_{}", synctv_common::snanoid!(6));
     let email = format!("opaque_mfa_{}@test.com", synctv_common::snanoid!(6));
-    let (user, _, _) = opaque_register(&service, username.clone(), Some(email), "StrongPass1")
+    let user = service
+        .create_user_with_role(
+            username.clone(),
+            Some(email),
+            "StrongPass1".to_string(),
+            None,
+        )
         .await
-        .expect("OPAQUE registration should succeed");
-    service
-        .set_email_verified(&user.id, true)
-        .await
-        .expect("email should be verified for factor counting");
+        .expect("user creation should succeed");
 
     let (_preferences, factors) = service
         .get_user_preferences(&user.id)
@@ -2731,7 +2461,6 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
         .expect("user lookup must succeed")
         .expect("winning user must exist");
     assert_eq!(persisted_user.email.as_deref(), user_info.email.as_deref());
-    assert!(persisted_user.email_verified);
     assert_eq!(
         persisted_user.status,
         synctv_core::models::UserStatus::Active,
@@ -3063,60 +2792,6 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
     );
 }
 
-// S1 additional: refresh_token with email verification re-check
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_refresh_token_email_verification_recheck() {
-    let (_container, pool) = create_test_pool().await;
-
-    // Register without email verification (get tokens)
-    let service_no_verify = create_user_service(&pool);
-    let (user, _access, Some(refresh_token)) = service_no_verify
-        .register(
-            format!("email_recheck_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "email_recheck_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
-        panic!("Expected tokens");
-    };
-
-    // Un-verify the email
-    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .expect("Failed to un-verify email");
-
-    let service_verify = create_user_service_with_email_verification(&pool);
-
-    // Now try to refresh -- should fail because email is not verified
-    let result = service_verify.refresh_token(refresh_token).await;
-    assert!(
-        result.is_err(),
-        "Refresh should fail when email verification is required but email is unverified"
-    );
-}
-
-// S1.5: refresh_token rate limiting tests (HIGH #16)
-
-/// Test that `refresh_token` endpoint has rate limiting to prevent abuse.
-///
-/// Without rate limiting, an attacker with a stolen refresh token can:
-/// 1. Rapidly call `refresh_token` to exhaust server resources
-/// 2. Trigger family revocation, locking out the legitimate user
-///
-/// Rate limiting should:
-/// - Limit per-user refresh requests to prevent abuse
-/// - Allow legitimate refresh patterns (occasional token rotation)
-/// - Return clear rate limit error when exceeded
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_rate_limiting_per_user() {

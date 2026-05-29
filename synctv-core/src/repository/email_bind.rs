@@ -36,7 +36,7 @@ impl EmailBindRepository {
 
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1::text), $2)")
             .bind(user_id.to_string())
-            .bind(i32::from(i16::from(EmailTokenType::EmailVerification)))
+            .bind(i32::from(i16::from(EmailTokenType::EmailBind)))
             .execute(&mut *tx)
             .await?;
 
@@ -148,16 +148,15 @@ where
         ),
         aei AS (
             INSERT INTO auth_email_identities (
-                user_id, email, email_verified, created_at, updated_at
+                user_id, email, created_at, updated_at
             )
-            SELECT id, $2, true, $3, $3
+            SELECT id, $2, $3, $3
             FROM updated_user
             ON CONFLICT (user_id)
             DO UPDATE SET
                 email = EXCLUDED.email,
-                email_verified = true,
                 updated_at = EXCLUDED.updated_at
-            RETURNING user_id, email, email_verified
+            RETURNING user_id, email
         )
         SELECT {USER_SELECT_COLUMNS}
         FROM updated_user u

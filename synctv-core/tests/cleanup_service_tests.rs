@@ -269,7 +269,6 @@ async fn create_test_user(pool: &PgPool) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
-        email_verified: true,
         created_at: now,
         updated_at: now,
         password_changed_at: now,

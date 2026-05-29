@@ -234,7 +234,6 @@ impl UserPreferencesRepository {
                     SELECT 1
                     FROM auth_email_identities
                     WHERE user_id = $1
-                      AND email_verified = TRUE
                 ) AS email
             ",
         )

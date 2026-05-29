@@ -693,7 +693,6 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         banned_by: None,
         banned_reason: None,
         signup_method: synctv_core::models::SignupMethod::Email,
-        email_verified: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -717,7 +716,7 @@ fn test_user_to_proto_basic() {
         proto.status,
         synctv_proto::common::UserStatus::Active as i32
     );
-    assert!(proto.email_verified);
+    assert!(!proto.is_banned);
 }
 
 #[test]

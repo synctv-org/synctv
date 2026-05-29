@@ -98,7 +98,7 @@ async fn test_fail_closed_denies_requests_without_redis() {
 // Fail-closed (`check_rate_limit_distributed`):
 // - Authentication endpoints
 // - Password checking
-// - Email verification
+// - Email token delivery
 // - Admin operations
 // - Any operation where exceeding global limits is unacceptable
 
@@ -303,7 +303,7 @@ fn test_security_considerations_documentation() {
     let security_critical = [
         "login",
         "password_reset",
-        "email_verification",
+        "email_bind",
         "room_password_check",
         "admin_actions",
     ];

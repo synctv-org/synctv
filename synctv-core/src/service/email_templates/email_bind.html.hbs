@@ -36,7 +36,7 @@
             color: #1F2937;
             margin-top: 0;
         }
-        .verification-code {
+        .bind-code {
             background-color: #EEF2FF;
             border: 2px dashed #4F46E5;
             border-radius: 8px;
@@ -80,18 +80,18 @@
         </div>
 
         <div class="content">
-            <h2>Welcome to SyncTV!</h2>
-            <p>Thank you for creating an account. Please verify your email address to get started.</p>
+            <h2>Confirm your email address</h2>
+            <p>Enter this code in SyncTV to bind this email address to your account.</p>
 
-            <div class="verification-code">
+            <div class="bind-code">
                 <div class="code">{{token}}</div>
                 <div class="expiry">This code will expire in {{expires_in}}</div>
             </div>
 
-            <p>Enter this verification code in the app to complete your registration.</p>
+            <p>This email address will be added to your account after confirmation.</p>
 
             <div class="warning">
-                <strong>Security Notice:</strong> If you didn't create a SyncTV account, please ignore this email. Your email address will not be used without verification.
+                <strong>Security Notice:</strong> If you didn't create a SyncTV account, please ignore this email. Your email address will only be added after confirmation.
             </div>
         </div>
 

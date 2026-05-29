@@ -3,7 +3,7 @@
 pub mod admin;
 pub(crate) mod admin_execute;
 pub mod auth;
-pub mod email_verification;
+pub mod email;
 pub mod error;
 pub mod health;
 pub mod metrics_auth;
@@ -854,7 +854,7 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
         .merge(notifications::create_notification_read_router())
         .merge(notifications::create_notification_write_router());
 
-    let email_routes = email_verification::create_email_router();
+    let email_routes = email::create_email_router();
     router = router.merge(email_routes);
 
     router = router.merge(
@@ -2351,7 +2351,6 @@ mod tests {
         assert!(json["paths"]["/api/oauth2/providers"].is_object());
         assert!(json["paths"]["/api/oauth2/{provider}/authorize"].is_object());
         assert!(json["paths"]["/api/notifications"].is_object());
-        assert!(json["paths"]["/api/email/verify/send"].is_object());
         assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
         assert!(json["paths"]["/api/providers/alist/login"].is_object());
         assert!(json["paths"]["/api/providers/instances"].is_object());
@@ -2828,26 +2827,6 @@ mod tests {
             matches!(err.classify(), crate::impls::ErrorKind::Unauthenticated),
             "strict optional-auth execution must reject invalid bearer headers instead of downgrading to anonymous",
         );
-    }
-
-    #[tokio::test]
-    async fn test_email_routes_fail_closed_when_services_missing() {
-        let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/email/verify/send")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"email":"test@example.com"}"#))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

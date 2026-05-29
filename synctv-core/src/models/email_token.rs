@@ -5,7 +5,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i16)]
 pub enum EmailTokenType {
-    EmailVerification = 1,
+    EmailBind = 1,
     PasswordReset = 2,
     EmailLogin = 3,
 }
@@ -14,7 +14,7 @@ impl EmailTokenType {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::EmailVerification => "email_verification",
+            Self::EmailBind => "email_bind",
             Self::PasswordReset => "password_reset",
             Self::EmailLogin => "email_login",
         }
@@ -23,7 +23,7 @@ impl EmailTokenType {
     #[must_use]
     pub const fn expiration_duration(&self) -> Duration {
         match self {
-            Self::EmailVerification => Duration::hours(24),
+            Self::EmailBind => Duration::hours(24),
             Self::PasswordReset => Duration::hours(1),
             Self::EmailLogin => Duration::minutes(15),
         }
@@ -52,7 +52,7 @@ impl TryFrom<i16> for EmailTokenType {
 
     fn try_from(value: i16) -> std::result::Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::EmailVerification),
+            1 => Ok(Self::EmailBind),
             2 => Ok(Self::PasswordReset),
             3 => Ok(Self::EmailLogin),
             other => Err(format!("Invalid EmailTokenType value: {other}")),

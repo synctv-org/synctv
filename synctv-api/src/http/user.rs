@@ -190,7 +190,7 @@ pub async fn update_user(
         tag = "User",
         request_body = StartEmailBindRequest,
         responses(
-            (status = 200, description = "Email bind verification sent", body = StartEmailBindResponse),
+            (status = 200, description = "Email bind confirmation sent", body = StartEmailBindResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
         ),

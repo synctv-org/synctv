@@ -32,7 +32,6 @@ fn make_user(username: &str) -> User {
         banned_at: None,
         banned_by: None,
         banned_reason: None,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: now,
         updated_at: now,

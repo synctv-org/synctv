@@ -269,9 +269,6 @@ impl RemoteProviderManager {
             crate::Error::Authentication(msg) => ProviderError::Internal(format!(
                 "Unexpected authentication error while resolving provider instance: {msg}"
             )),
-            crate::Error::EmailNotVerified => ProviderError::Internal(
-                "Unexpected email verification error while resolving provider instance".to_string(),
-            ),
             crate::Error::Authorization(msg) => ProviderError::Internal(format!(
                 "Unexpected authorization error while resolving provider instance: {msg}"
             )),

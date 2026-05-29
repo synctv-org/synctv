@@ -274,7 +274,7 @@ impl ClientApiImpl {
             .check_email_delivery_rate_limits(
                 &email,
                 user_id,
-                synctv_core::models::EmailTokenType::EmailVerification,
+                synctv_core::models::EmailTokenType::EmailBind,
                 None,
             )
             .await?;
@@ -286,7 +286,7 @@ impl ClientApiImpl {
 
         if let Err(error) = email_api
             .email_service
-            .send_verification_token_email_with_control(&email, &token, None)
+            .send_email_bind_token_email_with_control(&email, &token, None)
             .await
         {
             self.user_service
@@ -315,7 +315,7 @@ impl ClientApiImpl {
             .await
             .map_err(|error| match error {
                 synctv_core::Error::InvalidInput(_) => {
-                    ApiError::InvalidInput("Invalid or expired verification token".to_string())
+                    ApiError::InvalidInput("Invalid or expired email bind token".to_string())
                 }
                 other => ApiError::from(other),
             })?;
@@ -351,7 +351,7 @@ impl ClientApiImpl {
                 })?;
                 if req.email_token.is_empty() {
                     return Err(ApiError::InvalidInput(
-                        "email_token is required for email verification".to_string(),
+                        "email_token is required for email authentication".to_string(),
                     ));
                 }
                 email_api

@@ -2221,7 +2221,6 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
-            email_verified: true,
             signup_method: SignupMethod::Email,
             created_at: now,
             updated_at: now,

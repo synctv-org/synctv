@@ -103,7 +103,6 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
         password_version: 0,
         version: 0,
         deleted_at: None,
-        email_verified: true,
         is_banned: false,
         banned_at: None,
         banned_by: None,

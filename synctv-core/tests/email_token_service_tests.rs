@@ -25,7 +25,6 @@ fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
-        email_verified: true,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
@@ -51,14 +50,14 @@ async fn test_service_generate_and_validate_lifecycle() {
 
     // Generate a token
     let token = service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
     assert!(!token.is_empty());
 
     // Validate and consume the token
     let user_id = service
-        .validate_token(&token, EmailTokenType::EmailVerification)
+        .validate_token(&token, EmailTokenType::EmailBind)
         .await
         .unwrap();
     assert_eq!(user_id, user.id);
@@ -77,18 +76,13 @@ async fn test_service_expired_token_fails() {
     let token_str = synctv_common::snanoid!(64);
     let expired_at = Utc::now() - chrono::Duration::hours(1);
     token_repo
-        .create(
-            &token_str,
-            &user.id,
-            EmailTokenType::EmailVerification,
-            expired_at,
-        )
+        .create(&token_str, &user.id, EmailTokenType::EmailBind, expired_at)
         .await
         .unwrap();
 
     // Service validation should fail
     let result = service
-        .validate_token(&token_str, EmailTokenType::EmailVerification)
+        .validate_token(&token_str, EmailTokenType::EmailBind)
         .await;
     assert!(result.is_err(), "Expired token should fail validation");
 }
@@ -102,9 +96,9 @@ async fn test_service_wrong_type_fails() {
 
     let user = user_repo.create(&make_user("svc_user_3")).await.unwrap();
 
-    // Generate an email verification token
+    // Generate an email bind token
     let token = service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
@@ -116,7 +110,7 @@ async fn test_service_wrong_type_fails() {
 
     // Correct type should still work
     let user_id = service
-        .validate_token(&token, EmailTokenType::EmailVerification)
+        .validate_token(&token, EmailTokenType::EmailBind)
         .await
         .unwrap();
     assert_eq!(user_id, user.id);
@@ -133,31 +127,31 @@ async fn test_service_invalidate_user_tokens() {
 
     // Generate multiple tokens
     let token1 = service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
     let token2 = service
-        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
-    // Invalidate all email verification tokens for this user
+    // Invalidate all email bind tokens for this user
     service
-        .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
+        .invalidate_user_tokens(&user.id, EmailTokenType::EmailBind)
         .await
         .unwrap();
 
     // Both tokens should now fail
     assert!(
         service
-            .validate_token(&token1, EmailTokenType::EmailVerification)
+            .validate_token(&token1, EmailTokenType::EmailBind)
             .await
             .is_err(),
         "Token1 should be invalid after invalidate_user_tokens"
     );
     assert!(
         service
-            .validate_token(&token2, EmailTokenType::EmailVerification)
+            .validate_token(&token2, EmailTokenType::EmailBind)
             .await
             .is_err(),
         "Token2 should be invalid after invalidate_user_tokens"

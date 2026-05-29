@@ -243,11 +243,11 @@ impl Provider for GitHubProvider {
                         ));
                     }
                     Some(fallback_email) => {
-                        // Profile email is available but verification status is unknown.
-                        // Use email with verified=false; manual verification may be needed.
+                        // Profile email is available but GitHub did not provide a trusted
+                        // primary email claim for this response.
                         tracing::warn!(
                             "Using GitHub profile email as unverified fallback — \
-                             manual email verification may be required."
+                             email bind may be required."
                         );
                         (Some(fallback_email), false)
                     }

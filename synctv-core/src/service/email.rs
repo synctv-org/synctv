@@ -1,6 +1,6 @@
-//! Email verification and sending service.
+//! Email sending service.
 //!
-//! Handles SMTP-backed email delivery for verification and password reset flows.
+//! Handles SMTP-backed email delivery for email bind, login, and password reset flows.
 
 use lettre::{
     message::{header::ContentType, Mailbox, MultiPart},
@@ -35,7 +35,7 @@ fn map_email_send_failure(_error: impl std::fmt::Display) -> Error {
     )
 }
 
-/// Email verification error
+/// Email delivery error
 #[derive(Debug, thiserror::Error)]
 pub enum EmailError {
     #[error("Send error: {0}")]
@@ -145,8 +145,8 @@ impl EmailService {
 
         if let Some(config) = self.current_config()? {
             let send_result = match token_type {
-                EmailTokenType::EmailVerification => {
-                    self.send_verification_email_impl(&config, email, &token, control)
+                EmailTokenType::EmailBind => {
+                    self.send_email_bind_email_impl(&config, email, &token, control)
                         .await
                 }
                 EmailTokenType::PasswordReset => {
@@ -379,18 +379,18 @@ impl EmailService {
         Ok(())
     }
 
-    /// Send verification email
-    pub async fn send_verification_email(
+    /// Send email bind email
+    pub async fn send_email_bind_email(
         &self,
         email: &str,
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
     ) -> Result<String> {
-        self.send_verification_email_with_control(email, token_service, user_id, None)
+        self.send_email_bind_email_with_control(email, token_service, user_id, None)
             .await
     }
 
-    pub async fn send_verification_email_with_control(
+    pub async fn send_email_bind_email_with_control(
         &self,
         email: &str,
         token_service: &EmailTokenService,
@@ -401,14 +401,14 @@ impl EmailService {
             email,
             token_service,
             user_id,
-            EmailTokenType::EmailVerification,
-            "Sent verification email",
+            EmailTokenType::EmailBind,
+            "Sent email bind email",
             control,
         )
         .await
     }
 
-    pub async fn send_verification_token_email_with_control(
+    pub async fn send_email_bind_token_email_with_control(
         &self,
         email: &str,
         token: &str,
@@ -428,11 +428,11 @@ impl EmailService {
             )
         })?;
 
-        self.send_verification_email_impl(&config, email, token, control)
+        self.send_email_bind_email_impl(&config, email, token, control)
             .await
             .map_err(map_email_send_failure)?;
 
-        tracing::info!("Sent verification email to {}", mask_email(email));
+        tracing::info!("Sent email bind email to {}", mask_email(email));
         Ok(())
     }
 
@@ -527,17 +527,17 @@ impl EmailService {
         Ok(())
     }
 
-    async fn send_verification_email_impl(
+    async fn send_email_bind_email_impl(
         &self,
         config: &EmailConfig,
         to: &str,
         token: &str,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
-        let subject = "Verify your SyncTV email";
+        let subject = "Confirm your SyncTV email";
         let (html_body, plain_text_body) = self
             .template_manager
-            .render_verification_email(token, "24 hours")
+            .render_email_bind_email(token, "24 hours")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
         self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)

@@ -113,7 +113,6 @@ fn make_user(username: &str) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         signup_method: SignupMethod::Email,
-        email_verified: true,
         created_at: now,
         updated_at: now,
         password_changed_at: now,
@@ -130,9 +129,24 @@ fn make_user(username: &str) -> User {
 fn make_user_without_email(username: &str) -> User {
     let mut user = make_user(username);
     user.email = None;
-    user.email_verified = false;
     user.signup_method = SignupMethod::Password;
     user
+}
+
+async fn insert_trusted_email_identity(pool: &PgPool, user_id: &UserId, email: &str) {
+    sqlx::query(
+        r"
+        INSERT INTO auth_email_identities (user_id, email, created_at, updated_at)
+        VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT (user_id)
+        DO UPDATE SET email = EXCLUDED.email, updated_at = EXCLUDED.updated_at
+        ",
+    )
+    .bind(user_id)
+    .bind(email)
+    .execute(pool)
+    .await
+    .expect("trusted email identity should be inserted");
 }
 
 async fn insert_dummy_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
@@ -939,7 +953,6 @@ async fn assert_update_user_rejects_direct_email_changes(pool: PgPool) {
         .expect("fetch unchanged user")
         .expect("user should still exist");
     assert_eq!(unchanged.email, original_email);
-    assert!(unchanged.email_verified);
 
     let mut email_change_attempt = unchanged.clone();
     email_change_attempt.email = Some("email_update_guard_new@example.com".to_string());
@@ -949,22 +962,8 @@ async fn assert_update_user_rejects_direct_email_changes(pool: PgPool) {
         .expect_err("direct email changes must use email bind confirmation");
 
     assert!(
-        matches!(&updated, Error::InvalidInput(message) if message.contains("email bind verification token")),
+        matches!(&updated, Error::InvalidInput(message) if message.contains("email bind token")),
         "expected InvalidInput for direct email change, got {updated:?}"
-    );
-
-    let mut verification_change_attempt = unchanged;
-    verification_change_attempt.email_verified = false;
-    let result = service
-        .update_user(
-            &verification_change_attempt,
-            verification_change_attempt.version,
-        )
-        .await
-        .expect_err("direct email verification changes must use the verification flow");
-    assert!(
-        matches!(&result, Error::InvalidInput(message) if message.contains("verification flow")),
-        "expected InvalidInput for direct verification change, got {result:?}"
     );
 }
 
@@ -990,7 +989,6 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         .expect("fetch user after bind start")
         .expect("user exists after bind start");
     assert_eq!(after_start.email, original_email);
-    assert!(after_start.email_verified);
 
     let mismatch_result = service
         .confirm_email_bind(&created.id, "email_bind_flow_other@example.com", &token)
@@ -1007,14 +1005,12 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         .expect("fetch user after bind mismatch")
         .expect("user exists after bind mismatch");
     assert_eq!(after_mismatch.email, original_email);
-    assert!(after_mismatch.email_verified);
 
     let updated = service
         .confirm_email_bind(&created.id, new_email, &token)
         .await
         .expect("confirm email bind");
     assert_eq!(updated.email.as_deref(), Some(new_email));
-    assert!(updated.email_verified);
 
     let consumed_result = service
         .confirm_email_bind(&created.id, new_email, &token)
@@ -1118,10 +1114,7 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
         .await
         .expect("create user with password");
 
-    service
-        .set_email_verified(&user.id, true)
-        .await
-        .expect("verified email should count as second factor");
+    insert_trusted_email_identity(&pool, &user.id, "two_factor_login_blocked@example.com").await;
     let refresh_token = match service
         .login(
             "two_factor_login_blocked".to_string(),
@@ -1219,10 +1212,7 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
         .await
         .expect("single-factor access token should work before 2FA is enabled");
 
-    service
-        .set_email_verified(&user.id, true)
-        .await
-        .expect("verified email should count as second factor");
+    insert_trusted_email_identity(&pool, &user.id, "two_factor_access_context@example.com").await;
     service
         .set_two_factor_enabled(&user.id, true)
         .await
@@ -1331,10 +1321,7 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
         .await
         .expect("create user with password");
 
-    service
-        .set_email_verified(&user.id, true)
-        .await
-        .expect("verified email should count as second factor");
+    insert_trusted_email_identity(&pool, &user.id, "two_factor_oauth2_allowed@example.com").await;
     service
         .set_two_factor_enabled(&user.id, true)
         .await

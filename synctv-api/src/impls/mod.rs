@@ -360,9 +360,6 @@ impl From<synctv_core::Error> for ApiError {
         match err {
             synctv_core::Error::NotFound(msg) => Self::NotFound(msg),
             synctv_core::Error::Authentication(msg) => Self::Authentication(msg),
-            synctv_core::Error::EmailNotVerified => Self::Authorization(
-                "Email not verified. Please verify your email to continue.".to_string(),
-            ),
             synctv_core::Error::Authorization(msg) => Self::Authorization(msg),
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
             synctv_core::Error::Conflict(msg) | synctv_core::Error::LockConflict(msg) => {

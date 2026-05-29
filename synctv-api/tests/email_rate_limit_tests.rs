@@ -1,7 +1,6 @@
 //! Email endpoint rate limiting tests
 //!
-//! Validates per-IP and per-email rate limiting for email verification
-//! and password reset endpoints.
+//! Validates per-IP and per-email rate limiting for email token delivery.
 //!
 //! These tests exercise the `RateLimiter` directly with the key patterns
 //! used by the email handlers, since full integration tests would require
@@ -11,7 +10,7 @@
 
 use synctv_core::service::rate_limit::{RateLimitError, RateLimiter};
 
-/// Email rate limit constants (must match the values in email_verification.rs)
+/// Email rate limit constants (must match the values in email.rs)
 const EMAIL_IP_MAX_REQUESTS: u32 = 5;
 const EMAIL_IP_WINDOW_SECONDS: u64 = 60;
 const EMAIL_ADDR_MAX_REQUESTS: u32 = 3;

@@ -48,8 +48,6 @@ pub enum SingleFlightError<E> {
 pub enum CloneableError {
     #[error("Authentication error: {0}")]
     Authentication(String),
-    #[error("Email not verified")]
-    EmailNotVerified,
     #[error("Authorization error: {0}")]
     Authorization(String),
     #[error("Not found: {0}")]
@@ -97,7 +95,6 @@ impl From<Error> for CloneableError {
                 "Deserialization error while sharing SingleFlight result: {context}"
             )),
             Error::Authentication(message) => Self::Authentication(message),
-            Error::EmailNotVerified => Self::EmailNotVerified,
             Error::Authorization(message) => Self::Authorization(message),
             Error::NotFound(message) => Self::NotFound(message),
             Error::AlreadyExists(message) => Self::AlreadyExists(message),
@@ -117,7 +114,6 @@ impl From<CloneableError> for Error {
     fn from(error: CloneableError) -> Self {
         match error {
             CloneableError::Authentication(message) => Self::Authentication(message),
-            CloneableError::EmailNotVerified => Self::EmailNotVerified,
             CloneableError::Authorization(message) => Self::Authorization(message),
             CloneableError::NotFound(message) => Self::NotFound(message),
             CloneableError::AlreadyExists(message) => Self::AlreadyExists(message),

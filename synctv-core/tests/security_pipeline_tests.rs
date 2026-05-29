@@ -99,7 +99,6 @@ fn make_user(status: UserStatus, password_version: i32) -> User {
         password_hash: "$argon2id$v=19$m=16384,t=3,p=1$fake$fakehash".to_string(),
         role: UserRole::User,
         status,
-        email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

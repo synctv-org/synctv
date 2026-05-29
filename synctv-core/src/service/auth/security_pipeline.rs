@@ -106,7 +106,7 @@ impl SecurityPipeline {
     pub const fn classify_auth_error(err: &Error) -> AuthErrorCategory {
         match err {
             Error::Authentication(_) => AuthErrorCategory::Authentication,
-            Error::Authorization(_) | Error::EmailNotVerified => AuthErrorCategory::Authorization,
+            Error::Authorization(_) => AuthErrorCategory::Authorization,
             Error::ServiceUnavailable(_)
             | Error::Database(_)
             | Error::Redis(_)

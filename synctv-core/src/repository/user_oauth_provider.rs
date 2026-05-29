@@ -2,6 +2,8 @@
 //!
 //! This repository manages `OAuth2` provider mappings (NOT TOKENS).
 
+use std::collections::HashSet;
+
 use crate::{
     models::{
         oauth2_client::{
@@ -154,6 +156,18 @@ impl UserOAuthProviderRepository {
 
     /// Find all `OAuth2` providers for a user
     pub async fn find_by_user(&self, user_id: &UserId) -> Result<Vec<UserOAuthProviderMapping>> {
+        self.find_by_user_with_executor(user_id, &self.pool).await
+    }
+
+    /// Find all `OAuth2` providers for a user using a provided executor
+    pub async fn find_by_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<Vec<UserOAuthProviderMapping>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let rows = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
@@ -166,10 +180,36 @@ impl UserOAuthProviderRepository {
             "#,
             user_id as &UserId,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(executor)
         .await?;
 
         Ok(rows.into_iter().map(std::convert::Into::into).collect())
+    }
+
+    /// Count `OAuth2` provider mappings whose provider instance still exists.
+    pub async fn count_active_by_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        active_provider_keys: &HashSet<(String, String)>,
+        executor: E,
+    ) -> Result<usize>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if active_provider_keys.is_empty() {
+            return Ok(0);
+        }
+
+        let mappings = self.find_by_user_with_executor(user_id, executor).await?;
+        Ok(mappings
+            .iter()
+            .filter(|mapping| {
+                active_provider_keys.contains(&(
+                    mapping.provider_instance_name.clone(),
+                    mapping.provider.clone(),
+                ))
+            })
+            .count())
     }
 
     /// Delete one `OAuth2` provider instance mapping

@@ -303,14 +303,10 @@ impl PasskeyService {
             .collect()
     }
 
-    fn validate_credential_delete_policy(
-        signup_method: SignupMethod,
-        credential_exists: bool,
-        credential_count: i64,
-    ) -> Result<()> {
-        if credential_exists && signup_method == SignupMethod::WebAuthn && credential_count <= 1 {
+    fn validate_sign_in_method_delete_policy(remaining_sign_in_method_count: usize) -> Result<()> {
+        if remaining_sign_in_method_count == 0 {
             return Err(Error::InvalidInput(
-                "WebAuthn signup users cannot delete their last passkey".to_string(),
+                "Cannot delete the last sign-in method".to_string(),
             ));
         }
         Ok(())
@@ -938,8 +934,7 @@ impl PasskeyService {
 
     pub async fn delete_credential(&self, user_id: &UserId, credential_id: &[u8]) -> Result<bool> {
         let mut tx: Transaction<'_, Postgres> = self.user_service.pool().begin().await?;
-        let user = self
-            .user_service
+        self.user_service
             .repository
             .get_by_id_for_update_with_executor(user_id, &mut *tx)
             .await?
@@ -953,27 +948,30 @@ impl PasskeyService {
             return Ok(false);
         }
 
-        let count = self
-            .repository
-            .count_by_user_with_executor(user_id, &mut *tx)
+        let remaining_factors = self
+            .user_service
+            .user_preferences_repository
+            .auth_factors_with_excluded_passkey(user_id, Some(credential_id), &mut *tx)
             .await?;
-        Self::validate_credential_delete_policy(user.signup_method, exists, count)?;
+        let active_oauth2_identity_count = self
+            .user_service
+            .active_oauth2_identity_count_with_executor(user_id, &mut *tx)
+            .await?;
+        let remaining_sign_in_method_count = crate::service::UserService::sign_in_method_count(
+            &remaining_factors,
+            active_oauth2_identity_count,
+        );
+        Self::validate_sign_in_method_delete_policy(remaining_sign_in_method_count)?;
         if self
             .user_service
             .user_preferences_repository
             .two_factor_enabled_with_executor(user_id, &mut *tx)
             .await?
+            && !remaining_factors.supports_two_factor()
         {
-            let remaining_factors = self
-                .user_service
-                .user_preferences_repository
-                .auth_factors_with_excluded_passkey(user_id, Some(credential_id), &mut *tx)
-                .await?;
-            if !remaining_factors.supports_two_factor() {
-                return Err(Error::InvalidInput(
+            return Err(Error::InvalidInput(
                     "Cannot delete this passkey while two-factor authentication is enabled because the remaining verification methods are insufficient".to_string(),
                 ));
-            }
         }
 
         let deleted = self
@@ -1091,23 +1089,12 @@ mod tests {
     }
 
     #[test]
-    fn webauthn_signup_users_must_keep_their_last_passkey() {
+    fn deleting_passkey_requires_a_remaining_sign_in_method() {
         assert!(matches!(
-            PasskeyService::validate_credential_delete_policy(SignupMethod::WebAuthn, true, 1),
+            PasskeyService::validate_sign_in_method_delete_policy(0),
             Err(Error::InvalidInput(_))
         ));
-        assert!(
-            PasskeyService::validate_credential_delete_policy(SignupMethod::WebAuthn, true, 2)
-                .is_ok()
-        );
-        assert!(PasskeyService::validate_credential_delete_policy(
-            SignupMethod::WebAuthn,
-            false,
-            1
-        )
-        .is_ok());
-        assert!(
-            PasskeyService::validate_credential_delete_policy(SignupMethod::Email, true, 1).is_ok()
-        );
+        assert!(PasskeyService::validate_sign_in_method_delete_policy(1).is_ok());
+        assert!(PasskeyService::validate_sign_in_method_delete_policy(2).is_ok());
     }
 }

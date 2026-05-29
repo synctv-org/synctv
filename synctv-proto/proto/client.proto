@@ -40,6 +40,7 @@ service UserService {
     rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
     rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
     rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (ConfirmEmailBindResponse);
+    rpc UnbindEmail(UnbindEmailRequest) returns (UnbindEmailResponse);
     rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
     rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (FinishOpaquePasswordUpdateResponse);
     rpc StartPasskeyBind(StartPasskeyBindRequest) returns (StartPasskeyBindResponse);
@@ -2226,6 +2227,12 @@ message ConfirmEmailBindResponse {
     User user = 1;
 }
 
+message UnbindEmailRequest {}
+
+message UnbindEmailResponse {
+    User user = 1;
+}
+
 message ListMyRoomsRequest {
     option (buf.validate.message).cel = {
         id: "list_my_rooms.page"
@@ -2377,6 +2384,8 @@ message GetPublicSettingsResponse {
     bool enable_email_signup = 17;
     bool enable_guest = 18;
     bool email_signup_need_review = 19;
+    bool enable_email = 24;
+    bool enable_webauthn = 25;
     bool enable_webauthn_signup = 22;
     bool webauthn_signup_need_review = 23;
 
@@ -2390,6 +2399,7 @@ message GetPublicSettingsResponse {
 
     // Email settings
     bool email_whitelist_enabled = 15;
+    repeated string email_whitelist_domains = 26;
 }
 
 // ==================== Public Server Info ====================

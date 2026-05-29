@@ -45,6 +45,38 @@ use tracing::warn;
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
 
+fn validate_email_whitelist_domains(raw: &str) -> crate::Result<()> {
+    for entry in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let domain = entry.trim_start_matches('@');
+        if domain.is_empty()
+            || domain.contains('@')
+            || domain.len() > 253
+            || domain.starts_with('.')
+            || domain.ends_with('.')
+            || !domain.contains('.')
+            || domain.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || label.starts_with('-')
+                    || label.ends_with('-')
+                    || !label
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+            })
+        {
+            return Err(crate::Error::InvalidInput(
+                "email.whitelist must contain comma-separated email domains only".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 async fn recv_email_setting_change<T>(
     receiver: &mut crate::service::settings_vars::SettingChangeReceiver<T>,
 ) -> Result<(), crate::service::settings_vars::SettingChangeError>
@@ -527,6 +559,8 @@ pub struct PublicSettings {
     pub enable_webauthn_signup: bool,
     pub webauthn_signup_need_review: bool,
     pub enable_guest: bool,
+    pub enable_email: bool,
+    pub enable_webauthn: bool,
 
     // Proxy settings
     pub movie_proxy: bool,
@@ -539,6 +573,8 @@ pub struct PublicSettings {
 
     // Email settings
     pub email_whitelist_enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub email_whitelist_domains: Vec<String>,
 }
 
 impl PublicSettings {
@@ -559,11 +595,14 @@ impl PublicSettings {
             enable_webauthn_signup: false,
             webauthn_signup_need_review: false,
             enable_guest: true,
+            enable_email: false,
+            enable_webauthn: false,
             movie_proxy: true,
             live_proxy: true,
             ts_disguised_as_png: false,
             custom_publish_host: String::new(),
             email_whitelist_enabled: false,
+            email_whitelist_domains: Vec::new(),
         }
     }
 }
@@ -1019,7 +1058,13 @@ impl SettingsRegistry {
                 storage.clone(),
                 false
             ),
-            email_whitelist: setting!(String, "email.whitelist", storage.clone(), String::new()),
+            email_whitelist: setting!(
+                String,
+                "email.whitelist",
+                storage.clone(),
+                String::new(),
+                |value: &String| validate_email_whitelist_domains(value)
+            ),
 
             // WebRTC settings
             external_ice_servers: setting!(
@@ -1121,6 +1166,26 @@ impl SettingsRegistry {
     /// Build a `PublicSettings` snapshot from the current registry values.
     #[must_use]
     pub fn to_public_settings(&self) -> PublicSettings {
+        let email_whitelist_enabled = Self::get_or_warn(
+            "email_whitelist_enabled",
+            &self.email_whitelist_enabled,
+            false,
+        );
+        let email_whitelist_domains = if email_whitelist_enabled {
+            Self::normalize_email_whitelist_domains(&self.email_whitelist.get().unwrap_or_else(
+                |e| {
+                    tracing::warn!(
+                        setting = "email_whitelist",
+                        error = %e,
+                        "Failed to read email whitelist setting for public settings, using empty list"
+                    );
+                    String::new()
+                },
+            ))
+        } else {
+            Vec::new()
+        };
+
         PublicSettings {
             allow_room_creation: Self::get_or_warn(
                 "allow_room_creation",
@@ -1183,6 +1248,8 @@ impl SettingsRegistry {
                 false,
             ),
             enable_guest: Self::get_or_warn("enable_guest", &self.enable_guest, true),
+            enable_email: Self::get_or_warn("email_enabled", &self.email_enabled, false),
+            enable_webauthn: false,
             movie_proxy: Self::get_or_warn("movie_proxy", &self.movie_proxy, true),
             live_proxy: Self::get_or_warn("live_proxy", &self.live_proxy, true),
             ts_disguised_as_png: Self::get_or_warn(
@@ -1198,12 +1265,23 @@ impl SettingsRegistry {
                 );
                 String::new()
             }),
-            email_whitelist_enabled: Self::get_or_warn(
-                "email_whitelist_enabled",
-                &self.email_whitelist_enabled,
-                false,
-            ),
+            email_whitelist_enabled,
+            email_whitelist_domains,
         }
+    }
+
+    #[must_use]
+    pub fn normalize_email_whitelist_domains(raw: &str) -> Vec<String> {
+        let mut domains: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_start_matches('@').to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect();
+        domains.sort();
+        domains.dedup();
+        domains
     }
 
     /// Helper to get a setting value with a warning log on failure.
@@ -1372,6 +1450,79 @@ mod tests {
                 .storage
                 .validate("permissions.guest_default", valid),
             "guest defaults should accept guest-safe permissions"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_settings_registry_validates_email_whitelist_domains() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
+        let service = Arc::new(SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        let registry = SettingsRegistry::new(service);
+
+        assert!(registry
+            .storage
+            .validate("email.whitelist", "example.com,@team.example.org"));
+        assert!(!registry
+            .storage
+            .validate("email.whitelist", "alice@example.com"));
+        assert!(!registry.storage.validate("email.whitelist", "example"));
+    }
+
+    #[tokio::test]
+    async fn test_public_settings_hides_disabled_email_whitelist_domains() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
+        let service = Arc::new(SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        let registry = SettingsRegistry::new(service);
+
+        registry
+            .email_whitelist_enabled
+            .set_for_test(&false)
+            .unwrap();
+        registry
+            .email_whitelist
+            .set_for_test(&"example.com,@team.example.org".to_string())
+            .unwrap();
+
+        let settings = registry.to_public_settings();
+        assert!(!settings.email_whitelist_enabled);
+        assert!(settings.email_whitelist_domains.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_public_settings_returns_enabled_email_whitelist_domains() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
+        let service = Arc::new(SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        let registry = SettingsRegistry::new(service);
+
+        registry
+            .email_whitelist_enabled
+            .set_for_test(&true)
+            .unwrap();
+        registry
+            .email_whitelist
+            .set_for_test(&"Example.com,@team.example.org,example.com".to_string())
+            .unwrap();
+
+        let settings = registry.to_public_settings();
+        assert!(settings.email_whitelist_enabled);
+        assert_eq!(
+            settings.email_whitelist_domains,
+            vec!["example.com", "team.example.org"]
         );
     }
 

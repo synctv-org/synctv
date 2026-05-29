@@ -19,7 +19,7 @@
 //! 7. Backend validates state, exchanges code for user info, creates/logs in user
 //! 8. Backend returns JWT token to frontend
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use synctv_core::models::{User, UserId, UserRole, UserStatus};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{OAuth2LinkResult, OAuth2Service, UserService};
@@ -75,6 +75,32 @@ impl OAuth2ApiImpl {
                 }
                 (target, remaining)
             })
+    }
+
+    fn active_oauth2_mappings<'a>(
+        linked_mappings: &'a [synctv_core::models::oauth2_client::UserOAuthProviderMapping],
+        active_provider_keys: &HashSet<(String, String)>,
+    ) -> Vec<&'a synctv_core::models::oauth2_client::UserOAuthProviderMapping> {
+        linked_mappings
+            .iter()
+            .filter(|mapping| {
+                active_provider_keys.contains(&(
+                    mapping.provider_instance_name.clone(),
+                    mapping.provider.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    async fn active_oauth2_provider_keys(&self) -> Result<HashSet<(String, String)>, ApiError> {
+        Ok(self
+            .oauth2_service
+            .list_available_instances()
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .map(|(name, provider, _)| (name, provider.as_str().to_string()))
+            .collect())
     }
 
     fn map_bind_user_lookup_error(err: synctv_core::Error) -> ApiError {
@@ -508,20 +534,22 @@ impl OAuth2ApiImpl {
             ));
         }
 
-        let user = self
-            .user_service
-            .get_user(user_id)
-            .await
-            .map_err(ApiError::from)?;
         let linked_mappings = self
             .oauth2_service
             .get_user_provider_mappings(user_id)
             .await
             .map_err(ApiError::from)?;
+        let active_provider_keys = self.active_oauth2_provider_keys().await?;
+        let active_linked_mappings =
+            Self::active_oauth2_mappings(&linked_mappings, &active_provider_keys);
+        let active_linked_mappings = active_linked_mappings
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
 
         let (target_oauth2_identities, remaining_oauth2_identities) =
             Self::oauth2_identity_unlink_counts(
-                &linked_mappings,
+                &active_linked_mappings,
                 &provider_type,
                 provider_instance_name,
                 provider_user_id,
@@ -533,11 +561,16 @@ impl OAuth2ApiImpl {
             ));
         }
 
-        if user.signup_method == synctv_core::models::SignupMethod::OAuth2
-            && remaining_oauth2_identities == 0
-        {
+        let (_preferences, auth_factors) = self
+            .user_service
+            .get_user_preferences(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let remaining_sign_in_method_count =
+            UserService::sign_in_method_count(&auth_factors, remaining_oauth2_identities);
+        if remaining_sign_in_method_count == 0 {
             return Err(ApiError::InvalidInput(
-                "OAuth2 signup users cannot unlink their last OAuth2 identity".to_string(),
+                "Cannot unlink the last sign-in method".to_string(),
             ));
         }
 
@@ -599,15 +632,21 @@ impl OAuth2ApiImpl {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<LinkedProviderInfo>, ApiError> {
-        // Fetch complete provider mappings with username and linked_at
         let mappings = self
             .oauth2_service
             .get_user_provider_mappings(user_id)
             .await
             .map_err(ApiError::from)?;
+        let available = self.active_oauth2_provider_keys().await?;
 
         let result = mappings
             .into_iter()
+            .filter(|mapping| {
+                available.contains(&(
+                    mapping.provider_instance_name.clone(),
+                    mapping.provider.clone(),
+                ))
+            })
             .map(|mapping| LinkedProviderInfo {
                 provider_type: mapping.provider,
                 provider_instance_name: mapping.provider_instance_name,
@@ -728,6 +767,8 @@ impl From<LinkedProviderInfo> for LinkedProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::impls::ApiError;
     use synctv_proto::client::{
         ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
@@ -985,6 +1026,48 @@ mod tests {
 
         assert_eq!(target, 2);
         assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn test_active_oauth2_mappings_filters_missing_provider_instances() {
+        use synctv_core::models::oauth2_client::UserOAuthProviderMapping;
+        use synctv_core::models::UserId;
+
+        let now = chrono::Utc::now();
+        let mappings = vec![
+            UserOAuthProviderMapping {
+                id: 1,
+                provider: "github".to_string(),
+                provider_instance_name: "github-main".to_string(),
+                provider_issuer: Some("https://github.com".to_string()),
+                provider_user_id: "github-a".to_string(),
+                user_id: UserId::expect_positive(42),
+                username: "github-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+            UserOAuthProviderMapping {
+                id: 2,
+                provider: "google".to_string(),
+                provider_instance_name: "removed-google".to_string(),
+                provider_issuer: Some("https://accounts.google.com".to_string()),
+                provider_user_id: "google-a".to_string(),
+                user_id: UserId::expect_positive(42),
+                username: "google-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+        ];
+        let active = HashSet::from([("github-main".to_string(), "github".to_string())]);
+
+        let filtered = super::OAuth2ApiImpl::active_oauth2_mappings(&mappings, &active);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].provider_instance_name, "github-main");
     }
 
     #[test]

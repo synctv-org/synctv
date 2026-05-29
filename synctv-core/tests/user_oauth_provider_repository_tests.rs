@@ -57,7 +57,6 @@ fn oauth_user_info(
         username: username.to_string(),
         email: email.map(str::to_string),
         avatar: avatar.map(str::to_string),
-        email_verified: true,
     }
 }
 
@@ -385,7 +384,6 @@ async fn test_delete_all_for_user_with_executor() {
         username: "ghuser".to_string(),
         email: None,
         avatar: None,
-        email_verified: false,
     };
     oauth_repo
         .upsert(
@@ -406,7 +404,6 @@ async fn test_delete_all_for_user_with_executor() {
         username: "googleuser".to_string(),
         email: None,
         avatar: None,
-        email_verified: false,
     };
     oauth_repo
         .upsert(

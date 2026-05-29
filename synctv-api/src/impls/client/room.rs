@@ -1074,6 +1074,8 @@ impl ClientApiImpl {
             password_signup_need_review: s.password_signup_need_review,
             enable_email_signup: s.enable_email_signup,
             email_signup_need_review: s.email_signup_need_review,
+            enable_email: s.enable_email && self.email_api.is_some(),
+            enable_webauthn: self.passkey_service.is_some(),
             enable_webauthn_signup: s.enable_webauthn_signup,
             webauthn_signup_need_review: s.webauthn_signup_need_review,
             enable_guest: s.enable_guest,
@@ -1082,6 +1084,7 @@ impl ClientApiImpl {
             ts_disguised_as_png: s.ts_disguised_as_png,
             custom_publish_host: s.custom_publish_host,
             email_whitelist_enabled: s.email_whitelist_enabled,
+            email_whitelist_domains: s.email_whitelist_domains,
         })
     }
 

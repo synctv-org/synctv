@@ -741,6 +741,7 @@ fn register_extracted_user_routes() -> Router<AppState> {
             "/api/user/email/bind/confirm",
             post(user::confirm_email_bind),
         )
+        .route("/api/user/email/unbind", post(user::unbind_email))
         .route(
             "/api/user/preferences",
             get(user::get_user_preferences).patch(user::update_user_preferences),

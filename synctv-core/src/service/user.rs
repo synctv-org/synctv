@@ -921,6 +921,17 @@ impl std::fmt::Debug for UserService {
 }
 
 impl UserService {
+    fn email_domain_allowed_by_whitelist(email: &str, whitelist: &str) -> bool {
+        let domain = email
+            .rsplit_once('@')
+            .map(|(_, domain)| domain.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let allowed_domains =
+            crate::service::SettingsRegistry::normalize_email_whitelist_domains(whitelist);
+
+        allowed_domains.is_empty() || allowed_domains.iter().any(|allowed| allowed == &domain)
+    }
+
     fn opaque_credential_identifier_for_new_user(username: &str) -> Vec<u8> {
         format!("synctv:user:{}", Self::canonical_username(username)).into_bytes()
     }
@@ -978,7 +989,7 @@ impl UserService {
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<AuthenticatedLogin> {
-        if let Err(error) = self.validate_user_access(&user) {
+        if let Err(error) = Self::validate_user_access(&user) {
             if let Err(bf_err) = self
                 .brute_force
                 .record_failure_with_control(brute_force_key, client_ip, control)
@@ -1158,7 +1169,7 @@ impl UserService {
             .get_by_id(&session.user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
-        self.validate_user_access(&user)?;
+        Self::validate_user_access(&user)?;
         let auth_factors = self
             .user_preferences_repository
             .auth_factors(&user.id)
@@ -1215,7 +1226,7 @@ impl UserService {
         if session.first_factor == method {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
-        self.validate_user_access(user)?;
+        Self::validate_user_access(user)?;
         let auth_factors = self
             .user_preferences_repository
             .auth_factors(&user.id)
@@ -2947,7 +2958,7 @@ impl UserService {
     ///
     /// This is shared between `login()`, `refresh_token()`, and other
     /// authentication flows to avoid duplicating the same checks.
-    fn validate_user_access(&self, user: &User) -> Result<()> {
+    fn validate_user_access(user: &User) -> Result<()> {
         // Reject inactive or soft-deleted users with a generic message to prevent enumeration.
         if user.is_banned || user.status == UserStatus::Banned || user.deleted_at.is_some() {
             return Err(Error::Authentication("Authentication failed".to_string()));
@@ -3009,20 +3020,7 @@ impl UserService {
                 let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
                 if whitelist_enabled {
                     let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
-                    let domain = email_addr
-                        .rsplit_once('@')
-                        .map(|(_, domain)| domain.to_lowercase())
-                        .unwrap_or_default();
-                    let allowed: Vec<&str> = whitelist_str
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .collect();
-                    if !allowed.is_empty()
-                        && !allowed
-                            .iter()
-                            .any(|domain_value| domain_value.eq_ignore_ascii_case(&domain))
-                    {
+                    if !Self::email_domain_allowed_by_whitelist(email_addr, &whitelist_str) {
                         self.record_registration_bruteforce_failure(client_ip, control)
                             .await;
                         return Err(Error::InvalidInput(
@@ -3194,18 +3192,7 @@ impl UserService {
                 let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
                 if whitelist_enabled {
                     let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
-                    let domain = email_addr
-                        .rsplit_once('@')
-                        .map(|(_, d)| d.to_lowercase())
-                        .unwrap_or_default();
-                    let allowed: Vec<&str> = whitelist_str
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    if !allowed.is_empty()
-                        && !allowed.iter().any(|d| d.eq_ignore_ascii_case(&domain))
-                    {
+                    if !Self::email_domain_allowed_by_whitelist(email_addr, &whitelist_str) {
                         if let Err(err) = self
                             .brute_force
                             .record_failure_with_control(
@@ -3255,7 +3242,7 @@ impl UserService {
             let pending_user = self
                 .create_registration_request(
                     &username,
-                    None,
+                    email.as_deref(),
                     legacy_password_hash.as_deref(),
                     &opaque_record,
                     SignupMethod::Email,
@@ -3264,15 +3251,11 @@ impl UserService {
             return Ok((pending_user, None, None));
         }
 
-        // Create the account without an email identity. Email becomes an account
-        // login factor only after the bind confirmation flow proves ownership.
-        // The database UNIQUE constraint on username rejects duplicates atomically.
-        // IMPORTANT: AlreadyExists errors (username/email taken) are NOT recorded
-        // as brute-force failures. A legitimate user trying to register with a
-        // common username shouldn't be locked out - they just need to pick another.
+        // The database UNIQUE constraints reject duplicate usernames and emails
+        // atomically.
         let user = User::new(
             username.clone(),
-            None,
+            email,
             legacy_password_hash.clone().unwrap_or_default(),
             SignupMethod::Email,
         );
@@ -3416,7 +3399,7 @@ impl UserService {
             let pending_user = self
                 .create_registration_request(
                     &username,
-                    None,
+                    email.as_deref(),
                     None,
                     &opaque_record,
                     SignupMethod::Email,
@@ -3425,7 +3408,7 @@ impl UserService {
             return Ok((pending_user, None, None));
         }
 
-        let user = User::new(username.clone(), None, String::new(), SignupMethod::Email);
+        let user = User::new(username.clone(), email, String::new(), SignupMethod::Email);
         let created_user = match self
             .repository
             .create_with_password_credentials(
@@ -3944,7 +3927,7 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        if let Err(error) = self.validate_user_access(&user) {
+        if let Err(error) = Self::validate_user_access(&user) {
             if let Err(bf_err) = self
                 .brute_force
                 .record_failure_with_control(provider_user_id, client_ip, control)
@@ -4024,7 +4007,7 @@ impl UserService {
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
         // Check user status using the same access gate as login.
-        self.validate_user_access(&user)?;
+        Self::validate_user_access(&user)?;
         if self
             .user_preferences_repository
             .get_or_default(&user.id)
@@ -4756,6 +4739,125 @@ impl UserService {
         Ok(updated_user)
     }
 
+    pub(crate) fn active_oauth2_provider_keys(&self) -> Result<HashSet<(String, String)>> {
+        let Some(registry) = self.settings_registry.as_ref() else {
+            return Ok(HashSet::new());
+        };
+        let configs = registry.oauth2_providers.get()?;
+        Ok(configs
+            .0
+            .iter()
+            .map(|(instance_name, config)| {
+                (
+                    instance_name.clone(),
+                    config.provider_type.trim().to_string(),
+                )
+            })
+            .collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count_active_oauth2_identities(
+        mappings: &[crate::models::oauth2_client::UserOAuthProviderMapping],
+        active_provider_keys: &HashSet<(String, String)>,
+    ) -> usize {
+        mappings
+            .iter()
+            .filter(|mapping| {
+                active_provider_keys.contains(&(
+                    mapping.provider_instance_name.clone(),
+                    mapping.provider.clone(),
+                ))
+            })
+            .count()
+    }
+
+    pub(crate) async fn active_oauth2_identity_count_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<usize>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let active_provider_keys = self.active_oauth2_provider_keys()?;
+        UserOAuthProviderRepository::new(self.repository.pool().clone())
+            .count_active_by_user_with_executor(user_id, &active_provider_keys, executor)
+            .await
+    }
+
+    #[must_use]
+    pub const fn sign_in_method_count(
+        auth_factors: &UserAuthFactors,
+        active_oauth2_identity_count: usize,
+    ) -> usize {
+        auth_factors.password as usize
+            + auth_factors.webauthn as usize
+            + auth_factors.email as usize
+            + active_oauth2_identity_count
+    }
+
+    pub async fn unbind_email(&self, user_id: &UserId) -> Result<User> {
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        let current_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        if current_user.email.is_none() {
+            return Err(Error::InvalidInput("Email is not bound".to_string()));
+        }
+        if current_user.signup_method == SignupMethod::Email {
+            return Err(Error::InvalidInput(
+                "Email signup users must keep their email identity".to_string(),
+            ));
+        }
+
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors_with_excluded_passkey(user_id, None, &mut *tx)
+            .await?;
+        let active_oauth2_identity_count = self
+            .active_oauth2_identity_count_with_executor(user_id, &mut *tx)
+            .await?;
+        let remaining_auth_factors = UserAuthFactors {
+            email: false,
+            ..auth_factors
+        };
+        let remaining_sign_in_method_count =
+            Self::sign_in_method_count(&remaining_auth_factors, active_oauth2_identity_count);
+        if remaining_sign_in_method_count == 0 {
+            return Err(Error::InvalidInput(
+                "Cannot unbind the last sign-in method".to_string(),
+            ));
+        }
+
+        let remaining_two_factor_method_count =
+            usize::from(auth_factors.password) + usize::from(auth_factors.webauthn);
+        let two_factor_enabled = self
+            .user_preferences_repository
+            .two_factor_enabled_with_executor(user_id, &mut *tx)
+            .await?;
+        if two_factor_enabled && remaining_two_factor_method_count < 2 {
+            return Err(Error::InvalidInput(
+                "Cannot unbind email while two-factor authentication depends on it".to_string(),
+            ));
+        }
+
+        let mut candidate = current_user.clone();
+        candidate.email = None;
+        let updated_user = self
+            .repository
+            .update_with_executor(&candidate, current_user.version, &mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        self.notify_user_invalidation(user_id).await;
+
+        Ok(updated_user)
+    }
+
     async fn validate_email_bind_target(&self, user_id: &UserId, email: &str) -> Result<String> {
         let email = email.trim().to_ascii_lowercase();
         Self::validate_email(&email)?;
@@ -4764,20 +4866,7 @@ impl UserService {
             let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
             if whitelist_enabled {
                 let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
-                let domain = email
-                    .rsplit_once('@')
-                    .map(|(_, domain)| domain.to_ascii_lowercase())
-                    .unwrap_or_default();
-                let allowed: Vec<&str> = whitelist_str
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .collect();
-                if !allowed.is_empty()
-                    && !allowed
-                        .iter()
-                        .any(|domain_value| domain_value.eq_ignore_ascii_case(&domain))
-                {
+                if !Self::email_domain_allowed_by_whitelist(&email, &whitelist_str) {
                     return Err(Error::InvalidInput(
                         "Email domain is not allowed for registration".to_string(),
                     ));
@@ -5904,6 +5993,84 @@ mod tests {
         // Verify IP counter is now reset
         let (ip_count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
         assert_eq!(ip_count_after, 0, "IP counter should be reset");
+    }
+
+    #[test]
+    fn test_sign_in_method_count_includes_active_oauth2() {
+        let factors = UserAuthFactors {
+            password: false,
+            webauthn: false,
+            email: false,
+        };
+        assert_eq!(UserService::sign_in_method_count(&factors, 1), 1);
+
+        let factors = UserAuthFactors {
+            password: true,
+            webauthn: true,
+            email: true,
+        };
+        assert_eq!(UserService::sign_in_method_count(&factors, 2), 5);
+    }
+
+    #[test]
+    fn test_count_active_oauth2_identities_filters_missing_provider_instances() {
+        use crate::models::oauth2_client::UserOAuthProviderMapping;
+
+        let now = chrono::Utc::now();
+        let mappings = vec![
+            UserOAuthProviderMapping {
+                id: 1,
+                provider: "github".to_string(),
+                provider_instance_name: "github-main".to_string(),
+                provider_issuer: None,
+                provider_user_id: "github-a".to_string(),
+                user_id: UserId::expect_positive(42),
+                username: "github-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+            UserOAuthProviderMapping {
+                id: 2,
+                provider: "google".to_string(),
+                provider_instance_name: "removed-google".to_string(),
+                provider_issuer: None,
+                provider_user_id: "google-a".to_string(),
+                user_id: UserId::expect_positive(42),
+                username: "google-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+        ];
+        let active = HashSet::from([("github-main".to_string(), "github".to_string())]);
+
+        assert_eq!(
+            UserService::count_active_oauth2_identities(&mappings, &active),
+            1
+        );
+    }
+
+    #[test]
+    fn test_email_domain_allowed_by_whitelist_normalizes_domains() {
+        assert!(UserService::email_domain_allowed_by_whitelist(
+            "alice@example.com",
+            "@example.com"
+        ));
+        assert!(UserService::email_domain_allowed_by_whitelist(
+            "alice@example.com",
+            "Example.COM"
+        ));
+        assert!(UserService::email_domain_allowed_by_whitelist(
+            "alice@example.com",
+            ""
+        ));
+        assert!(!UserService::email_domain_allowed_by_whitelist(
+            "alice@example.com",
+            "other.com"
+        ));
     }
 
     #[tokio::test]

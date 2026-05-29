@@ -60,13 +60,14 @@ use crate::proto::client::{
     StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
     StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
     StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
-    TransferRoomOwnershipResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
-    UpdatePlaybackRequest, UpdatePlaylistRequest, UpdatePlaylistResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateUserPreferencesRequest,
-    UpdateUserPreferencesResponse, VerifyMfaEmailCodeRequest, WatchPlaybackSnapshotEvent,
-    WatchPlaybackSnapshotRequest, WatchPlaybackStateEvent, WatchPlaybackStateRequest,
-    WatchPlaylistItemsEvent, WatchPlaylistItemsRequest, WatchRoomMembersEvent,
-    WatchRoomMembersRequest, WatchRoomSettingsEvent, WatchRoomSettingsRequest,
+    TransferRoomOwnershipResponse, UnbindEmailRequest, UnbindEmailResponse,
+    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaybackRequest,
+    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    VerifyMfaEmailCodeRequest, WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest,
+    WatchPlaybackStateEvent, WatchPlaybackStateRequest, WatchPlaylistItemsEvent,
+    WatchPlaylistItemsRequest, WatchRoomMembersEvent, WatchRoomMembersRequest,
+    WatchRoomSettingsEvent, WatchRoomSettingsRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -1070,6 +1071,27 @@ impl UserService for ClientServiceImpl {
                     client_api
                         .confirm_email_bind(&authenticated.user_id, req)
                         .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn unbind_email(
+        &self,
+        request: Request<UnbindEmailRequest>,
+    ) -> Result<Response<UnbindEmailResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api.unbind_email(&authenticated.user_id, req).await
                 },
             )
             .await

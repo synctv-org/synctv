@@ -622,6 +622,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.admin.BatchBanRoomsRequest.reason",
         "#[serde(default)]",
     );
+    add_field_attribute(
+        &mut main_field_attributes,
+        ".synctv.client.GetPublicSettingsResponse.email_whitelist_domains",
+        "#[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+    );
     validate_field_attributes(&MAIN_PROTO_FILES, &main_field_attributes)?;
     apply_main_field_attributes(&mut prost_config, &main_field_attributes);
     let mut main_builder = tonic_prost_build::configure();

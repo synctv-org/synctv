@@ -297,7 +297,7 @@ impl UserRepository {
             .bind(user.role)
             .bind(user.created_at)
             .bind(user.updated_at)
-            .bind(user.email.as_ref())
+            .bind(user.email.as_deref())
             .bind(credentials.legacy_password_hash)
             .bind(opaque_record_bytes)
             .bind(opaque_identifier)
@@ -593,7 +593,7 @@ impl UserRepository {
         let u = sqlx::query_as::<_, User>(&sql)
             .bind(user.id)
             .bind(&user.username)
-            .bind(user.email.as_ref())
+            .bind(user.email.as_deref())
             .bind(user.role)
             .bind(Utc::now())
             .bind(old_version)
@@ -1318,6 +1318,15 @@ mod tests {
         let created = repo.create(&user).await.unwrap();
         assert_eq!(created.username, "testuser");
         assert_eq!(created.email, Some("test@example.com".into()));
+
+        let identity_email = sqlx::query_scalar!(
+            "SELECT email FROM auth_email_identities WHERE user_id = $1",
+            created.id.as_i64()
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("email identity should be created");
+        assert_eq!(identity_email, "test@example.com");
     }
 
     #[tokio::test]

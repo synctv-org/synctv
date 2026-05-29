@@ -325,6 +325,19 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn unbind_email(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::UnbindEmailRequest,
+    ) -> Result<crate::proto::client::UnbindEmailResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let updated_user = self.user_service.unbind_email(user_id).await?;
+
+        Ok(crate::proto::client::UnbindEmailResponse {
+            user: Some(user_to_proto(&updated_user, &self.public_id_codec)),
+        })
+    }
+
     pub async fn start_opaque_password_update(
         &self,
         user_id: &UserId,

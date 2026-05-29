@@ -657,10 +657,10 @@ async fn recreate_template_database(
     // template, skip the expensive DROP + CREATE + migrate cycle.  The first
     // nextest worker process creates the template; all subsequent workers in
     // the same run reuse it (they share the same NEXTEST_RUN_ID).
-    let already_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1 AND datistemplate = true)",
+    let already_exists: bool = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1 AND datistemplate = true) AS \"exists!\"",
+        template_database,
     )
-    .bind(template_database)
     .fetch_one(admin_pool)
     .await
     .expect("template database existence check should succeed");

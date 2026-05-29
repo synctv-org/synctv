@@ -20,7 +20,8 @@ use crate::proto::client::{
 };
 use crate::proto::client::{
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, GetUserPreferencesResponse,
-    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    UnbindEmailRequest, UnbindEmailResponse, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse,
 };
 use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
@@ -253,6 +254,45 @@ pub async fn confirm_email_bind(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move { client_api.confirm_email_bind(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/email/unbind",
+        tag = "User",
+        request_body = UnbindEmailRequest,
+        responses(
+            (status = 200, description = "Email unbound", body = UnbindEmailResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn unbind_email(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoJson(req): ProtoJson<UnbindEmailRequest>,
+) -> AppResult<Json<UnbindEmailResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.unbind_email(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;

@@ -861,9 +861,9 @@ mod tests {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool);
         let email = format!("mfa_{}@example.com", synctv_common::snanoid!(8));
-        let user = api
+        let (user, _, _) = api
             .user_service
-            .create_user_with_role(
+            .register(
                 "mfa_email_user".to_string(),
                 Some(email.clone()),
                 "StrongPass1".to_string(),

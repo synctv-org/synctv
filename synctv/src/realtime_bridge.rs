@@ -196,7 +196,6 @@ pub fn room_event_to_realtime_event(
         }),
         synctv_core::service::RoomEvent::UserJoined { .. }
         | synctv_core::service::RoomEvent::ChatMessage { .. }
-        | synctv_core::service::RoomEvent::Danmaku { .. }
         | synctv_core::service::RoomEvent::PlaybackStateChanged { .. }
         | synctv_core::service::RoomEvent::MemberKicked { .. }
         | synctv_core::service::RoomEvent::GuestKicked { .. }
@@ -407,6 +406,8 @@ mod tests {
             room_id: *room_id,
             creator_id: Some(UserId::expect_positive(120_004)),
             name: "playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 0.0,
             source_provider: None,
@@ -613,13 +614,6 @@ mod tests {
                 user_id,
                 username: "chat-user".to_string(),
                 content: "hello".to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-            synctv_core::service::RoomEvent::Danmaku {
-                user_id,
-                username: "danmaku-user".to_string(),
-                content: "bullet".to_string(),
-                position: "top".to_string(),
                 timestamp: chrono::Utc::now(),
             },
             synctv_core::service::RoomEvent::PlaybackStateChanged {

@@ -10,10 +10,25 @@ use std::fmt::Write as _;
 use crate::{
     models::{
         normalize_provider_instance_name, provider_type_code_from_name, Media, MediaId,
-        MediaListQuery, PageParams, PlaylistId, ProviderTypeName, RoomId,
+        MediaListQuery, PageParams, PlaylistId, ProviderTypeName, RoomId, UserId,
     },
     Result,
 };
+
+const MEDIA_ROW_COLUMNS: &str = "id,
+                   playlist_id,
+                   room_id,
+                   creator_id,
+                   name,
+                   description,
+                   position,
+                   source_provider,
+                   source_config,
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   cover_file_reference_id,
+                   added_at,
+                   updated_at,
+                   version";
 
 #[derive(Debug, sqlx::FromRow)]
 struct MediaRow {
@@ -22,10 +37,12 @@ struct MediaRow {
     room_id: RoomId,
     creator_id: Option<crate::models::UserId>,
     name: String,
+    description: String,
     position: f64,
     source_provider: ProviderTypeName,
     source_config: serde_json::Value,
     provider_instance_name: Option<String>,
+    cover_file_reference_id: Option<i64>,
     added_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     version: i32,
@@ -39,10 +56,12 @@ impl From<MediaRow> for Media {
             room_id: row.room_id,
             creator_id: row.creator_id,
             name: row.name,
+            description: row.description,
             position: row.position,
             source_provider: row.source_provider.0,
             source_config: row.source_config,
             provider_instance_name: row.provider_instance_name,
+            cover_file_reference_id: row.cover_file_reference_id,
             added_at: row.added_at,
             updated_at: row.updated_at,
             version: row.version,
@@ -57,10 +76,12 @@ fn media_from_pg_row(row: &PgRow) -> Result<Media> {
         room_id: row.try_get("room_id")?,
         creator_id: row.try_get("creator_id")?,
         name: row.try_get("name")?,
+        description: row.try_get("description")?,
         position: row.try_get("position")?,
         source_provider: row.try_get::<ProviderTypeName, _>("source_provider")?.0,
         source_config: row.try_get("source_config")?,
         provider_instance_name: row.try_get("provider_instance_name")?,
+        cover_file_reference_id: row.try_get("cover_file_reference_id")?,
         added_at: row.try_get("added_at")?,
         updated_at: row.try_get("updated_at")?,
         version: row.try_get("version")?,
@@ -232,8 +253,9 @@ impl MediaRepository {
         offset: i64,
     ) -> Result<Vec<MediaListItem>> {
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.position,
+            "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.description, m.position,
                     m.source_provider, m.source_config, NULLIF(m.provider_instance_name, '') AS provider_instance_name,
+                    m.cover_file_reference_id,
                     m.added_at, m.updated_at, m.version,
                     CASE
                       WHEN m.creator_id IS NULL THEN TRUE
@@ -276,39 +298,36 @@ impl MediaRepository {
     {
         let source_config_json = serde_json::to_value(&media.source_config)?;
 
-        let row = sqlx::query_as::<_, MediaRow>(
+        let row = sqlx::query_as_unchecked!(
+            MediaRow,
             r"
-            INSERT INTO media (playlist_id, room_id, creator_id, name, position,
+            INSERT INTO media (playlist_id, room_id, creator_id, name, description, position,
                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 0)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0)
              RETURNING id,
                        playlist_id,
                        room_id,
                        creator_id,
                        name,
+                       description,
                        position,
                        source_provider,
                        source_config,
                        NULLIF(provider_instance_name, '') AS provider_instance_name,
+                       cover_file_reference_id,
                        added_at, updated_at, version
             ",
+            media.playlist_id.as_ref().map(PlaylistId::as_i64),
+            media.room_id.as_i64(),
+            media.creator_id.as_ref().map(UserId::as_i64),
+            &media.name,
+            &media.description,
+            media.position,
+            Self::provider_type_code(&media.source_provider)?,
+            &source_config_json,
+            Self::normalize_provider_instance_name_for_db(media.provider_instance_name.as_deref(),),
+            media.added_at
         )
-        .bind(media.playlist_id.as_ref().map(PlaylistId::as_i64))
-        .bind(media.room_id.as_i64())
-        .bind(
-            media
-                .creator_id
-                .as_ref()
-                .map(super::super::models::id::UserId::as_i64),
-        )
-        .bind(&media.name)
-        .bind(media.position)
-        .bind(Self::provider_type_code(&media.source_provider)?)
-        .bind(&source_config_json)
-        .bind(Self::normalize_provider_instance_name_for_db(
-            media.provider_instance_name.as_deref(),
-        ))
-        .bind(media.added_at)
         .fetch_one(executor)
         .await?;
 
@@ -356,7 +375,7 @@ impl MediaRepository {
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
         /// Number of bind parameters per row.
-        const PARAMS_PER_ROW: usize = 9;
+        const PARAMS_PER_ROW: usize = 10;
         /// Maximum rows per INSERT statement (well within the 65535 parameter limit).
         const MAX_ROWS_PER_CHUNK: usize = 1000;
 
@@ -376,7 +395,7 @@ impl MediaRepository {
         let mut results = Vec::with_capacity(items.len());
 
         let mut query_builder = String::from(
-            "INSERT INTO media (playlist_id, room_id, creator_id, name, position,
+            "INSERT INTO media (playlist_id, room_id, creator_id, name, description, position,
                                source_provider, source_config, provider_instance_name, added_at, updated_at, version)
              VALUES "
         );
@@ -388,7 +407,7 @@ impl MediaRepository {
             let base = i * PARAMS_PER_ROW;
             write!(
                 query_builder,
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
                 base + 1,
                 base + 2,
                 base + 3,
@@ -398,14 +417,16 @@ impl MediaRepository {
                 base + 7,
                 base + 8,
                 base + 9,
-                base + 9
+                base + 10,
+                base + 10
             )
             .expect("writing SQL into String should not fail");
             binds.push(serde_json::to_value(&item.source_config)?);
         }
         query_builder.push_str(
-            " RETURNING id, playlist_id, room_id, creator_id, name, position,
+            " RETURNING id, playlist_id, room_id, creator_id, name, description, position,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+                       cover_file_reference_id,
                        added_at, updated_at, version",
         );
 
@@ -420,6 +441,7 @@ impl MediaRepository {
                         .map(super::super::models::id::UserId::as_i64),
                 )
                 .bind(&item.name)
+                .bind(&item.description)
                 .bind(item.position)
                 .bind(Self::provider_type_code(&item.source_provider)?)
                 .bind(&binds[i])
@@ -460,29 +482,21 @@ impl MediaRepository {
 
     /// Update media
     pub async fn update(&self, media: &Media) -> Result<Media> {
-        let row = sqlx::query_as!(
-            MediaRow,
-            r#"
+        let sql = format!(
+            r"
             UPDATE media
-            SET name = $2, position = $3
+            SET name = $2, description = $3, position = $4
              WHERE id = $1
-             RETURNING id AS "id: MediaId",
-                       playlist_id AS "playlist_id?: PlaylistId",
-                       room_id AS "room_id: RoomId",
-                       creator_id AS "creator_id?: crate::models::UserId",
-                       name,
-                       position,
-                       source_provider,
-                       source_config AS "source_config!: serde_json::Value",
-                       NULLIF(provider_instance_name, '') AS provider_instance_name,
-                       added_at, updated_at, version
-            "#,
-            media.id.as_i64(),
-            &media.name,
-            media.position,
-        )
-        .fetch_one(&self.pool)
-        .await?;
+             RETURNING {MEDIA_ROW_COLUMNS}
+            "
+        );
+        let row = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(media.id.as_i64())
+            .bind(&media.name)
+            .bind(&media.description)
+            .bind(media.position)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(row.into())
     }
@@ -520,56 +534,39 @@ impl MediaRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let row = sqlx::query_as!(
-            MediaRow,
-            r#"
+        let sql = format!(
+            r"
             UPDATE media
-            SET name = $2, position = $3, version = version + 1
-             WHERE id = $1 AND version = $4
-             RETURNING id AS "id: MediaId",
-                       playlist_id AS "playlist_id?: PlaylistId",
-                       room_id AS "room_id: RoomId",
-                       creator_id AS "creator_id?: crate::models::UserId",
-                       name,
-                       position,
-                       source_provider,
-                       source_config AS "source_config!: serde_json::Value",
-                       NULLIF(provider_instance_name, '') AS provider_instance_name,
-                       added_at, updated_at, version
-            "#,
-            media.id.as_i64(),
-            &media.name,
-            media.position,
-            expected_version,
-        )
-        .fetch_optional(executor)
-        .await?;
+            SET name = $2, description = $3, position = $4, version = version + 1
+             WHERE id = $1 AND version = $5
+             RETURNING {MEDIA_ROW_COLUMNS}
+            "
+        );
+        let row = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(media.id.as_i64())
+            .bind(&media.name)
+            .bind(&media.description)
+            .bind(media.position)
+            .bind(expected_version)
+            .fetch_optional(executor)
+            .await?;
 
         Ok(row.map(Into::into))
     }
 
     /// Get media by ID
     pub async fn get_by_id(&self, media_id: &MediaId) -> Result<Option<Media>> {
-        let row = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE id = $1
-            "#,
-            media_id.as_i64(),
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+            "
+        );
+        let row = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(media_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(row.map(Into::into))
     }
@@ -580,28 +577,75 @@ impl MediaRepository {
         room_id: &RoomId,
         media_id: &MediaId,
     ) -> Result<Option<Media>> {
-        let row = sqlx::query_as::<_, MediaRow>(
+        let sql = format!(
             r"
-            SELECT id,
-                   playlist_id,
-                   room_id,
-                   creator_id,
-                   name,
-                   position,
-                   source_provider,
-                   source_config,
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at,
-                   updated_at,
-                   version
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE room_id = $1 AND id = $2
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(media_id.as_i64())
-        .fetch_optional(&self.pool)
-        .await?;
+            "
+        );
+        let row = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(media_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn get_by_room_and_id_for_update_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        executor: E,
+    ) -> Result<Option<Media>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
+             FROM media
+             WHERE room_id = $1 AND id = $2
+             FOR UPDATE
+            "
+        );
+        let row = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(media_id.as_i64())
+            .fetch_optional(executor)
+            .await?;
+
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn update_cover_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        cover_file_reference_id: Option<i64>,
+        expected_version: i32,
+        executor: E,
+    ) -> Result<Option<Media>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let sql = format!(
+            r"
+            UPDATE media
+            SET cover_file_reference_id = $3,
+                version = version + 1
+             WHERE room_id = $1 AND id = $2 AND version = $4
+             RETURNING {MEDIA_ROW_COLUMNS}
+            "
+        );
+        let row = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(media_id.as_i64())
+            .bind(cover_file_reference_id)
+            .bind(expected_version)
+            .fetch_optional(executor)
+            .await?;
 
         Ok(row.map(Into::into))
     }
@@ -625,26 +669,17 @@ impl MediaRepository {
         }
 
         let id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE id = ANY($1)
-            "#,
-            &id_strs,
-        )
-        .fetch_all(executor)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(&id_strs)
+            .fetch_all(executor)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -664,28 +699,18 @@ impl MediaRepository {
         }
 
         let id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
-        let rows = sqlx::query_as::<_, MediaRow>(
+        let sql = format!(
             r"
-            SELECT id,
-                   playlist_id,
-                   room_id,
-                   creator_id,
-                   name,
-                   position,
-                   source_provider,
-                   source_config,
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at,
-                   updated_at,
-                   version
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE room_id = $1 AND id = ANY($2)
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(&id_strs)
-        .fetch_all(executor)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(&id_strs)
+            .fetch_all(executor)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -700,84 +725,57 @@ impl MediaRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
             FROM media
             WHERE room_id = $1
               AND playlist_id IS NOT DISTINCT FROM $2
             ORDER BY position ASC, id ASC
-            "#,
-            room_id.as_i64(),
-            playlist_id.map(PlaylistId::as_i64),
-        )
-        .fetch_all(executor)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(playlist_id.map(PlaylistId::as_i64))
+            .fetch_all(executor)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Get media directly under the room root.
     pub async fn get_room_root(&self, room_id: &RoomId) -> Result<Vec<Media>> {
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE room_id = $1
                AND playlist_id IS NULL
              ORDER BY position ASC
-            "#,
-            room_id.as_i64(),
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Get media in a specific playlist.
     pub async fn get_by_playlist(&self, playlist_id: &PlaylistId) -> Result<Vec<Media>> {
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE playlist_id = $1
              ORDER BY position ASC
-            "#,
-            playlist_id.as_i64(),
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(playlist_id.as_i64())
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -788,29 +786,19 @@ impl MediaRepository {
         room_id: &RoomId,
         playlist_id: &PlaylistId,
     ) -> Result<Vec<Media>> {
-        let rows = sqlx::query_as::<_, MediaRow>(
+        let sql = format!(
             r"
-            SELECT id,
-                   playlist_id,
-                   room_id,
-                   creator_id,
-                   name,
-                   position,
-                   source_provider,
-                   source_config,
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at,
-                   updated_at,
-                   version
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE room_id = $1 AND playlist_id = $2
              ORDER BY position ASC
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(playlist_id.as_i64())
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(playlist_id.as_i64())
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -835,30 +823,21 @@ impl MediaRepository {
         .await?;
 
         // Get paginated results
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE playlist_id = $1
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
-            "#,
-            playlist_id.as_i64(),
-            limit,
-            offset,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(playlist_id.as_i64())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
 
         let items = rows.into_iter().map(Into::into).collect();
 
@@ -886,31 +865,22 @@ impl MediaRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE room_id = $1
                AND playlist_id IS NULL
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
-            "#,
-            room_id.as_i64(),
-            limit,
-            offset,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
 
         let items = rows.into_iter().map(Into::into).collect();
 
@@ -927,30 +897,21 @@ impl MediaRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Media>> {
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE playlist_id = $1
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
-            "#,
-            playlist_id.as_i64(),
-            limit,
-            offset,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(playlist_id.as_i64())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -962,31 +923,22 @@ impl MediaRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Media>> {
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id AS "id: MediaId",
-                   playlist_id AS "playlist_id?: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
-                   name,
-                   position,
-                   source_provider,
-                   source_config AS "source_config!: serde_json::Value",
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at, updated_at, version
+        let sql = format!(
+            r"
+            SELECT {MEDIA_ROW_COLUMNS}
              FROM media
              WHERE room_id = $1
                AND playlist_id IS NULL
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
-            "#,
-            room_id.as_i64(),
-            limit,
-            offset,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            "
+        );
+        let rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -1194,29 +1146,19 @@ impl MediaRepository {
         }
 
         let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
-        let moved_rows = sqlx::query_as::<_, MediaRow>(
+        let sql = format!(
             r"
-            SELECT id,
-                   playlist_id,
-                   room_id,
-                   creator_id,
-                   name,
-                   position,
-                   source_provider,
-                   source_config,
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at,
-                   updated_at,
-                   version
+            SELECT {MEDIA_ROW_COLUMNS}
             FROM media
             WHERE room_id = $1 AND id = ANY($2)
             FOR UPDATE
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(&media_id_strs)
-        .fetch_all(&mut **tx)
-        .await?;
+            "
+        );
+        let moved_rows = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(&media_id_strs)
+            .fetch_all(&mut **tx)
+            .await?;
 
         if moved_rows.len() != media_ids.len() {
             return Err(crate::Error::NotFound("Media not found".to_string()));
@@ -1256,31 +1198,21 @@ impl MediaRepository {
         }
 
         let anchor_media = if let Some(anchor_id) = anchor_id {
-            let anchor_media: Media = sqlx::query_as::<_, MediaRow>(
+            let sql = format!(
                 r"
-                SELECT id,
-                       playlist_id,
-                       room_id,
-                       creator_id,
-                       name,
-                       position,
-                       source_provider,
-                       source_config,
-                       NULLIF(provider_instance_name, '') AS provider_instance_name,
-                       added_at,
-                       updated_at,
-                       version
+                SELECT {MEDIA_ROW_COLUMNS}
                 FROM media
                 WHERE room_id = $1 AND id = $2
                 FOR UPDATE
-                ",
-            )
-            .bind(room_id.as_i64())
-            .bind(anchor_id.as_i64())
-            .fetch_optional(&mut **tx)
-            .await?
-            .map(Into::into)
-            .ok_or_else(|| crate::Error::NotFound("Anchor media not found".to_string()))?;
+                "
+            );
+            let anchor_media: Media = sqlx::query_as::<_, MediaRow>(&sql)
+                .bind(room_id.as_i64())
+                .bind(anchor_id.as_i64())
+                .fetch_optional(&mut **tx)
+                .await?
+                .map(Into::into)
+                .ok_or_else(|| crate::Error::NotFound("Anchor media not found".to_string()))?;
 
             Some(anchor_media)
         } else {
@@ -1378,33 +1310,26 @@ impl MediaRepository {
 
             let mut updated_media = Vec::with_capacity(moved_media.len());
             for (media, position) in moved_media.iter().zip(positions) {
-                let row = sqlx::query_as!(
-                    MediaRow,
-                    r#"
+                let sql = format!(
+                    r"
                     UPDATE media
                     SET playlist_id = $2,
                         position = $3,
                         version = version + 1
                     WHERE id = $1
-                    RETURNING id AS "id: MediaId",
-                              playlist_id AS "playlist_id?: PlaylistId",
-                              room_id AS "room_id: RoomId",
-                              creator_id AS "creator_id?: crate::models::UserId",
-                              name,
-                              position,
-                              source_provider,
-                              source_config AS "source_config!: serde_json::Value",
-                              NULLIF(provider_instance_name, '') AS provider_instance_name,
-                              added_at, updated_at, version
-                    "#,
-                    media.id.as_i64(),
-                    effective_target_playlist_id
-                        .as_ref()
-                        .map(PlaylistId::as_i64),
-                    position,
-                )
-                .fetch_one(&mut **tx)
-                .await?;
+                    RETURNING {MEDIA_ROW_COLUMNS}
+                    "
+                );
+                let row = sqlx::query_as::<_, MediaRow>(&sql)
+                    .bind(media.id.as_i64())
+                    .bind(
+                        effective_target_playlist_id
+                            .as_ref()
+                            .map(PlaylistId::as_i64),
+                    )
+                    .bind(position)
+                    .fetch_one(&mut **tx)
+                    .await?;
                 updated_media.push(row.into());
             }
 
@@ -1579,57 +1504,37 @@ impl MediaRepository {
             ));
         }
 
-        let moved: Media = sqlx::query_as::<_, MediaRow>(
+        let sql = format!(
             r"
-            SELECT id,
-                   playlist_id,
-                   room_id,
-                   creator_id,
-                   name,
-                   position,
-                   source_provider,
-                   source_config,
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at,
-                   updated_at,
-                   version
+            SELECT {MEDIA_ROW_COLUMNS}
             FROM media
             WHERE room_id = $1 AND id = $2
             FOR UPDATE
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(media_id.as_i64())
-        .fetch_optional(&mut **tx)
-        .await?
-        .map(Into::into)
-        .ok_or_else(|| crate::Error::NotFound("Media not found".to_string()))?;
+            "
+        );
+        let moved: Media = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(media_id.as_i64())
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(Into::into)
+            .ok_or_else(|| crate::Error::NotFound("Media not found".to_string()))?;
 
-        let anchor: Media = sqlx::query_as::<_, MediaRow>(
+        let sql = format!(
             r"
-            SELECT id,
-                   playlist_id,
-                   room_id,
-                   creator_id,
-                   name,
-                   position,
-                   source_provider,
-                   source_config,
-                   NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   added_at,
-                   updated_at,
-                   version
+            SELECT {MEDIA_ROW_COLUMNS}
             FROM media
             WHERE room_id = $1 AND id = $2
             FOR UPDATE
-            ",
-        )
-        .bind(room_id.as_i64())
-        .bind(anchor_id.as_i64())
-        .fetch_optional(&mut **tx)
-        .await?
-        .map(Into::into)
-        .ok_or_else(|| crate::Error::NotFound("Anchor media not found".to_string()))?;
+            "
+        );
+        let anchor: Media = sqlx::query_as::<_, MediaRow>(&sql)
+            .bind(room_id.as_i64())
+            .bind(anchor_id.as_i64())
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(Into::into)
+            .ok_or_else(|| crate::Error::NotFound("Anchor media not found".to_string()))?;
 
         if moved.playlist_id != anchor.playlist_id {
             return Err(crate::Error::InvalidInput(
@@ -1682,28 +1587,19 @@ impl MediaRepository {
             };
 
             if let Some(position) = new_position.filter(|position| position.is_finite()) {
-                let row = sqlx::query_as!(
-                    MediaRow,
-                    r#"
+                let sql = format!(
+                    r"
                     UPDATE media
                     SET position = $2, version = version + 1
                     WHERE id = $1
-                    RETURNING id AS "id: MediaId",
-                              playlist_id AS "playlist_id?: PlaylistId",
-                              room_id AS "room_id: RoomId",
-                              creator_id AS "creator_id?: crate::models::UserId",
-                              name,
-                              position,
-                              source_provider,
-                              source_config AS "source_config!: serde_json::Value",
-                              NULLIF(provider_instance_name, '') AS provider_instance_name,
-                              added_at, updated_at, version
-                    "#,
-                    moved.id.as_i64(),
-                    position,
-                )
-                .fetch_one(&mut **tx)
-                .await?;
+                    RETURNING {MEDIA_ROW_COLUMNS}
+                    "
+                );
+                let row = sqlx::query_as::<_, MediaRow>(&sql)
+                    .bind(moved.id.as_i64())
+                    .bind(position)
+                    .fetch_one(&mut **tx)
+                    .await?;
 
                 return Ok(row.into());
             }
@@ -1733,13 +1629,14 @@ impl MediaRepository {
 
     /// Count all media items.
     pub async fn count_all(&self) -> Result<i64> {
-        let count = sqlx::query_scalar::<_, i64>(
+        let count = sqlx::query_scalar_unchecked!(
             r"
             SELECT COUNT(*) FROM media
-            ",
+            "
         )
         .fetch_one(&self.pool)
-        .await?;
+        .await?
+        .unwrap_or(0);
 
         Ok(count)
     }
@@ -1750,15 +1647,16 @@ impl MediaRepository {
         room_id: &RoomId,
         playlist_id: &PlaylistId,
     ) -> Result<i64> {
-        let count = sqlx::query_scalar::<_, i64>(
+        let count = sqlx::query_scalar_unchecked!(
             r"
             SELECT COUNT(*) FROM media WHERE room_id = $1 AND playlist_id = $2
             ",
+            room_id.as_i64(),
+            playlist_id.as_i64()
         )
-        .bind(room_id.as_i64())
-        .bind(playlist_id.as_i64())
         .fetch_one(&self.pool)
-        .await?;
+        .await?
+        .unwrap_or(0);
 
         Ok(count)
     }
@@ -2392,7 +2290,7 @@ mod tests {
                     "unexpected message: {message}"
                 );
                 assert!(
-                    message.contains("9009 bind parameters"),
+                    message.contains("10010 bind parameters"),
                     "unexpected message: {message}"
                 );
             }

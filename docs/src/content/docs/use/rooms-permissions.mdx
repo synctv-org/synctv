@@ -56,7 +56,7 @@ SyncTV 有两层角色，不能混为一谈。
 | 聊天历史 | 否 | `view_chat_history` | 只读 |
 | WebRTC 信令 | 否 | `use_webrtc` | 只允许信令参与，不授予房间管理能力 |
 | 媒体资源 | 否 | 否 | 游客不能读取、浏览或管理媒体资源 |
-| 聊天和弹幕发送 | 否 | 否 | `send_chat` 只适用于登录成员 |
+| 聊天发送 | 否 | 否 | `send_chat` 只适用于登录成员 |
 | 播放控制、成员管理、房间设置 | 否 | 否 | 必须是登录成员并具有对应权限 |
 
 ## 权限计算顺序
@@ -84,7 +84,7 @@ SyncTV 有两层角色，不能混为一谈。
 
 | 权限名称 | 含义 |
 | --- | --- |
-| `send_chat` | 发送聊天和弹幕消息 |
+| `send_chat` | 发送聊天消息 |
 | `create_media_resource` | 创建媒体资源，并修改自己创建的媒体资源 |
 | `delete_media_resource_any` | 删除其他用户创建或没有记录创建者的媒体资源 |
 | `reorder_media_resources` | 调整媒体资源顺序 |
@@ -119,7 +119,6 @@ SyncTV 有两层角色，不能混为一谈。
 | `require_approval` | `false` | 加入房间是否需要审核 |
 | `allow_auto_join` | `true` | 是否允许符合条件的用户自动加入 |
 | `chat_enabled` | `true` | 是否启用聊天 |
-| `danmaku_enabled` | `true` | 是否启用弹幕 |
 | `auto_play` | `{}` | 自动播放策略，JSON 结构 |
 | `admin_added_permissions` / `admin_removed_permissions` | 空权限集合 | 房间 admin 默认权限增减 |
 | `member_added_permissions` / `member_removed_permissions` | 空权限集合 | 房间 member 默认权限增减 |

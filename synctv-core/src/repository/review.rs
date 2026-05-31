@@ -160,7 +160,8 @@ impl ReviewRepository {
         &self,
         request_id: UserId,
     ) -> Result<Option<UserRegistrationReviewRecord>> {
-        let row = sqlx::query_as::<_, UserRegistrationReviewRow>(
+        let row = sqlx::query_as_unchecked!(
+            UserRegistrationReviewRow,
             r"
             SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
                    requested_at, reviewed_at, reviewed_by, rejection_reason,
@@ -171,8 +172,8 @@ impl ReviewRepository {
             FROM user_registration_requests
             WHERE id = $1
             ",
+            request_id
         )
-        .bind(request_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(crate::Error::from)?;
@@ -189,21 +190,21 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let total = sqlx::query_scalar::<_, i64>(
-            r"
+        let total = sqlx::query_scalar_unchecked!(r"
             SELECT COUNT(*)
             FROM user_registration_requests
             WHERE status = $1
               AND ($2 = '' OR username ILIKE $2 ESCAPE '\' OR COALESCE(email, '') ILIKE $2 ESCAPE '\')
             ",
-        )
-        .bind(query.status)
-        .bind(&search)
-        .fetch_one(&self.pool)
-        .await?;
+query.status,
+&search)
 
-        let rows = sqlx::query_as::<_, UserRegistrationReviewRow>(
-            r"
+        .fetch_one(&self.pool)
+        .await?.unwrap_or(0);
+
+        let rows = sqlx::query_as_unchecked!(
+UserRegistrationReviewRow,
+r"
             SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
                    requested_at, reviewed_at, reviewed_by, rejection_reason,
                    oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
@@ -216,11 +217,11 @@ impl ReviewRepository {
             ORDER BY requested_at DESC, id DESC
             LIMIT $3 OFFSET $4
             ",
-        )
-        .bind(query.status)
-        .bind(&search)
-        .bind(query.limit)
-        .bind(query.offset)
+query.status,
+&search,
+query.limit,
+query.offset
+)
         .fetch_all(&self.pool)
         .await?;
 
@@ -250,17 +251,17 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
             WHERE id = $1 AND reviewed_at IS NULL AND status = $4
             ",
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Approved),
+            reviewed_by.map(|id| id.as_i64()),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Approved))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(i16::from(ReviewStatus::Pending))
         .execute(executor)
         .await?;
 
@@ -276,18 +277,18 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+r"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
-        )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Rejected))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(reason)
-        .bind(i16::from(ReviewStatus::Pending))
+request_id.as_i64(),
+i16::from(ReviewStatus::Rejected),
+reviewed_by.map(|id| id.as_i64()),
+reason,
+i16::from(ReviewStatus::Pending)
+)
         .execute(executor)
         .await?;
 
@@ -302,17 +303,17 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE room_creation_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
             WHERE id = $1 AND reviewed_at IS NULL AND status = $4
             ",
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Approved),
+            reviewed_by.map(|id| id.as_i64()),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Approved))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(i16::from(ReviewStatus::Pending))
         .execute(executor)
         .await?;
 
@@ -328,18 +329,18 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+r"
             UPDATE room_creation_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
-        )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Rejected))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(reason)
-        .bind(i16::from(ReviewStatus::Pending))
+request_id.as_i64(),
+i16::from(ReviewStatus::Rejected),
+reviewed_by.map(|id| id.as_i64()),
+reason,
+i16::from(ReviewStatus::Pending)
+)
         .execute(executor)
         .await?;
 
@@ -350,7 +351,8 @@ impl ReviewRepository {
         &self,
         request_id: RoomId,
     ) -> Result<Option<RoomCreationReviewRecord>> {
-        sqlx::query_as::<_, RoomCreationReviewRecord>(
+        sqlx::query_as_unchecked!(
+            RoomCreationReviewRecord,
             r"
             SELECT rcr.id, rcr.requested_by, COALESCE(u.username, '') AS requested_by_username,
                    rcr.name, rcr.description, rcr.status, rcr.requested_at, rcr.reviewed_at,
@@ -359,8 +361,8 @@ impl ReviewRepository {
             LEFT JOIN users u ON u.id = rcr.requested_by
             WHERE rcr.id = $1
             ",
+            request_id
         )
-        .bind(request_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
@@ -375,7 +377,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let total = sqlx::query_scalar::<_, i64>(
+        let total = sqlx::query_scalar_unchecked!(
             r"
             SELECT COUNT(*)
             FROM room_creation_requests
@@ -383,14 +385,16 @@ impl ReviewRepository {
               AND ($2::bigint IS NULL OR requested_by = $2)
               AND ($3 = '' OR name ILIKE $3 ESCAPE '\' OR description ILIKE $3 ESCAPE '\')
             ",
+            query.status,
+            query.requested_by,
+            &search
         )
-        .bind(query.status)
-        .bind(query.requested_by)
-        .bind(&search)
         .fetch_one(&self.pool)
-        .await?;
+        .await?
+        .unwrap_or(0);
 
-        let rows = sqlx::query_as::<_, RoomCreationReviewRecord>(
+        let rows = sqlx::query_as_unchecked!(
+            RoomCreationReviewRecord,
             r"
             SELECT rcr.id, rcr.requested_by, COALESCE(u.username, '') AS requested_by_username,
                    rcr.name, rcr.description, rcr.status, rcr.requested_at, rcr.reviewed_at,
@@ -403,12 +407,12 @@ impl ReviewRepository {
             ORDER BY rcr.requested_at DESC, rcr.id DESC
             LIMIT $4 OFFSET $5
             ",
+            query.status,
+            query.requested_by,
+            &search,
+            query.limit,
+            query.offset
         )
-        .bind(query.status)
-        .bind(query.requested_by)
-        .bind(&search)
-        .bind(query.limit)
-        .bind(query.offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -464,7 +468,7 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE room_join_requests
             SET status = $3,
@@ -475,12 +479,12 @@ impl ReviewRepository {
               AND reviewed_at IS NULL
               AND status = $5
             ",
+            room_id.as_i64(),
+            user_id.as_i64(),
+            i16::from(ReviewStatus::Approved),
+            reviewed_by.map(|id| id.as_i64()),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(room_id.as_i64())
-        .bind(user_id.as_i64())
-        .bind(i16::from(ReviewStatus::Approved))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(i16::from(ReviewStatus::Pending))
         .execute(executor)
         .await?;
 
@@ -496,7 +500,7 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE room_join_requests
             SET status = $2,
@@ -507,12 +511,12 @@ impl ReviewRepository {
               AND reviewed_at IS NULL
               AND status = $5
             ",
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Approved),
+            reviewed_by.map(|id| id.as_i64()),
+            room_id.as_i64(),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Approved))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(room_id.as_i64())
-        .bind(i16::from(ReviewStatus::Pending))
         .execute(executor)
         .await?;
 
@@ -529,7 +533,7 @@ impl ReviewRepository {
     where
         E: PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE room_join_requests
             SET status = $2,
@@ -541,13 +545,13 @@ impl ReviewRepository {
               AND reviewed_at IS NULL
               AND status = $6
             ",
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Rejected),
+            reviewed_by.map(|id| id.as_i64()),
+            reason,
+            room_id.as_i64(),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Rejected))
-        .bind(reviewed_by.map(|id| id.as_i64()))
-        .bind(reason)
-        .bind(room_id.as_i64())
-        .bind(i16::from(ReviewStatus::Pending))
         .execute(executor)
         .await?;
 
@@ -563,8 +567,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let total = sqlx::query_scalar::<_, i64>(
-            r"
+        let total = sqlx::query_scalar_unchecked!(r"
             SELECT COUNT(*)
             FROM room_join_requests rjr
             LEFT JOIN rooms r ON r.id = rjr.room_id
@@ -574,13 +577,13 @@ impl ReviewRepository {
               AND ($3::bigint IS NULL OR rjr.user_id = $3)
               AND ($4 = '' OR COALESCE(r.name, '') ILIKE $4 ESCAPE '\' OR COALESCE(u.username, '') ILIKE $4 ESCAPE '\')
             ",
-        )
-        .bind(query.status)
-        .bind(query.room_id)
-        .bind(query.user_id)
-        .bind(&search)
+query.status,
+query.room_id,
+query.user_id,
+&search)
+
         .fetch_one(&self.pool)
-        .await?;
+        .await?.unwrap_or(0);
 
         let rows = sqlx::query_as::<_, RoomJoinReviewRecord>(
             &format!(

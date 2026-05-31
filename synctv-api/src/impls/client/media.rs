@@ -5,15 +5,17 @@ use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
-    MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
-    Playlist, PlaylistListQuery as CorePlaylistListQuery,
-    PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
-    UserId,
+    FileBlob, FileUploadSession, MediaId, MediaListQuery as CoreMediaListQuery,
+    MediaListSortBy as CoreMediaListSortBy, NewStoredFile, Playlist,
+    PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
+    RoomId, SortDirection as CoreSortDirection, UserId,
 };
 use synctv_core::provider::DynamicListQuery;
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
-use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
-use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
+use synctv_core::service::media::{
+    AddMediaRequest as CoreAddMediaRequest, CreateVideoCoverUploadSession,
+    MoveMediaRequest as CoreMoveMediaRequest,
+};
 use synctv_core::service::room::{
     DeleteEntriesPlan, DeleteEntriesRequest as CoreDeleteEntriesRequest,
     MemberResourceCleanupResult, RealtimeOutboxDeleteEntriesEventFactory,
@@ -21,10 +23,7 @@ use synctv_core::service::room::{
 };
 use synctv_core::service::MediaService;
 
-use super::convert::{
-    media_list_to_proto_with_availability, media_to_proto_for_viewer, playlist_list_to_proto,
-    playlist_path_node_to_proto, playlist_to_proto_for_viewer,
-};
+use super::convert::playlist_path_node_to_proto;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
 use crate::playlist_fanout::{PlaylistFanoutService, PreparedPlaylistDeletedFanout};
@@ -34,6 +33,199 @@ use crate::realtime_fanout::RealtimeFanoutService;
 struct AddMediaBatchBuildResult {
     items: Vec<synctv_core::service::media::AddMediaRequest>,
     playlist_id: Option<synctv_core::models::PlaylistId>,
+}
+
+fn optional_trimmed_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub(crate) fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, ApiError> {
+    if bytes.is_empty() {
+        return Ok(serde_json::Value::Object(Default::default()));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| ApiError::InvalidInput(format!("Invalid metadata JSON: {error}")))?;
+    if !metadata.is_object() {
+        return Err(ApiError::InvalidInput(
+            "metadata must be a JSON object".to_string(),
+        ));
+    }
+    Ok(metadata)
+}
+
+pub(crate) fn stored_file_to_file_cover_proto(
+    file: &NewStoredFile,
+) -> crate::proto::client::FileCover {
+    crate::proto::client::FileCover {
+        id: file.id.clone(),
+        storage_backend: file.storage_backend.clone(),
+        object_key: file.object_key.clone(),
+        url: file.url.clone().unwrap_or_default(),
+        mime_type: file.mime_type.clone().unwrap_or_default(),
+        size_bytes: file.size_bytes.unwrap_or_default(),
+        width: file.width.unwrap_or_default(),
+        height: file.height.unwrap_or_default(),
+        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
+    }
+}
+
+pub(crate) fn file_cover_proto_to_stored_file(
+    cover: crate::proto::client::FileCover,
+) -> Result<NewStoredFile, ApiError> {
+    Ok(NewStoredFile {
+        id: cover.id,
+        storage_backend: cover.storage_backend,
+        object_key: cover.object_key,
+        url: optional_trimmed_string(&cover.url),
+        mime_type: optional_trimmed_string(&cover.mime_type),
+        size_bytes: (cover.size_bytes > 0).then_some(cover.size_bytes),
+        width: (cover.width > 0).then_some(cover.width),
+        height: (cover.height > 0).then_some(cover.height),
+        metadata: parse_json_metadata(&cover.metadata)?,
+    })
+}
+
+pub(crate) fn stored_file_to_video_cover_proto(
+    file: &NewStoredFile,
+) -> crate::proto::client::VideoCover {
+    crate::proto::client::VideoCover {
+        id: file.id.clone(),
+        storage_backend: file.storage_backend.clone(),
+        object_key: file.object_key.clone(),
+        url: file.url.clone().unwrap_or_default(),
+        mime_type: file.mime_type.clone().unwrap_or_default(),
+        size_bytes: file.size_bytes.unwrap_or_default(),
+        width: file.width.unwrap_or_default(),
+        height: file.height.unwrap_or_default(),
+        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
+    }
+}
+
+fn video_cover_proto_to_stored_file(
+    cover: crate::proto::client::VideoCover,
+) -> Result<NewStoredFile, ApiError> {
+    Ok(NewStoredFile {
+        id: cover.id,
+        storage_backend: cover.storage_backend,
+        object_key: cover.object_key,
+        url: optional_trimmed_string(&cover.url),
+        mime_type: optional_trimmed_string(&cover.mime_type),
+        size_bytes: (cover.size_bytes > 0).then_some(cover.size_bytes),
+        width: (cover.width > 0).then_some(cover.width),
+        height: (cover.height > 0).then_some(cover.height),
+        metadata: parse_json_metadata(&cover.metadata)?,
+    })
+}
+
+fn video_cover_upload_session_to_proto(
+    session: FileUploadSession,
+) -> crate::proto::client::VideoCoverUploadSession {
+    crate::proto::client::VideoCoverUploadSession {
+        cover: Some(stored_file_to_video_cover_proto(&session.file)),
+        upload_required: session.upload_required,
+        upload_url: session.upload_url.unwrap_or_default(),
+        upload_method: session.upload_method.unwrap_or_default(),
+        upload_headers: session.upload_headers.into_iter().collect(),
+        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        max_size_bytes: session.max_size_bytes,
+        ownership_proof_required: session.ownership_proof_required,
+        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_ranges: session
+            .ownership_proof_ranges
+            .into_iter()
+            .map(
+                |range| crate::proto::client::VideoCoverOwnershipProofRange {
+                    offset: range.offset,
+                    length: range.length,
+                },
+            )
+            .collect(),
+        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
+    }
+}
+
+pub(crate) fn file_upload_session_to_room_cover_proto(
+    session: FileUploadSession,
+) -> crate::proto::client::RoomCoverUploadSession {
+    crate::proto::client::RoomCoverUploadSession {
+        cover: Some(stored_file_to_file_cover_proto(&session.file)),
+        upload_required: session.upload_required,
+        upload_url: session.upload_url.unwrap_or_default(),
+        upload_method: session.upload_method.unwrap_or_default(),
+        upload_headers: session.upload_headers.into_iter().collect(),
+        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        max_size_bytes: session.max_size_bytes,
+        ownership_proof_required: session.ownership_proof_required,
+        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_ranges: session
+            .ownership_proof_ranges
+            .into_iter()
+            .map(|range| crate::proto::client::FileOwnershipProofRange {
+                offset: range.offset,
+                length: range.length,
+            })
+            .collect(),
+        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
+    }
+}
+
+pub(crate) fn file_upload_session_to_playlist_cover_proto(
+    session: FileUploadSession,
+) -> crate::proto::client::PlaylistCoverUploadSession {
+    crate::proto::client::PlaylistCoverUploadSession {
+        cover: Some(stored_file_to_file_cover_proto(&session.file)),
+        upload_required: session.upload_required,
+        upload_url: session.upload_url.unwrap_or_default(),
+        upload_method: session.upload_method.unwrap_or_default(),
+        upload_headers: session.upload_headers.into_iter().collect(),
+        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        max_size_bytes: session.max_size_bytes,
+        ownership_proof_required: session.ownership_proof_required,
+        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_ranges: session
+            .ownership_proof_ranges
+            .into_iter()
+            .map(|range| crate::proto::client::FileOwnershipProofRange {
+                offset: range.offset,
+                length: range.length,
+            })
+            .collect(),
+        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
+    }
+}
+
+pub(crate) fn video_cover_object_to_proto(
+    blob: &FileBlob,
+) -> crate::proto::client::VideoCoverObjectResponse {
+    crate::proto::client::VideoCoverObjectResponse {
+        object_key: blob.object_key.clone(),
+        mime_type: blob.mime_type.clone(),
+        checksum_sha256: blob.checksum_sha256.clone(),
+        data: blob.data.clone(),
+    }
+}
+
+pub(crate) fn room_cover_object_to_proto(
+    blob: &FileBlob,
+) -> crate::proto::client::RoomCoverObjectResponse {
+    crate::proto::client::RoomCoverObjectResponse {
+        object_key: blob.object_key.clone(),
+        mime_type: blob.mime_type.clone(),
+        checksum_sha256: blob.checksum_sha256.clone(),
+        data: blob.data.clone(),
+    }
+}
+
+pub(crate) fn playlist_cover_object_to_proto(
+    blob: &FileBlob,
+) -> crate::proto::client::PlaylistCoverObjectResponse {
+    crate::proto::client::PlaylistCoverObjectResponse {
+        object_key: blob.object_key.clone(),
+        mime_type: blob.mime_type.clone(),
+        checksum_sha256: blob.checksum_sha256.clone(),
+        data: blob.data.clone(),
+    }
 }
 
 pub enum MoveMediaFanoutStep {
@@ -469,6 +661,7 @@ pub(crate) fn build_add_media_request(
         provider_instance_name,
         source_config,
         name,
+        description,
     } = req;
 
     let playlist_id = playlist_id
@@ -494,6 +687,7 @@ pub(crate) fn build_add_media_request(
     Ok(CoreAddMediaRequest {
         playlist_id,
         name,
+        description,
         source_provider,
         provider_instance_name,
         source_config,
@@ -603,6 +797,7 @@ pub(crate) fn build_edit_media_request(
     Ok(synctv_core::service::media::EditMediaRequest {
         media_id: crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
         name,
+        description: (!req.description.trim().is_empty()).then_some(req.description),
     })
 }
 
@@ -664,12 +859,10 @@ impl ClientApiImpl {
         prepared_outbox_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::AddMediaResponse {
-            media: Some(media_to_proto_for_viewer(
-                &media,
-                true,
-                Some(uid),
-                &self.public_id_codec,
-            )),
+            media: Some(
+                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+                    .await?,
+            ),
         })
     }
 
@@ -782,12 +975,137 @@ impl ClientApiImpl {
         self.room_cache_fanout.publish_invalidation(&rid);
 
         Ok(crate::proto::client::EditMediaResponse {
-            media: Some(media_to_proto_for_viewer(
-                &media,
-                true,
-                Some(uid),
-                &self.public_id_codec,
-            )),
+            media: Some(
+                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+                    .await?,
+            ),
+        })
+    }
+
+    pub async fn create_video_cover_upload_session(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::CreateVideoCoverUploadSessionRequest,
+    ) -> Result<crate::proto::client::CreateVideoCoverUploadSessionResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id =
+            crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
+        let session = self
+            .room_service
+            .media_service()
+            .create_video_cover_upload_session(
+                rid,
+                media_id,
+                *user_id,
+                CreateVideoCoverUploadSession {
+                    client_cover_id: optional_trimmed_string(&req.client_cover_id),
+                    mime_type: req.mime_type,
+                    size_bytes: req.size_bytes,
+                    width: (req.width > 0).then_some(req.width),
+                    height: (req.height > 0).then_some(req.height),
+                    checksum_sha256: optional_trimmed_string(&req.checksum_sha256),
+                    metadata: parse_json_metadata(&req.metadata)?,
+                },
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(
+            crate::proto::client::CreateVideoCoverUploadSessionResponse {
+                session: Some(video_cover_upload_session_to_proto(session)),
+            },
+        )
+    }
+
+    pub async fn upload_video_cover_object(
+        &self,
+        req: crate::proto::client::UploadVideoCoverObjectRequest,
+    ) -> Result<crate::proto::client::UploadVideoCoverObjectResponse, ApiError> {
+        let blob = self
+            .room_service
+            .media_service()
+            .store_video_cover_upload_object(
+                &req.encoded_object_key,
+                &req.token,
+                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.data,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::UploadVideoCoverObjectResponse {
+            object: Some(video_cover_object_to_proto(&blob)),
+        })
+    }
+
+    pub async fn get_video_cover_object(
+        &self,
+        req: crate::proto::client::GetVideoCoverObjectRequest,
+    ) -> Result<crate::proto::client::VideoCoverObjectResponse, ApiError> {
+        let blob = self
+            .room_service
+            .media_service()
+            .get_video_cover_object(&req.encoded_object_key, &req.token)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(video_cover_object_to_proto(&blob))
+    }
+
+    pub async fn update_video_cover(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::UpdateVideoCoverRequest,
+    ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id =
+            crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
+        let cover = req
+            .cover
+            .ok_or_else(|| ApiError::InvalidInput("cover is required".to_string()))?;
+        let media = self
+            .room_service
+            .media_service()
+            .update_video_cover(
+                rid,
+                media_id,
+                *user_id,
+                video_cover_proto_to_stored_file(cover)?,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+        Ok(crate::proto::client::EditMediaResponse {
+            media: Some(
+                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
+                    .await?,
+            ),
+        })
+    }
+
+    pub async fn clear_video_cover(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::ClearVideoCoverRequest,
+    ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id =
+            crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
+        let media = self
+            .room_service
+            .media_service()
+            .clear_video_cover(rid, media_id, *user_id)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+        Ok(crate::proto::client::EditMediaResponse {
+            media: Some(
+                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
+                    .await?,
+            ),
         })
     }
 
@@ -934,17 +1252,15 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         prepared_outbox_fanout.publish_after_outbox_commit();
 
-        let results = media_list
-            .into_iter()
-            .map(|media| crate::proto::client::AddMediaResponse {
-                media: Some(media_to_proto_for_viewer(
-                    &media,
-                    true,
-                    Some(uid),
-                    &self.public_id_codec,
-                )),
-            })
-            .collect();
+        let mut results = Vec::with_capacity(media_list.len());
+        for media in media_list {
+            results.push(crate::proto::client::AddMediaResponse {
+                media: Some(
+                    self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+                        .await?,
+                ),
+            });
+        }
 
         Ok(crate::proto::client::AddMediaBatchResponse { results })
     }
@@ -997,11 +1313,17 @@ impl ClientApiImpl {
         prepared_outbox_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
 
+        let mut proto_media = Vec::with_capacity(media.len());
+        for media in &media {
+            proto_media.push(
+                self.media_to_proto_for_viewer_with_loaded_cover(media, true, Some(uid))
+                    .await?,
+            );
+        }
+
         Ok(crate::proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_saturating(media.len()),
-            media: media_list_to_proto_with_availability(&media, |media| {
-                media_to_proto_for_viewer(media, true, Some(uid), &self.public_id_codec)
-            }),
+            media: proto_media,
         })
     }
 
@@ -1143,25 +1465,31 @@ impl ClientApiImpl {
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .unwrap_or_default();
-            let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
+            let mut proto_playlists = Vec::with_capacity(playlists.len());
+            for entry in &playlists {
                 let item_count =
                     i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-                playlist_to_proto_for_viewer(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                    viewer_id,
-                    &self.public_id_codec,
-                )
-            });
-            let proto_media = media_list_to_proto_with_availability(&media, |entry| {
-                media_to_proto_for_viewer(
-                    &entry.media,
-                    entry.is_available,
-                    viewer_id,
-                    &self.public_id_codec,
-                )
-            });
+                proto_playlists.push(
+                    self.playlist_to_proto_for_viewer_with_loaded_cover(
+                        &entry.playlist,
+                        item_count,
+                        entry.is_available,
+                        viewer_id,
+                    )
+                    .await?,
+                );
+            }
+            let mut proto_media = Vec::with_capacity(media.len());
+            for entry in &media {
+                proto_media.push(
+                    self.media_to_proto_for_viewer_with_loaded_cover(
+                        &entry.media,
+                        entry.is_available,
+                        viewer_id,
+                    )
+                    .await?,
+                );
+            }
 
             return Ok(finalize_playlist_items_response_version(
                 crate::proto::client::ListPlaylistItemsResponse {
@@ -1276,6 +1604,7 @@ impl ClientApiImpl {
                         size: item.size.map(u64_to_i64_saturating),
                         thumbnail: Some(thumbnail.unwrap_or_default()),
                         modified_at: Some(item.modified_at.unwrap_or(0)),
+                        description: item.description.unwrap_or_default(),
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;
@@ -1409,25 +1738,31 @@ impl ClientApiImpl {
             .count_playlist_media_batch(&folder_ids)
             .await
             .unwrap_or_default();
-        let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
+        let mut proto_playlists = Vec::with_capacity(playlists.len());
+        for entry in &playlists {
             let item_count =
                 i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-            playlist_to_proto_for_viewer(
-                &entry.playlist,
-                item_count,
-                entry.is_available,
-                viewer_id,
-                &self.public_id_codec,
-            )
-        });
-        let proto_media = media_list_to_proto_with_availability(&media, |entry| {
-            media_to_proto_for_viewer(
-                &entry.media,
-                entry.is_available,
-                viewer_id,
-                &self.public_id_codec,
-            )
-        });
+            proto_playlists.push(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                    viewer_id,
+                )
+                .await?,
+            );
+        }
+        let mut proto_media = Vec::with_capacity(media.len());
+        for entry in &media {
+            proto_media.push(
+                self.media_to_proto_for_viewer_with_loaded_cover(
+                    &entry.media,
+                    entry.is_available,
+                    viewer_id,
+                )
+                .await?,
+            );
+        }
 
         Ok(finalize_playlist_items_response_version(
             crate::proto::client::ListPlaylistItemsResponse {
@@ -1490,12 +1825,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(media_to_proto_for_viewer(
+        self.media_to_proto_for_viewer_with_loaded_cover(
             &media,
             availability.is_available(),
             actor.user_id(),
-            &self.public_id_codec,
-        ))
+        )
+        .await
     }
 }
 
@@ -1532,6 +1867,8 @@ mod tests {
             room_id: RoomId::new(),
             creator_id: Some(UserId::new()),
             name: name.to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 0.0,
             source_provider: source_provider.map(str::to_string),
@@ -1558,6 +1895,7 @@ mod tests {
                 size: Some(123),
                 thumbnail: Some(thumbnail.to_string()),
                 modified_at: Some(456),
+                description: String::new(),
             }],
             current_path: Vec::new(),
             version: String::new(),
@@ -1586,6 +1924,7 @@ mod tests {
                 provider_instance_name: String::new(),
                 source_config: br#"{"path":"/tv"}"#.to_vec(),
                 name: String::new(),
+                description: String::new(),
             },
             &codec,
         )
@@ -1605,6 +1944,7 @@ mod tests {
                 provider_instance_name: "alist-main".into(),
                 source_config: br#"{"path":"/tv"}"#.to_vec(),
                 name: "Episode 1".into(),
+                description: String::new(),
             },
             &codec,
         )
@@ -1630,6 +1970,7 @@ mod tests {
                 provider_instance_name: String::new(),
                 source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
                 name: "Example".into(),
+                description: String::new(),
             },
             &codec,
         )
@@ -1649,6 +1990,7 @@ mod tests {
                 provider_instance_name: "alist-main".into(),
                 source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#.to_vec(),
                 name: String::new(),
+                description: String::new(),
             },
             &codec,
         )
@@ -1668,6 +2010,7 @@ mod tests {
                     provider_instance_name: "alist-main".into(),
                     source_config: br#"{"path":"/tv"}"#.to_vec(),
                     name: "Episode 1".into(),
+                    description: String::new(),
                 }],
             },
             &codec,
@@ -1690,6 +2033,7 @@ mod tests {
                     source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#
                         .to_vec(),
                     name: String::new(),
+                    description: String::new(),
                 }],
             },
             &codec,
@@ -1781,6 +2125,7 @@ mod tests {
             crate::proto::client::EditMediaRequest {
                 media_id: "bad-media".to_string(),
                 name: "Episode 1".to_string(),
+                description: String::new(),
             },
             &codec,
         )
@@ -1797,6 +2142,7 @@ mod tests {
             crate::proto::client::EditMediaRequest {
                 media_id: codec.encode_media_id(media_id).unwrap(),
                 name: "Episode 1".to_string(),
+                description: String::new(),
             },
             &codec,
         )

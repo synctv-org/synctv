@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH _lock AS (\n                    SELECT pg_advisory_xact_lock(hashtextextended($2, 0))\n                )\n                INSERT INTO room_bans (room_id, starts_at)\n                SELECT r.id, CURRENT_TIMESTAMP\n                FROM rooms r, _lock\n                WHERE r.id = $1 AND r.deleted_at IS NULL\n                  AND NOT EXISTS (\n                      SELECT 1 FROM room_bans rb\n                      WHERE rb.room_id = r.id\n                        AND rb.revoked_at IS NULL\n                        AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                  )\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "46b2654cb5c0857f3109f3824ac5d988d7d5c74db7b647903ad7fe56b846ccca"
+}

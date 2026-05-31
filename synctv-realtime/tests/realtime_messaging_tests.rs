@@ -135,8 +135,8 @@ async fn test_cross_node_broadcast() {
             username: "sender".to_string(),
             message: "hello from node2".to_string(),
             timestamp: chrono::Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         |event| matches!(event, RealtimeEvent::ChatMessage { message, .. } if message == "hello from node2"),
         "cross-node broadcast",
@@ -165,8 +165,8 @@ async fn test_message_deduplication() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let key = DedupKey::try_from_event(&event).unwrap();
@@ -193,8 +193,8 @@ async fn test_message_deduplication() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
     let key2 = DedupKey::try_from_event(&event2).unwrap();
     let should_process3 = dedup.should_process(&key2);
@@ -214,8 +214,8 @@ async fn test_dedup_ttl_expiry() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
     let key = DedupKey::try_from_event(&event).unwrap();
 
@@ -315,8 +315,8 @@ async fn test_single_node_mode_without_redis() {
         username: "test".to_string(),
         message: "local message".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     manager.broadcast(event);
@@ -394,8 +394,8 @@ async fn test_multiple_subscriptions_same_room() {
         username: "sender".to_string(),
         message: "broadcast test".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     manager.broadcast(event);
@@ -501,8 +501,8 @@ async fn test_event_type_routing() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
     assert!(
         room_event.room_id().is_some(),
@@ -617,8 +617,8 @@ async fn test_critical_event_classification() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     }
     .is_critical());
 
@@ -673,8 +673,8 @@ async fn test_broadcast_recipient_count() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let result = manager.broadcast(event);
@@ -793,8 +793,8 @@ async fn test_dedup_key_from_event() {
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let key = DedupKey::try_from_event(&event).unwrap();

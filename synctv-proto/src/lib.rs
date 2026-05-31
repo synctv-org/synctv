@@ -134,6 +134,8 @@ mod tests {
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
             is_banned: false,
+            avatar_url: "https://cdn.example.com/avatar.webp".into(),
+            avatar: None,
         };
         let bytes = user.encode_to_vec();
         let decoded = crate::client::User::decode(bytes.as_slice()).unwrap();
@@ -147,6 +149,8 @@ mod tests {
             username: "bob".into(),
             role: crate::common::UserRole::User.into(),
             created_at: 1_700_000_000,
+            avatar_url: "https://cdn.example.com/bob.webp".into(),
+            avatar: None,
         };
         let bytes = view.encode_to_vec();
         let decoded = crate::client::UserPublicView::decode(bytes.as_slice()).unwrap();
@@ -168,6 +172,7 @@ mod tests {
             is_banned: false,
             availability: crate::client::ResourceAvailability::Available.into(),
             version: 7,
+            cover: None,
         };
         let bytes = room.encode_to_vec();
         let decoded = crate::client::Room::decode(bytes.as_slice()).unwrap();
@@ -221,8 +226,22 @@ mod tests {
             username: "alice".into(),
             content: "Hello world!".into(),
             timestamp: 1_700_000_000,
-            position: Some(42.5),
-            color: Some("#FF0000".into()),
+            display_position: "top".into(),
+            display_color: "#ffffff".into(),
+            client_message_id: "client-1".into(),
+            status: crate::client::ChatMessageStatus::Active as i32,
+            version: 1,
+            edited_at: 0,
+            deleted_at: 0,
+            reply_to_message_id: String::new(),
+            images: Vec::new(),
+            deleted_by_user_id: String::new(),
+            delete_reason: String::new(),
+            playback_media_id: String::new(),
+            playback_playlist_id: String::new(),
+            playback_target: Vec::new(),
+            playback_target_hash: String::new(),
+            playback_position_seconds: None,
         };
         let bytes = msg.encode_to_vec();
         let decoded = crate::client::ChatMessageReceive::decode(bytes.as_slice()).unwrap();
@@ -235,8 +254,11 @@ mod tests {
             message: Some(crate::client::client_message::Message::Chat(
                 crate::client::ChatMessageSend {
                     content: "Hello!".into(),
-                    position: Some(10.0),
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: "client-1".into(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -396,6 +418,8 @@ mod tests {
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
             is_banned: false,
+            avatar_url: "https://cdn.example.com/avatar.webp".into(),
+            avatar: None,
         };
         let json = serde_json::to_string(&user).unwrap();
         let decoded: crate::client::User = serde_json::from_str(&json).unwrap();
@@ -426,8 +450,11 @@ mod tests {
             message: Some(crate::client::client_message::Message::Chat(
                 crate::client::ChatMessageSend {
                     content: "test".into(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -590,6 +617,7 @@ mod tests {
             banned_at: 0,
             banned_by: String::new(),
             banned_reason: String::new(),
+            avatar_url: "https://cdn.example.com/admin.webp".into(),
         };
         let bytes = user.encode_to_vec();
         let decoded = crate::admin::AdminUser::decode(bytes.as_slice()).unwrap();
@@ -1655,6 +1683,7 @@ mod tests {
                 source_provider: "alist".into(),
                 source_config: Vec::new(),
                 provider_instance_name: String::new(),
+                description: String::new(),
             })
             .unwrap_err(),
         );
@@ -1673,6 +1702,7 @@ mod tests {
             source_provider: "alist".into(),
             source_config: br#"{"path":"/tv"}"#.to_vec(),
             provider_instance_name: String::new(),
+            description: String::new(),
         })
         .expect("dynamic playlist should allow default provider instance");
     }
@@ -1683,6 +1713,7 @@ mod tests {
             &crate::validate(&crate::client::UpdatePlaylistRequest {
                 playlist_id: "playlist-1".into(),
                 name: "a".repeat(256),
+                description: String::new(),
             })
             .unwrap_err(),
         );
@@ -1766,6 +1797,7 @@ mod tests {
             provider_instance_name: String::new(),
             source_config: br#"{"path":"/tv"}"#.to_vec(),
             name: String::new(),
+            description: String::new(),
         })
         .expect("provider-backed media add should allow default provider instance");
     }
@@ -1779,6 +1811,7 @@ mod tests {
                 provider_instance_name: String::new(),
                 source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
                 name: "a".repeat(501),
+                description: String::new(),
             })
             .unwrap_err(),
         );
@@ -1794,6 +1827,7 @@ mod tests {
             provider_instance_name: String::new(),
             source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
             name: String::new(),
+            description: String::new(),
         };
         let error = validation_error_text(
             &crate::validate(&crate::client::AddMediaBatchRequest {

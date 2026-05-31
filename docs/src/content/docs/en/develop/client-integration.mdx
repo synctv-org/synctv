@@ -23,7 +23,7 @@ For a minimal runnable call chain, see [SDK and API Examples](../sdk-and-api-exa
 | Reconnect | Request a new ticket, reconnect, observe resources with local versions | [Realtime API](../realtime-api/) |
 | Build unified errors | Classify by HTTP status, business code, `request_id`, and `Retry-After` | [Errors](../../reference/errors/) |
 
-Implement sign-in, room list, ticket creation, Realtime, and playback snapshots first. Then add Providers, chat, danmaku, notifications, and WebRTC.
+Implement sign-in, room list, ticket creation, Realtime, and playback snapshots first. Then add Providers, chat, notifications, and WebRTC.
 
 ## Choose an Interface
 
@@ -32,9 +32,63 @@ Implement sign-in, room list, ticket creation, Realtime, and playback snapshots 
 | Normal business operations | HTTP/OpenAPI or public gRPC | Users, rooms, playlists, notifications, providers, and most business APIs can use either style. |
 | SDK generation | HTTP/OpenAPI | Generate TypeScript, Kotlin, Swift, Go, or other clients from `/api-docs/openapi.json`. |
 | Strongly typed internal clients | gRPC | Use `synctv-proto/proto/client.proto`, `oauth2.proto`, and provider protobuf files. |
-| Room realtime state | WebSocket or gRPC stream | Use for playback state, chat, danmaku, and WebRTC signaling. |
+| Room realtime state | WebSocket or gRPC stream | Use for playback state, chat, and WebRTC signaling. |
 | Operations management | management gRPC or CLI | Do not expose the management endpoint to normal clients. Prefer the CLI. |
 | Media playback | Direct provider URL or SyncTV proxy URL | Providers decide headers, proxy policy, and Range behavior. Clients should not infer upstream rules. |
+
+## Chat Message API
+
+Room chat is a durable message system. HTTP and gRPC handle history, single-message lookup, context lookup, send, edit, delete, image upload sessions, and read state. Realtime connections deliver message events after explicit subscription.
+
+HTTP endpoints:
+
+| Goal | HTTP |
+| --- | --- |
+| Send message | `POST /api/rooms/{room_id}/chat/messages` |
+| Create image upload session | `POST /api/rooms/{room_id}/chat/images/upload-session` |
+| Edit message | `PATCH /api/rooms/{room_id}/chat/messages/{message_id}` |
+| Delete message | `DELETE /api/rooms/{room_id}/chat/messages/{message_id}` |
+| Page history | `GET /api/rooms/{room_id}/chat/history` |
+| Fetch playback-scoped chat | `GET /api/rooms/{room_id}/chat/playback-messages` |
+| Fetch one message | `GET /api/rooms/{room_id}/chat/messages/{message_id}` |
+| Fetch message context | `GET /api/rooms/{room_id}/chat/messages/{message_id}/context` |
+| Mark read | `POST /api/rooms/{room_id}/chat/read-state` |
+| Fetch read state | `GET /api/rooms/{room_id}/chat/read-state` |
+| SSE message events | `GET /api/rooms/{room_id}/watch/chat-events` |
+
+gRPC methods on `synctv.client.RoomService`:
+
+| Goal | RPC |
+| --- | --- |
+| Send message | `SendChatMessage` |
+| Create image upload session | `CreateChatImageUploadSession` |
+| Edit message | `EditChatMessage` |
+| Delete message | `DeleteChatMessage` |
+| Page history | `GetChatHistory` |
+| Fetch one message | `GetChatMessage` |
+| Fetch message context | `GetChatMessageContext` |
+| Fetch playback-scoped chat | `GetChatPlaybackMessages` |
+| Mark read | `MarkChatRead` |
+| Fetch read state | `GetChatReadState` |
+| Server-stream message events | `WatchChatEvents` |
+
+Client rules:
+
+- `client_message_id` is the send idempotency key. `client_operation_id` is the edit/delete idempotency key. Generate a stable key for one user operation and reuse it for retries.
+- `display_position` and `display_color` are chat presentation metadata. The server validates, stores, and forwards these fields; clients may use them for any presentation mode.
+- When a message is sent, the server records the current playback context: `playback_media_id`, `playback_playlist_id`, `playback_target`, `playback_target_hash`, and `playback_position_seconds`. `GetChatPlaybackMessages` reads historical chat for the current playback object and time window.
+- `expected_version` enables optimistic locking for edit and delete. On conflict, reload the message or context before submitting again.
+- `metadata` must be a JSON object. Empty metadata can be omitted.
+- Images use `CreateChatImageUploadSession`, then the returned `ChatImage` goes into `SendChatMessage.images`. Requests must include `checksum_sha256`; the server uses global content-addressed objects for reuse. When `upload_required=true`, upload the object with `upload_url`, `upload_method`, and `upload_headers`. When `ownership_proof_required=true`, read the returned `ownership_proof_ranges` from the local original image, compute the SHA-256 hex proof with `ownership_proof_nonce`, and write it into `image.metadata[ownership_proof_metadata_key]` before sending. The proof hash input order is `synctv-file-ownership-proof-v1`, one `0x00` byte, nonce UTF-8, then each range's `offset` as big-endian i64, `length` as big-endian i32, and range bytes.
+- Chat supports image attachments. Generic file transfer belongs to a separate product capability.
+- Delete is soft delete: history and events keep the message id, version, delete actor, and reason, while content and images are hidden in deleted views.
+
+Event subscription:
+
+- In bidirectional `MessageStream`, send `observe_resource.chat_events` to receive later `resource_changed.chat_event` payloads.
+- `WatchChatEvents` is the gRPC server-streaming version.
+- HTTP SSE uses `/watch/chat-events`; initial recovery can pass `after_event_id`, and browser reconnects use `Last-Event-ID`.
+- The event cursor is `ChatMessageEvent.event_id`, separate from generic resource versions.
 
 ## Minimal HTTP Flow
 

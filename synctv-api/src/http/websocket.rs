@@ -895,6 +895,7 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::PlaybackSnapshot(_)
                 | Message::RoomMembers(_)
                 | Message::ResourceChanged(_)
+                | Message::ChatEvent(_)
                 | Message::Notification(_)
         )
     )
@@ -925,6 +926,7 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::ResourceObserved(_)) => "ResourceObserved",
         Some(Message::ResourceChanged(_)) => "ResourceChanged",
         Some(Message::ResourceObserveError(_)) => "ResourceObserveError",
+        Some(Message::ChatEvent(_)) => "ChatEvent",
         Some(Message::PlayingChanged(_)) => "PlayingChanged",
         Some(Message::WebrtcOffer(_)) => "WebrtcOffer",
         Some(Message::WebrtcAnswer(_)) => "WebrtcAnswer",
@@ -1610,7 +1612,6 @@ mod tests {
     fn test_websocket_content_filter_reuses_shared_filter() {
         let shared = Arc::new(ContentFilter::with_config(
             17,
-            9,
             Some(vec!["blocked".to_string()]),
             false,
         ));
@@ -1620,7 +1621,6 @@ mod tests {
             "websocket path must reuse the shared ContentFilter instance"
         );
         assert_eq!(selected.max_chat_length, 17);
-        assert_eq!(selected.max_danmaku_length, 9);
         assert_eq!(
             selected.filter_chat("<b>hi</b>").unwrap(),
             "<b>hi</b>",

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)\n            FROM chat_messages\n            WHERE room_id = $1\n              AND status <> $2\n              AND (user_id IS NULL OR user_id <> $3)\n              AND created_at >= NOW() - INTERVAL '90 days'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d9358d57d3bf541d517f5782c43337206b494a59364575ebc6893d38bf60f264"
+}

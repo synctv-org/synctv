@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO file_references (\n                storage_backend, object_key, reference_kind, reference_id, expires_at, metadata\n            )\n            VALUES ($1, $2, $3, $4, $5, $6)\n            ON CONFLICT (reference_kind, reference_id, storage_backend, object_key)\n            DO UPDATE SET\n                expires_at = EXCLUDED.expires_at,\n                released_at = NULL,\n                metadata = EXCLUDED.metadata,\n                updated_at = CURRENT_TIMESTAMP\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d7bebcb24a22a8979d00fdc50b68076666d88eef12781e41f9cdc242fef4c2cb"
+}

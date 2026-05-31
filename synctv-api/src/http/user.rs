@@ -2,7 +2,10 @@
 // This layer now uses proto types and delegates to the impls layer for business logic
 
 use axum::{
+    body::Bytes,
     extract::{Path, State},
+    http::{header, HeaderMap, HeaderName, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 
@@ -24,12 +27,26 @@ use crate::proto::client::{
     UpdateUserPreferencesResponse,
 };
 use crate::proto::client::{
+    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
+    GetProfileResponse as UserAvatarUpdateResponse, UpdateUserAvatarRequest,
+};
+use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
     StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
 };
 pub use crate::proto::client::{
     SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse,
 };
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UserAvatarObjectPath {
+    pub encoded_object_key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UserAvatarObjectQuery {
+    pub token: String,
+}
 
 /// Get current user info
 #[cfg_attr(
@@ -181,6 +198,148 @@ pub async fn update_user(
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
+}
+
+pub async fn create_user_avatar_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoJson(req): ProtoJson<CreateUserAvatarUploadSessionRequest>,
+) -> AppResult<Json<CreateUserAvatarUploadSessionResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .create_user_avatar_upload_session(&auth.user_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn update_user_avatar(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoJson(req): ProtoJson<UpdateUserAvatarRequest>,
+) -> AppResult<Json<UserAvatarUpdateResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.update_user_avatar(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn clear_user_avatar(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+) -> AppResult<Json<UserAvatarUpdateResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.clear_user_avatar(&auth.user_id).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn upload_user_avatar_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<UserAvatarObjectPath>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AppResult<StatusCode> {
+    let upload_token = headers
+        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| super::AppError::bad_request("Missing file upload token"))?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let req = crate::proto::client::UploadUserAvatarObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: upload_token.to_string(),
+        content_type: content_type.unwrap_or_default().to_string(),
+        data: body.to_vec(),
+    };
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    executor
+        .execute_public_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move || async move { client_api.upload_user_avatar_object(req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_user_avatar_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<UserAvatarObjectPath>,
+    axum::extract::Query(query): axum::extract::Query<UserAvatarObjectQuery>,
+) -> AppResult<Response> {
+    let req = crate::proto::client::GetUserAvatarObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: query.token,
+    };
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let blob = executor
+        .execute_public_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move || async move { client_api.get_user_avatar_object(req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    let response = (
+        [
+            (header::CONTENT_TYPE, blob.mime_type),
+            (
+                HeaderName::from_static("x-synctv-checksum-sha256"),
+                blob.checksum_sha256,
+            ),
+        ],
+        blob.data,
+    )
+        .into_response();
+    Ok(response)
 }
 
 #[cfg_attr(

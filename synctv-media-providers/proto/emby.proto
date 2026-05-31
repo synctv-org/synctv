@@ -101,6 +101,7 @@ message Item {
   repeated MediaSourceInfo media_source_info = 10;
   string collection_type = 11;
   bool has_thumbnail = 12;
+  string description = 13;
 }
 
 message GetItemsResp {

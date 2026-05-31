@@ -30,8 +30,8 @@ fn chat_event(room: &RoomId, user: &UserId) -> RealtimeEvent {
         username: "tester".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     }
 }
 

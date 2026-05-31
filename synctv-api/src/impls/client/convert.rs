@@ -65,6 +65,45 @@ fn serialize_playlist_source_config_for_viewer(
     }
 }
 
+fn metadata_i32(metadata: &serde_json::Value, key: &str) -> i32 {
+    metadata
+        .get(key)
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or_default()
+}
+
+#[must_use]
+pub(crate) fn stored_file_reference_to_resource_cover(
+    file: &synctv_core::models::StoredFileReference,
+    url: Option<String>,
+) -> crate::proto::client::ResourceCover {
+    crate::proto::client::ResourceCover {
+        storage_backend: file.storage_backend.clone(),
+        object_key: file.object_key.clone(),
+        url: url.unwrap_or_default(),
+        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
+    }
+}
+
+#[must_use]
+pub(crate) fn stored_file_reference_to_video_cover(
+    file: &synctv_core::models::StoredFileReference,
+    url: Option<String>,
+) -> crate::proto::client::VideoCover {
+    crate::proto::client::VideoCover {
+        id: file.file_reference_id.to_string(),
+        storage_backend: file.storage_backend.clone(),
+        object_key: file.object_key.clone(),
+        url: url.unwrap_or_default(),
+        mime_type: file.mime_type.clone(),
+        size_bytes: file.size_bytes,
+        width: metadata_i32(&file.metadata, "width"),
+        height: metadata_i32(&file.metadata, "height"),
+        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
+    }
+}
+
 pub(super) fn user_role_to_proto(role: synctv_core::models::UserRole) -> i32 {
     i32::from(role)
 }
@@ -265,6 +304,8 @@ pub(crate) fn user_to_proto(
         status: user_status_to_proto(user.status),
         created_at: user.created_at.timestamp(),
         is_banned: user.is_banned,
+        avatar_url: String::new(),
+        avatar: None,
     }
 }
 
@@ -281,6 +322,19 @@ pub(crate) fn room_to_proto_basic(
         ClientResourceAvailability::Available,
         public_id_codec,
     )
+}
+
+pub(crate) fn room_to_proto_basic_with_cover(
+    room: &synctv_core::models::Room,
+    settings: Option<&synctv_core::models::RoomSettings>,
+    member_count: Option<i32>,
+    cover: Option<&synctv_core::models::StoredFileReference>,
+    cover_url: Option<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Room {
+    let mut proto = room_to_proto_basic(room, settings, member_count, public_id_codec);
+    proto.cover = cover.map(|file| stored_file_reference_to_resource_cover(file, cover_url));
+    proto
 }
 
 pub(crate) fn room_to_proto_with_availability(
@@ -308,7 +362,28 @@ pub(crate) fn room_to_proto_with_availability(
         is_banned: room.is_banned,
         availability: resource_availability_enum_to_proto(availability),
         version: i64::from(room.version),
+        cover: None,
     }
+}
+
+pub(crate) fn room_to_proto_with_availability_and_cover(
+    room: &synctv_core::models::Room,
+    settings: Option<&synctv_core::models::RoomSettings>,
+    member_count: Option<i32>,
+    availability: ClientResourceAvailability,
+    cover: Option<&synctv_core::models::StoredFileReference>,
+    cover_url: Option<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Room {
+    let mut proto = room_to_proto_with_availability(
+        room,
+        settings,
+        member_count,
+        availability,
+        public_id_codec,
+    );
+    proto.cover = cover.map(|file| stored_file_reference_to_resource_cover(file, cover_url));
+    proto
 }
 
 #[cfg(test)]
@@ -398,7 +473,22 @@ pub fn media_to_proto_for_viewer(
         source_config: serialize_source_config_for_viewer(media, viewer_id),
         availability: resource_availability_to_proto(is_available),
         version: i64::from(media.version),
+        description: media.description.clone(),
+        cover: None,
     }
+}
+
+pub fn media_to_proto_for_viewer_with_cover(
+    media: &synctv_core::models::Media,
+    is_available: bool,
+    viewer_id: Option<synctv_core::models::UserId>,
+    cover: Option<&synctv_core::models::StoredFileReference>,
+    cover_url: Option<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Media {
+    let mut proto = media_to_proto_for_viewer(media, is_available, viewer_id, public_id_codec);
+    proto.cover = cover.map(|file| stored_file_reference_to_video_cover(file, cover_url));
+    proto
 }
 
 pub(crate) fn playlist_to_proto(
@@ -448,7 +538,29 @@ pub(crate) fn playlist_to_proto_for_viewer(
         source_config: serialize_playlist_source_config_for_viewer(playlist, viewer_id),
         source_provider: playlist.source_provider.clone().unwrap_or_default(),
         provider_instance_name: playlist.provider_instance_name.clone().unwrap_or_default(),
+        description: playlist.description.clone(),
+        cover: None,
     }
+}
+
+pub(crate) fn playlist_to_proto_for_viewer_with_cover(
+    playlist: &synctv_core::models::Playlist,
+    item_count: i32,
+    is_available: bool,
+    viewer_id: Option<synctv_core::models::UserId>,
+    cover: Option<&synctv_core::models::StoredFileReference>,
+    cover_url: Option<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Playlist {
+    let mut proto = playlist_to_proto_for_viewer(
+        playlist,
+        item_count,
+        is_available,
+        viewer_id,
+        public_id_codec,
+    );
+    proto.cover = cover.map(|file| stored_file_reference_to_resource_cover(file, cover_url));
+    proto
 }
 
 pub(crate) fn playlist_path_node_to_proto(
@@ -559,17 +671,6 @@ pub(crate) fn media_list_to_proto(
     public_id_codec: &crate::PublicIdCodec,
 ) -> Vec<crate::proto::client::Media> {
     map_slice_preserve_order(media, |media| media_to_proto(media, public_id_codec))
-}
-
-pub(crate) fn media_list_to_proto_with_availability<T, F>(
-    items: &[T],
-    map: F,
-) -> Vec<crate::proto::client::Media>
-where
-    T: Sync,
-    F: Fn(&T) -> crate::proto::client::Media + Sync + Send,
-{
-    map_slice_preserve_order(items, map)
 }
 
 pub(crate) fn playlist_list_to_proto<T, F>(
@@ -1157,6 +1258,7 @@ mod tests {
             room_id: RoomId::expect_positive(1202),
             creator_id: None,
             name: "Bilibili Live".to_string(),
+            description: String::new(),
             position: 0.0,
             source_provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             source_config: serde_json::json!({
@@ -1164,6 +1266,7 @@ mod tests {
                 "room_id": 12345_u64
             }),
             provider_instance_name: None,
+            cover_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1216,10 +1319,12 @@ mod tests {
             room_id: RoomId::expect_positive(102),
             creator_id: Some(UserId::expect_positive(103)),
             name: "Proto Media".to_string(),
+            description: String::new(),
             position: 3.5,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
             provider_instance_name: None,
+            cover_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 42,
@@ -1239,6 +1344,7 @@ mod tests {
             room_id: RoomId::expect_positive(102),
             creator_id: Some(creator_id),
             name: "Secret Media".to_string(),
+            description: String::new(),
             position: 1.0,
             source_provider: "alist".to_string(),
             source_config: serde_json::json!({
@@ -1259,6 +1365,7 @@ mod tests {
                 }
             }),
             provider_instance_name: Some("alist-main".to_string()),
+            cover_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 1,
@@ -1332,6 +1439,8 @@ mod tests {
             room_id: RoomId::expect_positive(102),
             creator_id: Some(UserId::expect_positive(103)),
             name: "Proto Playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 1.0,
             source_provider: None,
@@ -1355,6 +1464,8 @@ mod tests {
             room_id: RoomId::expect_positive(102),
             creator_id: Some(creator_id),
             name: "Secret Playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 1.0,
             source_provider: Some("alist".to_string()),
@@ -1419,6 +1530,7 @@ mod tests {
             id: RoomId::expect_positive(102),
             name: "Proto Room".to_string(),
             description: "Room description".to_string(),
+            cover_file_reference_id: None,
             created_by: UserId::expect_positive(103),
             status: synctv_core::models::RoomStatus::Active,
             is_banned: false,

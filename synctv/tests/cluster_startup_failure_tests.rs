@@ -8,11 +8,12 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
-    BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, GrpcRateLimitConfig, HlsStorageBackend,
-    HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-    MessagingRateLimitConfig, PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig,
-    RedisConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
+    BootstrapConfig, BufferSizesConfig, CacheConfig, ChatConfig, ClusterChannelConfig, Config,
+    ConnectionLimitsConfig, DatabaseConfig, FileStorageConfig, GrpcRateLimitConfig,
+    HlsStorageBackend, HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig,
+    MediaProvidersConfig, MessagingRateLimitConfig, PasswordComplexityConfig,
+    ProxySliceCacheConfig, PublicIdsConfig, RedisConfig, SecurityConfig, ServerConfig, TimeConfig,
+    WebAuthnConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no distributed mode)
@@ -46,6 +47,8 @@ fn standalone_test_config() -> Config {
         },
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig::default(),
+        file_storage: FileStorageConfig::default(),
+        chat: ChatConfig::default(),
         webauthn: WebAuthnConfig::default(),
         media_providers: MediaProvidersConfig::default(),
         webrtc: WebRTCConfig::default(),
@@ -142,6 +145,8 @@ fn cluster_test_config() -> Config {
             hls_storage_path: "/var/lib/synctv/hls".to_string(),
             ..LivestreamConfig::default()
         },
+        file_storage: FileStorageConfig::default(),
+        chat: ChatConfig::default(),
         webauthn: WebAuthnConfig::default(),
         media_providers: MediaProvidersConfig::default(),
         webrtc: WebRTCConfig {

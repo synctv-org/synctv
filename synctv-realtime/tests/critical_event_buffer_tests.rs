@@ -139,8 +139,8 @@ fn test_chat_message_is_not_critical() {
         username: "test_user".to_string(),
         message: "test message".to_string(),
         timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
     assert!(
         !event.is_critical(),

@@ -1,6 +1,6 @@
 ---
 title: Rate Limits and Connection Limits
-description: HTTP/gRPC request limits, chat and danmaku limits, WebSocket limits, and streaming protection.
+description: HTTP/gRPC request limits, chat limits, WebSocket limits, and streaming protection.
 ---
 
 Rate limits protect login, API, chat, WebSocket connection attempts, and streaming paths. Multi-replica deployments depend on Redis for shared rate-limit state.
@@ -22,16 +22,13 @@ When sizing these values, consider CPU, memory, file descriptor limits, reverse 
 
 ## `messaging_rate_limits`
 
-Business-layer chat and danmaku limits:
+Business-layer chat limits:
 
 ```yaml
 messaging_rate_limits:
   chat_per_second: 10
-  danmaku_per_second: 3
   window_seconds: 1
 ```
-
-Danmaku defaults are stricter because it can produce more UI and network pressure.
 
 ## HTTP Rate Limits
 

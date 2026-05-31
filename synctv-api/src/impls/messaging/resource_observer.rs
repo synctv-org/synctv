@@ -6,13 +6,14 @@ use std::time::Duration;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
-    service::RoomService,
+    service::{ChatService, RoomService},
 };
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
 use crate::impls::client::convert::{playback_client_profile_from_proto, playback_state_to_proto};
 use crate::impls::client::RoomActor;
+use crate::impls::messaging::chat_message_event_to_proto;
 use crate::impls::playback_snapshot::PlaybackSnapshotService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
@@ -26,6 +27,15 @@ use crate::resource_change::{
 const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
 pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
+const CHAT_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
+
+fn chat_event_version(event: &synctv_core::models::ChatMessageEvent) -> String {
+    format!(
+        "{}:{}",
+        event.occurred_at.timestamp_millis(),
+        event.event_id
+    )
+}
 
 #[derive(Debug, Clone, Default)]
 struct ResourceObserverState {
@@ -77,6 +87,9 @@ enum ObservationEvaluationKey {
     RoomMembers {
         delivery_mode: i32,
         request: Vec<u8>,
+    },
+    ChatEvents {
+        delivery_mode: i32,
     },
 }
 
@@ -288,6 +301,7 @@ enum ObservedResource {
     RoomMembers {
         request: crate::proto::client::GetRoomMembersRequest,
     },
+    ChatEvents,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -371,6 +385,7 @@ impl ResourceObservation {
                 delivery_mode,
                 request: request.encode_to_vec(),
             },
+            ObservedResource::ChatEvents => ObservationEvaluationKey::ChatEvents { delivery_mode },
         }
     }
 
@@ -502,6 +517,15 @@ impl ResourceObserver {
             .await
             .observations
             .contains_key(observe_id)
+    }
+
+    pub(super) async fn has_chat_events_observation(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .observations
+            .values()
+            .any(|observation| matches!(observation.resource, ObservedResource::ChatEvents))
     }
 
     fn public_room_id(&self) -> String {
@@ -968,6 +992,7 @@ impl MediaResourceHub {
             ResourceSubscriberKey,
             (Weak<ResourceObserver>, ResourceObservation, bool, u64),
         >::new();
+        let mut chat_outcome = ResourceRefreshOutcome::default();
 
         for invalidation in invalidations {
             for (key, observer, observation, revision) in &subscriptions {
@@ -975,6 +1000,50 @@ impl MediaResourceHub {
                     self.remove_stale_subscription(key, *revision).await;
                     continue;
                 };
+
+                if let ResourceInvalidation::ChatEvents { event } = invalidation {
+                    if !ResourceObserver::observation_invalidated_by_invalidation(
+                        observation,
+                        invalidation,
+                    ) {
+                        continue;
+                    }
+                    let mut updated_observation = observation.clone();
+                    updated_observation.last_version = chat_event_version(event);
+                    let changed = crate::proto::client::ResourceChanged {
+                        observe_id: updated_observation.observe_id.clone(),
+                        version: updated_observation.last_version.clone(),
+                        payload: Some(crate::proto::client::resource_changed::Payload::ChatEvent(
+                            chat_message_event_to_proto(
+                                event,
+                                &observer.public_id_codec,
+                                observer.room_id,
+                            ),
+                        )),
+                    };
+                    match self
+                        .send_and_commit_subscription_update(
+                            key,
+                            *revision,
+                            &observer,
+                            updated_observation.clone(),
+                            Some(changed),
+                        )
+                        .await
+                    {
+                        SubscriptionRefreshCommit::Committed => {
+                            observer
+                                .replace_local_observation(updated_observation)
+                                .await;
+                        }
+                        SubscriptionRefreshCommit::Stale => {}
+                        SubscriptionRefreshCommit::SendFailed(error) => {
+                            observer.remove_local_observation(&key.observe_id).await;
+                            chat_outcome.record_send_failure(key.connection_id.clone(), error);
+                        }
+                    }
+                    continue;
+                }
 
                 let should_refresh = if let ResourceInvalidation::ProviderCredential {
                     user_id,
@@ -1023,12 +1092,15 @@ impl MediaResourceHub {
             }
         }
 
-        self.refresh_subscription_batch(refresh_plan.into_iter().map(
-            |(key, (observer, observation, force, revision))| {
-                (key, observer, observation, force, revision)
-            },
-        ))
-        .await
+        let mut outcome = self
+            .refresh_subscription_batch(refresh_plan.into_iter().map(
+                |(key, (observer, observation, force, revision))| {
+                    (key, observer, observation, force, revision)
+                },
+            ))
+            .await;
+        outcome.send_failures.extend(chat_outcome.send_failures);
+        outcome
     }
 
     async fn snapshot_subscriptions(
@@ -1300,6 +1372,7 @@ impl ResourceObserver {
                 },
                 None,
             ),
+            Resource::ChatEvents(_) => (ObservedResource::ChatEvents, None),
         };
 
         Ok(ResourceObservation {
@@ -1387,6 +1460,70 @@ impl ResourceObserver {
         }
     }
 
+    pub(super) async fn replay_chat_events_after(
+        &self,
+        chat_service: &ChatService,
+        request: &crate::proto::client::ObserveResource,
+    ) -> Result<(), String> {
+        let Some(crate::proto::client::observe_resource::Resource::ChatEvents(chat_events)) =
+            request.resource.as_ref()
+        else {
+            return Ok(());
+        };
+        let observe_id = request.observe_id.trim();
+        let mut after_event_id = chat_events.after_event_id.trim().to_string();
+        if observe_id.is_empty() || after_event_id.is_empty() {
+            return Ok(());
+        }
+
+        loop {
+            let events = chat_service
+                .get_events_after(
+                    &self.room_id,
+                    Some(after_event_id.as_str()),
+                    CHAT_EVENT_REPLAY_BATCH_LIMIT,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if events.is_empty() {
+                break;
+            }
+
+            for logged in &events {
+                let event = &logged.event;
+                let version = chat_event_version(event);
+                self.send_server_message(ServerMessage {
+                    message: Some(
+                        crate::proto::client::server_message::Message::ResourceChanged(
+                            crate::proto::client::ResourceChanged {
+                                observe_id: observe_id.to_string(),
+                                version: version.clone(),
+                                payload: Some(
+                                    crate::proto::client::resource_changed::Payload::ChatEvent(
+                                        chat_message_event_to_proto(
+                                            event,
+                                            &self.public_id_codec,
+                                            self.room_id,
+                                        ),
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                })?;
+                self.update_local_observation_version(observe_id, version)
+                    .await;
+                after_event_id = event.event_id.clone();
+            }
+
+            if events.len() < usize::try_from(CHAT_EVENT_REPLAY_BATCH_LIMIT).unwrap_or(usize::MAX) {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn handle_unobserve_resource(
         self: &Arc<Self>,
         request: &crate::proto::client::UnobserveResource,
@@ -1397,6 +1534,13 @@ impl ResourceObserver {
             .unregister_observation(&self.connection_id, observe_id)
             .await;
         Ok(())
+    }
+
+    async fn update_local_observation_version(&self, observe_id: &str, version: String) {
+        let mut state = self.state.lock().await;
+        if let Some(observation) = state.observations.get_mut(observe_id) {
+            observation.last_version = version;
+        }
     }
 
     pub(super) async fn next_playback_snapshot_refresh_deadline(
@@ -1556,6 +1700,9 @@ impl ResourceObserver {
             ObservedResource::RoomMembers { .. } => {
                 matches!(invalidation, ResourceInvalidation::RoomMembers)
             }
+            ObservedResource::ChatEvents => {
+                matches!(invalidation, ResourceInvalidation::ChatEvents { .. })
+            }
         }
     }
 
@@ -1665,7 +1812,8 @@ impl ResourceObserver {
             ObservedResource::PlaybackState | ObservedResource::RoomSettings => None,
             ObservedResource::PlaybackSnapshot { .. }
             | ObservedResource::PlaylistItems { .. }
-            | ObservedResource::RoomMembers { .. } => Some(self.user_id),
+            | ObservedResource::RoomMembers { .. }
+            | ObservedResource::ChatEvents => Some(self.user_id),
         }
     }
 
@@ -1674,10 +1822,14 @@ impl ResourceObserver {
         resource: &ObservedResource,
     ) -> SharedResourceServiceIdentity {
         match resource {
-            ObservedResource::PlaybackState => SharedResourceServiceIdentity {
-                id: Arc::as_ptr(&self.room_service) as usize,
-                weak: SharedResourceServiceWeak::RoomService(Arc::downgrade(&self.room_service)),
-            },
+            ObservedResource::PlaybackState | ObservedResource::ChatEvents => {
+                SharedResourceServiceIdentity {
+                    id: Arc::as_ptr(&self.room_service) as usize,
+                    weak: SharedResourceServiceWeak::RoomService(Arc::downgrade(
+                        &self.room_service,
+                    )),
+                }
+            }
             ObservedResource::PlaybackSnapshot { .. } => {
                 self.playback_snapshot_service.read().as_ref().map_or(
                     SharedResourceServiceIdentity {
@@ -1863,6 +2015,17 @@ impl ResourceObserver {
                     }
                 };
                 (snapshot.version.clone(), None, None, payload)
+            }
+            ObservedResource::ChatEvents => {
+                let version = chrono::Utc::now().timestamp_millis().to_string();
+                let payload = match delivery_mode {
+                    ResourceDeliveryMode::NotifyOnly
+                    | ResourceDeliveryMode::Unspecified
+                    | ResourceDeliveryMode::PushSnapshot => {
+                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                    }
+                };
+                (version, None, None, payload)
             }
         };
 

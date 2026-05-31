@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH ranked AS (\n                    SELECT id, created_at,\n                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn\n                    FROM chat_messages\n                ),\n                candidates AS (\n                    SELECT id, created_at\n                    FROM ranked\n                    WHERE rn > $1\n                )\n                SELECT i.id, i.room_id, i.message_id, i.message_created_at, i.storage_backend,\n                       i.object_key, i.url, i.mime_type, i.size_bytes, i.width, i.height,\n                       i.metadata, i.created_at\n                FROM chat_message_images i\n                INNER JOIN candidates c\n                    ON c.id = i.message_id AND c.created_at = i.message_created_at\n                ORDER BY i.message_created_at, i.message_id, i.created_at\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "message_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "storage_backend",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "object_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "mime_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "size_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "width",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "height",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "44a21ddd6d38c34ec73c4868cb2300f4540638cd3845af73e30d2123d074e753"
+}

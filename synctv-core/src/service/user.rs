@@ -16,8 +16,9 @@ use crate::{
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{
-        MediaId, OpaquePasswordRecord, PlaylistId, ReviewStatus, RoomId, RoomPlaybackState,
-        SignupMethod, User, UserAuthFactors, UserId, UserPreferences, UserStatus,
+        CreateFileUploadSession, FileBlob, FileUploadSession, MediaId, NewStoredFile,
+        OpaquePasswordRecord, PlaylistId, ReviewStatus, RoomId, RoomPlaybackState, SignupMethod,
+        User, UserAuthFactors, UserId, UserPreferences, UserStatus,
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -31,9 +32,15 @@ use crate::{
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     service::session_store::RedisJsonSessionStore,
-    service::{permission::PermissionWriteFence, PermissionService},
+    service::{
+        file_storage::{FileStorageCleanupOrigin, FileStorageContext, FileStorageService},
+        permission::PermissionWriteFence,
+        user_avatar_upload_policy, PermissionService,
+    },
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
+
+const USER_AVATAR_REFERENCE_KIND: &str = "user_avatar";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationMode {
@@ -88,6 +95,10 @@ const OAUTH2_PENDING_REGISTRATION_LOCK_NS: i32 = 20_260_407;
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or_default()
+}
+
+fn user_avatar_storage_scope(user_id: UserId) -> String {
+    format!("users/{}/avatars", user_id.as_i64())
 }
 
 #[derive(Debug)]
@@ -779,6 +790,17 @@ pub struct UserDeletionSummary {
     pub modified_rooms: Vec<UserDeletedRoomImpact>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateUserAvatarUploadSession {
+    pub client_avatar_id: Option<String>,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub checksum_sha256: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Default)]
 struct UserDeletionCleanupStats {
     oauth_mappings_deleted: u64,
@@ -886,6 +908,7 @@ pub struct UserService {
     mfa_session_store: Arc<dyn MfaSessionStore>,
     permission_service: Option<PermissionService>,
     consistency: ConsistencyCoordinator,
+    file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
 #[derive(Default)]
@@ -901,6 +924,7 @@ pub struct UserServiceRuntimeOptions {
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub permission_service: Option<PermissionService>,
     pub version_fence: Option<Arc<dyn VersionFenceStore>>,
+    pub file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
 pub struct UserServiceDependencies {
@@ -2242,6 +2266,7 @@ impl UserService {
                 .mfa_session_store
                 .unwrap_or_else(local_mfa_session_store),
             permission_service: runtime.permission_service,
+            file_storage_service: runtime.file_storage_service,
             consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
@@ -4698,6 +4723,176 @@ impl UserService {
         Ok(updated_user)
     }
 
+    pub async fn create_avatar_upload_session(
+        &self,
+        user_id: &UserId,
+        request: CreateUserAvatarUploadSession,
+    ) -> Result<FileUploadSession> {
+        let storage = self.file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for user avatars".to_string())
+        })?;
+        self.repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+        storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id: *user_id,
+                storage_scope: user_avatar_storage_scope(*user_id),
+                client_file_id: request.client_avatar_id,
+                mime_type: request.mime_type,
+                size_bytes: request.size_bytes,
+                width: request.width,
+                height: request.height,
+                checksum_sha256: request.checksum_sha256,
+                metadata: request.metadata,
+                policy: user_avatar_upload_policy(),
+            })
+            .await
+    }
+
+    pub async fn store_avatar_upload_object(
+        &self,
+        encoded_object_key: &str,
+        upload_token: &str,
+        content_type: Option<&str>,
+        data: Vec<u8>,
+    ) -> Result<FileBlob> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidInput("file storage is not configured for user avatars".to_string())
+            })?
+            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .await
+    }
+
+    pub async fn get_avatar_object(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+    ) -> Result<FileBlob> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object(encoded_object_key, read_token)
+            .await
+    }
+
+    pub async fn update_avatar(&self, user_id: &UserId, file: NewStoredFile) -> Result<User> {
+        let storage = self.file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for user avatars".to_string())
+        })?;
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        let current_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        let storage_scope = user_avatar_storage_scope(*user_id);
+        let prepared = storage
+            .prepare_files(
+                FileStorageContext {
+                    user_id: *user_id,
+                    storage_scope: &storage_scope,
+                    client_request_id: None,
+                },
+                vec![file],
+            )
+            .await?;
+        let file = prepared
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidInput("avatar file is required".to_string()))?;
+
+        let new_reference_id = crate::repository::FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            &file.storage_backend,
+            &file.object_key,
+            USER_AVATAR_REFERENCE_KIND,
+            &user_id.as_i64().to_string(),
+            None,
+            &file.metadata,
+        )
+        .await?
+        .ok_or_else(|| Error::InvalidInput("avatar file object is not registered".to_string()))?;
+        let old_reference = if let Some(reference_id) = current_user.avatar_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.repository.pool().clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| {
+                    reference
+                        .reference_target(USER_AVATAR_REFERENCE_KIND, user_id.as_i64().to_string())
+                })
+        } else {
+            None
+        };
+
+        let updated_user = self
+            .repository
+            .update_avatar_with_executor(
+                user_id,
+                Some(new_reference_id),
+                current_user.version,
+                &mut *tx,
+            )
+            .await?;
+        tx.commit().await?;
+
+        if let Some(old_reference) = old_reference {
+            if old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key
+            {
+                storage
+                    .delete_files(
+                        FileStorageCleanupOrigin::ReferenceReleased,
+                        &[old_reference],
+                    )
+                    .await?;
+            }
+        }
+        self.notify_user_invalidation(user_id).await;
+
+        Ok(updated_user)
+    }
+
+    pub async fn clear_avatar(&self, user_id: &UserId) -> Result<User> {
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        let current_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+        let old_reference = if let Some(reference_id) = current_user.avatar_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.repository.pool().clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| {
+                    reference
+                        .reference_target(USER_AVATAR_REFERENCE_KIND, user_id.as_i64().to_string())
+                })
+        } else {
+            None
+        };
+        let updated_user = self
+            .repository
+            .update_avatar_with_executor(user_id, None, current_user.version, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        if let (Some(storage), Some(reference)) =
+            (self.file_storage_service.as_ref(), old_reference)
+        {
+            storage
+                .delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
+                .await?;
+        }
+        self.notify_user_invalidation(user_id).await;
+
+        Ok(updated_user)
+    }
+
     pub async fn start_email_bind(&self, user_id: &UserId, email: &str) -> Result<String> {
         let email = self.validate_email_bind_target(user_id, email).await?;
         let token = synctv_common::snanoid!(64);
@@ -5476,6 +5671,11 @@ impl UserService {
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         self.repository.pool()
+    }
+
+    #[must_use]
+    pub fn file_storage_service(&self) -> Option<&Arc<dyn FileStorageService>> {
+        self.file_storage_service.as_ref()
     }
 
     /// Get the access token duration in seconds from the JWT service

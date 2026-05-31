@@ -23,7 +23,7 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 | 实现重连 | WebSocket 断开后重新申请 ticket、重连、用本地版本重新观察资源 | [Realtime API](../realtime-api/) |
 | 统一错误体验 | 按 HTTP status、业务 code、`request_id`、`Retry-After` 分类处理 | [错误参考](../../reference/errors/) |
 
-先实现登录、房间列表、ticket、Realtime 和播放快照，再扩展 Provider、聊天、弹幕、通知和 WebRTC。这样可以尽早验证客户端已经理解 SyncTV 的核心状态模型。
+先实现登录、房间列表、ticket、Realtime 和播放快照，再扩展 Provider、聊天、通知和 WebRTC。这样可以尽早验证客户端已经理解 SyncTV 的核心状态模型。
 
 ## 选择哪种接口
 
@@ -32,9 +32,63 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 | 普通业务操作 | HTTP/OpenAPI 或公开 gRPC | 用户、房间、播放列表、通知、Provider 等业务都可以按客户端技术栈选择。 |
 | 生成 SDK | HTTP/OpenAPI | 通过 `/api-docs/openapi.json` 生成 TypeScript、Kotlin、Swift、Go 等客户端。 |
 | 强类型内部客户端 | gRPC | 直接使用 `synctv-proto/proto/client.proto`、`oauth2.proto` 和 provider proto。 |
-| 房间实时状态 | WebSocket 或 gRPC stream | 需要收发实时播放、聊天、弹幕、WebRTC 信令时使用。 |
+| 房间实时状态 | WebSocket 或 gRPC stream | 需要收发实时播放、聊天、WebRTC 信令时使用。 |
 | 运维管理 | management gRPC/CLI | 不要把 management 端点暴露给普通客户端。CLI 是日常入口。 |
 | 媒体播放 | Provider 返回的直连 URL 或 SyncTV proxy URL | Provider 决定 header、代理策略和 Range 行为。客户端不要猜测底层上游规则。 |
+
+## 聊天消息 API
+
+房间聊天是持久化消息系统。HTTP 和 gRPC 负责历史、单条消息、上下文、发送、编辑、删除、图片上传会话和已读状态；实时连接负责订阅之后的消息事件推送。
+
+HTTP 入口：
+
+| 目标 | HTTP |
+| --- | --- |
+| 发送消息 | `POST /api/rooms/{room_id}/chat/messages` |
+| 创建图片上传会话 | `POST /api/rooms/{room_id}/chat/images/upload-session` |
+| 编辑消息 | `PATCH /api/rooms/{room_id}/chat/messages/{message_id}` |
+| 删除消息 | `DELETE /api/rooms/{room_id}/chat/messages/{message_id}` |
+| 历史分页 | `GET /api/rooms/{room_id}/chat/history` |
+| 按播放位置获取聊天 | `GET /api/rooms/{room_id}/chat/playback-messages` |
+| 获取单条消息 | `GET /api/rooms/{room_id}/chat/messages/{message_id}` |
+| 获取消息上下文 | `GET /api/rooms/{room_id}/chat/messages/{message_id}/context` |
+| 标记已读 | `POST /api/rooms/{room_id}/chat/read-state` |
+| 查询已读状态 | `GET /api/rooms/{room_id}/chat/read-state` |
+| SSE 消息事件 | `GET /api/rooms/{room_id}/watch/chat-events` |
+
+gRPC 对应 `synctv.client.RoomService`：
+
+| 目标 | RPC |
+| --- | --- |
+| 发送消息 | `SendChatMessage` |
+| 创建图片上传会话 | `CreateChatImageUploadSession` |
+| 编辑消息 | `EditChatMessage` |
+| 删除消息 | `DeleteChatMessage` |
+| 历史分页 | `GetChatHistory` |
+| 获取单条消息 | `GetChatMessage` |
+| 获取消息上下文 | `GetChatMessageContext` |
+| 按播放位置获取聊天 | `GetChatPlaybackMessages` |
+| 标记已读 | `MarkChatRead` |
+| 查询已读状态 | `GetChatReadState` |
+| 服务端流消息事件 | `WatchChatEvents` |
+
+客户端发送规则：
+
+- `client_message_id` 是发送幂等键；`client_operation_id` 是编辑和删除幂等键。客户端应为一次用户操作生成稳定 key，重试时复用同一个 key。
+- `display_position` 和 `display_color` 是聊天展示元数据。服务端验证、存储、转发这些字段；客户端可以把它们用于任意展示形态。
+- 发送消息时服务端会记录当前播放上下文，包括 `playback_media_id`、`playback_playlist_id`、`playback_target`、`playback_target_hash` 和 `playback_position_seconds`。`GetChatPlaybackMessages` 可按当前播放对象和时间窗口读取历史聊天。
+- `expected_version` 用于编辑和删除的乐观锁。客户端持有旧版本时会收到冲突错误，应重新读取消息或上下文后再提交。
+- `metadata` 必须是 JSON object。空 metadata 可省略。
+- 图片走 `CreateChatImageUploadSession`，再把返回的 `ChatImage` 放进 `SendChatMessage.images`。请求必须带 `checksum_sha256`，服务端用全局内容寻址对象实现复用；`upload_required=true` 时先按 `upload_url`、`upload_method`、`upload_headers` 上传对象；`ownership_proof_required=true` 时按返回的 `ownership_proof_nonce` 和 `ownership_proof_ranges` 从本地原图读取字节，计算 SHA-256 hex，并写入 `image.metadata[ownership_proof_metadata_key]` 后发送。proof 哈希输入顺序为 `synctv-file-ownership-proof-v1`、一个 `0x00` 字节、nonce UTF-8、每个 range 的 `offset` big-endian i64、`length` big-endian i32、range 字节。
+- 聊天只支持图片附件。通用文件传输属于另一类产品能力。
+- 删除是软删除：历史和事件保留消息 id、版本、删除者和原因，内容与图片按删除视图隐藏。
+
+事件订阅：
+
+- 双向 `MessageStream` 里发送 `observe_resource.chat_events` 后，连接会收到订阅后的 `resource_changed.chat_event`。
+- `WatchChatEvents` 是 gRPC 服务端流版本。
+- HTTP SSE 使用 `/watch/chat-events`，首次恢复可传 `after_event_id`，浏览器重连时服务端读取 `Last-Event-ID`。
+- 事件游标使用 `ChatMessageEvent.event_id`，和普通 resource version 分开。
 
 ## 最小 HTTP 流程
 

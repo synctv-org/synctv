@@ -5,7 +5,7 @@ description: SyncTV room WebSocket realtime protocol, connection authentication,
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-The Realtime API is the room-scoped long-lived connection protocol. It carries chat, danmaku, playback commands, playback progress, WebRTC signaling, and subscriptions to cacheable room resources.
+The Realtime API is the room-scoped long-lived connection protocol. It carries chat, playback commands, playback progress, WebRTC signaling, and subscriptions to cacheable room resources.
 
 Use HTTP/OpenAPI or gRPC for one-shot reads and writes. Use Realtime when a client needs low-latency push, less polling, or continuously synchronized room state.
 
@@ -62,7 +62,7 @@ A guest can enter only when all of these are true:
 - The room has no password and is not closed or banned.
 - The guest token still matches the room guest version. Disabling guests, adding a password, or revoking guest access invalidates older tokens.
 
-Guests receive only basic realtime room state by default. They cannot read or manage media resources, send chat, or send danmaku. A room may grant guest-safe capabilities through `guest_added_permissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, media-resource management, member administration, room administration, Provider credential, or management-plane APIs.
+Guests receive only basic realtime room state by default. They cannot read or manage media resources or send chat. A room may grant guest-safe capabilities through `guest_added_permissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, media-resource management, member administration, room administration, Provider credential, or management-plane APIs.
 
 ```bash
 curl -sS "$BASE_URL/api/auth/guest-token" \
@@ -88,7 +88,7 @@ authorization: Bearer <guest_token>
 | Scenario | Why Realtime |
 | --- | --- |
 | Synchronized playback | Play, pause, seek, and media changes need low-latency propagation |
-| Chat and danmaku | Room members need messages immediately |
+| Chat | Chat message events are delivered after explicit subscription |
 | Playback snapshot | Expired URLs, Provider credential changes, and media switches need refreshes |
 | Room members | Joins, leaves, and permission changes need UI sync |
 | WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding; targets use `public_actor_id:conn_id`, where signed-in users are `usr_*` and guests are `gst_*` |
@@ -101,7 +101,7 @@ Common client messages:
 
 | `ClientMessage` field | Purpose |
 | --- | --- |
-| `chat` | Send chat or danmaku |
+| `chat` | Send chat |
 | `heartbeat` | Client heartbeat |
 | `playback_progress` | Report current playback position and play/pause state |
 | `playback_update` | Send a playback state update command |
@@ -114,7 +114,7 @@ Common server messages:
 
 | `ServerMessage` field | Purpose |
 | --- | --- |
-| `chat` | Chat or danmaku received |
+| `chat` | Chat message received |
 | `heartbeat_ack` | Heartbeat acknowledgement |
 | `error` | General business error |
 | `playback_state` / `playing_changed` | Playback state or playback target changed |
@@ -122,6 +122,7 @@ Common server messages:
 | `media_added` / `media_updated` / `media_removed` | Media changed |
 | `playlist_created` / `playlist_updated` / `playlist_deleted` | Playlist changed |
 | `permission_changed` / `user_joined` / `user_left` / `room_members` | Member or permission changed |
+| `chat_event` or `resource_changed.chat_event` | Chat message event after explicit subscription |
 | `resource_observed` / `resource_changed` / `resource_observe_error` | Resource observation result |
 
 Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [SDK and API Examples](../sdk-and-api-examples/).
@@ -132,6 +133,11 @@ All Realtime API business messages live in the `ClientMessage.message` and `Serv
 
 ```ts
 function handleServerMessage(message) {
+  if (message.chatEvent) {
+    appendChatEvent(message.chatEvent);
+    return;
+  }
+
   if (message.chat) {
     appendChat(message.chat);
     return;
@@ -143,6 +149,11 @@ function handleServerMessage(message) {
   }
 
   if (message.resourceChanged) {
+    if (message.resourceChanged.chatEvent) {
+      appendChatEvent(message.resourceChanged.chatEvent);
+      return;
+    }
+
     handleResourceChanged(message.resourceChanged);
     return;
   }
@@ -154,6 +165,8 @@ function handleServerMessage(message) {
 ```
 
 After connecting, subscribe to the resources needed by the current view. See [Realtime Resource Observation](../realtime-resource-observation/).
+
+Chat message events use their own cursor: in bidirectional streams, send `observe_resource.chat_events.after_event_id` to replay events after a known event; HTTP SSE `GET /api/rooms/<room_id>/watch/chat-events` accepts the `after_event_id` query parameter and reads the browser's `Last-Event-ID` header on reconnect. The server sets the SSE `id:` field, so clients can persist that value for recovery.
 
 ## Reconnect Flow
 

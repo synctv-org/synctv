@@ -69,6 +69,7 @@ indexmap.workspace = true
 
 # Utilities
 anyhow.workspace = true
+opendal.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true

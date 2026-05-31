@@ -5,7 +5,7 @@ description: SyncTV 房间 WebSocket 实时协议、连接认证、基础消息�
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-Realtime API 是房间内的长连接协议。它用于聊天、弹幕、播放控制、播放进度、WebRTC 信令，以及订阅房间内可缓存资源的变化。
+Realtime API 是房间内的长连接协议。它用于聊天、播放控制、播放进度、WebRTC 信令，以及订阅房间内可缓存资源的变化。
 
 如果你只需要一次性读取或修改资源，优先使用 HTTP/OpenAPI 或 gRPC。只有需要低延迟推送、减少轮询、或保持房间实时状态时，才使用 Realtime API。
 
@@ -62,7 +62,7 @@ function sendClientMessage(message) {
 - 房间没有密码，且未关闭、未封禁。
 - guest token 的房间版本仍然有效；房间关闭游客、设置密码或触发游客吊销后，旧 token 失效。
 
-游客默认只能接收基础房间实时状态，不能读取播放列表、发送聊天/弹幕或管理媒体。房间可以通过 `guest_added_permissions` 开放 guest 安全能力，例如成员列表、聊天历史或 WebRTC 信令；该上限独立于 member 权限。即使增加权限，游客仍不能调用账号、播放列表、媒体管理、成员管理、房间管理、Provider 凭据或管理面接口。
+游客默认只能接收基础房间实时状态，不能读取播放列表、发送聊天或管理媒体。房间可以通过 `guest_added_permissions` 开放 guest 安全能力，例如成员列表、聊天历史或 WebRTC 信令；该上限独立于 member 权限。即使增加权限，游客仍不能调用账号、播放列表、媒体管理、成员管理、房间管理、Provider 凭据或管理面接口。
 
 ```bash
 curl -sS "$BASE_URL/api/auth/guest-token" \
@@ -88,7 +88,7 @@ authorization: Bearer <guest_token>
 | 场景 | 使用 Realtime 的原因 |
 | --- | --- |
 | 同步播放 | 播放、暂停、seek、切换媒体需要低延迟传播 |
-| 聊天和弹幕 | 房间成员需要实时收到消息 |
+| 聊天 | 聊天消息事件通过显式订阅接收 |
 | 播放快照 | URL 过期、Provider 凭据变化或媒体切换后需要刷新 |
 | 房间成员列表 | 成员加入、离开、权限变化需要同步 UI |
 | WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发；目标地址使用 `public_actor_id:conn_id`，登录用户是 `usr_*`，游客是 `gst_*` |
@@ -101,7 +101,7 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<room_id>/webrtc/ice-se
 
 | `ClientMessage` 字段 | 用途 |
 | --- | --- |
-| `chat` | 发送聊天或弹幕消息 |
+| `chat` | 发送聊天消息 |
 | `heartbeat` | 客户端心跳 |
 | `playback_progress` | 上报当前播放位置和播放状态 |
 | `playback_update` | 发起播放状态更新命令 |
@@ -114,7 +114,7 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<room_id>/webrtc/ice-se
 
 | `ServerMessage` 字段 | 用途 |
 | --- | --- |
-| `chat` | 收到聊天或弹幕 |
+| `chat` | 收到聊天消息 |
 | `heartbeat_ack` | 心跳确认 |
 | `error` | 普通业务错误 |
 | `playback_state` / `playing_changed` | 播放状态或播放目标变化 |
@@ -122,6 +122,7 @@ WebRTC 客户端在发送信令前调用 `GET /api/rooms/<room_id>/webrtc/ice-se
 | `media_added` / `media_updated` / `media_removed` | 媒体变更广播 |
 | `playlist_created` / `playlist_updated` / `playlist_deleted` | 播放列表变更广播 |
 | `permission_changed` / `user_joined` / `user_left` / `room_members` | 成员和权限变化 |
+| `chat_event` 或 `resource_changed.chat_event` | 显式订阅后的聊天消息事件 |
 | `resource_observed` / `resource_changed` / `resource_observe_error` | 实时资源观察结果 |
 
 字段的完整结构以 `synctv-proto/proto/client.proto` 为准。端到端示例见 [SDK 与 API 示例](../sdk-and-api-examples/)。
@@ -132,6 +133,11 @@ Realtime API 的所有业务消息都在 `ClientMessage.message` 和 `ServerMess
 
 ```ts
 function handleServerMessage(message) {
+  if (message.chatEvent) {
+    appendChatEvent(message.chatEvent);
+    return;
+  }
+
   if (message.chat) {
     appendChat(message.chat);
     return;
@@ -143,6 +149,11 @@ function handleServerMessage(message) {
   }
 
   if (message.resourceChanged) {
+    if (message.resourceChanged.chatEvent) {
+      appendChatEvent(message.resourceChanged.chatEvent);
+      return;
+    }
+
     handleResourceChanged(message.resourceChanged);
     return;
   }
@@ -154,6 +165,8 @@ function handleServerMessage(message) {
 ```
 
 连接建立后，先订阅当前页面需要的资源。资源观察见 [Realtime 资源观察](../realtime-resource-observation/)。
+
+聊天消息事件使用独立游标：双向流中发送 `observe_resource.chat_events.after_event_id` 可以补发指定事件之后的事件；HTTP SSE `GET /api/rooms/<room_id>/watch/chat-events` 支持 `after_event_id` 查询参数，并在重连时读取浏览器发送的 `Last-Event-ID`。服务端会在 SSE 事件上设置 `id:`，客户端保存该值即可恢复。
 
 ## 重连流程
 

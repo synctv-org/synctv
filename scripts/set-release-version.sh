@@ -54,14 +54,20 @@ perl -0pi -e '
   s/(--version\s+)[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?/$1$version/g;
 ' helm/synctv/README.md
 
-cargo_version="$(awk '/^\[workspace.package\]/{in_section=1; next} /^\[/{in_section=0} in_section && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)"
-chart_version="$(sed -n 's/^version:[[:space:]]*//p' helm/synctv/Chart.yaml | head -n1 | tr -d '"')"
-app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' helm/synctv/Chart.yaml | head -n1 | tr -d '"')"
+cargo_version="$(cargo metadata --format-version 1 --no-deps | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); process.stdout.write(meta.workspace_default_members.length ? meta.packages.find((pkg) => pkg.id === meta.workspace_default_members[0]).version : meta.packages[0].version);')"
+chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' helm/synctv/Chart.yaml)"
+app_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("appVersion")' helm/synctv/Chart.yaml)"
 docs_package_version="$(node -p 'require("./docs/package.json").version')"
 docs_lock_version="$(node -p 'require("./docs/package-lock.json").version')"
 docs_lock_root_version="$(node -p 'require("./docs/package-lock.json").packages[""].version')"
-docs_default_app_version="$(sed -n "s/.*defaultAppVersion = '\\([^']*\\)';.*/\\1/p" docs/src/lib/project.ts)"
-compose_image_tag="$(sed -n 's/.*SYNCTV_IMAGE_TAG:-\([^}]*\).*/\1/p' docker-compose.yml | head -n1)"
+docs_default_app_version="$(node --input-type=module -e 'const project = await import("./docs/src/lib/project.ts"); process.stdout.write(project.dockerImageTag);')"
+compose_image_tag="$(ruby -ryaml -e '
+  compose = YAML.load_file(ARGV.fetch(0))
+  image = compose.fetch("services").fetch("synctv").fetch("image")
+  match = image.match(/\$\{SYNCTV_IMAGE_TAG:-([^}]+)\}/)
+  abort("docker-compose.yml synctv image must use SYNCTV_IMAGE_TAG fallback") unless match
+  puts match[1]
+' docker-compose.yml)"
 
 if [ "$cargo_version" != "$version" ] ||
   [ "$chart_version" != "$version" ] ||

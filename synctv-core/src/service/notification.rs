@@ -54,14 +54,6 @@ pub enum RoomEvent {
         content: String,
         timestamp: chrono::DateTime<chrono::Utc>,
     },
-    /// Danmaku message
-    Danmaku {
-        user_id: UserId,
-        username: String,
-        content: String,
-        position: String, // "top", "bottom", or "scrolling"
-        timestamp: chrono::DateTime<chrono::Utc>,
-    },
     /// Playback state changed
     PlaybackStateChanged {
         playing: bool,
@@ -175,7 +167,6 @@ impl RoomEvent {
             Self::UserJoined { .. } => "user_joined",
             Self::UserLeft { .. } => "user_left",
             Self::ChatMessage { .. } => "chat_message",
-            Self::Danmaku { .. } => "danmaku",
             Self::PlaybackStateChanged { .. } => "playback_state_changed",
             Self::MediaAdded { .. } => "media_added",
             Self::MediaRemoved { .. } => "media_removed",
@@ -309,25 +300,6 @@ impl NotificationService {
             user_id: *user_id,
             username: username.to_string(),
             content: content.to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        self.broadcast_to_room(room_id, &event)
-    }
-
-    /// Broadcast danmaku message
-    pub fn notify_danmaku(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        username: &str,
-        content: &str,
-        position: &str,
-    ) -> Result<()> {
-        let event = RoomEvent::Danmaku {
-            user_id: *user_id,
-            username: username.to_string(),
-            content: content.to_string(),
-            position: position.to_string(),
             timestamp: chrono::Utc::now(),
         };
         self.broadcast_to_room(room_id, &event)
@@ -645,13 +617,6 @@ mod tests {
                 user_id: UserId::new(),
                 username: "test".to_string(),
                 content: "hello".to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-            RoomEvent::Danmaku {
-                user_id: UserId::new(),
-                username: "test".to_string(),
-                content: "hello".to_string(),
-                position: "top".to_string(),
                 timestamp: chrono::Utc::now(),
             },
             RoomEvent::PlaybackStateChanged {

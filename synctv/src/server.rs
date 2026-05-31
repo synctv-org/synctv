@@ -1694,7 +1694,6 @@ impl SyncTvServer {
                 proxy_http_client,
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig {
                     chat_per_second: self.config.messaging_rate_limits.chat_per_second,
-                    danmaku_per_second: self.config.messaging_rate_limits.danmaku_per_second,
                     window_seconds: self.config.messaging_rate_limits.window_seconds,
                 },
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),

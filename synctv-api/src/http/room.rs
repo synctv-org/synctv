@@ -3,8 +3,13 @@
 // Request and response types are proto-generated structs.
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
-    response::sse::{Event, KeepAlive, Sse},
+    http::{header, HeaderMap, StatusCode},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -21,29 +26,39 @@ use tokio_stream::{Stream, StreamExt};
 
 use super::validation::{ProtoJson, ProtoQuery};
 use super::websocket::RealtimeTransportFormat;
-use super::{middleware::RequestMetadata, AppResult, AppState};
+use super::{middleware::RequestMetadata, AppError, AppResult, AppState};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
-    AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomResponse,
-    ClearPlaylistRequest, ClearPlaylistResponse, CreatePlaylistRequest, CreatePlaylistResponse,
-    CreateRoomRequest, CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse,
-    DeleteMediaQuery, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery,
-    DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomResponse, EditMediaResponse,
-    GetChatHistoryRequest, GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse,
-    GetPlaybackRequest, GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse,
-    GetRoomResponse, GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, JoinRoomResponse,
-    KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomResponse, ListPlaylistItemsRequest,
-    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
-    ListRoomsRequest, ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
-    ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
-    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
-    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdatePlaybackRequest,
-    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, WatchOptions,
-    WatchPlaybackSnapshotRequest, WatchPlaybackStateRequest, WatchPlaylistItemsRequest,
-    WatchRoomMembersRequest, WatchRoomSettingsRequest,
+    AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, ChatMessageEventResponse,
+    ChatReadStateResponse, CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse,
+    CreateChatImageUploadSessionRequest, CreateChatImageUploadSessionResponse,
+    CreatePlaylistCoverUploadSessionRequest, CreatePlaylistCoverUploadSessionResponse,
+    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomCoverUploadSessionRequest,
+    CreateRoomCoverUploadSessionResponse, CreateRoomRequest, CreateRoomResponse,
+    CreateVideoCoverUploadSessionRequest, CreateVideoCoverUploadSessionResponse,
+    DeleteChatMessageRequest, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
+    DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery, DeletePlaylistRequest,
+    DeletePlaylistResponse, DeleteRoomResponse, EditChatMessageRequest, EditMediaResponse,
+    GetChatHistoryRequest, GetChatHistoryResponse, GetChatMessageContextRequest,
+    GetChatMessageContextResponse, GetChatMessageRequest, GetChatMessageResponse,
+    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
+    GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
+    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse, GetRoomStreamInfoRequest,
+    GetRoomStreamInfoResponse, JoinRoomResponse, KickRoomStreamRequest, KickRoomStreamResponse,
+    LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest, ListPlaylistsResponse,
+    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
+    MarkChatReadRequest, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
+    ResetRoomSettingsResponse, SendChatMessageRequest, SetRoomPasswordRequest,
+    SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
+    StopPlaybackResponse, TransferRoomOwnershipRequest, TransferRoomOwnershipResponse,
+    UpdatePlaybackRequest, UpdatePlaylistCoverRequest, UpdatePlaylistResponse,
+    UpdateRoomCoverRequest, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    UpdateVideoCoverRequest, WatchChatEventsRequest, WatchOptions, WatchPlaybackSnapshotRequest,
+    WatchPlaybackStateRequest, WatchPlaylistItemsRequest, WatchRoomMembersRequest,
+    WatchRoomSettingsRequest,
 };
 
 pub type SetRoomPasswordBody = SetRoomPasswordRequest;
@@ -54,6 +69,62 @@ pub type StopPlaybackBody = StopPlaybackRequest;
 pub type AddMediaBody = AddMediaRequest;
 pub type DeleteEntriesBody = DeleteEntriesRequest;
 pub type ClearPlaylistBody = ClearPlaylistRequest;
+pub type SendChatMessageBody = SendChatMessageRequest;
+pub type CreateChatImageUploadSessionBody = CreateChatImageUploadSessionRequest;
+pub type CreateVideoCoverUploadSessionBody = CreateVideoCoverUploadSessionRequest;
+pub type UpdateVideoCoverBody = UpdateVideoCoverRequest;
+pub type CreateRoomCoverUploadSessionBody = CreateRoomCoverUploadSessionRequest;
+pub type UpdateRoomCoverBody = UpdateRoomCoverRequest;
+pub type CreatePlaylistCoverUploadSessionBody = CreatePlaylistCoverUploadSessionRequest;
+pub type UpdatePlaylistCoverBody = UpdatePlaylistCoverRequest;
+pub type EditChatMessageBody = EditChatMessageRequest;
+pub type DeleteChatMessageBody = DeleteChatMessageRequest;
+pub type MarkChatReadBody = MarkChatReadRequest;
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatMessagePath {
+    pub room_id: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatImageObjectPath {
+    pub encoded_object_key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatImageObjectQuery {
+    pub token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VideoCoverObjectPath {
+    pub encoded_object_key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VideoCoverObjectQuery {
+    pub token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RoomCoverObjectPath {
+    pub encoded_object_key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RoomCoverObjectQuery {
+    pub token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PlaylistCoverObjectPath {
+    pub encoded_object_key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PlaylistCoverObjectQuery {
+    pub token: String,
+}
 #[derive(Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct KickRoomStreamBody {
@@ -118,6 +189,7 @@ pub struct WatchQuery {
     pub version: Option<String>,
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
+    pub after_event_id: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -372,17 +444,25 @@ fn sse_event_from_server_message(
 ) -> Option<Result<Event, Infallible>> {
     use crate::proto::client::server_message::Message;
 
-    let (event_name, data) = match message.message? {
+    let (event_name, event_id, data) = match message.message? {
         Message::ResourceObserved(observed) => (
             "observed",
+            None,
             encode_resource_watch_sse_data(format, &observed),
         ),
         Message::ResourceChanged(changed) => {
-            ("changed", encode_resource_watch_sse_data(format, &changed))
+            let event_id = sse_event_id_from_resource_changed(&changed);
+            (
+                "changed",
+                event_id,
+                encode_resource_watch_sse_data(format, &changed),
+            )
         }
-        Message::ResourceObserveError(error) => {
-            ("error", encode_resource_watch_sse_data(format, &error))
-        }
+        Message::ResourceObserveError(error) => (
+            "error",
+            None,
+            encode_resource_watch_sse_data(format, &error),
+        ),
         _ => return None,
     };
     let data = match data {
@@ -394,7 +474,45 @@ fn sse_event_from_server_message(
                 .data(r#"{"message":"Failed to serialize resource watch event"}"#)));
         }
     };
-    Some(Ok(Event::default().event(event_name).data(data)))
+    let mut event = Event::default().event(event_name).data(data);
+    if let Some(event_id) = event_id {
+        event = event.id(event_id);
+    }
+    Some(Ok(event))
+}
+
+fn sse_event_id_from_resource_changed(
+    changed: &crate::proto::client::ResourceChanged,
+) -> Option<String> {
+    let Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) =
+        changed.payload.as_ref()
+    else {
+        return None;
+    };
+    let trimmed = event.event_id.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn chat_watch_after_event_id(headers: &HeaderMap, query: &WatchQuery) -> Option<String> {
+    header_last_event_id(headers).or_else(|| trimmed_query_after_event_id(query))
+}
+
+fn header_last_event_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn trimmed_query_after_event_id(query: &WatchQuery) -> Option<String> {
+    query
+        .after_event_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 async fn open_resource_watch_sse(
@@ -459,6 +577,7 @@ async fn open_resource_watch_sse(
         room_id,
         principal,
         room_service: state.room_service.clone(),
+        chat_service: state.chat_service.clone(),
         event_service,
         connection_service: state.connection_manager.clone(),
         public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
@@ -1291,6 +1410,54 @@ pub async fn watch_room_members(
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/watch/chat-events",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
+            ("after_event_id" = Option<String>, Query, description = "Replay chat events strictly after this event id"),
+            ("delivery_mode" = Option<String>, Query, description = "Resource watch delivery mode")
+        ),
+        responses(
+            (status = 200, description = "SSE stream of chat resource events"),
+            (status = 400, description = "Invalid request or event cursor", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Realtime manager unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn watch_chat_events(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = extract_room_id(path);
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let request = WatchChatEventsRequest {
+        options: Some(watch_options(
+            query.version.as_deref(),
+            query.delivery_mode.as_deref(),
+        )?),
+        chat_events: Some(crate::proto::client::ObserveChatEvents::default()),
+    };
+    let mut request = request;
+    if let Some(after_event_id) = chat_watch_after_event_id(&headers, &query) {
+        request.chat_events = Some(crate::proto::client::ObserveChatEvents { after_event_id });
+    }
+    let observe = crate::impls::messaging::watch_chat_events_observe(request);
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
 /// Get room members with pagination.
 #[cfg_attr(
     feature = "openapi",
@@ -1664,6 +1831,228 @@ pub async fn edit_media(
         move |client_api, authenticated| async move {
             client_api
                 .edit_media(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn create_video_cover_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
+    ProtoJson(mut req): ProtoJson<CreateVideoCoverUploadSessionBody>,
+) -> AppResult<Json<CreateVideoCoverUploadSessionResponse>> {
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    req.room_id = room_id.clone();
+    req.media_id = media_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .create_video_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn update_video_cover(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
+    ProtoJson(mut req): ProtoJson<UpdateVideoCoverBody>,
+) -> AppResult<Json<EditMediaResponse>> {
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    req.room_id = room_id.clone();
+    req.media_id = media_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .update_video_cover(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn clear_video_cover(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
+) -> AppResult<Json<EditMediaResponse>> {
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    let req = crate::proto::client::ClearVideoCoverRequest {
+        room_id: room_id.clone(),
+        media_id,
+    };
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .clear_video_cover(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn create_room_cover_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    ProtoJson(mut req): ProtoJson<CreateRoomCoverUploadSessionBody>,
+) -> AppResult<Json<CreateRoomCoverUploadSessionResponse>> {
+    req.room_id = room_id.clone();
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .create_room_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn update_room_cover(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    ProtoJson(mut req): ProtoJson<UpdateRoomCoverBody>,
+) -> AppResult<Json<GetRoomResponse>> {
+    req.room_id = room_id.clone();
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .update_room_cover(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn clear_room_cover(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+) -> AppResult<Json<GetRoomResponse>> {
+    let req = crate::proto::client::ClearRoomCoverRequest {
+        room_id: room_id.clone(),
+    };
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .clear_room_cover(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn create_playlist_cover_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
+    ProtoJson(mut req): ProtoJson<CreatePlaylistCoverUploadSessionBody>,
+) -> AppResult<Json<CreatePlaylistCoverUploadSessionResponse>> {
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    req.room_id = room_id.clone();
+    req.playlist_id = playlist_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .create_playlist_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn update_playlist_cover(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
+    ProtoJson(mut req): ProtoJson<UpdatePlaylistCoverBody>,
+) -> AppResult<Json<UpdatePlaylistResponse>> {
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    req.room_id = room_id.clone();
+    req.playlist_id = playlist_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .update_playlist_cover(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn clear_playlist_cover(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
+) -> AppResult<Json<UpdatePlaylistResponse>> {
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    let req = crate::proto::client::ClearPlaylistCoverRequest {
+        room_id: room_id.clone(),
+        playlist_id,
+    };
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .clear_playlist_cover(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -2053,6 +2442,666 @@ pub async fn get_chat_history(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID"),
+            ("include_deleted" = Option<bool>, Query, description = "Include soft-deleted message metadata when allowed")
+        ),
+        responses(
+            (status = 200, description = "Chat message", body = GetChatMessageResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_chat_message(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    ProtoQuery(mut req): ProtoQuery<GetChatMessageRequest>,
+) -> AppResult<Json<GetChatMessageResponse>> {
+    let room_id = path.room_id;
+    req.message_id = path.message_id;
+    let response =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            room_id,
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api.get_chat_message_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/context",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Anchor chat message ID"),
+            ("before_limit" = Option<i32>, Query, description = "Messages before anchor"),
+            ("after_limit" = Option<i32>, Query, description = "Messages after anchor"),
+            ("include_deleted" = Option<bool>, Query, description = "Include soft-deleted messages when allowed")
+        ),
+        responses(
+            (status = 200, description = "Chat message context", body = GetChatMessageContextResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_chat_message_context(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    ProtoQuery(mut req): ProtoQuery<GetChatMessageContextRequest>,
+) -> AppResult<Json<GetChatMessageContextResponse>> {
+    let room_id = path.room_id;
+    req.message_id = path.message_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Read,
+        move |client_api, actor| async move {
+            client_api
+                .get_chat_message_context_for_actor(&actor, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/playback-messages",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("playback_media_id" = Option<String>, Query, description = "Playback media ID"),
+            ("playback_playlist_id" = Option<String>, Query, description = "Playback playlist ID"),
+            ("playback_target" = Option<Vec<u8>>, Query, description = "Playback target bytes"),
+            ("position_seconds" = Option<f64>, Query, description = "Playback position in seconds"),
+            ("before_seconds" = Option<f64>, Query, description = "Seconds before position"),
+            ("after_seconds" = Option<f64>, Query, description = "Seconds after position"),
+            ("limit" = Option<i32>, Query, description = "Maximum messages to return"),
+            ("include_deleted" = Option<bool>, Query, description = "Include deleted messages")
+        ),
+        responses(
+            (status = 200, description = "Chat messages around playback position", body = GetChatPlaybackMessagesResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_chat_playback_messages(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ProtoQuery(req): ProtoQuery<GetChatPlaybackMessagesRequest>,
+) -> AppResult<Json<GetChatPlaybackMessagesResponse>> {
+    let room_id = extract_room_id(path);
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Read,
+        move |client_api, actor| async move {
+            client_api
+                .get_chat_playback_messages_for_actor(&actor, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/chat/messages",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = SendChatMessageBody,
+        responses(
+            (status = 200, description = "Chat message event", body = ChatMessageEventResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Chat disabled or insufficient permission", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn send_chat_message(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ProtoJson(req): ProtoJson<SendChatMessageBody>,
+) -> AppResult<Json<ChatMessageEventResponse>> {
+    let room_id = extract_room_id(path);
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Write,
+        move |client_api, actor| async move {
+            client_api.send_chat_message_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/chat/images/upload-session",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = CreateChatImageUploadSessionBody,
+        responses(
+            (status = 200, description = "Chat image upload session", body = CreateChatImageUploadSessionResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn create_chat_image_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ProtoJson(req): ProtoJson<CreateChatImageUploadSessionBody>,
+) -> AppResult<Json<CreateChatImageUploadSessionResponse>> {
+    let room_id = extract_room_id(path);
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Write,
+        move |client_api, actor| async move {
+            client_api
+                .create_chat_image_upload_session_for_actor(&actor, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn upload_chat_image_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatImageObjectPath>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AppResult<StatusCode> {
+    let upload_token = headers
+        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let encoded_object_key = path.encoded_object_key;
+    let upload_token = upload_token.to_string();
+    let content_type = content_type.map(str::to_string);
+    let data = body.to_vec();
+    execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api| async move {
+            let chat_service = client_api.chat_service.as_ref().ok_or_else(|| {
+                crate::impls::ApiError::ServiceUnavailable(
+                    "Chat service is unavailable".to_string(),
+                )
+            })?;
+            chat_service
+                .store_image_upload_object(
+                    &encoded_object_key,
+                    &upload_token,
+                    content_type.as_deref(),
+                    data,
+                )
+                .await
+                .map(|_| ())
+                .map_err(crate::impls::ApiError::from)
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_chat_image_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatImageObjectPath>,
+    Query(query): Query<ChatImageObjectQuery>,
+) -> AppResult<Response> {
+    let encoded_object_key = path.encoded_object_key;
+    let token = query.token;
+    let blob = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move {
+            let chat_service = client_api.chat_service.as_ref().ok_or_else(|| {
+                crate::impls::ApiError::ServiceUnavailable(
+                    "Chat service is unavailable".to_string(),
+                )
+            })?;
+            chat_service
+                .get_image_object(&encoded_object_key, &token)
+                .await
+                .map_err(crate::impls::ApiError::from)
+        },
+    )
+    .await?;
+    let headers = [
+        (header::CONTENT_TYPE, blob.mime_type),
+        (
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable".to_string(),
+        ),
+    ];
+    Ok((headers, blob.data).into_response())
+}
+
+pub async fn upload_video_cover_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<VideoCoverObjectPath>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AppResult<StatusCode> {
+    let upload_token = headers
+        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let req = crate::proto::client::UploadVideoCoverObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: upload_token.to_string(),
+        content_type: content_type.unwrap_or_default().to_string(),
+        data: body.to_vec(),
+    };
+    execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api| async move { client_api.upload_video_cover_object(req).await },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_video_cover_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<VideoCoverObjectPath>,
+    Query(query): Query<VideoCoverObjectQuery>,
+) -> AppResult<Response> {
+    let req = crate::proto::client::GetVideoCoverObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: query.token,
+    };
+    let blob = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move { client_api.get_video_cover_object(req).await },
+    )
+    .await?;
+    let headers = [
+        (header::CONTENT_TYPE, blob.mime_type),
+        (
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable".to_string(),
+        ),
+    ];
+    Ok((headers, blob.data).into_response())
+}
+
+pub async fn upload_room_cover_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomCoverObjectPath>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AppResult<StatusCode> {
+    let upload_token = headers
+        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let req = crate::proto::client::UploadRoomCoverObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: upload_token.to_string(),
+        content_type: content_type.unwrap_or_default().to_string(),
+        data: body.to_vec(),
+    };
+    execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api| async move { client_api.upload_room_cover_object(req).await },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_room_cover_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomCoverObjectPath>,
+    Query(query): Query<RoomCoverObjectQuery>,
+) -> AppResult<Response> {
+    let req = crate::proto::client::GetRoomCoverObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: query.token,
+    };
+    let blob = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move { client_api.get_room_cover_object(req).await },
+    )
+    .await?;
+    let headers = [
+        (header::CONTENT_TYPE, blob.mime_type),
+        (
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable".to_string(),
+        ),
+    ];
+    Ok((headers, blob.data).into_response())
+}
+
+pub async fn upload_playlist_cover_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<PlaylistCoverObjectPath>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AppResult<StatusCode> {
+    let upload_token = headers
+        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let req = crate::proto::client::UploadPlaylistCoverObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: upload_token.to_string(),
+        content_type: content_type.unwrap_or_default().to_string(),
+        data: body.to_vec(),
+    };
+    execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api| async move { client_api.upload_playlist_cover_object(req).await },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_playlist_cover_object(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<PlaylistCoverObjectPath>,
+    Query(query): Query<PlaylistCoverObjectQuery>,
+) -> AppResult<Response> {
+    let req = crate::proto::client::GetPlaylistCoverObjectRequest {
+        encoded_object_key: path.encoded_object_key,
+        token: query.token,
+    };
+    let blob = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move { client_api.get_playlist_cover_object(req).await },
+    )
+    .await?;
+    let headers = [
+        (header::CONTENT_TYPE, blob.mime_type),
+        (
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable".to_string(),
+        ),
+    ];
+    Ok((headers, blob.data).into_response())
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID")
+        ),
+        request_body = EditChatMessageBody,
+        responses(
+            (status = 200, description = "Chat message edited event", body = ChatMessageEventResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Only the sender can edit this message", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Optimistic lock conflict", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn edit_chat_message(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    ProtoJson(mut req): ProtoJson<EditChatMessageBody>,
+) -> AppResult<Json<ChatMessageEventResponse>> {
+    let room_id = path.room_id;
+    req.message_id = path.message_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Write,
+        move |client_api, actor| async move {
+            client_api.edit_chat_message_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID")
+        ),
+        request_body = DeleteChatMessageBody,
+        responses(
+            (status = 200, description = "Chat message deleted event", body = ChatMessageEventResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Sender or DELETE_CHAT permission required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 409, description = "Optimistic lock conflict", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn delete_chat_message(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    ProtoJson(mut req): ProtoJson<DeleteChatMessageBody>,
+) -> AppResult<Json<ChatMessageEventResponse>> {
+    let room_id = path.room_id;
+    req.message_id = path.message_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Write,
+        move |client_api, actor| async move {
+            client_api.delete_chat_message_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/chat/read-state",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = MarkChatReadBody,
+        responses(
+            (status = 200, description = "Chat read state", body = ChatReadStateResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn mark_chat_read(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ProtoJson(req): ProtoJson<MarkChatReadBody>,
+) -> AppResult<Json<ChatReadStateResponse>> {
+    let room_id = extract_room_id(path);
+    let response =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            room_id,
+            EndpointRateLimitCategory::Write,
+            move |client_api, actor| async move {
+                client_api.mark_chat_read_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/read-state",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Chat read state", body = ChatReadStateResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_chat_read_state(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ProtoQuery(req): ProtoQuery<GetChatReadStateRequest>,
+) -> AppResult<Json<ChatReadStateResponse>> {
+    let room_id = extract_room_id(path);
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Read,
+        move |client_api, actor| async move {
+            client_api.get_chat_read_state_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
 /// Create a playlist
 /// POST /`api/rooms/:room_id/playlists`
 #[cfg_attr(
@@ -2324,9 +3373,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
-        AddMediaBatchBody, CancelOnDropStream, CreatePlaylistBody, DeleteEntriesBody,
-        GetPlaybackQuery, UpdatePlaybackRequest,
+        build_get_playback_request, chat_watch_after_event_id, parse_optional_query_bool,
+        parse_optional_query_i32, sse_event_from_server_message,
+        sse_event_id_from_resource_changed, AddMediaBatchBody, CancelOnDropStream,
+        CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, UpdatePlaybackRequest, WatchQuery,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetHotRoomsRequest,
@@ -2820,6 +3870,101 @@ mod tests {
                 )
             )
         );
+    }
+
+    #[test]
+    fn test_chat_watch_after_event_id_uses_last_event_id_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "last-event-id",
+            axum::http::HeaderValue::from_static(" chat-event-2 "),
+        );
+        let query = WatchQuery {
+            after_event_id: Some("chat-event-1".to_string()),
+            ..WatchQuery::default()
+        };
+
+        assert_eq!(
+            chat_watch_after_event_id(&headers, &query).as_deref(),
+            Some("chat-event-2")
+        );
+    }
+
+    #[test]
+    fn test_chat_watch_after_event_id_falls_back_to_query() {
+        let headers = axum::http::HeaderMap::new();
+        let query = WatchQuery {
+            after_event_id: Some(" chat-event-1 ".to_string()),
+            ..WatchQuery::default()
+        };
+
+        assert_eq!(
+            chat_watch_after_event_id(&headers, &query).as_deref(),
+            Some("chat-event-1")
+        );
+    }
+
+    #[test]
+    fn test_sse_event_id_from_resource_changed_uses_chat_event_id() {
+        let changed = crate::proto::client::ResourceChanged {
+            observe_id: "chat-events".to_string(),
+            version: "snapshot-version".to_string(),
+            payload: Some(crate::proto::client::resource_changed::Payload::ChatEvent(
+                crate::proto::client::ChatMessageEvent {
+                    event_id: " chat-event-3 ".to_string(),
+                    room_id: "room_test".to_string(),
+                    kind: crate::proto::client::ChatMessageEventKind::Created as i32,
+                    message: None,
+                    occurred_at: 123,
+                },
+            )),
+        };
+
+        assert_eq!(
+            sse_event_id_from_resource_changed(&changed).as_deref(),
+            Some("chat-event-3")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_resource_changed_sse_event_includes_chat_event_id() {
+        use crate::proto::client::resource_changed::Payload;
+        use crate::proto::client::server_message::Message;
+        use axum::response::IntoResponse;
+
+        let message = crate::proto::client::ServerMessage {
+            message: Some(Message::ResourceChanged(
+                crate::proto::client::ResourceChanged {
+                    observe_id: "chat-events".to_string(),
+                    version: "snapshot-version".to_string(),
+                    payload: Some(Payload::ChatEvent(crate::proto::client::ChatMessageEvent {
+                        event_id: "chat-event-3".to_string(),
+                        room_id: "room_test".to_string(),
+                        kind: crate::proto::client::ChatMessageEventKind::Created as i32,
+                        message: None,
+                        occurred_at: 123,
+                    })),
+                },
+            )),
+        };
+        let event = sse_event_from_server_message(
+            crate::http::websocket::RealtimeTransportFormat::Json,
+            message,
+        )
+        .expect("resource changed should produce SSE event")
+        .expect("SSE event should serialize");
+        let response = axum::response::sse::Sse::new(tokio_stream::iter([Ok::<
+            _,
+            std::convert::Infallible,
+        >(event)]))
+        .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE body should render");
+        let rendered = std::str::from_utf8(&body).expect("SSE body should be utf-8");
+
+        assert!(rendered.contains("id: chat-event-3\n"));
+        assert!(rendered.contains("event: changed\n"));
     }
 
     #[test]

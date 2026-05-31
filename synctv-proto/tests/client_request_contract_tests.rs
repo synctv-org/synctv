@@ -27,6 +27,7 @@ fn test_add_media_request_allows_room_root_without_playlist_id() {
         provider_instance_name: String::new(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
         name: "Example".to_string(),
+        description: String::new(),
     };
 
     assert!(request.playlist_id.is_none());
@@ -60,6 +61,7 @@ fn test_add_media_request_requires_non_empty_provider() {
         provider_instance_name: String::new(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
         name: "Example".to_string(),
+        description: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -75,6 +77,7 @@ fn test_add_media_request_rejects_invalid_playlist_id() {
         provider_instance_name: String::new(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
         name: "Example".to_string(),
+        description: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -385,6 +388,7 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
         source_provider: "alist".to_string(),
         source_config: br#"{"path":"/tv"}"#.to_vec(),
         provider_instance_name: "alist-main".to_string(),
+        description: String::new(),
     };
 
     let json = serde_json::to_value(&request).expect("serialize create playlist request");
@@ -608,6 +612,7 @@ fn test_create_playlist_request_rejects_invalid_source_provider_format() {
         source_provider: "Bad Provider".to_string(),
         source_config: br#"{"path":"/tv"}"#.to_vec(),
         provider_instance_name: "alist-main".to_string(),
+        description: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -670,6 +675,7 @@ fn test_add_media_request_rejects_invalid_provider_identifiers() {
         provider_instance_name: "bad name".to_string(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
         name: "Example".to_string(),
+        description: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -814,6 +820,7 @@ fn test_edit_media_request_rejects_invalid_media_id() {
     let request = EditMediaRequest {
         media_id: "bad-media".to_string(),
         name: "Episode 1".to_string(),
+        description: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -826,6 +833,7 @@ fn test_update_playlist_request_rejects_invalid_playlist_id() {
     let request = UpdatePlaylistRequest {
         playlist_id: "bad-playlist".to_string(),
         name: "Folder".to_string(),
+        description: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");

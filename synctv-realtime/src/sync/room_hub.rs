@@ -1966,8 +1966,8 @@ mod tests {
             username: "testuser".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let sent_count = hub.broadcast(&room_id, &event);
@@ -2025,8 +2025,8 @@ mod tests {
             username: "user1".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let sent_count = hub.broadcast(&room_id, &event);
@@ -2213,8 +2213,8 @@ mod tests {
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
-                position: None,
-                color: None,
+                display_position: None,
+                display_color: None,
             };
             let sent = hub.broadcast(&room_id, &event);
             assert_eq!(sent, 1, "filler message should enqueue");
@@ -2289,8 +2289,8 @@ mod tests {
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
-                position: None,
-                color: None,
+                display_position: None,
+                display_color: None,
             };
             let sent = hub.broadcast(&room_id, &event);
             assert_eq!(sent, 1, "filler message should enqueue");
@@ -2362,8 +2362,8 @@ mod tests {
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
-                position: None,
-                color: None,
+                display_position: None,
+                display_color: None,
             };
             let sent = hub.broadcast(&room_id, &event);
             assert_eq!(sent, 1, "filler message should enqueue");
@@ -2432,8 +2432,8 @@ mod tests {
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
-                    position: None,
-                    color: None,
+                    display_position: None,
+                    display_color: None,
                 };
                 let sent = hub.broadcast(
                     &room_id,
@@ -2515,8 +2515,8 @@ mod tests {
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
-                    position: None,
-                    color: None,
+                    display_position: None,
+                    display_color: None,
                 };
                 let sent = hub.broadcast(
                     &room_id,

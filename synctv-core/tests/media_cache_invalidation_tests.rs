@@ -35,6 +35,7 @@ fn make_user(username: &str) -> User {
         email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
+        avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
@@ -67,6 +68,7 @@ async fn test_edit_media_sends_notification() {
                 id: RoomId::new(),
                 name: "Test Room".to_string(),
                 description: String::new(),
+                cover_file_reference_id: None,
                 created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
@@ -108,6 +110,8 @@ async fn test_edit_media_sends_notification() {
                 room_id: room.id,
                 creator_id: Some(owner.id),
                 name: String::new(),
+                description: String::new(),
+                cover_file_reference_id: None,
                 parent_id: None,
                 position: 0.0,
                 source_provider: None,
@@ -177,6 +181,7 @@ async fn test_edit_media_sends_notification() {
     let add_req = AddMediaRequest {
         playlist_id: Some(playlist.id),
         name: "Test Media".to_string(),
+        description: String::new(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: None,
         source_config: json!({
@@ -193,6 +198,7 @@ async fn test_edit_media_sends_notification() {
     let edit_req = EditMediaRequest {
         media_id: media.id,
         name: Some("Updated Media".to_string()),
+        description: None,
     };
 
     let updated_media = media_service
@@ -247,6 +253,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
                 id: RoomId::new(),
                 name: "Test Room 2".to_string(),
                 description: String::new(),
+                cover_file_reference_id: None,
                 created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
@@ -288,6 +295,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
                 room_id: room.id,
                 creator_id: Some(owner.id),
                 name: String::new(),
+                description: String::new(),
+                cover_file_reference_id: None,
                 parent_id: None,
                 position: 0.0,
                 source_provider: None,
@@ -352,6 +361,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
     let add_req = AddMediaRequest {
         playlist_id: Some(playlist.id),
         name: "Test Media".to_string(),
+        description: String::new(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: None,
         source_config: json!({
@@ -368,6 +378,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
     let edit_req = EditMediaRequest {
         media_id: media.id,
         name: Some("Updated Media".to_string()),
+        description: None,
     };
 
     let updated_media = media_service

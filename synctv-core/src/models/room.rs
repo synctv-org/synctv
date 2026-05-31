@@ -159,6 +159,7 @@ pub struct Room {
     /// Room description (max 500 characters)
     #[serde(default)]
     pub description: String,
+    pub cover_file_reference_id: Option<i64>,
     /// Creator user ID. ON DELETE RESTRICT prevents deleting users who still own rooms.
     pub created_by: UserId,
     #[serde(skip)]
@@ -192,6 +193,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Room {
             id: row.try_get("id")?,
             name: row.try_get("name")?,
             description: row.try_get("description")?,
+            cover_file_reference_id: row.try_get("cover_file_reference_id")?,
             created_by: row.try_get("created_by")?,
             status: if closed_at.is_some() {
                 RoomStatus::Closed
@@ -217,6 +219,7 @@ impl Room {
             id: RoomId::new(),
             name,
             description: String::new(),
+            cover_file_reference_id: None,
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
@@ -237,6 +240,7 @@ impl Room {
             id: RoomId::new(),
             name,
             description,
+            cover_file_reference_id: None,
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
@@ -394,7 +398,6 @@ pub struct RoomSettingsJson {
     /// `None` or `0` means no limit.  Uses `u32` to prevent negative values.
     pub max_members: Option<u32>,
     pub chat_enabled: bool,
-    pub danmaku_enabled: bool,
 
     // Rooms can override global default permissions from SettingsRegistry
     // Each role has added/removed permissions that modify the global defaults

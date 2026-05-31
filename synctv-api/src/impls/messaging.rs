@@ -15,14 +15,16 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use prost::Message;
 use rand::RngExt;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{
-        RoomId, RoomMember, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomSettings,
-        RoomStatus, UserId, UserStatus,
+        ChatEventKind, ChatMessageEvent, ChatMessageStatus, ChatMessageType, NewChatImage, RoomId,
+        RoomMember, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomSettings, RoomStatus,
+        SendChatMessage, UserId, UserStatus,
     },
     service::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
@@ -31,6 +33,7 @@ use synctv_core::{
 use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 use tokio::sync::Semaphore;
 
+use crate::chat_event_dispatcher::{default_chat_event_dispatcher, ChatEventDispatcher};
 use crate::impls::client::{GuestRoomAccess, RoomActor};
 
 /// Minimum position change (in seconds) required to trigger a DB write
@@ -376,6 +379,7 @@ pub fn guest_display_name(session_id: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RealtimeJoinError {
+    InvalidInput(String),
     PermissionDenied(String),
     RateLimited(String),
     ServiceUnavailable(String),
@@ -386,7 +390,8 @@ impl RealtimeJoinError {
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
-            Self::PermissionDenied(message)
+            Self::InvalidInput(message)
+            | Self::PermissionDenied(message)
             | Self::RateLimited(message)
             | Self::ServiceUnavailable(message)
             | Self::Internal(message) => message,
@@ -422,6 +427,7 @@ impl From<crate::impls::ApiError> for RealtimeJoinError {
     fn from(error: crate::impls::ApiError) -> Self {
         let message = error.message().to_string();
         match error.classify() {
+            crate::impls::ErrorKind::InvalidArgument => Self::InvalidInput(message),
             crate::impls::ErrorKind::RateLimited => Self::RateLimited(message),
             crate::impls::ErrorKind::ServiceUnavailable | crate::impls::ErrorKind::Timeout => {
                 Self::ServiceUnavailable(message)
@@ -436,6 +442,7 @@ impl From<crate::impls::ApiError> for RealtimeJoinError {
 impl From<RealtimeJoinError> for crate::impls::ApiError {
     fn from(error: RealtimeJoinError) -> Self {
         match error {
+            RealtimeJoinError::InvalidInput(message) => Self::InvalidInput(message),
             RealtimeJoinError::PermissionDenied(message) => Self::Authorization(message),
             RealtimeJoinError::RateLimited(message) => Self::RateLimited(message),
             RealtimeJoinError::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
@@ -460,6 +467,7 @@ impl std::error::Error for RealtimeJoinError {}
 
 fn classify_realtime_join_error_message(message: String) -> RealtimeJoinError {
     match crate::impls::classify_error(&message) {
+        crate::impls::ErrorKind::InvalidArgument => RealtimeJoinError::InvalidInput(message),
         crate::impls::ErrorKind::RateLimited => RealtimeJoinError::RateLimited(message),
         crate::impls::ErrorKind::ServiceUnavailable => {
             RealtimeJoinError::ServiceUnavailable(message)
@@ -680,6 +688,7 @@ pub enum WatchResourceKind {
     RoomSettings,
     PlaylistItems,
     RoomMembers,
+    ChatEvents,
 }
 
 impl WatchResourceKind {
@@ -690,6 +699,7 @@ impl WatchResourceKind {
             Self::RoomSettings => "room_settings",
             Self::PlaylistItems => "playlist_items",
             Self::RoomMembers => "room_members",
+            Self::ChatEvents => "chat_events",
         }
     }
 }
@@ -699,6 +709,7 @@ pub struct ResourceWatchSessionConfig {
     pub room_id: RoomId,
     pub principal: RealtimePrincipal,
     pub room_service: Arc<RoomService>,
+    pub chat_service: Option<Arc<ChatService>>,
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub public_id_codec: Arc<crate::PublicIdCodec>,
@@ -715,6 +726,7 @@ pub struct ResourceWatchSession {
     user_id: UserId,
     connection_id: String,
     room_service: Arc<RoomService>,
+    chat_service: Option<Arc<ChatService>>,
     event_service: Arc<dyn RealtimeEventService>,
     connection_service: Arc<dyn RealtimeConnectionService>,
     public_id_codec: Arc<crate::PublicIdCodec>,
@@ -732,6 +744,7 @@ impl ResourceWatchSession {
             room_id,
             principal,
             room_service,
+            chat_service,
             event_service,
             connection_service,
             public_id_codec,
@@ -766,6 +779,7 @@ impl ResourceWatchSession {
             user_id,
             connection_id,
             room_service,
+            chat_service,
             event_service,
             connection_service,
             public_id_codec,
@@ -843,6 +857,25 @@ impl ResourceWatchSession {
             }
         };
 
+        let chat_replay_service = if matches!(
+            observe.resource.as_ref(),
+            Some(crate::proto::client::observe_resource::Resource::ChatEvents(_))
+        ) {
+            if let Some(chat_service) = self.chat_service.as_ref() {
+                Some(Arc::clone(chat_service))
+            } else {
+                self.event_service.unsubscribe(&self.connection_id);
+                self.connection_service
+                    .unregister(&self.connection_id)
+                    .await;
+                return Err(RealtimeJoinError::Internal(
+                    "Chat service is not available".to_string(),
+                ));
+            }
+        } else {
+            None
+        };
+
         if let Err(error) = self
             .resource_observer
             .handle_observe_resource(observe)
@@ -853,6 +886,20 @@ impl ResourceWatchSession {
                 .unregister(&self.connection_id)
                 .await;
             return Err(RealtimeJoinError::from(error));
+        }
+
+        if let Some(chat_service) = chat_replay_service {
+            if let Err(error) = self
+                .resource_observer
+                .replay_chat_events_after(&chat_service, observe)
+                .await
+            {
+                self.event_service.unsubscribe(&self.connection_id);
+                self.connection_service
+                    .unregister(&self.connection_id)
+                    .await;
+                return Err(RealtimeJoinError::from(error));
+            }
         }
 
         Ok(PreparedResourceWatchSession {
@@ -1090,33 +1137,52 @@ impl ResourceWatchSession {
         &self,
         observe: &ObserveResource,
     ) -> Result<(), String> {
-        if !self.principal.is_guest() {
-            return Ok(());
-        }
-
         let Some(resource) = observe.resource.as_ref() else {
-            self.ensure_guest_admission_for_action().await?;
+            if self.principal.is_guest() {
+                self.ensure_guest_admission_for_action().await?;
+            }
             return Ok(());
         };
 
         match resource {
             crate::proto::client::observe_resource::Resource::PlaybackState(_)
             | crate::proto::client::observe_resource::Resource::RoomSettings(_) => {
-                self.ensure_guest_admission_for_action().await?;
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                }
                 Ok(())
             }
             crate::proto::client::observe_resource::Resource::PlaylistItems(_) => {
-                Err("Guests cannot observe playlist items".to_string())
+                if self.principal.is_guest() {
+                    Err("Guests cannot observe playlist items".to_string())
+                } else {
+                    Ok(())
+                }
             }
             crate::proto::client::observe_resource::Resource::RoomMembers(_) => {
-                self.ensure_guest_admission_for_action().await?;
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                }
                 self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
                     .await
             }
-            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => Err(
-                "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
-                    .to_string(),
-            ),
+            crate::proto::client::observe_resource::Resource::ChatEvents(_) => {
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                }
+                self.check_realtime_permission(RoomPermission::VIEW_CHAT_HISTORY)
+                    .await
+            }
+            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => {
+                if self.principal.is_guest() {
+                    Err(
+                        "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
+                            .to_string(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -1181,6 +1247,18 @@ pub fn watch_room_members_observe(
             crate::proto::client::ObserveRoomMembers {
                 request: req.request,
             },
+        ),
+    )
+}
+
+pub fn watch_chat_events_observe(
+    req: crate::proto::client::WatchChatEventsRequest,
+) -> ObserveResource {
+    build_watch_observe(
+        WatchResourceKind::ChatEvents,
+        req.options,
+        crate::proto::client::observe_resource::Resource::ChatEvents(
+            req.chat_events.unwrap_or_default(),
         ),
     )
 }
@@ -1313,6 +1391,7 @@ pub struct StreamMessageHandler {
     /// which handles permission checks, content filtering, rate limiting, and persistence.
     chat_service: Arc<ChatService>,
     event_service: Arc<dyn RealtimeEventService>,
+    chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     /// Optional notification service for direct real-time push to connected clients.
     /// When set, the handler subscribes to notification events and pushes them
     /// without depending on the gRPC notification-to-realtime bridge.
@@ -1375,6 +1454,7 @@ impl Clone for StreamMessageHandler {
             room_service: Arc::clone(&self.room_service),
             chat_service: Arc::clone(&self.chat_service),
             event_service: Arc::clone(&self.event_service),
+            chat_event_dispatcher: Arc::clone(&self.chat_event_dispatcher),
             notification_service: self.notification_service.clone(),
             connection_service: Arc::clone(&self.connection_service),
             rate_limiter: Arc::clone(&self.rate_limiter),
@@ -1600,6 +1680,7 @@ impl StreamMessageHandler {
         let room_settings_snapshot_service =
             default_room_settings_snapshot_service(Arc::clone(room_service));
         let room_actor = principal.room_actor(room_id);
+        let chat_event_dispatcher = default_chat_event_dispatcher(event_service.clone());
         let resource_observer = Arc::new(ResourceObserver::new(ResourceObserverParams {
             room_id,
             user_id,
@@ -1620,6 +1701,7 @@ impl StreamMessageHandler {
             room_service: Arc::clone(room_service),
             chat_service,
             event_service,
+            chat_event_dispatcher,
             notification_service: None,
             connection_service,
             rate_limiter,
@@ -1649,6 +1731,12 @@ impl StreamMessageHandler {
     #[must_use]
     pub const fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
         self.ws_message_rate_limit = limit;
+        self
+    }
+
+    #[must_use]
+    pub fn with_chat_event_dispatcher(mut self, dispatcher: Arc<dyn ChatEventDispatcher>) -> Self {
+        self.chat_event_dispatcher = dispatcher;
         self
     }
 
@@ -1799,34 +1887,54 @@ impl StreamMessageHandler {
         &self,
         observe: &crate::proto::client::ObserveResource,
     ) -> Result<(), String> {
-        if !self.principal.is_guest() {
-            return Ok(());
-        }
-
         let Some(resource) = observe.resource.as_ref() else {
-            self.ensure_guest_admission_for_action().await?;
+            if self.principal.is_guest() {
+                self.ensure_guest_admission_for_action().await?;
+            }
             return Ok(());
         };
 
         match resource {
             crate::proto::client::observe_resource::Resource::PlaybackState(_)
             | crate::proto::client::observe_resource::Resource::RoomSettings(_) => {
-                self.ensure_guest_admission_for_action().await?;
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                }
                 Ok(())
             }
             crate::proto::client::observe_resource::Resource::PlaylistItems(_) => {
-                Err("Guests cannot observe playlist items".to_string())
+                if self.principal.is_guest() {
+                    Err("Guests cannot observe playlist items".to_string())
+                } else {
+                    Ok(())
+                }
             }
             crate::proto::client::observe_resource::Resource::RoomMembers(_) => {
-                self.ensure_guest_admission_for_action().await?;
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                }
                 self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
                     .await
                     .map_err(|e| e.to_string())
             }
-            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => Err(
-                "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
-                    .to_string(),
-            ),
+            crate::proto::client::observe_resource::Resource::ChatEvents(_) => {
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                }
+                self.check_realtime_permission(RoomPermission::VIEW_CHAT_HISTORY)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => {
+                if self.principal.is_guest() {
+                    Err(
+                        "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
+                            .to_string(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -2268,17 +2376,27 @@ impl StreamMessageHandler {
                                 continue;
                             }
                         }
+                        let send_direct_messages = if matches!(
+                            event,
+                            RealtimeEvent::ChatMessageEvent { .. }
+                        ) {
+                            !self.resource_observer.has_chat_events_observation().await
+                        } else {
+                            true
+                        };
 
                         let mut send_failed = false;
-                        for msg in realtime_event_to_server_messages(
-                            &event,
-                            &room_id_str,
-                            &self.public_id_codec,
-                        ) {
-                            if let Err(e) = stream.send(msg) {
-                                tracing::error!("Failed to send server message: {}", e);
-                                send_failed = true;
-                                break;
+                        if send_direct_messages {
+                            for msg in realtime_event_to_server_messages(
+                                &event,
+                                &room_id_str,
+                                &self.public_id_codec,
+                            ) {
+                                if let Err(e) = stream.send(msg) {
+                                    tracing::error!("Failed to send server message: {}", e);
+                                    send_failed = true;
+                                    break;
+                                }
                             }
                         }
                         if send_failed {
@@ -3312,15 +3430,29 @@ impl StreamMessageHandler {
                                         | RealtimeEvent::RoomOwnerInactive { .. }
                                 );
 
-                                for msg in realtime_event_to_server_messages(
-                                    &event,
-                                    &room_id_str,
-                                    &public_id_codec,
+                                let send_direct_messages = if matches!(
+                                    event,
+                                    RealtimeEvent::ChatMessageEvent { .. }
                                 ) {
-                                    if let Err(e) = sender.send(msg) {
-                                        tracing::error!("Failed to send message: {}", e);
-                                        event_token.cancel();
-                                        break;
+                                    !event_handler
+                                        .resource_observer
+                                        .has_chat_events_observation()
+                                        .await
+                                } else {
+                                    true
+                                };
+
+                                if send_direct_messages {
+                                    for msg in realtime_event_to_server_messages(
+                                        &event,
+                                        &room_id_str,
+                                        &public_id_codec,
+                                    ) {
+                                        if let Err(e) = sender.send(msg) {
+                                            tracing::error!("Failed to send message: {}", e);
+                                            event_token.cancel();
+                                            break;
+                                        }
                                     }
                                 }
 
@@ -3757,68 +3889,13 @@ impl StreamMessageHandler {
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {
                 if self.principal.is_guest() {
-                    return Err("Guests cannot send chat or danmaku messages".to_string());
+                    return Err("Guests cannot send chat messages".to_string());
                 }
 
-                // Check if this is a danmaku message (has position)
-                let is_danmaku = chat_msg.position.is_some();
-
-                if is_danmaku {
-                    // Danmaku: validate, check settings, rate limit, filter, then handle
-                    self.check_realtime_permission(RoomPermission::CHAT)
-                        .await
-                        .map_err(|e| e.to_string())?;
-
-                    if chat_msg.content.is_empty() {
-                        return Err("Danmaku message cannot be empty".to_string());
-                    }
-                    if chat_msg.content.chars().count()
-                        > synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS
-                    {
-                        return Err(format!(
-                            "Danmaku message too long (max {} characters)",
-                            synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS,
-                        ));
-                    }
-
-                    let room_settings = self
-                        .room_service
-                        .get_room_settings(&self.room_id)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    if !room_settings.danmaku_enabled.0 {
-                        return Err("Danmaku is disabled in this room".to_string());
-                    }
-
-                    let rate_limit_key =
-                        format!("room:{}:user:{}:danmaku", self.room_id, self.user_id);
-                    self.rate_limiter
-                        .check_rate_limit_with_control(
-                            &rate_limit_key,
-                            self.rate_limit_config.danmaku_per_second,
-                            self.rate_limit_config.window_seconds,
-                            control,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-
-                    let sanitized_content = self
-                        .content_filter
-                        .filter_danmaku(&chat_msg.content)
-                        .map_err(|e| e.to_string())?;
-
-                    validate_danmaku_color(&chat_msg.color)?;
-                    self.handle_danmaku(
-                        &sanitized_content,
-                        chat_msg.position.unwrap_or(0.0),
-                        chat_msg.color.clone(),
-                    );
-                } else {
-                    // Chat: delegate entirely to ChatService which handles permissions,
-                    // room settings, rate limiting, content filtering, and persistence.
-                    self.handle_chat_message_with_control(&chat_msg.content, control)
-                        .await?;
-                }
+                // ChatService handles permissions, room settings, rate limiting,
+                // content filtering, persistence, and event dispatch.
+                self.handle_chat_message_with_control(chat_msg, control)
+                    .await?;
             }
             Some(Message::Heartbeat(_)) => {
                 // Respond with HeartbeatAck to let client know server is alive
@@ -3851,6 +3928,9 @@ impl StreamMessageHandler {
                 self.resource_observer
                     .handle_observe_resource(observe)
                     .await?;
+                self.resource_observer
+                    .replay_chat_events_after(&self.chat_service, observe)
+                    .await?;
             }
             Some(Message::UnobserveResource(unobserve)) => {
                 self.resource_observer
@@ -3867,7 +3947,7 @@ impl StreamMessageHandler {
 
     async fn handle_chat_message_with_control(
         &self,
-        content: &str,
+        chat_msg: &crate::proto::client::ChatMessageSend,
         control: Option<&ExecutionControl>,
     ) -> Result<(), String> {
         if self.principal.is_guest() {
@@ -3877,12 +3957,46 @@ impl StreamMessageHandler {
 
         // Delegate to ChatService which handles permission checks, content filtering,
         // rate limiting, and persistence (no fallback path).
-        let saved_msg = self
+        let images = chat_msg
+            .images
+            .iter()
+            .map(proto_chat_image_to_core)
+            .collect::<Result<Vec<_>, _>>()?;
+        let reply_to_message_id = parse_optional_chat_message_id(&chat_msg.reply_to_message_id)?;
+        let playback_state = self
+            .room_service
+            .playback_service()
+            .get_state(&self.room_id)
+            .await
+            .ok();
+        let metadata = chat_metadata_for_send(
+            serde_json::Value::Object(Default::default()),
+            &chat_msg.display_position,
+            &chat_msg.display_color,
+            playback_state.as_ref(),
+        )?;
+        let outcome = self
             .chat_service
-            .send_message_with_control(self.room_id, self.user_id, content.to_string(), control)
+            .send_message_event_with_control_outcome(
+                SendChatMessage {
+                    room_id: self.room_id,
+                    user_id: self.user_id,
+                    client_message_id: (!chat_msg.client_message_id.trim().is_empty())
+                        .then(|| chat_msg.client_message_id.trim().to_string()),
+                    content: chat_msg.content.clone(),
+                    message_type: if images.is_empty() {
+                        ChatMessageType::Text
+                    } else {
+                        ChatMessageType::Image
+                    },
+                    reply_to_message_id,
+                    metadata,
+                    images,
+                },
+                control,
+            )
             .await
             .map_err(|e| e.to_string())?;
-
         // Touch room activity to prevent TTL expiry on active rooms
         self.room_service.touch_room_activity(self.room_id).await;
 
@@ -3891,29 +4005,8 @@ impl StreamMessageHandler {
             .with_label_values(&[] as &[&str])
             .inc();
 
-        // Use the filtered content from ChatService (content filtering already applied)
-        let event = RealtimeEvent::ChatMessage {
-            event_id: synctv_common::snanoid!(16),
-            room_id: self.room_id,
-            user_id: self.user_id,
-            username: self.username.clone(),
-            message: saved_msg.content,
-            timestamp: chrono::Utc::now(),
-            position: None,
-            color: None,
-        };
-
-        // Broadcast to cluster (handles both local and Redis).
-        // Chat is non-critical: log if Redis was not reached but do not fail the operation.
-        let outcome = self.event_service.broadcast_outcome(event);
-        if outcome.distributed_delivery_missed() {
-            tracing::warn!(
-                room_id = %self.room_id,
-                "ChatMessage broadcast missed the distributed fan-out path (message may not be visible on other replicas)"
-            );
-            synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
-                .with_label_values(&["chat_no_redis"])
-                .inc();
+        if outcome.inserted {
+            self.chat_event_dispatcher.dispatch(&outcome.event);
         }
 
         Ok(())
@@ -3924,37 +4017,6 @@ impl StreamMessageHandler {
             Ok(Some(reason)) => Err(reason),
             Ok(None) => Ok(()),
             Err(error) => Err(error.to_string()),
-        }
-    }
-
-    /// Handle danmaku (bullet comment) messages.
-    ///
-    /// Danmaku are intentionally ephemeral and NOT persisted to the database.
-    /// Unlike regular chat messages, danmaku are time-anchored video overlays
-    /// that only make sense in the context of the current playback session.
-    /// They are broadcast to all connected clients for real-time display but
-    /// are not saved for later retrieval. This is consistent with how major
-    /// danmaku platforms (Bilibili, Niconico) treat live/real-time danmaku.
-    fn handle_danmaku(&self, content: &str, position: f64, color: Option<String>) {
-        let event = RealtimeEvent::ChatMessage {
-            event_id: synctv_common::snanoid!(16),
-            room_id: self.room_id,
-            user_id: self.user_id,
-            username: self.username.clone(),
-            message: content.to_string(),
-            timestamp: chrono::Utc::now(),
-            position: Some(position),
-            color,
-        };
-
-        // Broadcast to cluster (handles both local and Redis).
-        // Danmaku is ephemeral and non-critical.
-        let outcome = self.event_service.broadcast_outcome(event);
-        if outcome.distributed_delivery_missed() {
-            tracing::debug!(
-                room_id = %self.room_id,
-                "Danmaku broadcast missed the distributed fan-out path (ephemeral, acceptable)"
-            );
         }
     }
 
@@ -4524,20 +4586,41 @@ fn realtime_event_to_server_messages(
             username,
             message,
             timestamp,
-            position,
-            color,
+            display_position,
+            display_color,
             ..
         } => vec![ServerMessage {
             message: Some(Message::Chat(ChatMessageReceive {
-                id: synctv_common::snanoid!(12),
+                id: event.event_id().to_string(),
                 room_id: room_id.to_string(),
                 user_id: encode_user(*user_id),
                 username: username.clone(),
                 content: message.clone(),
                 timestamp: timestamp.timestamp(),
-                position: *position,
-                color: color.clone(),
+                display_position: display_position.clone().unwrap_or_default(),
+                display_color: display_color.clone().unwrap_or_default(),
+                client_message_id: String::new(),
+                status: crate::proto::client::ChatMessageStatus::Active as i32,
+                version: 1,
+                edited_at: 0,
+                deleted_at: 0,
+                reply_to_message_id: String::new(),
+                images: Vec::new(),
+                deleted_by_user_id: String::new(),
+                delete_reason: String::new(),
+                playback_media_id: String::new(),
+                playback_playlist_id: String::new(),
+                playback_target: Vec::new(),
+                playback_target_hash: String::new(),
+                playback_position_seconds: None,
             })),
+        }],
+        RealtimeEvent::ChatMessageEvent { event, room_id, .. } => vec![ServerMessage {
+            message: Some(Message::ChatEvent(chat_message_event_to_proto(
+                event,
+                public_id_codec,
+                *room_id,
+            ))),
         }],
         RealtimeEvent::PlaybackStateChanged { state, .. } => vec![ServerMessage {
             message: Some(Message::PlaybackState(PlaybackStateChanged {
@@ -4860,6 +4943,303 @@ fn realtime_event_to_server_messages(
             vec![]
         }
     }
+}
+
+pub(crate) fn chat_event_kind_to_proto(
+    kind: ChatEventKind,
+) -> crate::proto::client::ChatMessageEventKind {
+    match kind {
+        ChatEventKind::Created => crate::proto::client::ChatMessageEventKind::Created,
+        ChatEventKind::Edited => crate::proto::client::ChatMessageEventKind::Edited,
+        ChatEventKind::Deleted => crate::proto::client::ChatMessageEventKind::Deleted,
+    }
+}
+
+pub(crate) fn chat_status_to_proto(
+    status: ChatMessageStatus,
+) -> crate::proto::client::ChatMessageStatus {
+    match status {
+        ChatMessageStatus::Active => crate::proto::client::ChatMessageStatus::Active,
+        ChatMessageStatus::Edited => crate::proto::client::ChatMessageStatus::Edited,
+        ChatMessageStatus::Deleted => crate::proto::client::ChatMessageStatus::Deleted,
+    }
+}
+
+pub(crate) fn chat_display_position_from_metadata(metadata: &serde_json::Value) -> String {
+    metadata
+        .get("presentation")
+        .and_then(|presentation| presentation.get("display_position"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub(crate) fn chat_display_color_from_metadata(metadata: &serde_json::Value) -> String {
+    metadata
+        .get("presentation")
+        .and_then(|presentation| presentation.get("display_color"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub(crate) fn chat_playback_media_id_from_metadata(
+    metadata: &serde_json::Value,
+    public_id_codec: &crate::PublicIdCodec,
+) -> String {
+    metadata
+        .get("playback")
+        .and_then(|playback| playback.get("media_id"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .and_then(|id| synctv_core::models::MediaId::try_from(id).ok())
+        .and_then(|id| public_id_codec.encode_media_id(id).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn chat_playback_playlist_id_from_metadata(
+    metadata: &serde_json::Value,
+    public_id_codec: &crate::PublicIdCodec,
+) -> String {
+    metadata
+        .get("playback")
+        .and_then(|playback| playback.get("playlist_id"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .and_then(|id| synctv_core::models::PlaylistId::try_from(id).ok())
+        .and_then(|id| public_id_codec.encode_playlist_id(id).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn chat_playback_target_from_metadata(metadata: &serde_json::Value) -> Vec<u8> {
+    metadata
+        .get("playback")
+        .and_then(|playback| playback.get("target_hex"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| hex::decode(value).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn chat_playback_target_hash_from_metadata(metadata: &serde_json::Value) -> String {
+    metadata
+        .get("playback")
+        .and_then(|playback| playback.get("target_hash"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub(crate) fn chat_playback_position_seconds_from_metadata(
+    metadata: &serde_json::Value,
+) -> Option<f64> {
+    metadata
+        .get("playback")
+        .and_then(|playback| playback.get("position_seconds"))
+        .and_then(serde_json::Value::as_f64)
+}
+
+fn validate_chat_metadata_text(
+    value: &str,
+    field_name: &str,
+    max_len: usize,
+) -> Result<Option<String>, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > max_len || trimmed.chars().any(char::is_control) {
+        return Err(format!(
+            "Chat {field_name} must be 1-{max_len} non-control characters"
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+pub(crate) fn chat_playback_target_hash(target: &[u8]) -> String {
+    hex::encode(Sha256::digest(target))
+}
+
+pub(crate) fn chat_metadata_for_send(
+    base: serde_json::Value,
+    display_position: &str,
+    display_color: &str,
+    playback_state: Option<&RoomPlaybackState>,
+) -> Result<serde_json::Value, String> {
+    let serde_json::Value::Object(mut metadata) = base else {
+        return Err("metadata must be a JSON object".to_string());
+    };
+    metadata.remove("position");
+    metadata.remove("color");
+
+    let display_position = validate_chat_metadata_text(display_position, "display position", 64)?;
+    let display_color = validate_chat_metadata_text(display_color, "display color", 64)?;
+    let mut presentation = serde_json::Map::new();
+    if let Some(display_position) = display_position {
+        presentation.insert(
+            "display_position".to_string(),
+            serde_json::Value::String(display_position),
+        );
+    }
+    if let Some(display_color) = display_color {
+        presentation.insert(
+            "display_color".to_string(),
+            serde_json::Value::String(display_color),
+        );
+    }
+    if presentation.is_empty() {
+        metadata.remove("presentation");
+    } else {
+        metadata.insert(
+            "presentation".to_string(),
+            serde_json::Value::Object(presentation),
+        );
+    }
+
+    if let Some(state) = playback_state
+        .filter(|state| state.playing_media_id.is_some() || state.playing_playlist_id.is_some())
+    {
+        let mut playback = serde_json::Map::new();
+        if let Some(media_id) = state.playing_media_id {
+            playback.insert(
+                "media_id".to_string(),
+                serde_json::Value::String(media_id.as_i64().to_string()),
+            );
+        }
+        if let Some(playlist_id) = state.playing_playlist_id {
+            playback.insert(
+                "playlist_id".to_string(),
+                serde_json::Value::String(playlist_id.as_i64().to_string()),
+            );
+        }
+        if !state.target.is_empty() {
+            playback.insert(
+                "target_hex".to_string(),
+                serde_json::Value::String(hex::encode(&state.target)),
+            );
+            playback.insert(
+                "target_hash".to_string(),
+                serde_json::Value::String(chat_playback_target_hash(&state.target)),
+            );
+        }
+        let position_seconds = state.computed_position().max(0.0);
+        if position_seconds.is_finite() {
+            playback.insert(
+                "position_seconds".to_string(),
+                serde_json::json!(position_seconds),
+            );
+        }
+        metadata.insert("playback".to_string(), serde_json::Value::Object(playback));
+    } else {
+        metadata.remove("playback");
+    }
+
+    Ok(serde_json::Value::Object(metadata))
+}
+
+pub(crate) fn chat_message_event_to_proto(
+    event: &ChatMessageEvent,
+    public_id_codec: &crate::PublicIdCodec,
+    fallback_room_id: RoomId,
+) -> crate::proto::client::ChatMessageEvent {
+    let message = &event.message.message;
+    let room_id = public_id_codec
+        .encode_room_id(message.room_id)
+        .unwrap_or_else(|_| fallback_room_id.to_string());
+    let user_id = message
+        .user_id
+        .and_then(|id| public_id_codec.encode_user_id(id).ok())
+        .unwrap_or_default();
+    let deleted_by_user_id = message
+        .deleted_by
+        .and_then(|id| public_id_codec.encode_user_id(id).ok())
+        .unwrap_or_default();
+    crate::proto::client::ChatMessageEvent {
+        event_id: event.event_id.clone(),
+        room_id: room_id.clone(),
+        kind: chat_event_kind_to_proto(event.kind) as i32,
+        message: Some(crate::proto::client::ChatMessageReceive {
+            id: message.id.to_string(),
+            room_id,
+            user_id,
+            username: String::new(),
+            content: message.content.clone(),
+            timestamp: message.created_at.timestamp(),
+            display_position: chat_display_position_from_metadata(&message.metadata),
+            display_color: chat_display_color_from_metadata(&message.metadata),
+            client_message_id: message.client_message_id.clone().unwrap_or_default(),
+            status: chat_status_to_proto(message.status) as i32,
+            version: message.version,
+            edited_at: message.edited_at.map_or(0, |ts| ts.timestamp()),
+            deleted_at: message.deleted_at.map_or(0, |ts| ts.timestamp()),
+            reply_to_message_id: message
+                .reply_to_message_id
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            images: event
+                .message
+                .images
+                .iter()
+                .map(core_chat_image_to_proto)
+                .collect(),
+            deleted_by_user_id,
+            delete_reason: message.delete_reason.clone().unwrap_or_default(),
+            playback_media_id: chat_playback_media_id_from_metadata(
+                &message.metadata,
+                public_id_codec,
+            ),
+            playback_playlist_id: chat_playback_playlist_id_from_metadata(
+                &message.metadata,
+                public_id_codec,
+            ),
+            playback_target: chat_playback_target_from_metadata(&message.metadata),
+            playback_target_hash: chat_playback_target_hash_from_metadata(&message.metadata),
+            playback_position_seconds: chat_playback_position_seconds_from_metadata(
+                &message.metadata,
+            ),
+        }),
+        occurred_at: event.occurred_at.timestamp(),
+    }
+}
+
+pub(crate) fn core_chat_image_to_proto(
+    image: &synctv_core::models::ChatImage,
+) -> crate::proto::client::ChatImage {
+    crate::proto::client::ChatImage {
+        id: image.id.clone(),
+        storage_backend: image.storage_backend.clone(),
+        object_key: image.object_key.clone(),
+        url: image.url.clone().unwrap_or_default(),
+        mime_type: image.mime_type.clone().unwrap_or_default(),
+        size_bytes: image.size_bytes.unwrap_or_default(),
+        width: image.width.unwrap_or_default(),
+        height: image.height.unwrap_or_default(),
+        metadata: serde_json::to_vec(&image.metadata).unwrap_or_default(),
+    }
+}
+
+pub(crate) fn proto_chat_image_to_core(
+    image: &crate::proto::client::ChatImage,
+) -> Result<NewChatImage, String> {
+    let metadata = if image.metadata.is_empty() {
+        serde_json::Value::Object(Default::default())
+    } else {
+        serde_json::from_slice(&image.metadata).map_err(|error| error.to_string())?
+    };
+    Ok(NewChatImage {
+        id: image.id.clone(),
+        storage_backend: image.storage_backend.clone(),
+        object_key: image.object_key.clone(),
+        url: (!image.url.trim().is_empty()).then(|| image.url.clone()),
+        mime_type: (!image.mime_type.trim().is_empty()).then(|| image.mime_type.clone()),
+        size_bytes: (image.size_bytes > 0).then_some(image.size_bytes),
+        width: (image.width > 0).then_some(image.width),
+        height: (image.height > 0).then_some(image.height),
+        metadata,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5287,58 +5667,15 @@ fn watch_admin_event_matches(event: &RealtimeEvent, user_id: &UserId, room_id: &
     }
 }
 
-/// Validate danmaku color format.
-///
-/// Only accepts hex color format: `#RRGGBB` (6 hex digits with # prefix).
-/// Returns `Ok(())` if the color is valid or `None` (default color).
-/// Returns `Err` with a descriptive message if the color format is invalid.
-///
-/// # Security
-///
-/// This validation prevents XSS attacks by rejecting any non-hex characters
-/// and enforcing strict format requirements. The color value is typically
-/// rendered in CSS/HTML contexts where injection attacks could be dangerous.
-///
-/// # Examples
-///
-/// ```
-/// # use synctv_api::impls::messaging::validate_danmaku_color;
-/// assert!(validate_danmaku_color(&Some("#FF0000".to_string())).is_ok()); // Red
-/// assert!(validate_danmaku_color(&Some("#abcdef".to_string())).is_ok()); // Lowercase
-/// assert!(validate_danmaku_color(&None).is_ok()); // No color = default
-/// assert!(validate_danmaku_color(&Some("red".to_string())).is_err()); // Invalid format
-/// assert!(validate_danmaku_color(&Some("javascript:alert(1)".to_string())).is_err()); // XSS
-/// ```
-pub fn validate_danmaku_color(color: &Option<String>) -> Result<(), String> {
-    let Some(color_str) = color else {
-        // None is valid - means default color
-        return Ok(());
-    };
-
-    // Must start with #
-    if !color_str.starts_with('#') {
-        return Err(format!(
-            "Invalid danmaku color: must start with '#', got: {color_str}"
-        ));
+fn parse_optional_chat_message_id(raw: &str) -> Result<Option<i64>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
     }
-
-    // Must be exactly 7 characters (# + 6 hex digits)
-    if color_str.len() != 7 {
-        return Err(format!(
-            "Invalid danmaku color: must be 7 characters (#RRGGBB), got {} characters: {color_str}",
-            color_str.len()
-        ));
-    }
-
-    // All characters after # must be valid hex digits
-    let hex_part = &color_str[1..];
-    if !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!(
-            "Invalid danmaku color: must contain only hex characters (0-9, a-f, A-F), got: {color_str}"
-        ));
-    }
-
-    Ok(())
+    trimmed
+        .parse::<i64>()
+        .map(Some)
+        .map_err(|_| "Invalid chat message id".to_string())
 }
 
 /// Binary codec for proto messages

@@ -71,6 +71,7 @@ curl -fsS http://localhost:8080/health/ready
 | `jwt` | 对象 | 见下方 | [安全与密钥](../../configuration/security/) |
 | `logging` | 对象 | 见下方 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
 | `livestream` | 对象 | 见下方 | [直播配置](../../configuration/livestream/) |
+| `chat` | 对象 | 见下方 | [聊天](../../use/chat/) |
 | `webauthn` | 对象 | 见下方 | [WebAuthn 配置](../../configuration/webauthn/) |
 | `email` | 对象 | 见下方 | [邮件与 OAuth2](../../configuration/email-oauth2/) |
 | `media_providers` | 对象 | 见下方 | [媒体 Provider](../../configuration/media-providers/) |
@@ -218,6 +219,74 @@ curl -fsS http://localhost:8080/health/ready
 | `livestream.flv_max_connection_duration_seconds` | 秒数 | `86400` | HTTP-FLV 最大连接时长 |
 | `livestream.flv_write_timeout_seconds` | 秒数 | `30` | HTTP-FLV 写超时 |
 
+## `file_storage`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `file_storage.default_backend` | backend 名称 | `disabled` | 各业务默认使用的后端 |
+| `file_storage.chat_images_backend` | backend 名称或空 | `""` | 聊天图片后端；空值继承 `default_backend` |
+| `file_storage.user_avatars_backend` | backend 名称或空 | `""` | 用户头像后端；空值继承 `default_backend` |
+| `file_storage.video_covers_backend` | backend 名称或空 | `""` | 视频封面后端；空值继承 `default_backend` |
+| `file_storage.room_covers_backend` | backend 名称或空 | `""` | 房间封面后端；空值继承 `default_backend` |
+| `file_storage.playlist_covers_backend` | backend 名称或空 | `""` | 播放列表封面后端；空值继承 `default_backend` |
+| `file_storage.upload_token_secret` | secret 字符串 | `""` | 文件上传/读取 token 签名密钥；空值在启动时由 `jwt.secret` 派生 |
+| `file_storage.unreferenced_object_retention_seconds` | 秒数 | `86400` | 未被业务引用的已上传对象清理宽限期；`0` 表示关闭孤儿对象清理 |
+| `file_storage.backends.<name>.type` | `disabled`、`database` 或 `s3` | `disabled` | 已注册后端实现类型 |
+| `file_storage.backends.<name>.s3.*` | S3 配置 | S3 默认字段 | `type: "s3"` 后端的 S3-compatible 配置 |
+
+客户端在上传会话请求中提供 `checksum_sha256`。选中的后端按 `(storage_backend, checksum_sha256, size_bytes)` 存储内容寻址对象，重复文件会返回 `upload_required=false` 和 ownership proof challenge。读取和清理使用对象记录里的 `storage_backend`，业务数据可以在配置切换后混合多个后端。
+
+### 文件存储配置示例
+
+关闭文件存储：
+
+```yaml
+file_storage:
+  default_backend: "disabled"
+  backends: {}
+```
+
+使用 PostgreSQL 存储文件二进制：
+
+```yaml
+file_storage:
+  default_backend: "database"
+  chat_images_backend: "database"
+  user_avatars_backend: "database"
+  video_covers_backend: "database"
+  room_covers_backend: "database"
+  playlist_covers_backend: "database"
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  backends:
+    database:
+      type: "database"
+```
+
+使用 S3-compatible 对象存储：
+
+```yaml
+file_storage:
+  default_backend: "s3_public"
+  chat_images_backend: "s3_public"
+  user_avatars_backend: "s3_public"
+  video_covers_backend: "s3_public"
+  room_covers_backend: "s3_public"
+  playlist_covers_backend: "s3_public"
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  backends:
+    s3_public:
+      type: "s3"
+      s3:
+        endpoint: "https://s3.example.com"
+        access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+        secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+        bucket: "synctv-files"
+        region: "auto"
+        base_path: "files/"
+        public_base_url: "https://cdn.example.com/files"
+        upload_expires_seconds: 900
+```
+
 ## `webauthn` 和 `email`
 
 | 字段 | 类型/可选值 | 默认值 | 说明 |
@@ -317,8 +386,7 @@ curl -fsS http://localhost:8080/health/ready
 | 字段 | 类型/可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `messaging_rate_limits.chat_per_second` | 整数 | `10` | 聊天消息窗口内最大数量 |
-| `messaging_rate_limits.danmaku_per_second` | 整数 | `3` | 弹幕消息窗口内最大数量 |
-| `messaging_rate_limits.window_seconds` | 秒数 | `1` | 聊天/弹幕限流窗口 |
+| `messaging_rate_limits.window_seconds` | 秒数 | `1` | 聊天限流窗口 |
 
 ## `http_rate_limits`
 

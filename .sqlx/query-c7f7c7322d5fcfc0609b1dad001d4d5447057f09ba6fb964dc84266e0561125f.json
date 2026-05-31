@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)\n            FROM room_creation_requests\n            WHERE status = $1\n              AND ($2::bigint IS NULL OR requested_by = $2)\n              AND ($3 = '' OR name ILIKE $3 ESCAPE '\\' OR description ILIKE $3 ESCAPE '\\')\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c7f7c7322d5fcfc0609b1dad001d4d5447057f09ba6fb964dc84266e0561125f"
+}

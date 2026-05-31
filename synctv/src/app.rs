@@ -1112,13 +1112,21 @@ impl Application {
         );
         info!("Notification partition management started (leader-gated, monthly granularity, check interval: 24 hours)");
 
-        let cleanup_config = synctv_core::service::cleanup::CleanupConfig::default();
+        let cleanup_config = synctv_core::service::cleanup::CleanupConfig {
+            unreferenced_file_retention_seconds: infra
+                .config
+                .file_storage
+                .unreferenced_object_retention_seconds,
+            ..synctv_core::service::cleanup::CleanupConfig::default()
+        };
+        let file_storage_service = core.services.chat_service.file_storage_service();
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
             cleanup_config.clone(),
             leader.leader_runtime.clone(),
         )
-        .with_settings_registry(core.services.settings_registry.clone());
+        .with_settings_registry(core.services.settings_registry.clone())
+        .with_file_storage_service(file_storage_service.clone());
         shutdown.register_task(
             "data_cleanup",
             cleanup_service.start_periodic(24, singleton_cancel.clone()),
@@ -1130,7 +1138,8 @@ impl Application {
             leader.leader_runtime.clone(),
         )
         .with_cleanup_config(cleanup_config.clone())
-        .with_settings_registry(core.services.settings_registry.clone());
+        .with_settings_registry(core.services.settings_registry.clone())
+        .with_file_storage_service(file_storage_service.clone());
         shutdown.register_task(
             "db_maintenance",
             db_maintenance.spawn_maintenance_loop(singleton_cancel),
@@ -1149,6 +1158,7 @@ impl Application {
                 let settings_registry = settings_registry.clone();
                 let cleanup_config = deferred_cleanup_config.clone();
                 let leader_runtime = deferred_leader_runtime.clone();
+                let file_storage_service = file_storage_service.clone();
                 Box::pin(async move {
                     info!(
                         "Leadership gained after startup; running deferred singleton maintenance"
@@ -1159,7 +1169,8 @@ impl Application {
                         cleanup_config.clone(),
                         leader_runtime.clone(),
                     )
-                    .with_settings_registry(settings_registry.clone());
+                    .with_settings_registry(settings_registry.clone())
+                    .with_file_storage_service(file_storage_service.clone());
                     let cleanup_result = cleanup_service.run_all().await;
                     info!(
                         users_purged = cleanup_result.users_purged,
@@ -1169,13 +1180,15 @@ impl Application {
                         notifications_deleted = cleanup_result.notifications_deleted,
                         chat_messages_deleted = cleanup_result.chat_messages_deleted,
                         token_blacklist_deleted = cleanup_result.token_blacklist_deleted,
+                        unreferenced_files_deleted = cleanup_result.unreferenced_files_deleted,
                         "Deferred cleanup completed after leadership gain"
                     );
 
                     let db_maintenance =
                         synctv_core::service::DatabaseMaintenanceService::new(pool, leader_runtime)
                             .with_cleanup_config(cleanup_config.clone())
-                            .with_settings_registry(settings_registry);
+                            .with_settings_registry(settings_registry)
+                            .with_file_storage_service(file_storage_service);
                     db_maintenance.run_all_maintenance().await;
                     info!("Deferred database maintenance completed after leadership gain");
                 })
@@ -1606,6 +1619,8 @@ mod tests {
                 hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },
+            file_storage: synctv_core::config::FileStorageConfig::default(),
+            chat: synctv_core::config::ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {

@@ -238,6 +238,57 @@ description: 常用 SYNCTV_ 环境变量速查。
 | `SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS` | `livestream.flv_max_connection_duration_seconds` |
 | `SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS` | `livestream.flv_write_timeout_seconds` |
 
+## 文件存储
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_FILE_STORAGE_DEFAULT_BACKEND` | `file_storage.default_backend` |
+| `SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND` | `file_storage.chat_images_backend` |
+| `SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND` | `file_storage.user_avatars_backend` |
+| `SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND` | `file_storage.video_covers_backend` |
+| `SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND` | `file_storage.room_covers_backend` |
+| `SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND` | `file_storage.playlist_covers_backend` |
+| `SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS` | `file_storage.unreferenced_object_retention_seconds` |
+| `SYNCTV_FILE_STORAGE_BACKENDS` | `file_storage.backends` JSON object |
+| `SYNCTV_FILE_UPLOAD_TOKEN_SECRET` | `file_storage.upload_token_secret` |
+| `SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE` | `file_storage.upload_token_secret` 文件 |
+
+示例：关闭文件存储
+
+```bash
+SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=disabled
+SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
+SYNCTV_FILE_STORAGE_BACKENDS='{}'
+```
+
+示例：使用 PostgreSQL 存储文件
+
+```bash
+SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=database
+SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND=database
+SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND=database
+SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND=database
+SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=database
+SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=database
+SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
+SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
+SYNCTV_FILE_STORAGE_BACKENDS='{"database":{"type":"database"}}'
+```
+
+示例：使用 S3-compatible 对象存储
+
+```bash
+SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
+SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
+SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","access_key_id":"access-key","secret_access_key":"secret-key","bucket":"synctv-files","region":"auto","base_path":"files/","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":900}}}'
+```
+
 ## 集群
 
 | 环境变量 | 对应配置 |
@@ -265,7 +316,6 @@ description: 常用 SYNCTV_ 环境变量速查。
 | 环境变量 | 对应配置 |
 | --- | --- |
 | `SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND` | `messaging_rate_limits.chat_per_second` |
-| `SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND` | `messaging_rate_limits.danmaku_per_second` |
 | `SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS` | `messaging_rate_limits.window_seconds` |
 | `SYNCTV_CONNECTION_LIMITS_MAX_PER_USER` | `connection_limits.max_per_user` |
 | `SYNCTV_CONNECTION_LIMITS_MAX_PER_ROOM` | `connection_limits.max_per_room` |

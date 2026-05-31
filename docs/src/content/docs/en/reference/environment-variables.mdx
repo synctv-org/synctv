@@ -42,6 +42,52 @@ The list below mirrors the environment variable names used by the runtime.
 | `SYNCTV_CACHE_L2_TTL_SECONDS` | `cache.l2_ttl_seconds` |
 | `SYNCTV_CACHE_PERMISSION_CACHE_CAPACITY` | `cache.permission_cache_capacity` |
 | `SYNCTV_CACHE_PERMISSION_CACHE_TTL_SECONDS` | `cache.permission_cache_ttl_seconds` |
+| `SYNCTV_FILE_STORAGE_DEFAULT_BACKEND` | `file_storage.default_backend` |
+| `SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND` | `file_storage.chat_images_backend` |
+| `SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND` | `file_storage.user_avatars_backend` |
+| `SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND` | `file_storage.video_covers_backend` |
+| `SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND` | `file_storage.room_covers_backend` |
+| `SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND` | `file_storage.playlist_covers_backend` |
+| `SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS` | `file_storage.unreferenced_object_retention_seconds` |
+| `SYNCTV_FILE_STORAGE_BACKENDS` | `file_storage.backends` JSON object |
+| `SYNCTV_FILE_UPLOAD_TOKEN_SECRET` | `file_storage.upload_token_secret` |
+| `SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE` | `file_storage.upload_token_secret` file |
+
+Example: disable file storage
+
+```bash
+SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=disabled
+SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
+SYNCTV_FILE_STORAGE_BACKENDS='{}'
+```
+
+Example: store files in PostgreSQL
+
+```bash
+SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=database
+SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND=database
+SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND=database
+SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND=database
+SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=database
+SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=database
+SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
+SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
+SYNCTV_FILE_STORAGE_BACKENDS='{"database":{"type":"database"}}'
+```
+
+Example: use S3-compatible object storage
+
+```bash
+SYNCTV_FILE_STORAGE_DEFAULT_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=s3_public
+SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
+SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
+SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","access_key_id":"access-key","secret_access_key":"secret-key","bucket":"synctv-files","region":"auto","base_path":"files/","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":900}}}'
+```
 | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` | `proxy_slice_cache.enabled` |
 | `SYNCTV_PROXY_SLICE_CACHE_SLICE_SIZE_BYTES` | `proxy_slice_cache.slice_size_bytes` |
 | `SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES` | `proxy_slice_cache.max_cache_size_bytes` |
@@ -184,7 +230,6 @@ The list below mirrors the environment variable names used by the runtime.
 | `SYNCTV_LIVESTREAM_RTMP_PORT` | `livestream.rtmp_port` |
 | `SYNCTV_LIVESTREAM_STREAM_TIMEOUT_SECONDS` | `livestream.stream_timeout_seconds` |
 | `SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND` | `messaging_rate_limits.chat_per_second` |
-| `SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND` | `messaging_rate_limits.danmaku_per_second` |
 | `SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS` | `messaging_rate_limits.window_seconds` |
 | `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` | `metrics.auth.basic_password` |
 | `SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE` | `metrics.auth.basic_password` file |

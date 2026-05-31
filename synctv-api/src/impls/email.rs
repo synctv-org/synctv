@@ -731,6 +731,7 @@ mod tests {
             email: Some(format!("{username}@example.com")),
             password_hash: "hash".to_string(),
             role: UserRole::User,
+            avatar_file_reference_id: None,
             status: UserStatus::Active,
             is_banned: false,
             banned_at: None,

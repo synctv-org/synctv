@@ -15,7 +15,7 @@
 //! - Falls back to in-memory governor on Redis errors
 //! - Service remains available during Redis outage
 //! - Per-replica limits during outage (N * limit effective limit)
-//! - Appropriate for: chat, danmaku, non-critical operations
+//! - Appropriate for: chat, playback, playlist, non-critical operations
 //!
 //! ## Fail-Closed (`check_rate_limit_distributed`)
 //!
@@ -139,16 +139,6 @@ async fn test_health_check_detects_redis_unavailable() {
         "Error should indicate Redis not configured"
     );
 }
-
-// Test 5: Verify multi-replica behavior implications (documentation)
-
-// Documents the multi-replica implications of fail-open behavior.
-// Scenario: 3 replicas with 10 req/sec limit each.
-// With Redis healthy, global limit stays 10 req/sec.
-// With Redis unavailable, effective limit becomes 30 req/sec.
-// Mitigations:
-
-// Test 7: Verify the fallback does not leak Redis errors to callers
 
 /// Ensures that Redis errors are not propagated to callers in fail-open mode.
 ///
@@ -274,56 +264,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
     }
 }
 
-// Test 10: Document security considerations
-
-/// Documents security considerations for rate limiter fail modes.
-///
-/// # Security Implications
-///
-/// ## Fail-Open Risks
-///
-/// 1. **Brute force attacks**: During Redis outage, attackers get N * limit attempts
-/// 2. **Credential stuffing**: Password checking may allow more attempts
-/// 3. **DoS amplification**: Effective rate limit increases during outage
-///
-/// ## Fail-Closed Risks
-///
-/// 1. **Availability impact**: Service becomes unavailable during Redis outage
-/// 2. **Cascading failures**: Dependent services may fail
-///
-/// # Recommendations
-///
-/// 1. Use fail-closed for all authentication-related endpoints
-/// 2. Use fail-open for user experience features (chat, playback)
-/// 3. Monitor `rate_limit_redis_fallbacks_total` metric
-/// 4. Have Redis HA in production
-#[test]
-fn test_security_considerations_documentation() {
-    // Security-critical endpoints that MUST use fail-closed:
-    let security_critical = [
-        "login",
-        "password_reset",
-        "email_bind",
-        "room_password_check",
-        "admin_actions",
-    ];
-
-    // User experience endpoints that CAN use fail-open:
-    let ux_critical = ["chat", "danmaku", "playback", "playlist"];
-
-    assert!(security_critical.contains(&"login"));
-    assert!(security_critical.contains(&"room_password_check"));
-    assert!(ux_critical.contains(&"chat"));
-    assert!(ux_critical.contains(&"playback"));
-    assert!(
-        security_critical
-            .iter()
-            .all(|endpoint| !ux_critical.contains(endpoint)),
-        "security-critical and UX-oriented endpoints must remain disjoint"
-    );
-}
-
-// Test 11: Verify retry_after_seconds values
+// Test 10: Verify retry_after_seconds values
 
 /// Verifies that fail-closed mode reports backend unavailability distinctly.
 #[tokio::test]

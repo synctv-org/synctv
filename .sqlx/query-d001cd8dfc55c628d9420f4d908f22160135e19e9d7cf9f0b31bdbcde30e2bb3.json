@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT sequence, event_id, room_id, message_id, message_created_at,\n                       actor_user_id, kind, message_version, event_payload, occurred_at\n                FROM chat_message_events\n                WHERE room_id = $1\n                ORDER BY sequence ASC\n                LIMIT $2\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "message_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "actor_user_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "kind",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 7,
+        "name": "message_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "event_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "occurred_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d001cd8dfc55c628d9420f4d908f22160135e19e9d7cf9f0b31bdbcde30e2bb3"
+}

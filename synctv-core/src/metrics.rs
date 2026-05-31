@@ -208,7 +208,7 @@ pub mod http {
             .expect("Failed to register PLAYLIST_ITEMS_TOTAL")
         });
 
-    /// Total chat messages sent (persisted to database, excludes ephemeral danmaku).
+    /// Total chat messages sent.
     pub static CHAT_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
             register_int_counter_vec_with_registry!(
@@ -973,6 +973,67 @@ pub mod cluster {
         });
 }
 
+/// Generic file storage metrics.
+pub mod file_storage {
+    use super::{IntCounterVec, IntGauge, REGISTRY};
+    use prometheus::{
+        register_int_counter_vec_with_registry, register_int_gauge_with_registry, Opts,
+    };
+
+    /// File object delete attempts, labeled by cleanup origin and storage backend.
+    pub static FILE_OBJECT_DELETE_ATTEMPTS: std::sync::LazyLock<IntCounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_int_counter_vec_with_registry!(
+                Opts::new(
+                    "synctv_file_object_delete_attempts_total",
+                    "Total file object delete attempts"
+                ),
+                &["origin", "backend"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register FILE_OBJECT_DELETE_ATTEMPTS")
+        });
+
+    /// File object delete failures, labeled by cleanup origin and storage backend.
+    pub static FILE_OBJECT_DELETE_FAILURES: std::sync::LazyLock<IntCounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_int_counter_vec_with_registry!(
+                Opts::new(
+                    "synctv_file_object_delete_failures_total",
+                    "Total file object delete failures"
+                ),
+                &["origin", "backend"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register FILE_OBJECT_DELETE_FAILURES")
+        });
+
+    /// Due file cleanup jobs waiting for retry.
+    pub static FILE_CLEANUP_JOBS_DUE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| {
+            register_int_gauge_with_registry!(
+                "synctv_file_cleanup_jobs_due",
+                "File cleanup jobs due for retry",
+                REGISTRY.clone()
+            )
+            .expect("Failed to register FILE_CLEANUP_JOBS_DUE")
+        });
+
+    /// File cleanup retry job actions.
+    pub static FILE_CLEANUP_JOBS_TOTAL: std::sync::LazyLock<IntCounterVec> =
+        std::sync::LazyLock::new(|| {
+            register_int_counter_vec_with_registry!(
+                Opts::new(
+                    "synctv_file_cleanup_jobs_total",
+                    "Total file cleanup retry job actions"
+                ),
+                &["action", "origin", "backend"],
+                REGISTRY.clone()
+            )
+            .expect("Failed to register FILE_CLEANUP_JOBS_TOTAL")
+        });
+}
+
 /// Spawned task monitoring
 pub mod task {
     use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
@@ -1634,6 +1695,32 @@ mod tests {
         assert!(output.contains("synctv_realtime_events_published_total"));
         assert!(output.contains("synctv_realtime_events_received_total"));
         assert!(output.contains("synctv_realtime_events_dropped_total"));
+    }
+
+    #[test]
+    fn test_file_cleanup_metrics() {
+        file_storage::FILE_CLEANUP_JOBS_DUE.set(3);
+        file_storage::FILE_CLEANUP_JOBS_TOTAL
+            .with_label_values(&["completed", "cleanup_retry", "s3"])
+            .inc();
+
+        let output = gather_metrics();
+        assert!(output.contains("synctv_file_cleanup_jobs_due"));
+        assert!(output.contains("synctv_file_cleanup_jobs_total"));
+    }
+
+    #[test]
+    fn test_file_storage_object_delete_metrics() {
+        file_storage::FILE_OBJECT_DELETE_ATTEMPTS
+            .with_label_values(&["reference_released", "s3"])
+            .inc();
+        file_storage::FILE_OBJECT_DELETE_FAILURES
+            .with_label_values(&["reference_released", "s3"])
+            .inc();
+
+        let output = gather_metrics();
+        assert!(output.contains("synctv_file_object_delete_attempts_total"));
+        assert!(output.contains("synctv_file_object_delete_failures_total"));
     }
 
     #[test]

@@ -13324,6 +13324,7 @@ mod tests {
                 banned_at: 1_775_291_071_i64,
                 banned_by: "admin-1".into(),
                 banned_reason: "test".into(),
+                avatar_url: String::new(),
             }),
         })
         .expect("human output should render");
@@ -13358,6 +13359,7 @@ mod tests {
                 is_banned: false,
                 availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
                 version: 78,
+                cover: None,
             }),
             playback_state: None,
             membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -13477,6 +13479,8 @@ mod tests {
             source_config: br#"{"url":"https://example.com"}"#.to_vec(),
             availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
             version: 12,
+            cover: None,
+            description: String::new(),
         })
         .expect("media human output should render");
         let rendered_playlist = render_human_output(&synctv_proto::client::Playlist {
@@ -13494,6 +13498,8 @@ mod tests {
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
             version: 34,
             source_config: br#"{"path":"/shows"}"#.to_vec(),
+            description: String::new(),
+            cover: None,
         })
         .expect("playlist human output should render");
 
@@ -13525,6 +13531,8 @@ mod tests {
                 availability: synctv_proto::client::ResourceAvailability::Available as i32,
                 version: 10,
                 source_config: Vec::new(),
+                description: String::new(),
+                cover: None,
             }],
             media: vec![synctv_proto::client::Media {
                 id: "media-1".into(),
@@ -13539,6 +13547,8 @@ mod tests {
                 source_config: br#"{"url":"https://example.com"}"#.to_vec(),
                 availability: synctv_proto::client::ResourceAvailability::Available as i32,
                 version: 11,
+                cover: None,
+                description: String::new(),
             }],
             total: 2,
             folder_count: 1,

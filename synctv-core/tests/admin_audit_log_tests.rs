@@ -435,6 +435,7 @@ async fn test_all_audit_actions_are_logged() {
         AuditAction::RoomDeleted,
         AuditAction::SettingsUpdated,
         AuditAction::StreamKicked,
+        AuditAction::ChatMessageDeleted,
     ];
 
     for (i, action) in actions.iter().enumerate() {
@@ -453,6 +454,7 @@ async fn test_all_audit_actions_are_logged() {
                     | AuditAction::RoomUnbanned
                     | AuditAction::RoomDeleted => AuditTargetType::Room,
                     AuditAction::StreamKicked => AuditTargetType::Stream,
+                    AuditAction::ChatMessageDeleted => AuditTargetType::ChatMessage,
                     _ => AuditTargetType::Settings,
                 },
                 Some(format!("action_target_{i}")),
@@ -495,6 +497,7 @@ async fn test_all_target_types_are_logged() {
         AuditTargetType::Room,
         AuditTargetType::Stream,
         AuditTargetType::Settings,
+        AuditTargetType::ChatMessage,
     ];
 
     for (i, target_type) in target_types.iter().enumerate() {

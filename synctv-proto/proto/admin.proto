@@ -114,6 +114,7 @@ message AdminUser {
     int64 banned_at = 9;
     string banned_by = 10;
     string banned_reason = 11;
+    string avatar_url = 12;
 }
 
 message AdminRoom {

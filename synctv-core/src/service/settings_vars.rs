@@ -915,13 +915,13 @@ mod tests {
         let service = Arc::new(SettingsService::new(repo, pool.clone()));
         let storage = Arc::new(SettingsStorage::new(service.clone()));
 
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
              ON CONFLICT (key) DO NOTHING",
+            "room.password_policy",
+            "room",
+            "required"
         )
-        .bind("room.password_policy")
-        .bind("room")
-        .bind("required")
         .execute(&pool)
         .await
         .unwrap();

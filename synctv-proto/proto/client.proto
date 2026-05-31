@@ -38,6 +38,11 @@ service UserService {
     rpc Logout(LogoutRequest) returns (LogoutResponse);
     rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
     rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
+    rpc CreateUserAvatarUploadSession(CreateUserAvatarUploadSessionRequest) returns (CreateUserAvatarUploadSessionResponse);
+    rpc UploadUserAvatarObject(UploadUserAvatarObjectRequest) returns (UploadUserAvatarObjectResponse);
+    rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (UserAvatarObjectResponse);
+    rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (GetProfileResponse);
+    rpc ClearUserAvatar(ClearUserAvatarRequest) returns (GetProfileResponse);
     rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
     rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (ConfirmEmailBindResponse);
     rpc UnbindEmail(UnbindEmailRequest) returns (UnbindEmailResponse);
@@ -93,7 +98,24 @@ service RoomService {
     rpc WatchRoomSettings(WatchRoomSettingsRequest) returns (stream WatchRoomSettingsEvent);
     rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
     rpc WatchRoomMembers(WatchRoomMembersRequest) returns (stream WatchRoomMembersEvent);
+    rpc WatchChatEvents(WatchChatEventsRequest) returns (stream WatchChatEventsEvent);
+    rpc CreateChatImageUploadSession(CreateChatImageUploadSessionRequest) returns (CreateChatImageUploadSessionResponse);
+    rpc UploadChatImageObject(UploadChatImageObjectRequest) returns (UploadChatImageObjectResponse);
+    rpc GetChatImageObject(GetChatImageObjectRequest) returns (ChatImageObjectResponse);
+    rpc CreateRoomCoverUploadSession(CreateRoomCoverUploadSessionRequest) returns (CreateRoomCoverUploadSessionResponse);
+    rpc UploadRoomCoverObject(UploadRoomCoverObjectRequest) returns (UploadRoomCoverObjectResponse);
+    rpc GetRoomCoverObject(GetRoomCoverObjectRequest) returns (RoomCoverObjectResponse);
+    rpc UpdateRoomCover(UpdateRoomCoverRequest) returns (GetRoomResponse);
+    rpc ClearRoomCover(ClearRoomCoverRequest) returns (GetRoomResponse);
+    rpc SendChatMessage(SendChatMessageRequest) returns (ChatMessageEventResponse);
+    rpc EditChatMessage(EditChatMessageRequest) returns (ChatMessageEventResponse);
+    rpc DeleteChatMessage(DeleteChatMessageRequest) returns (ChatMessageEventResponse);
     rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+    rpc GetChatMessage(GetChatMessageRequest) returns (GetChatMessageResponse);
+    rpc GetChatMessageContext(GetChatMessageContextRequest) returns (GetChatMessageContextResponse);
+    rpc GetChatPlaybackMessages(GetChatPlaybackMessagesRequest) returns (GetChatPlaybackMessagesResponse);
+    rpc MarkChatRead(MarkChatReadRequest) returns (ChatReadStateResponse);
+    rpc GetChatReadState(GetChatReadStateRequest) returns (ChatReadStateResponse);
 
     // WebRTC ICE Servers Configuration
     rpc GetIceServers(GetIceServersRequest) returns (GetIceServersResponse);
@@ -102,6 +124,11 @@ service RoomService {
     rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
+    rpc CreatePlaylistCoverUploadSession(CreatePlaylistCoverUploadSessionRequest) returns (CreatePlaylistCoverUploadSessionResponse);
+    rpc UploadPlaylistCoverObject(UploadPlaylistCoverObjectRequest) returns (UploadPlaylistCoverObjectResponse);
+    rpc GetPlaylistCoverObject(GetPlaylistCoverObjectRequest) returns (PlaylistCoverObjectResponse);
+    rpc UpdatePlaylistCover(UpdatePlaylistCoverRequest) returns (UpdatePlaylistResponse);
+    rpc ClearPlaylistCover(ClearPlaylistCoverRequest) returns (UpdatePlaylistResponse);
     rpc MovePlaylist(MovePlaylistRequest) returns (MovePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
     rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
@@ -109,6 +136,11 @@ service RoomService {
     // Media Management (room-scoped operations)
     rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
     rpc GetMedia(GetMediaRequest) returns (Media);
+    rpc CreateVideoCoverUploadSession(CreateVideoCoverUploadSessionRequest) returns (CreateVideoCoverUploadSessionResponse);
+    rpc UploadVideoCoverObject(UploadVideoCoverObjectRequest) returns (UploadVideoCoverObjectResponse);
+    rpc GetVideoCoverObject(GetVideoCoverObjectRequest) returns (VideoCoverObjectResponse);
+    rpc UpdateVideoCover(UpdateVideoCoverRequest) returns (EditMediaResponse);
+    rpc ClearVideoCover(ClearVideoCoverRequest) returns (EditMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
     rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
@@ -176,6 +208,8 @@ message User {
     synctv.common.UserStatus status = 5; // Account status
     int64 created_at = 6;
     bool is_banned = 7;
+    string avatar_url = 8;
+    UserAvatar avatar = 9;
 }
 
 // Public user view - safe to return in any context (room member lists, chat, etc.).
@@ -185,6 +219,8 @@ message UserPublicView {
     string username = 2;
     synctv.common.UserRole role = 3;     // Global RBAC role
     int64 created_at = 4;
+    string avatar_url = 5;
+    UserAvatar avatar = 6;
 }
 
 message Room {
@@ -200,6 +236,7 @@ message Room {
     bool is_banned = 10; // Ban flag set by global admin only
     ResourceAvailability availability = 11; // Availability derived from creator state
     int64 version = 12; // Resource version from database
+    ResourceCover cover = 13;
 }
 
 message Media {
@@ -215,6 +252,8 @@ message Media {
     bytes source_config = 11; // JSON source config, only returned to the media creator
     ResourceAvailability availability = 12; // Availability derived from creator state
     int64 version = 13; // Resource version from database
+    VideoCover cover = 14;
+    string description = 15;
 }
 
 message Playlist {
@@ -232,6 +271,15 @@ message Playlist {
     bytes source_config = 12; // JSON source config, only returned to the playlist creator
     string source_provider = 13; // Source provider for dynamic playlists
     string provider_instance_name = 14; // Provider instance for dynamic playlists
+    string description = 15;
+    ResourceCover cover = 16;
+}
+
+message ResourceCover {
+    string storage_backend = 1;
+    string object_key = 2;
+    string url = 3;
+    bytes metadata = 4; // JSON object.
 }
 
 enum ResourceAvailability {
@@ -1204,6 +1252,9 @@ message CreatePlaylistRequest {
             max_len: 64
         }
     ]; // Optional provider instance name. Empty means use the default provider instance for source_provider
+    string description = 6 [(buf.validate.field).string = {
+        max_len: 5000
+    }];
 }
 
 message CreatePlaylistResponse {
@@ -1222,6 +1273,9 @@ message UpdatePlaylistRequest {
             max_len: 255
         }
     ]; // Optional new name
+    string description = 3 [(buf.validate.field).string = {
+        max_len: 5000
+    }];
 }
 
 message UpdatePlaylistResponse {
@@ -1406,6 +1460,7 @@ message AddMediaRequest {
     ]; // Optional provider instance name; empty means use the default provider instance for source_provider
     bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
     string name = 5 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
+    string description = 6 [(buf.validate.field).string.max_len = 5000];
 }
 
 message AddMediaResponse {
@@ -1539,6 +1594,7 @@ message PlaylistItem {
     optional int64 size = 4; // File size in bytes (for files)
     optional string thumbnail = 5; // Thumbnail URL
     optional int64 modified_at = 6; // Modified time (Unix timestamp)
+    string description = 7;
 }
 
 message PlaylistBrowsePathNode {
@@ -1615,6 +1671,7 @@ message EditMediaRequest {
         pattern: "^med_[A-Za-z0-9]+$"
     }];
     string name = 2 [(buf.validate.field).string.max_len = 500];
+    string description = 3 [(buf.validate.field).string.max_len = 5000];
 }
 message EditMediaResponse {
     Media media = 1;
@@ -1896,6 +1953,7 @@ message ObserveResource {
         ObserveRoomSettings room_settings = 6;
         ObservePlaylistItems playlist_items = 7;
         ObserveRoomMembers room_members = 8;
+        ObserveChatEvents chat_events = 9;
     }
 }
 
@@ -1928,6 +1986,11 @@ message ObserveRoomMembers {
     GetRoomMembersRequest request = 1;
 }
 
+message ObserveChatEvents {
+    // Empty means start with newly-created events only. Use GetChatHistory for backfill.
+    string after_event_id = 1;
+}
+
 message WatchOptions {
     string version = 1;
     ResourceDeliveryMode delivery_mode = 2;
@@ -1954,6 +2017,11 @@ message WatchPlaylistItemsRequest {
 message WatchRoomMembersRequest {
     WatchOptions options = 1;
     GetRoomMembersRequest request = 2;
+}
+
+message WatchChatEventsRequest {
+    WatchOptions options = 1;
+    ObserveChatEvents chat_events = 2;
 }
 
 message WatchPlaybackStateEvent {
@@ -1989,6 +2057,14 @@ message WatchPlaylistItemsEvent {
 }
 
 message WatchRoomMembersEvent {
+    oneof event {
+        ResourceObserved observed = 1;
+        ResourceChanged changed = 2;
+        ResourceObserveError error = 3;
+    }
+}
+
+message WatchChatEventsEvent {
     oneof event {
         ResourceObserved observed = 1;
         ResourceChanged changed = 2;
@@ -2038,6 +2114,7 @@ message ServerMessage {
         ResourceObserved resource_observed = 29;
         ResourceChanged resource_changed = 30;
         ResourceObserveError resource_observe_error = 31;
+        ChatMessageEvent chat_event = 32;
     }
 }
 
@@ -2059,6 +2136,7 @@ message ResourceChanged {
         RoomSettingsChanged room_settings = 6;
         ListPlaylistItemsResponse playlist_items = 7;
         GetRoomMembersResponse room_members = 8;
+        ChatMessageEvent chat_event = 9;
     }
 }
 
@@ -2078,12 +2156,14 @@ message RoomMembersChanged {
 }
 
 
-// Note: room_id extracted from x-room-id metadata in MessageStream context
-// If position is set, client may display this as a danmaku (bullet comment)
+// Note: room_id extracted from x-room-id metadata in MessageStream context.
 message ChatMessageSend {
     string content = 1; // Validation: required, max 5000 chars, HTML tags stripped
-    optional double position = 2; // Video position in seconds (for danmaku display). Validation: >= 0, max 86400
-    optional string color = 3; // Hex color (e.g., "#FFFFFF") for danmaku
+    string display_position = 2; // Optional chat presentation placement, e.g. "scroll", "top", "bottom".
+    string display_color = 3; // Optional chat presentation color, e.g. "#FFFFFF".
+    string client_message_id = 4; // Client-generated idempotency key for normal chat messages.
+    repeated ChatImage images = 5; // Image-only payloads; generic file sending is intentionally unsupported.
+    string reply_to_message_id = 6;
 }
 
 message ChatMessageReceive {
@@ -2093,8 +2173,412 @@ message ChatMessageReceive {
     string username = 4;
     string content = 5;
     int64 timestamp = 6; // Unix timestamp (seconds)
-    optional double position = 7; // Video position in seconds (for danmaku display)
-    optional string color = 8; // Hex color for danmaku
+    string display_position = 7; // Optional chat presentation placement.
+    string display_color = 8; // Optional chat presentation color.
+    string client_message_id = 9;
+    ChatMessageStatus status = 10;
+    int64 version = 11;
+    int64 edited_at = 12;
+    int64 deleted_at = 13;
+    string reply_to_message_id = 14;
+    repeated ChatImage images = 15;
+    string deleted_by_user_id = 16;
+    string delete_reason = 17;
+    string playback_media_id = 18;
+    string playback_playlist_id = 19;
+    bytes playback_target = 20;
+    string playback_target_hash = 21;
+    optional double playback_position_seconds = 22;
+}
+
+enum ChatMessageStatus {
+    CHAT_MESSAGE_STATUS_UNSPECIFIED = 0;
+    CHAT_MESSAGE_STATUS_ACTIVE = 1;
+    CHAT_MESSAGE_STATUS_EDITED = 2;
+    CHAT_MESSAGE_STATUS_DELETED = 3;
+}
+
+enum ChatMessageEventKind {
+    CHAT_MESSAGE_EVENT_KIND_UNSPECIFIED = 0;
+    CHAT_MESSAGE_EVENT_KIND_CREATED = 1;
+    CHAT_MESSAGE_EVENT_KIND_EDITED = 2;
+    CHAT_MESSAGE_EVENT_KIND_DELETED = 3;
+}
+
+message ChatImage {
+    string id = 1;
+    string storage_backend = 2;
+    string object_key = 3;
+    string url = 4;
+    string mime_type = 5;
+    int64 size_bytes = 6;
+    int32 width = 7;
+    int32 height = 8;
+    bytes metadata = 9; // JSON object.
+}
+
+message CreateChatImageUploadSessionRequest {
+    string client_image_id = 1;
+    string mime_type = 2;
+    int64 size_bytes = 3;
+    int32 width = 4;
+    int32 height = 5;
+    string checksum_sha256 = 6;
+    bytes metadata = 7; // JSON object.
+}
+
+message ChatImageUploadSession {
+    ChatImage image = 1;
+    bool upload_required = 2;
+    string upload_url = 3;
+    string upload_method = 4;
+    map<string, string> upload_headers = 5;
+    int64 expires_at = 6;
+    int64 max_size_bytes = 7;
+    bool ownership_proof_required = 8;
+    string ownership_proof_nonce = 9;
+    repeated ChatImageOwnershipProofRange ownership_proof_ranges = 10;
+    string ownership_proof_metadata_key = 11;
+}
+
+message ChatImageOwnershipProofRange {
+    int64 offset = 1;
+    int32 length = 2;
+}
+
+message CreateChatImageUploadSessionResponse {
+    ChatImageUploadSession session = 1;
+}
+
+message UploadChatImageObjectRequest {
+    string room_id = 1;
+    string encoded_object_key = 2;
+    string token = 3;
+    string content_type = 4;
+    bytes data = 5;
+}
+
+message GetChatImageObjectRequest {
+    string room_id = 1;
+    string encoded_object_key = 2;
+    string token = 3;
+}
+
+message ChatImageObjectResponse {
+    string room_id = 1;
+    string object_key = 2;
+    string mime_type = 3;
+    string checksum_sha256 = 4;
+    bytes data = 5;
+}
+
+message UploadChatImageObjectResponse {
+    ChatImageObjectResponse object = 1;
+}
+
+message UserAvatar {
+    string id = 1;
+    string storage_backend = 2;
+    string object_key = 3;
+    string url = 4;
+    string mime_type = 5;
+    int64 size_bytes = 6;
+    int32 width = 7;
+    int32 height = 8;
+    bytes metadata = 9; // JSON object.
+}
+
+message CreateUserAvatarUploadSessionRequest {
+    string client_avatar_id = 1;
+    string mime_type = 2;
+    int64 size_bytes = 3;
+    int32 width = 4;
+    int32 height = 5;
+    string checksum_sha256 = 6;
+    bytes metadata = 7; // JSON object.
+}
+
+message UserAvatarUploadSession {
+    UserAvatar avatar = 1;
+    bool upload_required = 2;
+    string upload_url = 3;
+    string upload_method = 4;
+    map<string, string> upload_headers = 5;
+    int64 expires_at = 6;
+    int64 max_size_bytes = 7;
+    bool ownership_proof_required = 8;
+    string ownership_proof_nonce = 9;
+    repeated UserAvatarOwnershipProofRange ownership_proof_ranges = 10;
+    string ownership_proof_metadata_key = 11;
+}
+
+message UserAvatarOwnershipProofRange {
+    int64 offset = 1;
+    int32 length = 2;
+}
+
+message CreateUserAvatarUploadSessionResponse {
+    UserAvatarUploadSession session = 1;
+}
+
+message UploadUserAvatarObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+    string content_type = 3;
+    bytes data = 4;
+}
+
+message GetUserAvatarObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+}
+
+message UserAvatarObjectResponse {
+    string object_key = 1;
+    string mime_type = 2;
+    string checksum_sha256 = 3;
+    bytes data = 4;
+}
+
+message UploadUserAvatarObjectResponse {
+    UserAvatarObjectResponse object = 1;
+}
+
+message UpdateUserAvatarRequest {
+    UserAvatar avatar = 1;
+}
+
+message ClearUserAvatarRequest {}
+
+message FileCover {
+    string id = 1;
+    string storage_backend = 2;
+    string object_key = 3;
+    string url = 4;
+    string mime_type = 5;
+    int64 size_bytes = 6;
+    int32 width = 7;
+    int32 height = 8;
+    bytes metadata = 9; // JSON object.
+}
+
+message VideoCover {
+    string id = 1;
+    string storage_backend = 2;
+    string object_key = 3;
+    string url = 4;
+    string mime_type = 5;
+    int64 size_bytes = 6;
+    int32 width = 7;
+    int32 height = 8;
+    bytes metadata = 9; // JSON object.
+}
+
+message CreateVideoCoverUploadSessionRequest {
+    string room_id = 1;
+    string media_id = 2 [(buf.validate.field).string.min_len = 1];
+    string client_cover_id = 3;
+    string mime_type = 4;
+    int64 size_bytes = 5;
+    int32 width = 6;
+    int32 height = 7;
+    string checksum_sha256 = 8;
+    bytes metadata = 9; // JSON object.
+}
+
+message VideoCoverUploadSession {
+    VideoCover cover = 1;
+    bool upload_required = 2;
+    string upload_url = 3;
+    string upload_method = 4;
+    map<string, string> upload_headers = 5;
+    int64 expires_at = 6;
+    int64 max_size_bytes = 7;
+    bool ownership_proof_required = 8;
+    string ownership_proof_nonce = 9;
+    repeated VideoCoverOwnershipProofRange ownership_proof_ranges = 10;
+    string ownership_proof_metadata_key = 11;
+}
+
+message VideoCoverOwnershipProofRange {
+    int64 offset = 1;
+    int32 length = 2;
+}
+
+message CreateVideoCoverUploadSessionResponse {
+    VideoCoverUploadSession session = 1;
+}
+
+message UploadVideoCoverObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+    string content_type = 3;
+    bytes data = 4;
+}
+
+message GetVideoCoverObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+}
+
+message VideoCoverObjectResponse {
+    string object_key = 1;
+    string mime_type = 2;
+    string checksum_sha256 = 3;
+    bytes data = 4;
+}
+
+message UploadVideoCoverObjectResponse {
+    VideoCoverObjectResponse object = 1;
+}
+
+message UpdateVideoCoverRequest {
+    string room_id = 1;
+    string media_id = 2 [(buf.validate.field).string.min_len = 1];
+    VideoCover cover = 3;
+}
+
+message ClearVideoCoverRequest {
+    string room_id = 1;
+    string media_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message CreateRoomCoverUploadSessionRequest {
+    string room_id = 1;
+    string client_cover_id = 2;
+    string mime_type = 3;
+    int64 size_bytes = 4;
+    int32 width = 5;
+    int32 height = 6;
+    string checksum_sha256 = 7;
+    bytes metadata = 8; // JSON object.
+}
+
+message RoomCoverUploadSession {
+    FileCover cover = 1;
+    bool upload_required = 2;
+    string upload_url = 3;
+    string upload_method = 4;
+    map<string, string> upload_headers = 5;
+    int64 expires_at = 6;
+    int64 max_size_bytes = 7;
+    bool ownership_proof_required = 8;
+    string ownership_proof_nonce = 9;
+    repeated FileOwnershipProofRange ownership_proof_ranges = 10;
+    string ownership_proof_metadata_key = 11;
+}
+
+message CreateRoomCoverUploadSessionResponse {
+    RoomCoverUploadSession session = 1;
+}
+
+message UploadRoomCoverObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+    string content_type = 3;
+    bytes data = 4;
+}
+
+message GetRoomCoverObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+}
+
+message RoomCoverObjectResponse {
+    string object_key = 1;
+    string mime_type = 2;
+    string checksum_sha256 = 3;
+    bytes data = 4;
+}
+
+message UploadRoomCoverObjectResponse {
+    RoomCoverObjectResponse object = 1;
+}
+
+message UpdateRoomCoverRequest {
+    string room_id = 1;
+    FileCover cover = 2;
+}
+
+message ClearRoomCoverRequest {
+    string room_id = 1;
+}
+
+message CreatePlaylistCoverUploadSessionRequest {
+    string room_id = 1;
+    string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
+    string client_cover_id = 3;
+    string mime_type = 4;
+    int64 size_bytes = 5;
+    int32 width = 6;
+    int32 height = 7;
+    string checksum_sha256 = 8;
+    bytes metadata = 9; // JSON object.
+}
+
+message PlaylistCoverUploadSession {
+    FileCover cover = 1;
+    bool upload_required = 2;
+    string upload_url = 3;
+    string upload_method = 4;
+    map<string, string> upload_headers = 5;
+    int64 expires_at = 6;
+    int64 max_size_bytes = 7;
+    bool ownership_proof_required = 8;
+    string ownership_proof_nonce = 9;
+    repeated FileOwnershipProofRange ownership_proof_ranges = 10;
+    string ownership_proof_metadata_key = 11;
+}
+
+message CreatePlaylistCoverUploadSessionResponse {
+    PlaylistCoverUploadSession session = 1;
+}
+
+message UploadPlaylistCoverObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+    string content_type = 3;
+    bytes data = 4;
+}
+
+message GetPlaylistCoverObjectRequest {
+    string encoded_object_key = 1;
+    string token = 2;
+}
+
+message PlaylistCoverObjectResponse {
+    string object_key = 1;
+    string mime_type = 2;
+    string checksum_sha256 = 3;
+    bytes data = 4;
+}
+
+message UploadPlaylistCoverObjectResponse {
+    PlaylistCoverObjectResponse object = 1;
+}
+
+message UpdatePlaylistCoverRequest {
+    string room_id = 1;
+    string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
+    FileCover cover = 3;
+}
+
+message ClearPlaylistCoverRequest {
+    string room_id = 1;
+    string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message FileOwnershipProofRange {
+    int64 offset = 1;
+    int32 length = 2;
+}
+
+message ChatMessageEvent {
+    string event_id = 1;
+    string room_id = 2;
+    ChatMessageEventKind kind = 3;
+    ChatMessageReceive message = 4;
+    int64 occurred_at = 5;
 }
 
 message HeartbeatMessage {
@@ -2163,6 +2647,35 @@ message UserNotification {
 
 // Chat History
 // Note: room_id extracted from x-room-id metadata
+message SendChatMessageRequest {
+    string content = 1;
+    string client_message_id = 2;
+    repeated ChatImage images = 3;
+    string reply_to_message_id = 4;
+    bytes metadata = 5; // JSON object.
+    string display_position = 6;
+    string display_color = 7;
+}
+
+message EditChatMessageRequest {
+    string message_id = 1;
+    string content = 2;
+    int64 expected_version = 3;
+    bytes metadata = 4; // JSON object.
+    string client_operation_id = 5; // Client-generated idempotency key for edit operations.
+}
+
+message DeleteChatMessageRequest {
+    string message_id = 1;
+    int64 expected_version = 2;
+    string reason = 3;
+    string client_operation_id = 4; // Client-generated idempotency key for delete operations.
+}
+
+message ChatMessageEventResponse {
+    ChatMessageEvent event = 1;
+}
+
 message GetChatHistoryRequest {
     option (buf.validate.message).cel = {
         id: "get_chat_history.limit"
@@ -2176,6 +2689,63 @@ message GetChatHistoryRequest {
 message GetChatHistoryResponse {
     repeated ChatMessageReceive messages = 1;
     string next_cursor = 2; // Pass this as cursor in the next request. Empty when no more messages.
+}
+
+message GetChatMessageRequest {
+    string message_id = 1;
+    bool include_deleted = 2;
+}
+
+message GetChatMessageResponse {
+    ChatMessageReceive message = 1;
+}
+
+message GetChatMessageContextRequest {
+    string message_id = 1;
+    int32 before_limit = 2;
+    int32 after_limit = 3;
+    bool include_deleted = 4;
+}
+
+message GetChatMessageContextResponse {
+    repeated ChatMessageReceive before = 1; // Chronological messages before anchor.
+    ChatMessageReceive message = 2;
+    repeated ChatMessageReceive after = 3; // Chronological messages after anchor.
+}
+
+message GetChatPlaybackMessagesRequest {
+    string playback_media_id = 1;
+    string playback_playlist_id = 2;
+    bytes playback_target = 3;
+    double position_seconds = 4;
+    double before_seconds = 5;
+    double after_seconds = 6;
+    int32 limit = 7;
+    bool include_deleted = 8;
+}
+
+message GetChatPlaybackMessagesResponse {
+    repeated ChatMessageReceive messages = 1;
+}
+
+message ChatReadState {
+    string room_id = 1;
+    string user_id = 2;
+    string last_read_message_id = 3;
+    string last_read_event_id = 4;
+    int64 last_read_event_sequence = 5;
+    int64 updated_at = 6;
+}
+
+message MarkChatReadRequest {
+    string message_id = 1;
+}
+
+message GetChatReadStateRequest {}
+
+message ChatReadStateResponse {
+    ChatReadState state = 1;
+    int64 unread_count = 2;
 }
 
 // User Profile Management

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_email_bind_requests\n            WHERE user_id = $1\n              AND used_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3748a4b74431d50adf19ecb5e1f360848c78dbd099422e66fe5423a636f9fabe"
+}

@@ -13,6 +13,7 @@ struct RoomRow {
     id: RoomId,
     name: String,
     description: String,
+    cover_file_reference_id: Option<i64>,
     created_by: UserId,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
     is_banned: bool,
@@ -34,6 +35,7 @@ impl From<RoomRow> for Room {
             id: row.id,
             name: row.name,
             description: row.description,
+            cover_file_reference_id: row.cover_file_reference_id,
             created_by: row.created_by,
             status,
             is_banned: row.is_banned,
@@ -47,7 +49,9 @@ impl From<RoomRow> for Room {
     }
 }
 
-const ROOM_SELECT_COLUMNS: &str = "r.id, r.name, r.description, r.created_by, r.closed_at,
+const ROOM_SELECT_COLUMNS: &str = r"r.id, r.name, r.description,
+    r.cover_file_reference_id,
+    r.created_by, r.closed_at,
     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
     EXISTS (
         SELECT 1 FROM room_bans rb
@@ -109,6 +113,11 @@ impl RoomRepository {
         Self { pool }
     }
 
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Create a new room.
     ///
     /// Product policies such as duplicate-name handling belong in the service
@@ -125,32 +134,35 @@ impl RoomRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let created = sqlx::query_as!(
-            RoomRow,
-            r#"
-             INSERT INTO rooms (name, description, created_by, closed_at, created_at, updated_at, version, last_activity_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             RETURNING id AS "id: RoomId",
+        let created = sqlx::query_as_unchecked!(
+RoomRow,
+r#"
+             INSERT INTO rooms (name, description, cover_file_reference_id,
+                                created_by, closed_at, created_at, updated_at, version, last_activity_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id,
                        name,
                        description,
-                       created_by AS "created_by: UserId",
+                       cover_file_reference_id,
+                       created_by,
                        closed_at,
-                       false AS "is_banned!",
+                       false AS is_banned,
                        created_at,
                        updated_at,
                        deleted_at,
                        version,
                        last_activity_at
             "#,
-            &room.name,
-            &room.description,
-            room.created_by.as_i64(),
-            room.closed_at,
-            room.created_at,
-            room.updated_at,
-            room.version,
-            room.last_activity_at,
-        )
+&room.name,
+&room.description,
+room.cover_file_reference_id,
+room.created_by.as_i64(),
+room.closed_at,
+room.created_at,
+room.updated_at,
+room.version,
+room.last_activity_at
+)
             .fetch_one(executor)
             .await?;
 
@@ -173,7 +185,7 @@ impl RoomRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let exists = sqlx::query_scalar::<_, bool>(
+        let exists = sqlx::query_scalar_unchecked!(
             r"
             SELECT EXISTS(
                 SELECT 1
@@ -183,31 +195,33 @@ impl RoomRepository {
                   AND deleted_at IS NULL
             )
             ",
+            creator_id.as_i64(),
+            name
         )
-        .bind(creator_id.as_i64())
-        .bind(name)
         .fetch_one(executor)
-        .await?;
+        .await?
+        .unwrap_or(false);
 
         Ok(exists)
     }
 
     /// Get room by ID
     pub async fn get_by_id(&self, room_id: &RoomId) -> Result<Option<Room>> {
-        let room = sqlx::query_as!(
+        let room = sqlx::query_as_unchecked!(
             RoomRow,
             r#"
-            SELECT r.id AS "id: RoomId",
+            SELECT r.id,
                    r.name,
                    r.description,
-                   r.created_by AS "created_by: UserId",
+                   r.cover_file_reference_id,
+                   r.created_by,
                    r.closed_at,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = r.id
                          AND rb.revoked_at IS NULL
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                   ) AS "is_banned!",
+                   ) AS is_banned,
                    r.created_at,
                    r.updated_at,
                    r.deleted_at,
@@ -216,9 +230,49 @@ impl RoomRepository {
             FROM rooms r
             WHERE r.id = $1 AND r.deleted_at IS NULL
             "#,
-            room_id.as_i64(),
+            room_id.as_i64()
         )
         .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(room.map(Into::into))
+    }
+
+    pub async fn get_by_id_for_update_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        executor: E,
+    ) -> Result<Option<Room>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let room = sqlx::query_as_unchecked!(
+            RoomRow,
+            r#"
+            SELECT r.id,
+                   r.name,
+                   r.description,
+                   r.cover_file_reference_id,
+                   r.created_by,
+                   r.closed_at,
+                   EXISTS (
+                       SELECT 1 FROM room_bans rb
+                       WHERE rb.room_id = r.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS is_banned,
+                   r.created_at,
+                   r.updated_at,
+                   r.deleted_at,
+                   r.version,
+                   r.last_activity_at
+            FROM rooms r
+            WHERE r.id = $1 AND r.deleted_at IS NULL
+            FOR UPDATE
+            "#,
+            room_id.as_i64()
+        )
+        .fetch_optional(executor)
         .await?;
 
         Ok(room.map(Into::into))
@@ -278,16 +332,20 @@ impl RoomRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let updated = sqlx::query_as!(
+        let updated = sqlx::query_as_unchecked!(
             RoomRow,
             r#"
              WITH updated AS (
                  UPDATE rooms
-                 SET name = $2, description = $3, closed_at = $4, version = version + 1
-                 WHERE id = $1 AND deleted_at IS NULL AND version = $5
+                 SET name = $2, description = $3,
+                     cover_file_reference_id = $4,
+                     closed_at = $5,
+                     version = version + 1
+                 WHERE id = $1 AND deleted_at IS NULL AND version = $6
                  RETURNING id,
                            name,
                            description,
+                           cover_file_reference_id,
                            created_by,
                            closed_at,
                            created_at,
@@ -296,17 +354,18 @@ impl RoomRepository {
                            version,
                            last_activity_at
              )
-             SELECT u.id AS "id: RoomId",
+             SELECT u.id,
                     u.name,
                     u.description,
-                    u.created_by AS "created_by: UserId",
+                    u.cover_file_reference_id,
+                    u.created_by,
                     u.closed_at,
                     EXISTS (
                         SELECT 1 FROM room_bans rb
                         WHERE rb.room_id = u.id
                           AND rb.revoked_at IS NULL
                           AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                    ) AS "is_banned!",
+                    ) AS is_banned,
                     u.created_at,
                     u.updated_at,
                     u.deleted_at,
@@ -317,8 +376,9 @@ impl RoomRepository {
             room.id.as_i64(),
             &room.name,
             &room.description,
+            room.cover_file_reference_id,
             room.closed_at,
-            old_version,
+            old_version
         )
         .fetch_optional(executor)
         .await?;
@@ -605,7 +665,7 @@ impl RoomRepository {
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
-            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.created_by, r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
             ORDER BY {order_by}
             LIMIT $1 OFFSET $2
             "
@@ -764,7 +824,7 @@ impl RoomRepository {
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
-            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.created_by, r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
             ORDER BY r.created_at DESC
             LIMIT $2 OFFSET $3
             "
@@ -799,7 +859,7 @@ impl RoomRepository {
             RoomStatus::Active => None,
             RoomStatus::Closed => Some(chrono::Utc::now()),
         };
-        let room = sqlx::query_as!(
+        let room = sqlx::query_as_unchecked!(
             RoomRow,
             r#"
             WITH updated AS (
@@ -809,6 +869,7 @@ impl RoomRepository {
                 RETURNING id,
                           name,
                           description,
+                          cover_file_reference_id,
                           created_by,
                           closed_at,
                           created_at,
@@ -817,17 +878,18 @@ impl RoomRepository {
                           version,
                           last_activity_at
             )
-            SELECT u.id AS "id: RoomId",
+            SELECT u.id,
                    u.name,
                    u.description,
-                   u.created_by AS "created_by: UserId",
+                   u.cover_file_reference_id,
+                   u.created_by,
                    u.closed_at,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = u.id
                          AND rb.revoked_at IS NULL
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                   ) AS "is_banned!",
+                   ) AS is_banned,
                    u.created_at,
                    u.updated_at,
                    u.deleted_at,
@@ -836,7 +898,7 @@ impl RoomRepository {
             FROM updated u
             "#,
             closed_at,
-            room_id.as_i64(),
+            room_id.as_i64()
         )
         .fetch_optional(&self.pool)
         .await?
@@ -859,7 +921,7 @@ impl RoomRepository {
     ) -> Result<Room> {
         if is_banned {
             let lock_key = format!("room-ban:{room_id}");
-            sqlx::query(
+            sqlx::query!(
                 r"
                 WITH _lock AS (
                     SELECT pg_advisory_xact_lock(hashtextextended($2, 0))
@@ -875,9 +937,9 @@ impl RoomRepository {
                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                   )
                 ",
+                room_id.as_i64(),
+                lock_key
             )
-            .bind(room_id.as_i64())
-            .bind(lock_key)
             .execute(&mut *executor)
             .await?;
         } else {
@@ -898,11 +960,13 @@ impl RoomRepository {
             .await?;
         }
 
-        let room = sqlx::query_as::<_, RoomRow>(
-            r"
+        let room = sqlx::query_as_unchecked!(
+            RoomRow,
+            r#"
             SELECT r.id,
                    r.name,
                    r.description,
+                   r.cover_file_reference_id,
                    r.created_by,
                    r.closed_at,
                    r.created_at,
@@ -918,9 +982,9 @@ impl RoomRepository {
                    ) AS is_banned
             FROM rooms r
             WHERE r.id = $1 AND r.deleted_at IS NULL
-            ",
+            "#,
+            room_id.as_i64()
         )
-        .bind(room_id.as_i64())
         .fetch_optional(&mut *executor)
         .await?
         .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
@@ -930,7 +994,7 @@ impl RoomRepository {
 
     /// Update room description
     pub async fn update_description(&self, room_id: &RoomId, description: &str) -> Result<Room> {
-        let room = sqlx::query_as!(
+        let room = sqlx::query_as_unchecked!(
             RoomRow,
             r#"
             WITH updated AS (
@@ -940,6 +1004,7 @@ impl RoomRepository {
                 RETURNING id,
                           name,
                           description,
+                          cover_file_reference_id,
                           created_by,
                           closed_at,
                           created_at,
@@ -948,17 +1013,18 @@ impl RoomRepository {
                           version,
                           last_activity_at
             )
-            SELECT u.id AS "id: RoomId",
+            SELECT u.id,
                    u.name,
                    u.description,
-                   u.created_by AS "created_by: UserId",
+                   u.cover_file_reference_id,
+                   u.created_by,
                    u.closed_at,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = u.id
                          AND rb.revoked_at IS NULL
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                   ) AS "is_banned!",
+                   ) AS is_banned,
                    u.created_at,
                    u.updated_at,
                    u.deleted_at,
@@ -967,7 +1033,7 @@ impl RoomRepository {
             FROM updated u
             "#,
             description,
-            room_id.as_i64(),
+            room_id.as_i64()
         )
         .fetch_optional(&self.pool)
         .await?
@@ -983,7 +1049,7 @@ impl RoomRepository {
         new_owner_id: &UserId,
         executor: impl sqlx::PgExecutor<'_>,
     ) -> Result<Room> {
-        let room = sqlx::query_as!(
+        let room = sqlx::query_as_unchecked!(
             RoomRow,
             r#"
             WITH updated AS (
@@ -993,6 +1059,7 @@ impl RoomRepository {
                 RETURNING id,
                           name,
                           description,
+                          cover_file_reference_id,
                           created_by,
                           closed_at,
                           created_at,
@@ -1001,17 +1068,18 @@ impl RoomRepository {
                           version,
                           last_activity_at
             )
-            SELECT u.id AS "id: RoomId",
+            SELECT u.id,
                    u.name,
                    u.description,
-                   u.created_by AS "created_by: UserId",
+                   u.cover_file_reference_id,
+                   u.created_by,
                    u.closed_at,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = u.id
                          AND rb.revoked_at IS NULL
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                   ) AS "is_banned!",
+                   ) AS is_banned,
                    u.created_at,
                    u.updated_at,
                    u.deleted_at,
@@ -1020,7 +1088,7 @@ impl RoomRepository {
             FROM updated u
             "#,
             room_id.as_i64(),
-            new_owner_id.as_i64(),
+            new_owner_id.as_i64()
         )
         .fetch_optional(executor)
         .await?

@@ -11,12 +11,16 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
-use synctv_core::models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus};
+use synctv_core::models::{
+    CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewChatImage, Room, RoomId,
+    RoomStatus, User, UserId, UserRole, UserStatus,
+};
 use synctv_core::repository::{RoomRepository, UserRepository};
 use synctv_core::service::{
     cleanup::{CleanupConfig, CleanupService},
-    AlwaysLeader, LeaderCheck,
+    AlwaysLeader, FileStorageCleanupOrigin, FileStorageContext, FileStorageService, LeaderCheck,
 };
+use synctv_core::Error;
 use synctv_core_testing::create_test_pool;
 
 /// A `LeaderCheck` that always returns false
@@ -25,6 +29,46 @@ struct NeverLeader;
 impl LeaderCheck for NeverLeader {
     fn is_leader(&self) -> bool {
         false
+    }
+}
+
+#[derive(Default)]
+struct RecordingFileStorageService {
+    deleted_object_keys: std::sync::Mutex<Vec<String>>,
+    deleted_origins: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl FileStorageService for RecordingFileStorageService {
+    fn backend_name(&self) -> &'static str {
+        "test-storage"
+    }
+
+    async fn create_upload_session(
+        &self,
+        _request: CreateFileUploadSession,
+    ) -> synctv_core::Result<FileUploadSession> {
+        Err(Error::Internal("not used".to_string()))
+    }
+
+    async fn prepare_files(
+        &self,
+        _context: FileStorageContext<'_>,
+        files: Vec<NewChatImage>,
+    ) -> synctv_core::Result<Vec<NewChatImage>> {
+        Ok(files)
+    }
+
+    async fn delete_files(
+        &self,
+        origin: FileStorageCleanupOrigin,
+        files: &[FileReferenceTarget],
+    ) -> synctv_core::Result<()> {
+        let mut deleted = self.deleted_object_keys.lock().unwrap();
+        deleted.extend(files.iter().map(|file| file.object_key.clone()));
+        let mut origins = self.deleted_origins.lock().unwrap();
+        origins.extend(files.iter().map(|_| origin.as_str().to_string()));
+        Ok(())
     }
 }
 
@@ -42,6 +86,7 @@ async fn test_zero_retention_skips_all_tasks() {
         notification_retention_days: 0,
         notification_max_retention_days: 0,
         chat_max_messages_per_room: 0,
+        unreferenced_file_retention_seconds: 0,
     };
 
     let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
@@ -131,6 +176,7 @@ async fn test_partial_config_only_some_tasks_enabled() {
         notification_retention_days: 0,
         notification_max_retention_days: 0,
         chat_max_messages_per_room: 0,
+        unreferenced_file_retention_seconds: 0,
     };
 
     let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
@@ -218,6 +264,7 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
             notification_retention_days: 0,
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 0,
+            unreferenced_file_retention_seconds: 0,
         },
         Arc::new(AlwaysLeader),
     );
@@ -256,6 +303,85 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_chat_message_cap_cleanup_deletes_image_objects() {
+    let (_container, pool) = create_test_pool().await;
+    let storage = Arc::new(RecordingFileStorageService::default());
+
+    let user = create_test_user(&pool).await;
+    let room = create_test_room(user.id, None);
+    let room = RoomRepository::new(pool.clone())
+        .create(&room)
+        .await
+        .expect("Failed to create test room");
+    let older_at = Utc::now() - Duration::minutes(10);
+    let newer_at = Utc::now() - Duration::minutes(1);
+
+    insert_chat_message_with_image(
+        &pool,
+        room.id,
+        user.id,
+        9_101,
+        older_at,
+        "cleanup-old-image",
+        "normalized/raw/cleanup-old.webp",
+    )
+    .await;
+    insert_chat_message_with_image(
+        &pool,
+        room.id,
+        user.id,
+        9_102,
+        newer_at,
+        "cleanup-kept-image",
+        "normalized/raw/cleanup-kept.webp",
+    )
+    .await;
+
+    let service = CleanupService::new(
+        pool.clone(),
+        CleanupConfig {
+            soft_delete_retention_days: 0,
+            room_soft_delete_retention_days: 0,
+            expired_token_retention_days: 0,
+            expired_credential_buffer_hours: 0,
+            notification_retention_days: 0,
+            notification_max_retention_days: 0,
+            chat_max_messages_per_room: 1,
+            unreferenced_file_retention_seconds: 0,
+        },
+        Arc::new(AlwaysLeader),
+    )
+    .with_file_storage_service(storage.clone());
+
+    let result = service.run_all().await;
+
+    assert_eq!(result.chat_messages_deleted, 1);
+    let deleted_object_keys = storage.deleted_object_keys.lock().unwrap().clone();
+    assert_eq!(
+        deleted_object_keys,
+        vec!["normalized/raw/cleanup-old.webp".to_string()]
+    );
+    let deleted_origins = storage.deleted_origins.lock().unwrap().clone();
+    assert_eq!(deleted_origins, vec!["reference_cap_exceeded".to_string()]);
+
+    let old_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
+            .bind(9_101_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("old message existence query should succeed");
+    let kept_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
+            .bind(9_102_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("kept message existence query should succeed");
+    assert!(!old_exists);
+    assert!(kept_exists);
+}
+
 /// Helper to create a test user in the database
 async fn create_test_user(pool: &PgPool) -> User {
     let now = Utc::now();
@@ -267,6 +393,7 @@ async fn create_test_user(pool: &PgPool) -> User {
         email: Some(email),
         password_hash: "test_hash".to_string(),
         role: UserRole::User,
+        avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
@@ -286,6 +413,64 @@ async fn create_test_user(pool: &PgPool) -> User {
         .expect("Failed to create test user")
 }
 
+async fn insert_chat_message_with_image(
+    pool: &PgPool,
+    room_id: RoomId,
+    user_id: UserId,
+    message_id: i64,
+    created_at: chrono::DateTime<Utc>,
+    image_id: &str,
+    object_key: &str,
+) {
+    sqlx::query(
+        r"
+        INSERT INTO chat_messages (
+            id, room_id, user_id, client_message_id, content, message_type, status, version,
+            reply_to_message_id, metadata, edited_at, deleted_at, deleted_by, delete_reason,
+            created_at
+        ) VALUES (
+            $1, $2, $3, NULL, $4, $5, $6, $7,
+            NULL, $8, NULL, NULL, NULL, NULL,
+            $9
+        )
+        ",
+    )
+    .bind(message_id)
+    .bind(room_id)
+    .bind(user_id)
+    .bind("image message")
+    .bind(4_i16)
+    .bind(1_i16)
+    .bind(1_i64)
+    .bind(serde_json::Value::Object(Default::default()))
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .expect("Failed to insert chat message");
+
+    sqlx::query(
+        r"
+        INSERT INTO chat_message_images (
+            id, room_id, message_id, message_created_at, storage_backend, object_key, url,
+            mime_type, size_bytes, width, height, metadata, created_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, NULL, NULL, $7, $8
+        )
+        ",
+    )
+    .bind(image_id)
+    .bind(room_id)
+    .bind(message_id)
+    .bind(created_at)
+    .bind("test-storage")
+    .bind(object_key)
+    .bind(serde_json::Value::Object(Default::default()))
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .expect("Failed to insert chat image");
+}
+
 /// Helper to create a test room with optional custom timestamps
 fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>>) -> Room {
     let now = Utc::now();
@@ -293,6 +478,7 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
         id: RoomId::new(),
         name: "Test Room".to_string(),
         description: String::new(),
+        cover_file_reference_id: None,
         created_by,
         status: RoomStatus::Active,
         is_banned: false,

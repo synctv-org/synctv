@@ -289,23 +289,23 @@ impl AuditService {
         user_agent: Option<&str>,
         created_at: DateTime<Utc>,
     ) -> Result<()> {
-        sqlx::query(
+        sqlx::query!(
             r"
             INSERT INTO audit_logs (
                 actor_id, actor_username, action, target_type, target_id,
                 details, ip_address, user_agent, created_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ",
+            parse_actor_id_for_storage(actor_id),
+            actor_username,
+            action.as_i16(),
+            target_type.as_i16(),
+            target_id,
+            details,
+            ip_address,
+            user_agent,
+            created_at
         )
-        .bind(parse_actor_id_for_storage(actor_id))
-        .bind(actor_username)
-        .bind(action.as_i16())
-        .bind(target_type.as_i16())
-        .bind(target_id)
-        .bind(details)
-        .bind(ip_address)
-        .bind(user_agent)
-        .bind(created_at)
         .execute(pool)
         .await?;
 
@@ -938,6 +938,7 @@ mod tests {
             // Settings access audit
             (AuditAction::SettingsViewed, "settings_viewed"),
             (AuditAction::SettingsGroupViewed, "settings_group_viewed"),
+            (AuditAction::ChatMessageDeleted, "chat_message_deleted"),
         ];
 
         for (action, expected) in actions {
@@ -972,6 +973,7 @@ mod tests {
             (AuditTargetType::System, "system"),
             (AuditTargetType::Stream, "stream"),
             (AuditTargetType::Token, "token"),
+            (AuditTargetType::ChatMessage, "chat_message"),
         ];
 
         for (target, expected) in targets {
@@ -1482,6 +1484,10 @@ mod tests {
         assert_eq!(
             "STREAM".parse::<AuditTargetType>().unwrap(),
             AuditTargetType::Stream
+        );
+        assert_eq!(
+            "CHAT_MESSAGE".parse::<AuditTargetType>().unwrap(),
+            AuditTargetType::ChatMessage
         );
         assert!("unknown_target".parse::<AuditTargetType>().is_err());
     }

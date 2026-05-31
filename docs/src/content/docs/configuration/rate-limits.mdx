@@ -1,6 +1,6 @@
 ---
 title: 限流与连接限制
-description: HTTP/gRPC 请求限流、聊天弹幕限流、WebSocket 限制和 streaming 保护。
+description: HTTP/gRPC 请求限流、聊天限流、WebSocket 限制和 streaming 保护。
 ---
 
 限流保护登录、API、聊天、WebSocket 建连和流媒体路径。多副本部署依赖 Redis 共享限流状态。
@@ -23,17 +23,13 @@ description: HTTP/gRPC 请求限流、聊天弹幕限流、WebSocket 限制和 s
 ```yaml
 messaging_rate_limits:
   chat_per_second: 10
-  danmaku_per_second: 3
   window_seconds: 1
 ```
 
 | 字段 | 用途 |
 | --- | --- |
 | `chat_per_second` | 每窗口聊天消息上限 |
-| `danmaku_per_second` | 每窗口弹幕消息上限 |
 | `window_seconds` | 统计窗口，单位秒 |
-
-弹幕默认更严格，因为它对 UI 和网络的压力更高。
 
 ## HTTP 限流
 

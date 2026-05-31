@@ -9,7 +9,10 @@ use synctv_core::service::playlist::{
     MovePlaylistRequest as CoreMovePlaylistRequest, SetPlaylistRequest as CoreSetPlaylistRequest,
 };
 
-use super::convert::playlist_to_proto_for_viewer;
+use super::media::{
+    file_cover_proto_to_stored_file, file_upload_session_to_playlist_cover_proto,
+    parse_json_metadata, playlist_cover_object_to_proto,
+};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::ApiError;
 
@@ -40,6 +43,11 @@ fn normalize_non_empty_filter(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
+fn optional_trimmed_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 pub(crate) fn build_create_playlist_request(
     room_id: &synctv_core::models::RoomId,
     req: crate::proto::client::CreatePlaylistRequest,
@@ -52,6 +60,7 @@ pub(crate) fn build_create_playlist_request(
         source_provider,
         source_config,
         provider_instance_name,
+        description,
     } = req;
 
     let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id, public_id_codec)?;
@@ -69,6 +78,7 @@ pub(crate) fn build_create_playlist_request(
     Ok(CoreCreatePlaylistRequest {
         room_id: *room_id,
         name,
+        description,
         parent_id,
         source_provider,
         source_config,
@@ -81,7 +91,7 @@ pub(crate) fn build_update_playlist_request(
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<CoreSetPlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    if req.name.trim().is_empty() {
+    if req.name.trim().is_empty() && req.description.trim().is_empty() {
         return Err(ApiError::InvalidInput(
             "playlist update requires at least one changed field".to_string(),
         ));
@@ -89,7 +99,8 @@ pub(crate) fn build_update_playlist_request(
 
     Ok(CoreSetPlaylistRequest {
         playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec)?,
-        name: Some(req.name),
+        name: (!req.name.trim().is_empty()).then_some(req.name),
+        description: (!req.description.trim().is_empty()).then_some(req.description),
     })
 }
 
@@ -204,13 +215,15 @@ impl ClientApiImpl {
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::CreatePlaylistResponse {
-            playlist: Some(playlist_to_proto_for_viewer(
-                &playlist,
-                item_count,
-                true,
-                Some(uid),
-                &self.public_id_codec,
-            )),
+            playlist: Some(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
+                    &playlist,
+                    item_count,
+                    true,
+                    Some(uid),
+                )
+                .await?,
+            ),
         })
     }
 
@@ -262,14 +275,170 @@ impl ClientApiImpl {
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
-            playlist: Some(playlist_to_proto_for_viewer(
-                &playlist,
-                item_count,
-                true,
-                Some(uid),
-                &self.public_id_codec,
-            )),
+            playlist: Some(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
+                    &playlist,
+                    item_count,
+                    true,
+                    Some(uid),
+                )
+                .await?,
+            ),
         })
+    }
+
+    async fn playlist_update_response(
+        &self,
+        playlist: &synctv_core::models::Playlist,
+        user_id: UserId,
+        is_available: bool,
+    ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
+        let item_count = self
+            .room_service
+            .media_service()
+            .count_room_playlist_media(&playlist.room_id, &playlist.id)
+            .await
+            .unwrap_or(0);
+        let item_count = i64_to_i32_api(item_count, "playlist item count")?;
+        Ok(crate::proto::client::UpdatePlaylistResponse {
+            playlist: Some(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
+                    playlist,
+                    item_count,
+                    is_available,
+                    Some(user_id),
+                )
+                .await?,
+            ),
+        })
+    }
+
+    pub async fn create_playlist_cover_upload_session(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::CreatePlaylistCoverUploadSessionRequest,
+    ) -> Result<crate::proto::client::CreatePlaylistCoverUploadSessionResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let playlist_id = crate::impls::parse_playlist_id_param(
+            &req.playlist_id,
+            "playlist_id",
+            &self.public_id_codec,
+        )?;
+        let session = self
+            .room_service
+            .playlist_service()
+            .create_cover_upload_session(
+                rid,
+                playlist_id,
+                *user_id,
+                synctv_core::service::playlist::CreatePlaylistCoverUploadSession {
+                    client_cover_id: optional_trimmed_string(&req.client_cover_id),
+                    mime_type: req.mime_type,
+                    size_bytes: req.size_bytes,
+                    width: (req.width > 0).then_some(req.width),
+                    height: (req.height > 0).then_some(req.height),
+                    checksum_sha256: optional_trimmed_string(&req.checksum_sha256),
+                    metadata: parse_json_metadata(&req.metadata)?,
+                },
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(
+            crate::proto::client::CreatePlaylistCoverUploadSessionResponse {
+                session: Some(file_upload_session_to_playlist_cover_proto(session)),
+            },
+        )
+    }
+
+    pub async fn upload_playlist_cover_object(
+        &self,
+        req: crate::proto::client::UploadPlaylistCoverObjectRequest,
+    ) -> Result<crate::proto::client::UploadPlaylistCoverObjectResponse, ApiError> {
+        let blob = self
+            .room_service
+            .playlist_service()
+            .store_cover_upload_object(
+                &req.encoded_object_key,
+                &req.token,
+                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.data,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::UploadPlaylistCoverObjectResponse {
+            object: Some(playlist_cover_object_to_proto(&blob)),
+        })
+    }
+
+    pub async fn get_playlist_cover_object(
+        &self,
+        req: crate::proto::client::GetPlaylistCoverObjectRequest,
+    ) -> Result<crate::proto::client::PlaylistCoverObjectResponse, ApiError> {
+        let blob = self
+            .room_service
+            .playlist_service()
+            .get_cover_object(&req.encoded_object_key, &req.token)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(playlist_cover_object_to_proto(&blob))
+    }
+
+    pub async fn update_playlist_cover(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::UpdatePlaylistCoverRequest,
+    ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let playlist_id = crate::impls::parse_playlist_id_param(
+            &req.playlist_id,
+            "playlist_id",
+            &self.public_id_codec,
+        )?;
+        let cover = req
+            .cover
+            .ok_or_else(|| ApiError::InvalidInput("cover is required".to_string()))?;
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .update_cover(
+                rid,
+                playlist_id,
+                *user_id,
+                file_cover_proto_to_stored_file(cover)?,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+        self.playlist_update_response(&playlist, *user_id, true)
+            .await
+    }
+
+    pub async fn clear_playlist_cover(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::ClearPlaylistCoverRequest,
+    ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let playlist_id = crate::impls::parse_playlist_id_param(
+            &req.playlist_id,
+            "playlist_id",
+            &self.public_id_codec,
+        )?;
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .clear_cover(rid, playlist_id, *user_id)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+        self.playlist_update_response(&playlist, *user_id, true)
+            .await
     }
 
     pub async fn move_playlist(
@@ -327,13 +496,15 @@ impl ClientApiImpl {
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::MovePlaylistResponse {
-            playlist: Some(playlist_to_proto_for_viewer(
-                &playlist,
-                item_count,
-                true,
-                Some(uid),
-                &self.public_id_codec,
-            )),
+            playlist: Some(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
+                    &playlist,
+                    item_count,
+                    true,
+                    Some(uid),
+                )
+                .await?,
+            ),
         })
     }
 
@@ -428,13 +599,15 @@ impl ClientApiImpl {
         let media_count = i64_to_i32_api(media_count, "playlist media count")?;
 
         Ok(crate::proto::client::GetPlaylistResponse {
-            playlist: Some(playlist_to_proto_for_viewer(
-                &playlist,
-                media_count,
-                playlist_availability.is_available(),
-                actor.user_id(),
-                &self.public_id_codec,
-            )),
+            playlist: Some(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
+                    &playlist,
+                    media_count,
+                    playlist_availability.is_available(),
+                    actor.user_id(),
+                )
+                .await?,
+            ),
             child_folder_count,
             media_count,
         })
@@ -568,22 +741,22 @@ impl ClientApiImpl {
             .await
             .unwrap_or_default();
 
-        let proto_playlists: Vec<_> = playlists
-            .iter()
-            .map(|entry| {
-                let item_count = i64_to_i32_api(
-                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
-                    "playlist item count",
-                )?;
-                Ok(playlist_to_proto_for_viewer(
+        let mut proto_playlists = Vec::with_capacity(playlists.len());
+        for entry in &playlists {
+            let item_count = i64_to_i32_api(
+                counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                "playlist item count",
+            )?;
+            proto_playlists.push(
+                self.playlist_to_proto_for_viewer_with_loaded_cover(
                     &entry.playlist,
                     item_count,
                     entry.is_available,
                     actor.user_id(),
-                    &self.public_id_codec,
-                ))
-            })
-            .collect::<std::result::Result<Vec<_>, ApiError>>()?;
+                )
+                .await?,
+            );
+        }
 
         Ok(crate::proto::client::ListPlaylistsResponse {
             playlists: proto_playlists,
@@ -611,6 +784,7 @@ mod tests {
                 source_provider: "alist".into(),
                 source_config: Vec::new(),
                 provider_instance_name: String::new(),
+                description: String::new(),
             },
             &codec,
         )
@@ -639,6 +813,7 @@ mod tests {
                 source_provider: "alist".into(),
                 source_config: serde_json::to_vec(&serde_json::json!({"path":"/tv"})).unwrap(),
                 provider_instance_name: "alist-main".into(),
+                description: String::new(),
             },
             &codec,
         )
@@ -671,6 +846,7 @@ mod tests {
                 source_provider: String::new(),
                 source_config: Vec::new(),
                 provider_instance_name: String::new(),
+                description: String::new(),
             },
             &codec,
         )
@@ -688,6 +864,7 @@ mod tests {
                     .encode_playlist_id(PlaylistId::expect_positive(1))
                     .unwrap(),
                 name: "a".repeat(256),
+                description: String::new(),
             },
             &codec,
         )

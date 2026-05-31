@@ -11,6 +11,8 @@ pub mod distributed_lock;
 pub mod email;
 pub mod email_templates;
 pub mod email_token;
+pub mod file_storage;
+pub mod file_upload_policies;
 pub mod global_settings;
 pub mod media;
 pub mod member;
@@ -71,6 +73,17 @@ pub use distributed_lock::{with_coordination_lock, CoordinationLock, Distributed
 pub use email::{mask_email, EmailConfig, EmailConfigProvider, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::EmailTokenService;
+pub use file_storage::{
+    DatabaseFileStorageService, DisabledFileStorageService, FileStorageBackendRegistry,
+    FileStorageCleanupOrigin, FileStorageContext, FileStorageService, RoutedFileStorageService,
+    S3CompatibleFileStorageService, S3FileStorageConfig,
+};
+pub use file_upload_policies::{
+    chat_image_upload_policy, playlist_cover_upload_policy, room_cover_upload_policy,
+    user_avatar_upload_policy, video_cover_upload_policy, MAX_CHAT_IMAGE_SIZE_BYTES,
+    MAX_PLAYLIST_COVER_SIZE_BYTES, MAX_ROOM_COVER_SIZE_BYTES, MAX_USER_AVATAR_SIZE_BYTES,
+    MAX_VIDEO_COVER_SIZE_BYTES,
+};
 pub use global_settings::{
     ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
     OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy, RuntimeEmailConfigProvider,

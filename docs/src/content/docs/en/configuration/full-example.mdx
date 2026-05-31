@@ -79,6 +79,27 @@ redis:
 jwt:
   secret_file: "/run/secrets/jwt_secret"
 
+file_storage:
+  default_backend: "s3_public"
+  chat_images_backend: "s3_public"
+  user_avatars_backend: "s3_public"
+  video_covers_backend: "s3_public"
+  room_covers_backend: "s3_public"
+  playlist_covers_backend: "s3_public"
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  backends:
+    s3_public:
+      type: "s3"
+      s3:
+        endpoint: "https://s3.example.com"
+        access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+        secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+        bucket: "synctv-files"
+        region: "auto"
+        base_path: "files/"
+        public_base_url: "https://cdn.example.com/files"
+        upload_expires_seconds: 900
+
 security:
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
@@ -254,6 +275,17 @@ livestream:
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
 
+file_storage:
+  default_backend: "disabled"
+  chat_images_backend: ""
+  user_avatars_backend: ""
+  video_covers_backend: ""
+  room_covers_backend: ""
+  playlist_covers_backend: ""
+  upload_token_secret: ""
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  backends: {}
+
 webauthn:
   enabled: true
   rp_id: "example.com"
@@ -358,7 +390,6 @@ proxy_slice_cache:
 
 messaging_rate_limits:
   chat_per_second: 10
-  danmaku_per_second: 3
   window_seconds: 1
 
 http_rate_limits:

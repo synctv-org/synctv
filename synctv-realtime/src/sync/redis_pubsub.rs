@@ -2608,8 +2608,8 @@ mod tests {
             username: "testuser".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let envelope = EventEnvelope {
@@ -2648,8 +2648,8 @@ mod tests {
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
-                    position: None,
-                    color: None,
+                    display_position: None,
+                    display_color: None,
                 },
             );
             assert_eq!(sent, 1, "filler message should enqueue");
@@ -2831,8 +2831,8 @@ mod tests {
             username: "testuser".to_string(),
             message: "Hello from node1!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         publish_tx1.send(PublishRequest::new(event)).await.unwrap();
@@ -3217,8 +3217,8 @@ mod tests {
                 username: "testuser1".to_string(),
                 message: "Hello from room1!".to_string(),
                 timestamp: chrono::Utc::now(),
-                position: None,
-                color: None,
+                display_position: None,
+                display_color: None,
             },
             "room1",
         )
@@ -3243,8 +3243,8 @@ mod tests {
                 username: "testuser2".to_string(),
                 message: "Hello from room2!".to_string(),
                 timestamp: chrono::Utc::now(),
-                position: None,
-                color: None,
+                display_position: None,
+                display_color: None,
             },
             "room2",
         )
@@ -3443,8 +3443,8 @@ mod tests {
             username: "dedup".to_string(),
             message: "hello".to_string(),
             timestamp: chrono::Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         pubsub

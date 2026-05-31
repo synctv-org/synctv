@@ -100,6 +100,10 @@ pub struct Item {
     pub season_name: Option<String>,
     #[serde(rename = "SeasonId", default)]
     pub season_id: Option<String>,
+    #[serde(rename = "Overview", default)]
+    pub overview: Option<String>,
+    #[serde(rename = "ShortOverview", default)]
+    pub short_overview: Option<String>,
     #[serde(rename = "CollectionType", default)]
     pub collection_type: Option<String>,
     #[serde(rename = "MediaSources", default)]
@@ -456,6 +460,11 @@ impl From<Item> for crate::grpc::emby::Item {
             series_id: item.series_id.unwrap_or_default(),
             season_name: item.season_name.unwrap_or_default(),
             season_id: item.season_id.unwrap_or_default(),
+            description: item
+                .overview
+                .filter(|overview| !overview.trim().is_empty())
+                .or(item.short_overview)
+                .unwrap_or_default(),
             is_folder: item.is_folder,
             media_source_info: item
                 .media_sources

@@ -117,7 +117,7 @@ impl RealtimeOutboxRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        sqlx::query(
+        sqlx::query!(
             r"
             WITH inserted AS (
                 INSERT INTO realtime_outbox (
@@ -135,16 +135,16 @@ impl RealtimeOutboxRepository {
             )
             SELECT pg_notify($9, id) FROM inserted
             ",
+            &event.id,
+            &event.aggregate_type,
+            &event.aggregate_id,
+            &event.event_type,
+            event.event_version,
+            event.aggregate_version,
+            &event.payload,
+            RealtimeOutboxStatus::Pending.as_i16(),
+            REALTIME_OUTBOX_CHANNEL
         )
-        .bind(&event.id)
-        .bind(&event.aggregate_type)
-        .bind(&event.aggregate_id)
-        .bind(&event.event_type)
-        .bind(event.event_version)
-        .bind(event.aggregate_version)
-        .bind(&event.payload)
-        .bind(RealtimeOutboxStatus::Pending.as_i16())
-        .bind(REALTIME_OUTBOX_CHANNEL)
         .execute(executor)
         .await?;
         Ok(())
@@ -203,7 +203,7 @@ impl RealtimeOutboxRepository {
     }
 
     pub async fn mark_sent(&self, id: &str) -> Result<()> {
-        sqlx::query(
+        sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = $2,
@@ -213,9 +213,9 @@ impl RealtimeOutboxRepository {
                 last_error = NULL
             WHERE id = $1
             ",
+            id,
+            RealtimeOutboxStatus::Sent.as_i16()
         )
-        .bind(id)
-        .bind(RealtimeOutboxStatus::Sent.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -230,7 +230,7 @@ impl RealtimeOutboxRepository {
             RealtimeOutboxStatus::Pending
         };
 
-        sqlx::query(
+        sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = $2,
@@ -241,19 +241,19 @@ impl RealtimeOutboxRepository {
                 last_error = $5
             WHERE id = $1
             ",
+            id,
+            status.as_i16(),
+            next_attempt,
+            delay_seconds,
+            error
         )
-        .bind(id)
-        .bind(status.as_i16())
-        .bind(next_attempt)
-        .bind(delay_seconds)
-        .bind(error)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn requeue_stale_processing(&self, stale_after_seconds: i64) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = $2,
@@ -263,10 +263,10 @@ impl RealtimeOutboxRepository {
             WHERE status = $3
               AND locked_at < NOW() - ($1::BIGINT::TEXT || ' seconds')::INTERVAL
             ",
+            stale_after_seconds,
+            RealtimeOutboxStatus::Pending.as_i16(),
+            RealtimeOutboxStatus::Processing.as_i16()
         )
-        .bind(stale_after_seconds)
-        .bind(RealtimeOutboxStatus::Pending.as_i16())
-        .bind(RealtimeOutboxStatus::Processing.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())

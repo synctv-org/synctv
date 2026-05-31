@@ -557,6 +557,7 @@ mod tests {
             id: crate::models::RoomId::expect_positive(3),
             name: "From Room".to_string(),
             description: "A room for testing From impl".to_string(),
+            cover_file_reference_id: None,
             created_by: UserId::expect_positive(1),
             status: RoomStatus::Closed,
             is_banned: true,

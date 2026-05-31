@@ -11,6 +11,7 @@ pub(crate) const USER_SELECT_COLUMNS: &str = "
     u.id, u.username, aei.email,
     COALESCE(apc.legacy_password_hash, '') AS password_hash,
     u.signup_method, u.role,
+    u.avatar_file_reference_id,
     u.created_at, u.updated_at,
     COALESCE(apc.password_changed_at, u.created_at) AS password_changed_at,
     COALESCE(apc.password_version, 0) AS password_version,
@@ -53,6 +54,7 @@ const USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL: &str = "
         ELSE COALESCE(existing_apc.legacy_password_hash, '')
     END AS password_hash,
     u.signup_method, u.role,
+    u.avatar_file_reference_id,
     u.created_at, u.updated_at,
     COALESCE(updated_apc.password_changed_at, existing_apc.password_changed_at, u.created_at) AS password_changed_at,
     COALESCE(updated_apc.password_version, existing_apc.password_version, 0) AS password_version,
@@ -93,7 +95,9 @@ const AUTH_PASSWORD_CREDENTIAL_JOIN: &str =
      LEFT JOIN auth_email_identities aei ON aei.user_id = u.id";
 
 pub(crate) const USER_ROW_RETURNING_COLUMNS: &str = "
-    id, username, signup_method, role, created_at, updated_at,
+    id, username, signup_method, role,
+    avatar_file_reference_id,
+    created_at, updated_at,
     version, deleted_at";
 
 #[derive(Clone, Copy)]
@@ -705,6 +709,51 @@ impl UserRepository {
         }
     }
 
+    pub async fn update_avatar_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        avatar_file_reference_id: Option<i64>,
+        old_version: i32,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let sql = format!(
+            r"
+            WITH updated_user AS (
+                UPDATE users
+                SET avatar_file_reference_id = $2,
+                    updated_at = $3,
+                    version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL AND version = $4
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            )
+            SELECT {USER_SELECT_COLUMNS}
+            FROM updated_user u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id)
+            .bind(avatar_file_reference_id)
+            .bind(Utc::now())
+            .bind(old_version)
+            .fetch_optional(executor)
+            .await?;
+
+        if let Some(updated) = u {
+            Ok(updated)
+        } else {
+            let exists = self.get_by_id(user_id).await?.is_some();
+            if exists {
+                Err(Error::OptimisticLockConflict)
+            } else {
+                Err(Error::NotFound(format!("User {user_id} not found")))
+            }
+        }
+    }
+
     /// Soft delete user
     pub async fn delete(&self, user_id: &UserId) -> Result<bool> {
         self.delete_with_executor(user_id, &self.pool).await
@@ -827,7 +876,7 @@ impl UserRepository {
     {
         let now = Utc::now();
         let lock_key = format!("user-ban:{user_id}");
-        let inserted = sqlx::query(
+        let inserted = sqlx::query!(
             r"
             WITH _lock AS (
                 SELECT pg_advisory_xact_lock(hashtextextended($5, 0))
@@ -843,12 +892,12 @@ impl UserRepository {
                     AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
                   )
             ",
+            user_id.as_i64(),
+            banned_by.map(UserId::as_i64),
+            reason,
+            now,
+            lock_key
         )
-        .bind(user_id.as_i64())
-        .bind(banned_by.map(UserId::as_i64))
-        .bind(reason)
-        .bind(now)
-        .bind(lock_key)
         .execute(executor)
         .await?;
 
@@ -1084,7 +1133,7 @@ impl UserRepository {
 
     /// Check if username exists
     pub async fn username_exists(&self, username: &str) -> Result<bool> {
-        let exists = sqlx::query_scalar::<_, bool>(
+        let exists = sqlx::query_scalar_unchecked!(
             r"
             SELECT EXISTS(
                 SELECT 1
@@ -1092,10 +1141,11 @@ impl UserRepository {
                 WHERE LOWER(username) = LOWER($1) AND deleted_at IS NULL
             )
             ",
+            username
         )
-        .bind(username)
         .fetch_one(&self.pool)
-        .await?;
+        .await?
+        .unwrap_or(false);
 
         Ok(exists)
     }
@@ -1502,13 +1552,14 @@ mod tests {
             .create(&user)
             .await
             .expect("OAuth2 user should be created without password credentials");
-        let credential_exists = sqlx::query_scalar::<_, bool>(
+        let credential_exists = sqlx::query_scalar_unchecked!(
             "SELECT EXISTS(SELECT 1 FROM auth_password_credentials WHERE user_id = $1)",
+            created.id.as_i64()
         )
-        .bind(created.id.as_i64())
         .fetch_one(&pool)
         .await
-        .expect("credential existence query should succeed");
+        .expect("credential existence query should succeed")
+        .unwrap_or(false);
 
         assert!(!credential_exists);
         assert_eq!(created.password_hash, "");

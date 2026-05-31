@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::str::FromStr;
 
+use super::file_storage::FileReferenceTarget;
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
 use super::normalize_provider_instance_name_owned;
 use super::query::SortDirection;
@@ -219,6 +220,8 @@ pub struct Media {
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub position: f64,
     /// Provider type name (e.g., "bilibili", "alist", "emby", "`direct_url`").
     /// The database stores the corresponding numeric provider type code; API
@@ -231,6 +234,7 @@ pub struct Media {
     /// Used to look up the provider from the registry at playback time.
     /// `None` means use the default local instance for `source_provider`.
     pub provider_instance_name: Option<String>,
+    pub cover_file_reference_id: Option<i64>,
     pub added_at: DateTime<Utc>,
     /// Timestamp of last update (auto-maintained by database trigger)
     pub updated_at: DateTime<Utc>,
@@ -245,6 +249,7 @@ pub struct FromProviderParams {
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
     pub name: String,
+    pub description: String,
     pub source_config: JsonValue,
     pub provider_name: String,
     pub provider_instance_name: Option<String>,
@@ -287,14 +292,43 @@ impl Media {
             room_id,
             creator_id,
             name,
+            description: String::new(),
             position,
             source_provider: provider_name.to_string(),
             source_config,
             provider_instance_name: normalize_provider_instance_name_owned(provider_instance_name),
+            cover_file_reference_id: None,
             added_at: now,
             updated_at: now,
             version: 0,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn from_provider_with_description(
+        playlist_id: Option<PlaylistId>,
+        room_id: RoomId,
+        creator_id: Option<UserId>,
+        name: String,
+        description: String,
+        source_config: JsonValue,
+        provider_name: &str,
+        provider_instance_name: Option<String>,
+        position: f64,
+    ) -> Self {
+        let mut media = Self::from_provider(
+            playlist_id,
+            room_id,
+            creator_id,
+            name,
+            source_config,
+            provider_name,
+            provider_instance_name,
+            position,
+        );
+        media.description = description;
+        media
     }
 
     /// Create media from provider with parameters struct
@@ -307,12 +341,14 @@ impl Media {
             room_id: params.room_id,
             creator_id: params.creator_id,
             name: params.name,
+            description: params.description,
             position: params.position,
             source_provider: params.provider_name,
             source_config: params.source_config,
             provider_instance_name: normalize_provider_instance_name_owned(
                 params.provider_instance_name,
             ),
+            cover_file_reference_id: None,
             added_at: now,
             updated_at: now,
             version: 0,
@@ -353,10 +389,12 @@ impl Media {
             room_id,
             creator_id,
             name,
+            description: String::new(),
             position,
             source_provider: "direct_url".to_string(),
             source_config,
             provider_instance_name: None,
+            cover_file_reference_id: None,
             added_at: now,
             updated_at: now,
             version: 0,
@@ -387,6 +425,14 @@ impl Media {
             &std::collections::HashMap::new(),
             position,
         )
+    }
+
+    #[must_use]
+    pub fn cover_file_reference_target(
+        &self,
+        file: &crate::models::StoredFileReference,
+    ) -> FileReferenceTarget {
+        file.reference_target("media_cover", self.id.as_i64().to_string())
     }
 }
 

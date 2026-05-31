@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
-    MediaId, Playlist, PlaylistId, RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits,
-    RoomPermissionSet, RoomPlaybackState, RoomRole, UserId,
+    ChatEventKind, ChatMessage, ChatMessageEvent, ChatMessageStatus, ChatMessageType,
+    ChatMessageWithImages, MediaId, Playlist, PlaylistId, RoomAdminPermissionBits, RoomId,
+    RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole,
+    SendChatMessage, UserId,
 };
 use synctv_core::repository::NotificationRepository;
 use synctv_core::repository::{
@@ -71,6 +73,8 @@ fn playlist() -> Playlist {
         room_id: room_id(),
         creator_id: Some(user_id()),
         name: "Test Playlist".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
         parent_id: None,
         position: 1.0,
         source_provider: None,
@@ -347,6 +351,26 @@ fn observe_room_members_message(
     )
 }
 
+fn observe_chat_events_message(
+    observe_id: impl Into<String>,
+    after_event_id: impl Into<String>,
+) -> crate::proto::client::client_message::Message {
+    crate::proto::client::client_message::Message::ObserveResource(
+        crate::proto::client::ObserveResource {
+            observe_id: observe_id.into(),
+            version: String::new(),
+            delivery_mode: crate::proto::client::ResourceDeliveryMode::NotifyOnly as i32,
+            resource: Some(
+                crate::proto::client::observe_resource::Resource::ChatEvents(
+                    crate::proto::client::ObserveChatEvents {
+                        after_event_id: after_event_id.into(),
+                    },
+                ),
+            ),
+        },
+    )
+}
+
 fn resource_changed_payload(
     message: &ServerMessage,
 ) -> Option<&crate::proto::client::resource_changed::Payload> {
@@ -562,6 +586,7 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
             permission_service,
             room_settings_service,
             user_service,
+            audit_service: None,
             notification_service: NotificationService::default(),
         },
     ))
@@ -1689,8 +1714,8 @@ async fn test_start_cancels_and_cleans_up_when_realtime_event_send_fails() {
         username: handler.username.clone(),
         message: "boom".to_string(),
         timestamp: now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     });
 
     wait_for_start_cleanup(
@@ -1783,8 +1808,8 @@ async fn test_run_after_join_cleans_up_when_realtime_event_send_fails() {
         username: handler.username.clone(),
         message: "boom".to_string(),
         timestamp: now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     });
 
     wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
@@ -1792,15 +1817,34 @@ async fn test_run_after_join_cleans_up_when_realtime_event_send_fails() {
 }
 
 #[tokio::test]
-async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
-    let event_service = test_realtime_manager("test_pre_join_caches_room_subscription").await;
-    let connection_service = test_connection_manager();
-    let handler = test_message_handler(
-        FailingMessageSender::fail_after(usize::MAX),
-        event_service.clone(),
-        connection_service.clone(),
+async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explicit_observe() {
+    let message_sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture(
+        "test_pre_join_caches_room_subscription",
+        message_sender.clone(),
+    )
+    .await;
+    let handler = &fixture.handler;
+    let event_service = &fixture.event_service;
+    let connection_service = &fixture.connection_service;
+    prepare_handler_for_run_after_join(handler, connection_service).await;
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_chat_events_message("chat-events", String::new())),
+        })
+        .await
+        .expect("chat observe should register");
+    assert!(
+        handler
+            .resource_observer
+            .has_chat_events_observation()
+            .await
     );
-    prepare_handler_for_run_after_join(&handler, &connection_service).await;
+    assert!(message_sender
+        .sent_messages()
+        .iter()
+        .any(|msg| matches!(msg.message, Some(Message::ResourceObserved(_)))));
 
     event_service.broadcast(RealtimeEvent::ChatMessage {
         event_id: "evt-prejoin-window".to_string(),
@@ -1809,8 +1853,8 @@ async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
         username: "other".to_string(),
         message: "arrived-before-run-after-join".to_string(),
         timestamp: now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     });
 
     let (mut stream, stream_state) = RecordingStream::new();
@@ -1838,8 +1882,220 @@ async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
         );
 
     connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(handler, connection_service, event_service, run_task).await;
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_observe_chat_events_replays_events_after_event_id() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let event_service = test_realtime_manager("test_chat_event_replay_after_event_id").await;
+    let connection_service = test_connection_manager();
+    let room_service = test_room_service(pool.clone());
+    let chat_service = test_chat_service(pool.clone());
+    let user_service = room_service.user_service().clone();
+    let owner = user_service
+        .register(
+            "chat-replay-owner".to_string(),
+            Some("chat-replay-owner@test.invalid".to_string()),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("owner should register")
+        .0;
+    let (room, _) = room_service
+        .create_room(
+            "Chat Replay Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("room should be created");
+
+    let first = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: owner.id,
+            client_message_id: Some("replay-1".to_string()),
+            content: "first replay".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect("first message should be stored");
+    chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: owner.id,
+            client_message_id: Some("replay-2".to_string()),
+            content: "second replay".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect("second message should be stored");
+    chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: owner.id,
+            client_message_id: Some("replay-3".to_string()),
+            content: "third replay".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect("third message should be stored");
+
+    let message_sender = RecordingMessageSender::new();
+    let handler = StreamMessageHandler::new(
+        room.id,
+        owner.id,
+        owner.username.clone(),
+        &room_service,
+        chat_service,
+        event_service.clone(),
+        connection_service.clone(),
+        Arc::new(RateLimiter::local_only("test:chat-replay:".to_string())),
+        Arc::new(RateLimitConfig::default()),
+        Arc::new(ContentFilter::new()),
+        Arc::new(crate::PublicIdCodec::default_for_tests()),
+        message_sender.clone(),
+    );
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_chat_events_message(
+                "chat-replay",
+                first.event_id.clone(),
+            )),
+        })
+        .await
+        .expect("chat observe should replay events after event id");
+
+    let replayed = message_sender
+        .sent_messages()
+        .iter()
+        .filter_map(|message| match resource_changed_payload(message) {
+            Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) => event
+                .message
+                .as_ref()
+                .map(|message| message.content.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(replayed, vec!["second replay", "third replay"]);
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
+    let event_service = test_realtime_manager("test_run_after_join_filters_chat_events").await;
+    let connection_service = test_connection_manager();
+    let handler = test_message_handler(
+        RecordingMessageSender::new(),
+        event_service.clone(),
+        connection_service.clone(),
+    );
+    prepare_handler_for_run_after_join(&handler, &connection_service).await;
+
+    let (mut stream, stream_state) = RecordingStream::new();
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+    wait_for_recorded_message_count(&stream_state, 1).await;
+
+    event_service.broadcast(RealtimeEvent::ChatMessage {
+        event_id: "evt-filtered-chat".to_string(),
+        room_id: handler.room_id,
+        user_id: UserId::expect_positive(113_002),
+        username: "other".to_string(),
+        message: "filtered-before-observe".to_string(),
+        timestamp: now(),
+        display_position: None,
+        display_color: None,
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let messages = stream_state.sent_messages();
+    assert!(
+        messages
+            .iter()
+            .any(|msg| matches!(msg.message, Some(Message::UserJoined(_)))),
+        "run_after_join should emit the initial UserJoined payload"
+    );
+    assert!(
+        messages.iter().all(|msg| {
+            !matches!(
+                &msg.message,
+                Some(Message::ChatEvent(event))
+                    if event.message.as_ref().is_some_and(|message| {
+                        message.content == "filtered-before-observe"
+                    })
+            )
+        }),
+        "chat events must wait for an explicit chat_events observation"
+    );
+
+    connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
     shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
+#[tokio::test]
+async fn test_observe_chat_events_requires_view_chat_history_permission_for_member() {
+    let sender = RecordingMessageSender::new();
+    let fixture =
+        create_start_handler_fixture("observe_chat_events_permission", sender.clone()).await;
+    let mut settings = fixture
+        .handler
+        .room_service
+        .get_room_settings(&fixture.handler.room_id)
+        .await
+        .expect("room settings should load");
+    settings.member_removed_permissions =
+        synctv_core::models::room_settings::MemberRemovedPermissions(
+            RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+        );
+    fixture
+        .handler
+        .room_service
+        .set_room_settings(&fixture.handler.room_id, &settings)
+        .await
+        .expect("room settings should update");
+
+    let error = fixture
+        .handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_chat_events_message("chat-events", String::new())),
+        })
+        .await
+        .expect_err("chat events observation should require VIEW_CHAT_HISTORY");
+
+    assert!(
+        error.contains("permission") || error.contains("Permission"),
+        "permission denial should be surfaced, got: {error}"
+    );
+    assert!(
+        !fixture
+            .handler
+            .resource_observer
+            .has_chat_events_observation()
+            .await
+    );
+    assert!(sender.sent_messages().is_empty());
+
+    fixture.shutdown().await;
 }
 
 #[tokio::test]
@@ -2351,12 +2607,14 @@ async fn test_provider_credential_change_refreshes_dependent_playback_snapshot()
             room_id: handler.room_id,
             creator_id: Some(handler.user_id),
             name: "provider credential dependent media".to_string(),
+            description: String::new(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({
                 "url": "https://example.com/provider-credential-dependent.mp4"
             }),
             provider_instance_name: None,
+            cover_file_reference_id: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -2477,12 +2735,14 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback_sna
             room_id: handler.room_id,
             creator_id: Some(handler.user_id),
             name: "provider credential unrelated media".to_string(),
+            description: String::new(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({
                 "url": "https://example.com/provider-credential-unrelated.mp4"
             }),
             provider_instance_name: None,
+            cover_file_reference_id: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -2585,12 +2845,14 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
             room_id: handler.room_id,
             creator_id: Some(handler.user_id),
             name: "observe-playback-media-update".to_string(),
+            description: String::new(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({
                 "url": "https://example.com/observe-playback-media-update.mp4"
             }),
             provider_instance_name: None,
+            cover_file_reference_id: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -2738,6 +3000,8 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
             room_id: handler.room_id,
             creator_id: Some(handler.user_id),
             name: "observe-playback-playlist-update".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 0.0,
             source_provider: None,
@@ -2818,6 +3082,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
             synctv_core::service::playlist::SetPlaylistRequest {
                 playlist_id: playlist.id,
                 name: Some("observe-playback-playlist-update-v2".to_string()),
+                description: None,
             },
         )
         .await
@@ -3318,6 +3583,7 @@ async fn test_observe_playlist_items_without_version_sends_snapshot_immediately(
                     room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
                     source_provider: "direct_url".to_string(),
                     name: "test media".to_string(),
+                    description: String::new(),
                     metadata: Vec::new(),
                     position: 1.0,
                     added_at: 1,
@@ -3326,6 +3592,7 @@ async fn test_observe_playlist_items_without_version_sends_snapshot_immediately(
                     source_config: Vec::new(),
                     availability: crate::proto::client::ResourceAvailability::Available as i32,
                     version: 3,
+                    cover: None,
                 }],
                 total: 1,
                 folder_count: 0,
@@ -4583,6 +4850,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             source_provider: "direct_url".to_string(),
             name: "next media".to_string(),
+            description: String::new(),
             metadata: Vec::new(),
             position: 2.0,
             added_at: 2,
@@ -4591,6 +4859,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             source_config: Vec::new(),
             availability: crate::proto::client::ResourceAvailability::Available as i32,
             version: 4,
+            cover: None,
         }],
         total: 1,
         folder_count: 0,
@@ -5233,7 +5502,7 @@ async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
 }
 
 #[test]
-fn test_chat_message_event_conversion() {
+fn test_ephemeral_chat_event_conversion() {
     let event = RealtimeEvent::ChatMessage {
         event_id: "evt1".to_string(),
         room_id: room_id(),
@@ -5241,8 +5510,8 @@ fn test_chat_message_event_conversion() {
         username: "alice".to_string(),
         message: "hello world".to_string(),
         timestamp: now(),
-        position: Some(42.5),
-        color: Some("#ff0000".to_string()),
+        display_position: Some("top".to_string()),
+        display_color: Some("#ff0000".to_string()),
     };
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
@@ -5254,10 +5523,70 @@ fn test_chat_message_event_conversion() {
             assert_eq!(chat.user_id, public_actor_id());
             assert_eq!(chat.username, "alice");
             assert_eq!(chat.content, "hello world");
-            assert_eq!(chat.position, Some(42.5));
-            assert_eq!(chat.color, Some("#ff0000".to_string()));
+            assert_eq!(chat.display_position, "top");
+            assert_eq!(chat.display_color, "#ff0000");
         }
         other => panic!("Expected Chat message, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_durable_chat_message_event_conversion() {
+    let created_at = now();
+    let event = RealtimeEvent::ChatMessageEvent {
+        event_id: "chat-event-1".to_string(),
+        room_id: room_id(),
+        actor_user_id: user_id(),
+        event: ChatMessageEvent {
+            event_id: "chat-event-1".to_string(),
+            room_id: room_id(),
+            actor_user_id: user_id(),
+            kind: ChatEventKind::Deleted,
+            message: ChatMessageWithImages {
+                message: ChatMessage {
+                    id: 42,
+                    room_id: room_id(),
+                    user_id: Some(user_id()),
+                    client_message_id: Some("client-42".to_string()),
+                    content: String::new(),
+                    message_type: ChatMessageType::Text,
+                    status: ChatMessageStatus::Deleted,
+                    version: 2,
+                    reply_to_message_id: None,
+                    reply_to_message_created_at: None,
+                    metadata: serde_json::Value::Object(Default::default()),
+                    edited_at: Some(created_at),
+                    deleted_at: Some(created_at),
+                    deleted_by: Some(user_id()),
+                    delete_reason: Some("policy".to_string()),
+                    created_at,
+                },
+                images: Vec::new(),
+            },
+            occurred_at: created_at,
+        },
+        timestamp: created_at,
+    };
+
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
+    assert_eq!(msgs.len(), 1);
+    match &msgs[0].message {
+        Some(Message::ChatEvent(event)) => {
+            assert_eq!(event.event_id, "chat-event-1");
+            assert_eq!(
+                event.kind,
+                crate::proto::client::ChatMessageEventKind::Deleted as i32
+            );
+            let message = event.message.as_ref().expect("chat message should exist");
+            assert_eq!(message.id, "42");
+            assert_eq!(
+                message.status,
+                crate::proto::client::ChatMessageStatus::Deleted as i32
+            );
+            assert_eq!(message.client_message_id, "client-42");
+            assert_eq!(message.delete_reason, "policy");
+        }
+        other => panic!("Expected ChatEvent message, got: {other:?}"),
     }
 }
 
@@ -5961,99 +6290,20 @@ async fn test_concurrency_config_backpressure_with_async() {
 }
 
 #[test]
-fn test_validate_danmaku_color_valid_hex_colors() {
-    // Valid hex color formats: #RRGGBB
-    assert!(super::validate_danmaku_color(&Some("#FF0000".to_string())).is_ok()); // Red
-    assert!(super::validate_danmaku_color(&Some("#00FF00".to_string())).is_ok()); // Green
-    assert!(super::validate_danmaku_color(&Some("#0000FF".to_string())).is_ok()); // Blue
-    assert!(super::validate_danmaku_color(&Some("#FFFFFF".to_string())).is_ok()); // White
-    assert!(super::validate_danmaku_color(&Some("#000000".to_string())).is_ok()); // Black
-    assert!(super::validate_danmaku_color(&Some("#abcdef".to_string())).is_ok()); // Lowercase
-    assert!(super::validate_danmaku_color(&Some("#ABCDEF".to_string())).is_ok()); // Uppercase
-    assert!(super::validate_danmaku_color(&Some("#123456".to_string())).is_ok()); // Mixed digits
-    assert!(super::validate_danmaku_color(&Some("#1a2B3c".to_string())).is_ok());
-    // Mixed case
+fn test_parse_optional_chat_message_id_accepts_empty_and_numeric_values() {
+    assert_eq!(super::parse_optional_chat_message_id("").unwrap(), None);
+    assert_eq!(
+        super::parse_optional_chat_message_id(" 42 ").unwrap(),
+        Some(42)
+    );
 }
 
 #[test]
-fn test_validate_danmaku_color_none_is_valid() {
-    // None should be valid (no color specified = default color)
-    assert!(super::validate_danmaku_color(&None).is_ok());
-}
+fn test_parse_optional_chat_message_id_rejects_invalid_values() {
+    let result = super::parse_optional_chat_message_id("message-42");
 
-#[test]
-fn test_validate_danmaku_color_invalid_format_no_hash() {
-    // Missing # prefix should be rejected
-    let result = super::validate_danmaku_color(&Some("FF0000".to_string()));
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("must start with '#'"));
-}
-
-#[test]
-fn test_validate_danmaku_color_invalid_format_wrong_length() {
-    // Wrong length should be rejected
-    let result = super::validate_danmaku_color(&Some("#FFF".to_string())); // Too short
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("must be 7 characters"));
-
-    let result = super::validate_danmaku_color(&Some("#FFFFFFFF".to_string())); // Too long (no alpha)
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("must be 7 characters"));
-}
-
-#[test]
-fn test_validate_danmaku_color_invalid_characters() {
-    // Non-hex characters should be rejected
-    let result = super::validate_danmaku_color(&Some("#GGGGGG".to_string()));
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .contains("must contain only hex characters"));
-
-    let result = super::validate_danmaku_color(&Some("#ZZZZZZ".to_string()));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_validate_danmaku_color_xss_injection() {
-    // XSS injection attempts should be rejected
-    let result = super::validate_danmaku_color(&Some("javascript:alert(1)".to_string()));
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("<script>".to_string()));
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("rgb(255,0,0)".to_string()));
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("red".to_string()));
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("#expression(alert(1))".to_string()));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_validate_danmaku_color_empty_string() {
-    // Empty string should be rejected
-    let result = super::validate_danmaku_color(&Some(String::new()));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_validate_danmaku_color_special_characters() {
-    // Special characters should be rejected
-    let result = super::validate_danmaku_color(&Some("#FF 000".to_string())); // Space
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("#FF-000".to_string())); // Dash
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("#FF\n000".to_string())); // Newline
-    assert!(result.is_err());
-
-    let result = super::validate_danmaku_color(&Some("#\u{0000}F0000".to_string())); // Null byte
-    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "Invalid chat message id");
 }
 
 #[test]
@@ -6458,8 +6708,11 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
             message: Some(crate::proto::client::client_message::Message::Chat(
                 crate::proto::client::ChatMessageSend {
                     content: "guest message".to_string(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         })
@@ -6471,8 +6724,8 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
 }
 
 #[tokio::test]
-async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_chat() {
-    let event_service = test_realtime_manager("guest_danmaku_rejected").await;
+async fn test_guest_chat_with_client_id_is_rejected() {
+    let event_service = test_realtime_manager("guest_chat_client_id_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -6485,14 +6738,17 @@ async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_chat() {
         .handle_client_message(&ClientMessage {
             message: Some(crate::proto::client::client_message::Message::Chat(
                 crate::proto::client::ChatMessageSend {
-                    content: "guest danmaku".to_string(),
-                    position: Some(1.0),
-                    color: Some("#ffffff".to_string()),
+                    content: "guest chat with client id".to_string(),
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         })
         .await
-        .expect_err("guest danmaku must be rejected at the realtime boundary");
+        .expect_err("guest chat must be rejected at the realtime boundary");
 
     assert!(err.contains("Guests cannot send chat"));
     shutdown_test_runtime_resources(event_service, connection_service).await;
@@ -7009,6 +7265,18 @@ fn test_realtime_join_error_from_admission_error_classifies_cluster_degradation(
         error,
         super::RealtimeJoinError::ServiceUnavailable(message)
         if message == "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+    ));
+}
+
+#[test]
+fn test_realtime_join_error_from_string_classifies_invalid_input() {
+    let error =
+        super::RealtimeJoinError::from("Invalid input: Invalid chat event cursor".to_string());
+
+    assert!(matches!(
+        error,
+        super::RealtimeJoinError::InvalidInput(message)
+        if message == "Invalid input: Invalid chat event cursor"
     ));
 }
 
@@ -7725,6 +7993,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
             room_id: room.id,
             principal: RealtimePrincipal::user(member.id, member.username.clone()),
             room_service: Arc::clone(&room_service),
+            chat_service: None,
             event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
             connection_service: Arc::clone(&connection_service)
                 as Arc<dyn RealtimeConnectionService>,
@@ -7764,6 +8033,95 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
         connection_service.room_connection_count(&room.id),
         0,
         "watch cancellation must release realtime room capacity"
+    );
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+    pool.close().await;
+    drop(container);
+}
+
+#[tokio::test]
+async fn test_resource_watch_chat_events_requires_view_chat_history_permission() {
+    let (container, pool) = synctv_core_testing::create_test_pool().await;
+    let room_service = test_room_service(pool.clone());
+    let chat_service = test_chat_service(pool.clone());
+    let user_service = room_service.user_service().clone();
+    let event_service = test_realtime_manager("watch_chat_events_permission").await;
+    let connection_service = test_connection_manager();
+    let public_id_codec = Arc::new(crate::PublicIdCodec::default_for_tests());
+
+    let owner = user_service
+        .register(
+            "watch_chat_perm_owner".to_string(),
+            Some("watch-chat-perm-owner@test.invalid".to_string()),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("owner should register")
+        .0;
+    let (room, _) = room_service
+        .create_room(
+            "Watch Chat Permission Room".to_string(),
+            "watch-chat-permission".to_string(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("room should be created");
+    let member = user_service
+        .register(
+            "watch_chat_perm_member".to_string(),
+            Some("watch-chat-perm-member@test.invalid".to_string()),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("member should register")
+        .0;
+    room_service
+        .join_room(room.id, member.id, None)
+        .await
+        .expect("member should join room");
+    let mut settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .expect("room settings should load");
+    settings.member_removed_permissions =
+        synctv_core::models::room_settings::MemberRemovedPermissions(
+            RoomMemberPermissionBits::VIEW_CHAT_HISTORY,
+        );
+    room_service
+        .set_room_settings(&room.id, &settings)
+        .await
+        .expect("room settings should update");
+
+    let observe =
+        watch_chat_events_observe(crate::proto::client::WatchChatEventsRequest::default());
+    let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
+        room_id: room.id,
+        principal: RealtimePrincipal::user(member.id, member.username.clone()),
+        room_service: Arc::clone(&room_service),
+        chat_service: Some(chat_service),
+        event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
+        connection_service: Arc::clone(&connection_service) as Arc<dyn RealtimeConnectionService>,
+        public_id_codec: Arc::clone(&public_id_codec),
+        sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
+        playback_snapshot_service: None,
+        playlist_items_snapshot_service: None,
+        room_members_snapshot_service: None,
+        room_settings_snapshot_service: None,
+    });
+
+    let Err(error) = session.prepare(&observe).await else {
+        panic!("chat events watch should require VIEW_CHAT_HISTORY");
+    };
+    assert!(matches!(error, RealtimeJoinError::PermissionDenied(_)));
+    assert_eq!(
+        connection_service.room_connection_count(&room.id),
+        0,
+        "failed prepare should unregister the denied watch"
     );
 
     shutdown_test_runtime_resources(event_service, connection_service).await;

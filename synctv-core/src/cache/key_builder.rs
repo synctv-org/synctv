@@ -349,7 +349,7 @@ impl KeyBuilder {
 
     /// Room-specific messages channel
     ///
-    /// Used for room message broadcasting (chat, danmaku, etc.)
+    /// Used for room message broadcasting.
     #[must_use]
     pub fn room_messages_channel(&self, room_id: &str) -> String {
         format!("{}:room:{}:messages", self.prefix, room_id)

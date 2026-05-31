@@ -302,6 +302,7 @@ impl EmbyApiImpl {
                     series_name: item.series_name,
                     series_id: item.series_id,
                     season_name: item.season_name,
+                    description: item.description,
                 }
             })
             .collect();

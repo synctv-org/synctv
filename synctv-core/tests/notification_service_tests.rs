@@ -108,16 +108,6 @@ fn test_event_type_names_all_variants() {
             "chat_message",
         ),
         (
-            RoomEvent::Danmaku {
-                user_id: UserId::new(),
-                username: "test".to_string(),
-                content: "hello".to_string(),
-                position: "top".to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-            "danmaku",
-        ),
-        (
             RoomEvent::PlaybackStateChanged {
                 playing: true,
                 position: 0.0,

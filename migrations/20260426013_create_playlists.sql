@@ -5,6 +5,9 @@ CREATE TABLE IF NOT EXISTS playlists (
     creator_id BIGINT REFERENCES users(id) ON DELETE RESTRICT,
 
     name VARCHAR(255) NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+
+    cover_file_reference_id BIGINT NULL,
 
     parent_id BIGINT,
 
@@ -42,6 +45,7 @@ CREATE TABLE IF NOT EXISTS playlists (
 );
 
 CREATE INDEX IF NOT EXISTS idx_playlists_room ON playlists(room_id);
+CREATE INDEX IF NOT EXISTS idx_playlists_description_trgm ON playlists USING gin(description gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_playlists_parent ON playlists(parent_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_playlists_tree ON playlists(room_id, parent_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_playlists_creator ON playlists(creator_id);

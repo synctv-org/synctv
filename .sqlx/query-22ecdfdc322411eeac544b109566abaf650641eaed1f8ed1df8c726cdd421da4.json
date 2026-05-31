@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CURRENT_DATE as \"current_date!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_date!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "22ecdfdc322411eeac544b109566abaf650641eaed1f8ed1df8c726cdd421da4"
+}

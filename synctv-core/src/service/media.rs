@@ -9,7 +9,10 @@
 
 use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
-    models::{normalize_provider_instance_name, Media, MediaId, PlaylistId, RoomId, UserId},
+    models::{
+        normalize_provider_instance_name, CreateFileUploadSession, FileBlob, FileUploadSession,
+        Media, MediaId, NewStoredFile, PlaylistId, RoomId, UserId,
+    },
     provider::{
         provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
         SourceConfig,
@@ -21,7 +24,8 @@ use crate::{
         permission::PermissionService,
         provider_binding::resolve_credential_provider_instance_binding,
         source_config::validate_source_config_size,
-        ProvidersManager,
+        video_cover_upload_policy, FileStorageCleanupOrigin, FileStorageContext,
+        FileStorageService, ProvidersManager,
     },
     Error, Result,
 };
@@ -36,6 +40,7 @@ use std::sync::Arc;
 const MAX_BATCH_SIZE: usize = 100;
 /// Leave sparse gaps between inserted media positions to reduce renumbering.
 const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
+const MEDIA_COVER_REFERENCE_KIND: &str = "media_cover";
 
 pub type RealtimeOutboxMediaEventFactory =
     Arc<dyn Fn(&Media) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
@@ -63,6 +68,7 @@ fn validate_media_name(name: &str) -> Result<()> {
 pub struct AddMediaRequest {
     pub playlist_id: Option<PlaylistId>,
     pub name: String,
+    pub description: String,
     /// Declared provider type name (e.g. "direct_url", "bilibili", "alist").
     pub source_provider: String,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
@@ -76,6 +82,26 @@ pub struct AddMediaRequest {
 pub struct EditMediaRequest {
     pub media_id: MediaId,
     pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateVideoCoverUploadSession {
+    pub client_cover_id: Option<String>,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub checksum_sha256: Option<String>,
+    pub metadata: JsonValue,
+}
+
+fn media_cover_storage_scope(room_id: RoomId, media_id: MediaId) -> String {
+    format!(
+        "rooms/{}/media/{}/cover",
+        room_id.as_i64(),
+        media_id.as_i64()
+    )
 }
 
 fn ensure_media_creator_can_edit(media: &Media, user_id: &UserId) -> Result<()> {
@@ -118,6 +144,7 @@ pub struct MediaService {
     /// Optional credential repository for provider-backed source resolution
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -223,6 +250,7 @@ impl MediaService {
             credential_encryption: None,
             credential_repo: None,
             realtime_outbox: None,
+            file_storage_service: None,
         }
     }
 
@@ -249,7 +277,22 @@ impl MediaService {
             credential_encryption,
             credential_repo,
             realtime_outbox: None,
+            file_storage_service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_file_storage_service(
+        mut self,
+        file_storage_service: Arc<dyn FileStorageService>,
+    ) -> Self {
+        self.file_storage_service = Some(file_storage_service);
+        self
+    }
+
+    #[must_use]
+    pub fn file_storage_service(&self) -> Option<&Arc<dyn FileStorageService>> {
+        self.file_storage_service.as_ref()
     }
 
     pub fn set_realtime_outbox(&mut self, realtime_outbox: Option<Arc<RealtimeOutboxRepository>>) {
@@ -327,6 +370,11 @@ impl MediaService {
         outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
     ) -> Result<Media> {
         validate_media_name(&request.name)?;
+        if request.description.chars().count() > 5000 {
+            return Err(Error::InvalidInput(
+                "Media description cannot exceed 5000 characters".to_string(),
+            ));
+        }
 
         // Check permission
         self.permission_service
@@ -424,11 +472,12 @@ impl MediaService {
         // Store the provider type and optional instance binding separately.
         // Source config remains provider-owned and must not carry instance
         // routing metadata.
-        let media = Media::from_provider(
+        let media = Media::from_provider_with_description(
             request.playlist_id,
             room_id,
             Some(user_id),
             request.name.clone(),
+            request.description.clone(),
             prepared_source_config,
             provider.name(), // Provider type name (e.g., "bilibili")
             bound_provider_instance.clone(),
@@ -532,6 +581,12 @@ impl MediaService {
         let mut validated_items = Vec::with_capacity(items.len());
         for item in items {
             validate_media_name(&item.name)?;
+            if item.description.chars().count() > 5000 {
+                return Err(Error::InvalidInput(format!(
+                    "Media description for item '{}' cannot exceed 5000 characters",
+                    item.name
+                )));
+            }
 
             let explicit_provider_instance =
                 normalize_provider_instance_name(item.provider_instance_name.as_deref())
@@ -633,11 +688,12 @@ impl MediaService {
         for (index, (item, provider, prepared_source_config, provider_instance_name)) in
             validated_items.into_iter().enumerate()
         {
-            let media = Media::from_provider(
+            let media = Media::from_provider_with_description(
                 item.playlist_id,
                 room_id,
                 Some(user_id),
                 item.name,
+                item.description,
                 prepared_source_config,
                 provider.name(), // Provider type name
                 provider_instance_name,
@@ -763,6 +819,14 @@ impl MediaService {
                     validate_media_name(name)?;
                     media.name = name.clone();
                 }
+                if let Some(ref description) = request.description {
+                    if description.chars().count() > 5000 {
+                        return Err(Error::InvalidInput(
+                            "Media description cannot exceed 5000 characters".to_string(),
+                        ));
+                    }
+                    media.description = description.clone();
+                }
                 let mut tx = self.media_repo.pool().begin().await?;
                 // Conditional update: only succeed if no other edit changed the row
                 match self
@@ -811,6 +875,212 @@ impl MediaService {
                 room_id = %room_id,
                 "Failed to broadcast media updated event"
             );
+        }
+
+        Ok(updated_media)
+    }
+
+    pub async fn create_video_cover_upload_session(
+        &self,
+        room_id: RoomId,
+        media_id: MediaId,
+        user_id: UserId,
+        request: CreateVideoCoverUploadSession,
+    ) -> Result<FileUploadSession> {
+        let storage = self.file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for video covers".to_string())
+        })?;
+        let media = self
+            .media_repo
+            .get_by_room_and_id(&room_id, &media_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        ensure_media_creator_can_edit(&media, &user_id)?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            )
+            .await?;
+
+        storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id,
+                storage_scope: media_cover_storage_scope(room_id, media_id),
+                client_file_id: request.client_cover_id,
+                mime_type: request.mime_type,
+                size_bytes: request.size_bytes,
+                width: request.width,
+                height: request.height,
+                checksum_sha256: request.checksum_sha256,
+                metadata: request.metadata,
+                policy: video_cover_upload_policy(),
+            })
+            .await
+    }
+
+    pub async fn store_video_cover_upload_object(
+        &self,
+        encoded_object_key: &str,
+        upload_token: &str,
+        content_type: Option<&str>,
+        data: Vec<u8>,
+    ) -> Result<FileBlob> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidInput("file storage is not configured for video covers".to_string())
+            })?
+            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .await
+    }
+
+    pub async fn get_video_cover_object(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+    ) -> Result<FileBlob> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object(encoded_object_key, read_token)
+            .await
+    }
+
+    pub async fn update_video_cover(
+        &self,
+        room_id: RoomId,
+        media_id: MediaId,
+        user_id: UserId,
+        file: NewStoredFile,
+    ) -> Result<Media> {
+        let storage = self.file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for video covers".to_string())
+        })?;
+        let mut tx = self.media_repo.pool().begin().await?;
+        let current_media = self
+            .media_repo
+            .get_by_room_and_id_for_update_with_executor(&room_id, &media_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        ensure_media_creator_can_edit(&current_media, &user_id)?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            )
+            .await?;
+
+        let storage_scope = media_cover_storage_scope(room_id, media_id);
+        let prepared = storage
+            .prepare_files(
+                FileStorageContext {
+                    user_id,
+                    storage_scope: &storage_scope,
+                    client_request_id: None,
+                },
+                vec![file],
+            )
+            .await?;
+        let file = prepared
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidInput("video cover file is required".to_string()))?;
+
+        let new_reference_id = crate::repository::FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            &file.storage_backend,
+            &file.object_key,
+            MEDIA_COVER_REFERENCE_KIND,
+            &media_id.as_i64().to_string(),
+            None,
+            &file.metadata,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::InvalidInput("video cover file object is not registered".to_string())
+        })?;
+        let old_reference = if let Some(reference_id) = current_media.cover_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.media_repo.pool().clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| current_media.cover_file_reference_target(&reference))
+        } else {
+            None
+        };
+
+        let updated_media = self
+            .media_repo
+            .update_cover_with_executor(
+                &room_id,
+                &media_id,
+                Some(new_reference_id),
+                current_media.version,
+                &mut *tx,
+            )
+            .await?
+            .ok_or(Error::OptimisticLockConflict)?;
+        tx.commit().await?;
+
+        if let Some(old_reference) = old_reference {
+            if old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key
+            {
+                storage
+                    .delete_files(
+                        FileStorageCleanupOrigin::ReferenceReleased,
+                        &[old_reference],
+                    )
+                    .await?;
+            }
+        }
+
+        Ok(updated_media)
+    }
+
+    pub async fn clear_video_cover(
+        &self,
+        room_id: RoomId,
+        media_id: MediaId,
+        user_id: UserId,
+    ) -> Result<Media> {
+        let mut tx = self.media_repo.pool().begin().await?;
+        let current_media = self
+            .media_repo
+            .get_by_room_and_id_for_update_with_executor(&room_id, &media_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        ensure_media_creator_can_edit(&current_media, &user_id)?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
+            )
+            .await?;
+        let old_reference = if let Some(reference_id) = current_media.cover_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.media_repo.pool().clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| current_media.cover_file_reference_target(&reference))
+        } else {
+            None
+        };
+        let updated_media = self
+            .media_repo
+            .update_cover_with_executor(&room_id, &media_id, None, current_media.version, &mut *tx)
+            .await?
+            .ok_or(Error::OptimisticLockConflict)?;
+        tx.commit().await?;
+
+        if let (Some(storage), Some(reference)) =
+            (self.file_storage_service.as_ref(), old_reference)
+        {
+            storage
+                .delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
+                .await?;
         }
 
         Ok(updated_media)
@@ -1665,10 +1935,12 @@ impl MediaService {
             room_id: *room_id,
             creator_id: playlist.creator_id,
             name: format!("dynamic:{playlist_id}"),
+            description: String::new(),
             position: 0.0,
             source_provider: provider_name.clone(),
             source_config: serde_json::Value::Null,
             provider_instance_name: playlist.provider_instance_name.clone(),
+            cover_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1717,6 +1989,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Test Video".to_string(),
+            description: String::new(),
             source_provider: "bilibili".to_string(),
             provider_instance_name: Some("bilibili_main".to_string()),
             source_config: serde_json::json!({"bvid": "BV1234567890"}),
@@ -1742,6 +2015,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Complex Video".to_string(),
+            description: String::new(),
             source_provider: "alist".to_string(),
             provider_instance_name: Some("alist_home".to_string()),
             source_config: config.clone(),
@@ -1759,6 +2033,7 @@ mod tests {
         let request = EditMediaRequest {
             media_id: MediaId::new(),
             name: Some("New Name".to_string()),
+            description: None,
         };
 
         assert_eq!(request.name, Some("New Name".to_string()));
@@ -1773,6 +2048,7 @@ mod tests {
             room_id: RoomId::expect_positive(12),
             creator_id: Some(creator_id),
             name: "Owned".to_string(),
+            description: String::new(),
             position: 1.0,
             source_provider: "direct_url".to_string(),
             provider_instance_name: None,
@@ -1780,6 +2056,7 @@ mod tests {
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 1,
+            cover_file_reference_id: None,
         };
 
         assert!(ensure_media_creator_can_edit(&media, &creator_id).is_ok());
@@ -1836,6 +2113,7 @@ mod tests {
             .map(|i| AddMediaRequest {
                 playlist_id: Some(PlaylistId::new()),
                 name: format!("Video {i}"),
+                description: String::new(),
                 source_provider: "direct_url".to_string(),
                 provider_instance_name: Some("test".to_string()),
                 source_config: serde_json::json!({}),
@@ -1856,6 +2134,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Null Config".to_string(),
+            description: String::new(),
             source_provider: "direct_url".to_string(),
             provider_instance_name: Some("test".to_string()),
             source_config: serde_json::Value::Null,
@@ -1881,6 +2160,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Nested Config".to_string(),
+            description: String::new(),
             source_provider: "alist".to_string(),
             provider_instance_name: Some("alist_home".to_string()),
             source_config: config,

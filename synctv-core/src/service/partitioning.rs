@@ -19,25 +19,26 @@ pub(crate) fn add_months(date: NaiveDate, months: i32) -> NaiveDate {
 }
 
 pub(crate) async fn current_database_date(pool: &PgPool) -> Result<NaiveDate> {
-    sqlx::query_scalar::<_, NaiveDate>("SELECT CURRENT_DATE")
+    sqlx::query_scalar!(r#"SELECT CURRENT_DATE as "current_date!""#)
         .fetch_one(pool)
         .await
         .internal_with_err("Failed to read database current date")
 }
 
 pub(crate) async fn table_exists(pool: &PgPool, table_name: &str) -> Result<bool> {
-    sqlx::query_scalar::<_, bool>(
+    let exists = sqlx::query_scalar!(
         "SELECT EXISTS (
             SELECT 1
             FROM pg_tables
             WHERE schemaname = 'public'
               AND tablename = $1
         )",
+        table_name,
     )
-    .bind(table_name)
     .fetch_one(pool)
     .await
-    .internal_with_err("Failed to check partition existence")
+    .internal_with_err("Failed to check partition existence")?;
+    Ok(exists.unwrap_or(false))
 }
 
 pub(crate) fn size_mb(size_bytes: i64) -> f64 {

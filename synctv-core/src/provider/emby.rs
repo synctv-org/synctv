@@ -1259,6 +1259,7 @@ impl DynamicFolder for EmbyProvider {
                     item_type,
                     size: None,
                     thumbnail: Some(thumbnail_url),
+                    description: (!item.description.trim().is_empty()).then_some(item.description),
                     modified_at: None,
                 })
             })
@@ -1628,6 +1629,7 @@ mod tests {
                 media_source_info: Vec::new(),
                 collection_type: String::new(),
                 has_thumbnail: false,
+                description: String::new(),
             })
         }
 

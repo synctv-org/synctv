@@ -5,6 +5,7 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
+pub mod chat_event_dispatcher;
 pub mod client_ip;
 pub mod config_adapters;
 pub mod fanout;

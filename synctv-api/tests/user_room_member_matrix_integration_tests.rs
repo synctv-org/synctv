@@ -52,6 +52,7 @@ fn make_user(username: &str, role: UserRole, status: UserStatus) -> User {
         email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role,
+        avatar_file_reference_id: None,
         status,
         is_banned: status == UserStatus::Banned,
         banned_at: None,

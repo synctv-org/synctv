@@ -1491,8 +1491,8 @@ mod tests {
             username: "user1".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let result = manager.broadcast(event.clone());
@@ -1826,8 +1826,8 @@ mod tests {
             username: "user1".to_string(),
             message: "Hello local!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let result = manager.broadcast(event.clone());
@@ -1894,8 +1894,8 @@ mod tests {
             username: "user2".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let result = manager.broadcast(event);
@@ -2263,8 +2263,8 @@ mod tests {
             username: "shutdown".to_string(),
             message: "non critical".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let result = manager.broadcast(event);
@@ -2350,8 +2350,8 @@ mod tests {
             username: "test_user".to_string(),
             message: "Test message".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let result = manager.broadcast(event);
@@ -2400,8 +2400,8 @@ mod tests {
             username: "quarantined-user".to_string(),
             message: "blocked while quarantined".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let blocked = manager.broadcast(event.clone());
@@ -2507,8 +2507,8 @@ mod tests {
                 username: "buffer".to_string(),
                 message: "fill channel".to_string(),
                 timestamp: Utc::now(),
-                position: None,
-                color: None,
+                display_position: None,
+                display_color: None,
             }))
             .expect("pre-fill normal channel");
 

@@ -247,8 +247,8 @@ mod tests {
             username: "test".to_string(),
             message: "Hello".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let key = DedupKey::try_from_event(&event).unwrap();
@@ -266,8 +266,8 @@ mod tests {
             username: "test".to_string(),
             message: "Hello".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         let error = DedupKey::try_from_event(&event)

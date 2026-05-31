@@ -63,7 +63,6 @@ static REGISTRY: std::sync::LazyLock<HashMap<&'static str, Arc<dyn RoomSettingPr
     std::sync::LazyLock::new(|| {
         [
             provider_entry(ChatEnabled::default()),
-            provider_entry(DanmakuEnabled::default()),
             provider_entry(AllowGuestJoin::default()),
             provider_entry(RequirePassword::default()),
             provider_entry(RequireApproval::default()),
@@ -285,7 +284,6 @@ macro_rules! room_setting {
 }
 
 room_setting!(ChatEnabled, bool, "chat_enabled", true);
-room_setting!(DanmakuEnabled, bool, "danmaku_enabled", true);
 room_setting!(AllowGuestJoin, bool, "allow_guest_join", false);
 room_setting!(RequirePassword, bool, "require_password", false);
 room_setting!(RequireApproval, bool, "require_approval", false);
@@ -412,7 +410,6 @@ pub struct RoomSettings {
     #[serde(default)]
     pub allow_auto_join: AllowAutoJoin,
     pub chat_enabled: ChatEnabled,
-    pub danmaku_enabled: DanmakuEnabled,
     #[serde(default)]
     pub auto_play: AutoPlay,
     #[serde(default)]
@@ -438,7 +435,6 @@ impl RoomSettings {
         self.require_approval.validate()?;
         self.allow_auto_join.validate()?;
         self.chat_enabled.validate()?;
-        self.danmaku_enabled.validate()?;
         self.auto_play.validate()?;
         self.admin_added_permissions.validate()?;
         self.admin_removed_permissions.validate()?;
@@ -608,8 +604,8 @@ mod tests {
     #[test]
     fn test_set_by_key_delegates_to_registry() {
         let mut settings = RoomSettings::default();
-        settings.set_by_key("danmaku_enabled", "false").unwrap();
-        assert!(!settings.danmaku_enabled.0);
+        settings.set_by_key("chat_enabled", "false").unwrap();
+        assert!(!settings.chat_enabled.0);
     }
 
     #[test]

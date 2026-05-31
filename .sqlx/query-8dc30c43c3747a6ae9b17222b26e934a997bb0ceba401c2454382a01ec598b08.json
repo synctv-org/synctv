@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE file_references\n            SET released_at = COALESCE(released_at, CURRENT_TIMESTAMP),\n                updated_at = CURRENT_TIMESTAMP\n            WHERE reference_kind = $1\n              AND reference_id = $2\n              AND storage_backend = $3\n              AND object_key = $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8dc30c43c3747a6ae9b17222b26e934a997bb0ceba401c2454382a01ec598b08"
+}

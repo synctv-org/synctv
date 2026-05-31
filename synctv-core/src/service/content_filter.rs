@@ -33,9 +33,6 @@ pub struct ContentFilter {
     /// Maximum chat message length
     pub max_chat_length: usize,
 
-    /// Maximum danmaku length
-    pub max_danmaku_length: usize,
-
     /// Sensitive words to filter (optional)
     sensitive_words: Option<HashSet<String>>,
 
@@ -49,7 +46,6 @@ impl ContentFilter {
     pub const fn new() -> Self {
         Self {
             max_chat_length: 2000,
-            max_danmaku_length: 100,
             sensitive_words: None,
             strip_html: true,
         }
@@ -59,7 +55,6 @@ impl ContentFilter {
     #[must_use]
     pub fn with_config(
         max_chat_length: usize,
-        max_danmaku_length: usize,
         sensitive_words: Option<Vec<String>>,
         strip_html: bool,
     ) -> Self {
@@ -68,7 +63,6 @@ impl ContentFilter {
 
         Self {
             max_chat_length,
-            max_danmaku_length,
             sensitive_words,
             strip_html,
         }
@@ -99,51 +93,6 @@ impl ContentFilter {
             // Allow safe HTML subset (links, bold, italic)
             SAFE_HTML_CLEANER.clean(trimmed).to_string()
         };
-
-        // Check for sensitive words
-        if let Some(ref words) = self.sensitive_words {
-            let lower = sanitized.to_lowercase();
-            for word in words {
-                if lower.contains(word) {
-                    return Err(ContentFilterError::ProhibitedContent {
-                        reason: "Contains prohibited word".to_string(),
-                    });
-                }
-            }
-        }
-
-        Ok(sanitized)
-    }
-
-    /// Filter and sanitize a danmaku message
-    ///
-    /// Danmaku has stricter rules (shorter, plain text only)
-    pub fn filter_danmaku(&self, message: &str) -> Result<String, ContentFilterError> {
-        // Check if empty
-        let trimmed = message.trim();
-        if trimmed.is_empty() {
-            return Err(ContentFilterError::EmptyMessage);
-        }
-
-        // Check length (character count for Unicode support, danmaku is shorter)
-        if trimmed.chars().count() > self.max_danmaku_length {
-            return Err(ContentFilterError::MessageTooLong {
-                max_length: self.max_danmaku_length,
-            });
-        }
-
-        // Validate danmaku doesn't contain control characters (check before sanitization)
-        if trimmed
-            .chars()
-            .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
-        {
-            return Err(ContentFilterError::ProhibitedContent {
-                reason: "Contains control characters".to_string(),
-            });
-        }
-
-        // Always strip HTML for danmaku (security + readability)
-        let sanitized = Self::strip_all_html(trimmed);
 
         // Check for sensitive words
         if let Some(ref words) = self.sensitive_words {
@@ -264,38 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_danmaku_normal() {
-        let filter = ContentFilter::new();
-        let result = filter.filter_danmaku("666").unwrap();
-        assert_eq!(result, "666");
-    }
-
-    #[test]
-    fn test_filter_danmaku_too_long() {
-        let filter = ContentFilter::new();
-        let long_message = "a".repeat(101);
-        let result = filter.filter_danmaku(&long_message);
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::MessageTooLong { max_length: 100 })
-        ));
-    }
-
-    #[test]
-    fn test_filter_danmaku_html() {
-        let filter = ContentFilter::new();
-        let result = filter
-            .filter_danmaku("<script>alert(1)</script>Danmaku")
-            .unwrap();
-        assert!(!result.contains("<script>"));
-        assert!(result.contains("Danmaku"));
-    }
-
-    #[test]
     fn test_sensitive_words() {
         let filter = ContentFilter::with_config(
             1000,
-            100,
             Some(vec!["badword".to_string(), "spam".to_string()]),
             true,
         );
@@ -348,10 +268,6 @@ mod tests {
         let result = filter.filter_chat("Привет мир 🌍").unwrap();
         assert_eq!(result, "Привет мир 🌍");
 
-        // Should support Unicode (Japanese)
-        let result = filter.filter_danmaku("ダンマクテスト").unwrap();
-        assert_eq!(result, "ダンマクテスト");
-
         // Should support Unicode (Arabic)
         let result = filter.filter_chat("مرحبا بالعالم").unwrap();
         assert_eq!(result, "مرحبا بالعالم");
@@ -373,22 +289,6 @@ mod tests {
         assert!(!result.contains("<script>"));
         // The text "Hello" should still be present
         assert!(result.contains("Hello") || result.contains("script")); // Either decoded or stripped
-    }
-
-    #[test]
-    fn test_control_characters_in_danmaku() {
-        let filter = ContentFilter::new();
-
-        // Control characters should be rejected in danmaku
-        let result = filter.filter_danmaku("Hello\x00World");
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::ProhibitedContent { .. })
-        ));
-
-        // Newlines and tabs are allowed
-        let result = filter.filter_danmaku("Line1\nLine2");
-        assert!(result.is_ok());
     }
 
     #[test]
@@ -686,31 +586,6 @@ mod tests {
     }
 
     #[test]
-    fn test_danmaku_xss_protection() {
-        let filter = ContentFilter::new();
-
-        // Script in danmaku
-        let result = filter
-            .filter_danmaku("<script>alert(1)</script>Danmaku")
-            .unwrap();
-        assert!(!result.contains("<script"));
-        assert!(result.contains("Danmaku"));
-
-        // Event handler in danmaku
-        let result = filter
-            .filter_danmaku("<img src=x onerror=alert(1)>")
-            .unwrap();
-        assert!(!result.contains("onerror"));
-
-        // Link in danmaku
-        let result = filter
-            .filter_danmaku("<a href='javascript:alert(1)'>Click</a>")
-            .unwrap();
-        assert!(!result.contains("javascript:"));
-        assert!(result.contains("Click"));
-    }
-
-    #[test]
     fn test_xss_nested_tags() {
         let filter = ContentFilter::new();
 
@@ -907,19 +782,6 @@ mod tests {
             Err(ContentFilterError::MessageTooLong { max_length: 2000 })
         ));
 
-        // Exact max length for danmaku (100 chars)
-        let exact_max_danmaku = "a".repeat(100);
-        let result = filter.filter_danmaku(&exact_max_danmaku);
-        assert!(result.is_ok());
-
-        // Just over max length for danmaku
-        let over_max_danmaku = "a".repeat(101);
-        let result = filter.filter_danmaku(&over_max_danmaku);
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::MessageTooLong { max_length: 100 })
-        ));
-
         // Unicode characters count correctly (not bytes)
         let emoji_message = "🎉".repeat(2000); // 2000 emojis
         let result = filter.filter_chat(&emoji_message);
@@ -937,7 +799,6 @@ mod tests {
     fn test_sensitive_word_edge_cases() {
         let filter = ContentFilter::with_config(
             1000,
-            100,
             Some(vec!["bad".to_string(), "spam".to_string()]),
             true,
         );
@@ -978,47 +839,6 @@ mod tests {
     fn test_control_characters_comprehensive() {
         let filter = ContentFilter::new();
 
-        // Null byte
-        let result = filter.filter_danmaku("Hello\x00World");
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::ProhibitedContent { .. })
-        ));
-
-        // Bell character
-        let result = filter.filter_danmaku("Hello\x07World");
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::ProhibitedContent { .. })
-        ));
-
-        // Escape character
-        let result = filter.filter_danmaku("Hello\x1bWorld");
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::ProhibitedContent { .. })
-        ));
-
-        // Delete character
-        let result = filter.filter_danmaku("Hello\x7fWorld");
-        assert!(matches!(
-            result,
-            Err(ContentFilterError::ProhibitedContent { .. })
-        ));
-
-        // Newline is allowed
-        let result = filter.filter_danmaku("Line1\nLine2");
-        assert!(result.is_ok());
-
-        // Tab is allowed
-        let result = filter.filter_danmaku("Col1\tCol2");
-        assert!(result.is_ok());
-
-        // Carriage return is allowed
-        let result = filter.filter_danmaku("Line1\rLine2");
-        assert!(result.is_ok());
-
-        // Chat doesn't have control character restrictions
         let result = filter.filter_chat("Hello\x00World");
         assert!(result.is_ok());
     }
@@ -1206,39 +1026,6 @@ mod tests {
             .filter_chat("<!-- <script>alert(1)</script>")
             .unwrap();
         assert!(!result.contains("<script"));
-    }
-
-    #[test]
-    fn test_danmaku_specific_security() {
-        let filter = ContentFilter::new();
-
-        // Danmaku should reject all control chars except \n, \t, \r
-        let control_chars: Vec<char> = vec![
-            '\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08', '\x0B', '\x0C',
-            '\x0E', '\x0F', '\x10', '\x11', '\x12', '\x13', '\x14', '\x15', '\x16', '\x17', '\x18',
-            '\x19', '\x1A', '\x1B', '\x1C', '\x1D', '\x1E', '\x1F', '\x7F',
-        ];
-
-        for cc in control_chars {
-            let test = format!("Test{cc}String");
-            let result = filter.filter_danmaku(&test);
-            assert!(
-                matches!(result, Err(ContentFilterError::ProhibitedContent { .. })),
-                "Control char U+{:04X} should be rejected",
-                cc as u32
-            );
-        }
-
-        // HTML in danmaku should always be stripped
-        let result = filter.filter_danmaku("<b>Bold</b>").unwrap();
-        assert_eq!(result, "Bold");
-
-        // Length limit strictly enforced
-        let long = "a".repeat(100);
-        assert!(filter.filter_danmaku(&long).is_ok());
-
-        let over = "a".repeat(101);
-        assert!(filter.filter_danmaku(&over).is_err());
     }
 
     #[test]

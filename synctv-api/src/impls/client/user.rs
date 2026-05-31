@@ -4,13 +4,90 @@ use crate::impls::ApiError;
 use crate::proto::client::OpaquePasswordUpdateVerificationMethod;
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
 use std::collections::HashMap;
-use synctv_core::models::{PageParams, RoomId, UserId};
+use synctv_core::models::{FileBlob, FileUploadSession, NewStoredFile, PageParams, RoomId, UserId};
 use synctv_core::validation::UsernameValidator;
 
-use super::convert::user_to_proto;
+use super::convert::{stored_file_reference_to_video_cover, user_to_proto};
 use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
+
+fn new_file_to_avatar_proto(file: &NewStoredFile) -> crate::proto::client::UserAvatar {
+    crate::proto::client::UserAvatar {
+        id: file.id.clone(),
+        storage_backend: file.storage_backend.clone(),
+        object_key: file.object_key.clone(),
+        url: file.url.clone().unwrap_or_default(),
+        mime_type: file.mime_type.clone().unwrap_or_default(),
+        size_bytes: file.size_bytes.unwrap_or_default(),
+        width: file.width.unwrap_or_default(),
+        height: file.height.unwrap_or_default(),
+        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
+    }
+}
+
+fn avatar_proto_to_new_file(
+    avatar: crate::proto::client::UserAvatar,
+) -> Result<NewStoredFile, ApiError> {
+    let metadata = if avatar.metadata.is_empty() {
+        serde_json::Value::Object(Default::default())
+    } else {
+        serde_json::from_slice(&avatar.metadata)
+            .map_err(|error| ApiError::InvalidInput(format!("Invalid avatar metadata: {error}")))?
+    };
+    if !metadata.is_object() {
+        return Err(ApiError::InvalidInput(
+            "Avatar metadata must be a JSON object".to_string(),
+        ));
+    }
+    Ok(NewStoredFile {
+        id: avatar.id,
+        storage_backend: avatar.storage_backend,
+        object_key: avatar.object_key,
+        url: (!avatar.url.trim().is_empty()).then_some(avatar.url),
+        mime_type: (!avatar.mime_type.trim().is_empty()).then_some(avatar.mime_type),
+        size_bytes: (avatar.size_bytes > 0).then_some(avatar.size_bytes),
+        width: (avatar.width > 0).then_some(avatar.width),
+        height: (avatar.height > 0).then_some(avatar.height),
+        metadata,
+    })
+}
+
+fn avatar_upload_session_to_proto(
+    session: FileUploadSession,
+) -> crate::proto::client::UserAvatarUploadSession {
+    crate::proto::client::UserAvatarUploadSession {
+        avatar: Some(new_file_to_avatar_proto(&session.file)),
+        upload_required: session.upload_required,
+        upload_url: session.upload_url.unwrap_or_default(),
+        upload_method: session.upload_method.unwrap_or_default(),
+        upload_headers: session.upload_headers.into_iter().collect(),
+        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        max_size_bytes: session.max_size_bytes,
+        ownership_proof_required: session.ownership_proof_required,
+        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_ranges: session
+            .ownership_proof_ranges
+            .into_iter()
+            .map(
+                |range| crate::proto::client::UserAvatarOwnershipProofRange {
+                    offset: range.offset,
+                    length: range.length,
+                },
+            )
+            .collect(),
+        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
+    }
+}
+
+fn avatar_object_to_proto(blob: &FileBlob) -> crate::proto::client::UserAvatarObjectResponse {
+    crate::proto::client::UserAvatarObjectResponse {
+        object_key: blob.object_key.clone(),
+        mime_type: blob.mime_type.clone(),
+        checksum_sha256: blob.checksum_sha256.clone(),
+        data: blob.data.clone(),
+    }
+}
 
 fn auth_factors_to_proto(
     factors: &synctv_core::models::UserAuthFactors,
@@ -126,6 +203,37 @@ fn prepare_deleted_room_outbox_fanout(
 }
 
 impl ClientApiImpl {
+    async fn user_to_proto_with_avatar(
+        &self,
+        user: &synctv_core::models::User,
+    ) -> Result<crate::proto::client::User, ApiError> {
+        let mut proto = user_to_proto(user, &self.public_id_codec);
+        if let Some(file) = self
+            .load_stored_file_reference(user.avatar_file_reference_id)
+            .await?
+        {
+            let url = self
+                .stored_file_reference_url(
+                    &file,
+                    &synctv_core::service::user_avatar_upload_policy(),
+                )?
+                .unwrap_or_default();
+            let file = stored_file_reference_to_video_cover(&file, Some(url));
+            proto.avatar = Some(crate::proto::client::UserAvatar {
+                id: file.id,
+                storage_backend: file.storage_backend,
+                object_key: file.object_key,
+                url: file.url,
+                mime_type: file.mime_type,
+                size_bytes: file.size_bytes,
+                width: file.width,
+                height: file.height,
+                metadata: file.metadata,
+            });
+        }
+        Ok(proto)
+    }
+
     pub async fn close_account(
         &self,
         user_id: &UserId,
@@ -183,7 +291,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetProfileResponse {
-            user: Some(user_to_proto(&updated_user, &self.public_id_codec)),
+            user: Some(self.user_to_proto_with_avatar(&updated_user).await?),
         })
     }
 
@@ -199,7 +307,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetProfileResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            user: Some(self.user_to_proto_with_avatar(&user).await?),
         })
     }
 
@@ -254,6 +362,106 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::SetUsernameResponse {
             user: response.user,
+        })
+    }
+
+    pub async fn create_user_avatar_upload_session(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::CreateUserAvatarUploadSessionRequest,
+    ) -> Result<crate::proto::client::CreateUserAvatarUploadSessionResponse, ApiError> {
+        let metadata = if req.metadata.is_empty() {
+            serde_json::Value::Object(Default::default())
+        } else {
+            serde_json::from_slice(&req.metadata).map_err(|error| {
+                ApiError::InvalidInput(format!("Invalid avatar metadata: {error}"))
+            })?
+        };
+        let session = self
+            .user_service
+            .create_avatar_upload_session(
+                user_id,
+                synctv_core::service::user::CreateUserAvatarUploadSession {
+                    client_avatar_id: (!req.client_avatar_id.trim().is_empty())
+                        .then_some(req.client_avatar_id),
+                    mime_type: req.mime_type,
+                    size_bytes: req.size_bytes,
+                    width: (req.width > 0).then_some(req.width),
+                    height: (req.height > 0).then_some(req.height),
+                    checksum_sha256: (!req.checksum_sha256.trim().is_empty())
+                        .then_some(req.checksum_sha256),
+                    metadata,
+                },
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(
+            crate::proto::client::CreateUserAvatarUploadSessionResponse {
+                session: Some(avatar_upload_session_to_proto(session)),
+            },
+        )
+    }
+
+    pub async fn upload_user_avatar_object(
+        &self,
+        req: crate::proto::client::UploadUserAvatarObjectRequest,
+    ) -> Result<crate::proto::client::UploadUserAvatarObjectResponse, ApiError> {
+        let blob = self
+            .user_service
+            .store_avatar_upload_object(
+                &req.encoded_object_key,
+                &req.token,
+                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.data,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::UploadUserAvatarObjectResponse {
+            object: Some(avatar_object_to_proto(&blob)),
+        })
+    }
+
+    pub async fn get_user_avatar_object(
+        &self,
+        req: crate::proto::client::GetUserAvatarObjectRequest,
+    ) -> Result<crate::proto::client::UserAvatarObjectResponse, ApiError> {
+        let blob = self
+            .user_service
+            .get_avatar_object(&req.encoded_object_key, &req.token)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(avatar_object_to_proto(&blob))
+    }
+
+    pub async fn update_user_avatar(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::UpdateUserAvatarRequest,
+    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+        let avatar = req
+            .avatar
+            .ok_or_else(|| ApiError::InvalidInput("avatar is required".to_string()))?;
+        let updated = self
+            .user_service
+            .update_avatar(user_id, avatar_proto_to_new_file(avatar)?)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::GetProfileResponse {
+            user: Some(self.user_to_proto_with_avatar(&updated).await?),
+        })
+    }
+
+    pub async fn clear_user_avatar(
+        &self,
+        user_id: &UserId,
+    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+        let updated = self
+            .user_service
+            .clear_avatar(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::GetProfileResponse {
+            user: Some(self.user_to_proto_with_avatar(&updated).await?),
         })
     }
 

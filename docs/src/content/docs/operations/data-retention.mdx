@@ -24,7 +24,7 @@ import { Aside } from '@astrojs/starlight/components';
 | 认证数据 | password credential、OPAQUE credential、WebAuthn credential、OAuth2 identity、email token、refresh token/blacklist | 高敏感，不应进入日志 |
 | Provider 凭据 | Alist token、Emby API key、Bilibili cookie、远程 Provider JWT secret | 高敏感，依赖 `security.credential_encryption_key` 保护 |
 | 房间数据 | 房间名、成员、权限、播放列表、媒体、播放状态、邀请通知和审核记录 | 业务数据 |
-| 消息数据 | 聊天、弹幕、通知内容 | 可能包含用户输入和敏感上下文 |
+| 消息数据 | 聊天、通知内容 | 可能包含用户输入和敏感上下文 |
 | 审计数据 | actor、action、target、details、IP、User-Agent | 安全排查必要，但也可能包含个人数据 |
 
 `client.proto` 中的 `User` 包含邮箱，只应返回给用户本人或管理员。公开场景应使用 `UserPublicView`，它不包含邮箱等 PII。
@@ -71,11 +71,12 @@ security:
 | 通知分区 | 默认保留 6 个月分区 | 内部分区管理 |
 | 聊天消息 | `chat.message_retention_days=90` 天绝对保留上限 | Runtime settings |
 | 每房间聊天数量 | `chat.max_messages_per_room=500`，`0` 表示不限数量 | Runtime settings |
+| 未被引用的已上传文件 | 默认按 `file_storage.unreferenced_object_retention_seconds=86400` 秒后清理 | 启动配置 |
 | 聊天分区 | 默认按 90 天保留分区 | 内部分区管理 |
 | 审计日志分区 | 默认保留 12 个月分区 | 内部分区管理 |
 | token blacklist | 过期记录会被后台清理 | 内部清理配置 |
 
-清理任务在多副本部署中由 leader-gated 后台任务执行，避免多个副本重复清理。数据库维护任务会在启动时和周期性运行时清理邮箱 token、通知、过期 Provider 凭据和旧聊天消息。
+清理任务在多副本部署中由 leader-gated 后台任务执行，避免多个副本重复清理。数据库维护任务会在启动时和周期性运行时清理邮箱 token、通知、过期 Provider 凭据、旧聊天消息，以及已上传但未被业务行引用的文件对象。
 
 <Aside type="note">
 Runtime settings 是数据库热更新设置，适合调整 `chat.message_retention_days` 和 `chat.max_messages_per_room`。它不替代启动配置，也不用于保存 secret。

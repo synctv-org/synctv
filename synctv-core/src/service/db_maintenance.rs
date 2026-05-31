@@ -11,12 +11,18 @@
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use super::{cleanup::CleanupConfig, LeaderCheck, SettingsRegistry};
+use super::{
+    cleanup::CleanupConfig, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
+    SettingsRegistry,
+};
+use crate::models::{ChatImage, FileReferenceTarget};
+use crate::repository::FileStorageRepository;
 
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
+const FILE_CLEANUP_RETRY_LIMIT: i64 = 100;
 
 fn u32_to_i32(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
@@ -32,6 +38,7 @@ pub struct DatabaseMaintenanceService {
     config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
     settings_registry: Option<Arc<SettingsRegistry>>,
+    file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
 impl DatabaseMaintenanceService {
@@ -43,6 +50,7 @@ impl DatabaseMaintenanceService {
             config: CleanupConfig::default(),
             leader_check,
             settings_registry: None,
+            file_storage_service: None,
         }
     }
 
@@ -58,6 +66,14 @@ impl DatabaseMaintenanceService {
     #[must_use]
     pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
         self.settings_registry = Some(registry);
+        self
+    }
+
+    /// Set the file storage service used to clean up file objects when
+    /// references are deleted or retention jobs purge rows.
+    #[must_use]
+    pub fn with_file_storage_service(mut self, service: Arc<dyn FileStorageService>) -> Self {
+        self.file_storage_service = Some(service);
         self
     }
 
@@ -83,6 +99,10 @@ impl DatabaseMaintenanceService {
 
     fn expired_credential_buffer_hours(&self) -> i32 {
         u32_to_i32(self.config.expired_credential_buffer_hours)
+    }
+
+    fn unreferenced_file_retention_seconds(&self) -> i64 {
+        i64::try_from(self.config.unreferenced_file_retention_seconds).unwrap_or(i64::MAX)
     }
 
     /// Delete expired email tokens.
@@ -162,6 +182,32 @@ impl DatabaseMaintenanceService {
         let retention_days = self.chat_message_retention_days();
         let interval = format!("{retention_days} days");
 
+        let images = if let Some(storage) = &self.file_storage_service {
+            let images = sqlx::query_as_unchecked!(
+                ChatImage,
+                r"
+                SELECT i.id, i.room_id, i.message_id, i.message_created_at, i.storage_backend,
+                       i.object_key, i.url, i.mime_type, i.size_bytes, i.width, i.height,
+                       i.metadata, i.created_at
+                FROM chat_message_images i
+                INNER JOIN chat_messages m
+                    ON m.id = i.message_id AND m.created_at = i.message_created_at
+                WHERE m.created_at <= NOW() - $1::text::interval
+                ORDER BY m.created_at, m.id, i.created_at
+                ",
+                &interval
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            if images.is_empty() {
+                None
+            } else {
+                Some((storage.clone(), images))
+            }
+        } else {
+            None
+        };
+
         let result = sqlx::query!(
             "DELETE FROM chat_messages WHERE created_at <= NOW() - $1::text::interval",
             interval,
@@ -176,7 +222,188 @@ impl DatabaseMaintenanceService {
                 retention_days, "Old chat message cleanup completed"
             );
         }
+
+        if let Some((storage, images)) = images {
+            let file_references = images
+                .iter()
+                .map(crate::models::ChatImage::file_reference_target)
+                .collect::<Vec<_>>();
+            if let Err(error) = storage
+                .delete_files(FileStorageCleanupOrigin::RetentionExpired, &file_references)
+                .await
+            {
+                warn!(
+                    error = %error,
+                    deleted,
+                    retention_days,
+                    "Chat image cleanup after old message purge failed"
+                );
+                if let Err(enqueue_error) = FileStorageRepository::new(self.pool.clone())
+                    .enqueue_cleanup_jobs(
+                        FileStorageCleanupOrigin::RetentionExpired.as_str(),
+                        &file_references,
+                        &serde_json::Value::Object(Default::default()),
+                        &error.to_string(),
+                    )
+                    .await
+                {
+                    warn!(
+                        error = %enqueue_error,
+                        deleted,
+                        retention_days,
+                        "Failed to enqueue chat image cleanup retry after old message purge"
+                    );
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Retry due file object cleanup jobs that were persisted after a previous
+    /// delete attempt failed.
+    pub async fn run_retry_file_cleanup_jobs(&self) -> crate::Result<()> {
+        let repository = FileStorageRepository::new(self.pool.clone());
+        let due_jobs = repository.count_due_cleanup_jobs().await?;
+        crate::metrics::file_storage::FILE_CLEANUP_JOBS_DUE.set(due_jobs);
+
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(());
+        };
+
+        let jobs = repository
+            .claim_due_cleanup_jobs(FILE_CLEANUP_RETRY_LIMIT, "db_maintenance")
+            .await?;
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        let mut completed = 0_u64;
+        let mut rescheduled = 0_u64;
+        for job in jobs {
+            record_file_cleanup_job_metric("claimed", &job.origin, &job.storage_backend);
+            let file_reference = job.reference_target();
+            match storage
+                .delete_files(
+                    FileStorageCleanupOrigin::CleanupRetry,
+                    std::slice::from_ref(&file_reference),
+                )
+                .await
+            {
+                Ok(()) => {
+                    repository.complete_cleanup_job(job.id).await?;
+                    record_file_cleanup_job_metric("completed", &job.origin, &job.storage_backend);
+                    completed += 1;
+                }
+                Err(error) => {
+                    let delay_seconds = file_cleanup_retry_delay_seconds(job.attempt_count);
+                    repository
+                        .reschedule_cleanup_job(job.id, &error.to_string(), delay_seconds)
+                        .await?;
+                    record_file_cleanup_job_metric(
+                        "rescheduled",
+                        &job.origin,
+                        &job.storage_backend,
+                    );
+                    rescheduled += 1;
+                    warn!(
+                        job_id = job.id,
+                        object_key = %job.object_key,
+                        delay_seconds,
+                        error = %error,
+                        "File cleanup retry failed"
+                    );
+                }
+            }
+        }
+
+        let due_jobs_after_retry = repository.count_due_cleanup_jobs().await?;
+        crate::metrics::file_storage::FILE_CLEANUP_JOBS_DUE.set(due_jobs_after_retry);
+
+        info!(completed, rescheduled, "File cleanup retry cycle completed");
+        Ok(())
+    }
+
+    /// Delete uploaded file objects that never received an active product reference.
+    ///
+    /// This handles interrupted direct uploads where bytes were stored but the
+    /// product mutation that would attach the file never completed.
+    pub async fn run_cleanup_unreferenced_file_objects(&self) -> crate::Result<u64> {
+        if self.config.unreferenced_file_retention_seconds == 0 {
+            return Ok(0);
+        }
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        let repository = FileStorageRepository::new(self.pool.clone());
+        let files = repository
+            .list_unreferenced_objects(self.unreferenced_file_retention_seconds(), 100)
+            .await?;
+        if files.is_empty() {
+            return Ok(0);
+        }
+
+        let references = files
+            .into_iter()
+            .map(|file| FileReferenceTarget {
+                storage_backend: file.storage_backend,
+                object_key: file.object_key.clone(),
+                reference_kind: "unreferenced_file".to_string(),
+                reference_id: file.object_key,
+            })
+            .collect::<Vec<_>>();
+        match storage
+            .delete_files(FileStorageCleanupOrigin::UnreferencedObject, &references)
+            .await
+        {
+            Ok(()) => {
+                let deleted = u64::try_from(references.len()).unwrap_or(u64::MAX);
+                if deleted > 0 {
+                    info!(deleted, "Unreferenced file object cleanup completed");
+                }
+                Ok(deleted)
+            }
+            Err(error) => {
+                repository
+                    .enqueue_cleanup_jobs(
+                        FileStorageCleanupOrigin::UnreferencedObject.as_str(),
+                        &references,
+                        &serde_json::Value::Object(Default::default()),
+                        &error.to_string(),
+                    )
+                    .await?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Release file references whose reference-level lifetime has expired.
+    pub async fn run_cleanup_expired_file_references(&self) -> crate::Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        let repository = FileStorageRepository::new(self.pool.clone());
+        let references = repository.list_expired_references(100).await?;
+        if references.is_empty() {
+            return Ok(0);
+        }
+
+        match storage
+            .delete_files(FileStorageCleanupOrigin::ReferenceExpired, &references)
+            .await
+        {
+            Ok(()) => Ok(u64::try_from(references.len()).unwrap_or(u64::MAX)),
+            Err(error) => {
+                repository
+                    .enqueue_cleanup_jobs(
+                        FileStorageCleanupOrigin::ReferenceExpired.as_str(),
+                        &references,
+                        &serde_json::Value::Object(Default::default()),
+                        &error.to_string(),
+                    )
+                    .await?;
+                Err(error)
+            }
+        }
     }
 
     /// Delete expired provider credentials.
@@ -220,6 +447,15 @@ impl DatabaseMaintenanceService {
         if let Err(e) = self.run_cleanup_old_chat_messages().await {
             error!(error = %e, "Old chat message cleanup failed");
         }
+        if let Err(e) = self.run_cleanup_expired_file_references().await {
+            error!(error = %e, "Expired file reference cleanup failed");
+        }
+        if let Err(e) = self.run_cleanup_unreferenced_file_objects().await {
+            error!(error = %e, "Unreferenced file object cleanup failed");
+        }
+        if let Err(e) = self.run_retry_file_cleanup_jobs().await {
+            error!(error = %e, "File cleanup retry failed");
+        }
     }
 
     /// Spawn the maintenance background loop.
@@ -235,6 +471,7 @@ impl DatabaseMaintenanceService {
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
             settings_registry: self.settings_registry.clone(),
+            file_storage_service: self.file_storage_service.clone(),
         };
 
         crate::spawn::spawn_monitored("db_maintenance", async move {
@@ -273,11 +510,31 @@ impl DatabaseMaintenanceService {
                         if let Err(e) = service.run_cleanup_old_chat_messages().await {
                             error!(error = %e, "Scheduled old chat message cleanup failed");
                         }
+                        if let Err(e) = service.run_cleanup_expired_file_references().await {
+                            error!(error = %e, "Scheduled expired file reference cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_unreferenced_file_objects().await {
+                            error!(error = %e, "Scheduled unreferenced file object cleanup failed");
+                        }
+                        if let Err(e) = service.run_retry_file_cleanup_jobs().await {
+                            error!(error = %e, "Scheduled file cleanup retry failed");
+                        }
                     }
                 }
             }
         })
     }
+}
+
+fn file_cleanup_retry_delay_seconds(attempt_count: i32) -> i64 {
+    let exponent = u32::try_from(attempt_count.clamp(0, 6)).unwrap_or(6);
+    (60_i64 * 2_i64.pow(exponent)).min(3600)
+}
+
+fn record_file_cleanup_job_metric(action: &'static str, origin: &str, backend: &str) {
+    crate::metrics::file_storage::FILE_CLEANUP_JOBS_TOTAL
+        .with_label_values(&[action, origin, backend])
+        .inc();
 }
 
 #[cfg(test)]

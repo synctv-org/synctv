@@ -79,6 +79,7 @@ fn test_add_media_permission_denied() {
     let request = AddMediaRequest {
         playlist_id: Some(PlaylistId::new()),
         name: "Test Video".to_string(),
+        description: String::new(),
         source_provider: "bilibili".to_string(),
         provider_instance_name: Some("bilibili_main".to_string()),
         source_config: serde_json::json!({"bvid": "BV1234567890"}),
@@ -142,6 +143,7 @@ fn test_add_media_request_with_null_source_config() {
     let request = AddMediaRequest {
         playlist_id: Some(PlaylistId::new()),
         name: "Null Config".to_string(),
+        description: String::new(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("test".to_string()),
         source_config: serde_json::Value::Null,
@@ -154,6 +156,7 @@ fn test_edit_media_request_name_only() {
     let request = EditMediaRequest {
         media_id: MediaId::new(),
         name: Some("New Name".to_string()),
+        description: None,
     };
     assert_eq!(request.name.as_deref(), Some("New Name"));
 }
@@ -163,6 +166,7 @@ fn test_edit_media_request_allows_name_to_be_absent() {
     let request = EditMediaRequest {
         media_id: MediaId::new(),
         name: None,
+        description: None,
     };
     assert!(request.name.is_none());
 }

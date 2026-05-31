@@ -74,11 +74,12 @@ use crate::{
         CacheDomain, CacheInvalidationRuntime, ConsistencyCoordinator, VersionFenceReservation,
     },
     models::{
-        AddMemberOptions, AuditAction, AuditTargetType, ChatMessage, ChatMessageType, Media,
-        MediaId, MemberStatus, PageParams, Playlist, PlaylistId, ReviewRequestId, ReviewStatus,
-        Room, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId, RoomListQuery, RoomMember,
-        RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole,
-        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
+        AddMemberOptions, AuditAction, AuditTargetType, ChatMessage, ChatMessageType, FileBlob,
+        FileUploadSession, Media, MediaId, MemberStatus, NewStoredFile, PageParams, Playlist,
+        PlaylistId, ReviewRequestId, ReviewStatus, Room, RoomAdminPermissionBits,
+        RoomGuestPermissionBits, RoomId, RoomListQuery, RoomMember, RoomMemberPermissionBits,
+        RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole, RoomSettings, RoomStatus,
+        RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
         media::MediaListItem,
@@ -94,20 +95,38 @@ use crate::{
     },
     service::{
         audit::AuditService,
+        file_storage::FileStorageContext,
         media::MediaService,
         member::{AdminMemberUpdate, MemberService},
         notification::NotificationService,
         permission::{PermissionService, PermissionServiceRuntime, PermissionWriteFence},
         playback::PlaybackService,
         playlist::PlaylistService,
+        room_cover_upload_policy,
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
         user::UserService,
-        ProvidersManager, RoomPasswordPolicy,
+        FileStorageCleanupOrigin, ProvidersManager, RoomPasswordPolicy,
     },
     Error, InternalExt, Result,
 };
 
 pub const MAX_KICK_COOLDOWN_SECONDS: i64 = 30 * 24 * 60 * 60;
+const ROOM_COVER_REFERENCE_KIND: &str = "room_cover";
+
+#[derive(Debug, Clone)]
+pub struct CreateRoomCoverUploadSession {
+    pub client_cover_id: Option<String>,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub checksum_sha256: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
+fn room_cover_storage_scope(room_id: RoomId) -> String {
+    format!("rooms/{}/cover", room_id.as_i64())
+}
 
 #[derive(Debug)]
 struct PendingRoomCreationRequest {
@@ -287,6 +306,9 @@ pub struct RoomServiceOptions {
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
     pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    pub media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+    pub room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+    pub playlist_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
 }
 
 /// Room service for business logic
@@ -343,6 +365,8 @@ pub struct RoomService {
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
 
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+    room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -381,6 +405,7 @@ pub(crate) struct EntryDeletionImpact {
     pub playlist_nodes: Vec<(PlaylistId, i32)>,
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
+    pub deleted_media_file_references: Vec<crate::models::FileReferenceTarget>,
     pub playback_reset: bool,
     pub playback_state: Option<RoomPlaybackState>,
 }
@@ -933,6 +958,11 @@ impl RoomService {
         &self.playlist_service
     }
 
+    #[must_use]
+    pub fn file_storage_service(&self) -> Option<&Arc<dyn crate::service::FileStorageService>> {
+        self.room_file_storage_service.as_ref()
+    }
+
     pub async fn ensure_client_usable_playlist(&self, playlist: &Playlist) -> Result<()> {
         if !playlist.is_dynamic() {
             return Ok(());
@@ -1274,6 +1304,9 @@ impl RoomService {
             options.credential_encryption.clone(),
             options.credential_repo.clone(),
         );
+        if let Some(file_storage_service) = options.playlist_file_storage_service.clone() {
+            playlist_service = playlist_service.with_file_storage_service(file_storage_service);
+        }
         playlist_service.set_realtime_outbox(options.realtime_outbox.clone());
         let mut media_service = MediaService::new_with_provider_credentials(
             media_repo.clone(),
@@ -1284,6 +1317,9 @@ impl RoomService {
             options.credential_encryption.clone(),
             options.credential_repo.clone(),
         );
+        if let Some(file_storage_service) = options.media_file_storage_service.clone() {
+            media_service = media_service.with_file_storage_service(file_storage_service);
+        }
         media_service.set_realtime_outbox(options.realtime_outbox.clone());
         let playback_service = PlaybackService::new_with_runtime(
             playback_repo.clone(),
@@ -1339,6 +1375,8 @@ impl RoomService {
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
             realtime_outbox: options.realtime_outbox,
+            media_file_storage_service: options.media_file_storage_service,
+            room_file_storage_service: options.room_file_storage_service,
             consistency: ConsistencyCoordinator::new(version_fence),
         }
     }
@@ -3941,6 +3979,7 @@ impl RoomService {
                     id: row.id,
                     name: row.name,
                     description: row.description,
+                    cover_file_reference_id: None,
                     created_by: row.requested_by,
                     status: RoomStatus::Active,
                     is_banned: false,
@@ -5272,6 +5311,200 @@ impl RoomService {
             .await?;
         self.notify_room_invalidation(room_id).await;
         Ok(room)
+    }
+
+    pub async fn create_room_cover_upload_session(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: CreateRoomCoverUploadSession,
+    ) -> Result<FileUploadSession> {
+        let storage = self.room_file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for room covers".to_string())
+        })?;
+        self.room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+
+        storage
+            .create_upload_session(crate::models::CreateFileUploadSession {
+                user_id,
+                storage_scope: room_cover_storage_scope(room_id),
+                client_file_id: request.client_cover_id,
+                mime_type: request.mime_type,
+                size_bytes: request.size_bytes,
+                width: request.width,
+                height: request.height,
+                checksum_sha256: request.checksum_sha256,
+                metadata: request.metadata,
+                policy: room_cover_upload_policy(),
+            })
+            .await
+    }
+
+    pub async fn store_room_cover_upload_object(
+        &self,
+        encoded_object_key: &str,
+        upload_token: &str,
+        content_type: Option<&str>,
+        data: Vec<u8>,
+    ) -> Result<FileBlob> {
+        self.room_file_storage_service
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidInput("file storage is not configured for room covers".to_string())
+            })?
+            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .await
+    }
+
+    pub async fn get_room_cover_object(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+    ) -> Result<FileBlob> {
+        self.room_file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object(encoded_object_key, read_token)
+            .await
+    }
+
+    pub async fn update_room_cover(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        file: NewStoredFile,
+    ) -> Result<Room> {
+        let storage = self.room_file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for room covers".to_string())
+        })?;
+        let mut tx = self.room_repo.pool().begin().await?;
+        let mut room = self
+            .room_repo
+            .get_by_id_for_update_with_executor(&room_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+
+        let storage_scope = room_cover_storage_scope(room_id);
+        let prepared = storage
+            .prepare_files(
+                FileStorageContext {
+                    user_id,
+                    storage_scope: &storage_scope,
+                    client_request_id: None,
+                },
+                vec![file],
+            )
+            .await?;
+        let file = prepared
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidInput("room cover file is required".to_string()))?;
+        let new_reference_id = crate::repository::FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            &file.storage_backend,
+            &file.object_key,
+            ROOM_COVER_REFERENCE_KIND,
+            &room_id.as_i64().to_string(),
+            None,
+            &file.metadata,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::InvalidInput("room cover file object is not registered".to_string())
+        })?;
+        let old_reference = if let Some(reference_id) = room.cover_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.pool.clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| {
+                    reference
+                        .reference_target(ROOM_COVER_REFERENCE_KIND, room_id.as_i64().to_string())
+                })
+        } else {
+            None
+        };
+
+        room.cover_file_reference_id = Some(new_reference_id);
+        let updated_room = self
+            .room_repo
+            .update_with_executor(&room, room.version, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        if let Some(old_reference) = old_reference {
+            if old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key
+            {
+                storage
+                    .delete_files(
+                        FileStorageCleanupOrigin::ReferenceReleased,
+                        &[old_reference],
+                    )
+                    .await?;
+            }
+        }
+        self.notify_room_invalidation(&room_id).await;
+        Ok(updated_room)
+    }
+
+    pub async fn clear_room_cover(&self, room_id: RoomId, user_id: UserId) -> Result<Room> {
+        let mut tx = self.room_repo.pool().begin().await?;
+        let mut room = self
+            .room_repo
+            .get_by_id_for_update_with_executor(&room_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+        let old_reference = if let Some(reference_id) = room.cover_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.pool.clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| {
+                    reference
+                        .reference_target(ROOM_COVER_REFERENCE_KIND, room_id.as_i64().to_string())
+                })
+        } else {
+            None
+        };
+        room.cover_file_reference_id = None;
+        let updated_room = self
+            .room_repo
+            .update_with_executor(&room, room.version, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        if let (Some(storage), Some(reference)) =
+            (self.room_file_storage_service.as_ref(), old_reference)
+        {
+            storage
+                .delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
+                .await?;
+        }
+        self.notify_room_invalidation(&room_id).await;
+        Ok(updated_room)
     }
 
     /// List all rooms (paginated)
@@ -6966,6 +7199,8 @@ impl RoomService {
             self.broadcast_playback_reset_after_entry_deletion(state)
                 .await;
         }
+        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
+            .await;
 
         let should_notify_playlist_delete = !impact.deleted_playlist_ids.is_empty();
         if !impact.deleted_media_ids.is_empty() || should_notify_playlist_delete {
@@ -7120,6 +7355,8 @@ impl RoomService {
             self.broadcast_playback_reset_after_entry_deletion(state)
                 .await;
         }
+        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
+            .await;
 
         if !impact.deleted_media_ids.is_empty() || !impact.deleted_playlist_ids.is_empty() {
             for media_id in &impact.deleted_media_ids {
@@ -7234,7 +7471,11 @@ impl RoomService {
         name: Option<String>,
     ) -> Result<Media> {
         use crate::service::media::EditMediaRequest;
-        let request = EditMediaRequest { media_id, name };
+        let request = EditMediaRequest {
+            media_id,
+            name,
+            description: None,
+        };
         self.media_service
             .edit_media(room_id, user_id, request)
             .await
@@ -7275,15 +7516,15 @@ impl RoomService {
         .await?;
 
         if let Some(playlist_id) = playlist_id {
-            let exists = sqlx::query_scalar::<_, bool>(
+            let exists = sqlx::query_scalar_unchecked!(
                 r#"SELECT EXISTS(
                     SELECT 1
                     FROM playlists
                     WHERE room_id = $1 AND id = $2
                 ) AS "exists!""#,
+                room_id.as_i64(),
+                playlist_id.as_i64()
             )
-            .bind(room_id.as_i64())
-            .bind(playlist_id.as_i64())
             .fetch_one(&mut *tx)
             .await?;
             if !exists {
@@ -7313,6 +7554,8 @@ impl RoomService {
             self.broadcast_playback_reset_after_entry_deletion(state)
                 .await;
         }
+        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
+            .await;
 
         let actor_username = self.resolve_actor_username(&user_id).await;
         for media_id in &impact.deleted_media_ids {
@@ -7411,9 +7654,19 @@ impl RoomService {
         cursor: Option<(DateTime<Utc>, i64)>,
         limit: i32,
     ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, i64)>)> {
-        self.chat_repo
-            .list_by_room_cursor(room_id, cursor, limit)
-            .await
+        let cursor =
+            cursor.map(|(created_at, id)| crate::models::ChatHistoryCursor { created_at, id });
+        let (messages, next) = self
+            .chat_repo
+            .list_by_room_cursor(room_id, cursor, limit, true)
+            .await?;
+        Ok((
+            messages
+                .into_iter()
+                .map(|message| message.message)
+                .collect(),
+            next.map(|cursor| (cursor.created_at, cursor.id)),
+        ))
     }
 
     /// Save a chat message to the database
@@ -7438,8 +7691,18 @@ impl RoomService {
             id: 0,
             room_id,
             user_id: Some(user_id),
+            client_message_id: None,
             content,
             message_type: ChatMessageType::Text,
+            status: crate::models::ChatMessageStatus::Active,
+            version: 1,
+            reply_to_message_id: None,
+            reply_to_message_created_at: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            edited_at: None,
+            deleted_at: None,
+            deleted_by: None,
+            delete_reason: None,
             created_at: Utc::now(),
         };
         self.chat_repo.create(&message).await
@@ -8181,6 +8444,30 @@ impl RoomService {
         }
     }
 
+    async fn cleanup_deleted_media_file_references(
+        &self,
+        references: &[crate::models::FileReferenceTarget],
+    ) {
+        if references.is_empty() {
+            return;
+        }
+
+        let Some(storage) = self.media_file_storage_service.as_ref() else {
+            return;
+        };
+
+        if let Err(error) = storage
+            .delete_files(FileStorageCleanupOrigin::ReferenceReleased, references)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                file_references = references.len(),
+                "Failed to cleanup media file references after entry deletion"
+            );
+        }
+    }
+
     /// Invalidate room cache locally and broadcast to other replicas.
     ///
     /// Best-effort: logs a warning on failure but does not propagate the error,
@@ -8743,6 +9030,47 @@ async fn collect_deleted_media_ids_in_tx(
     Ok(media_ids)
 }
 
+async fn collect_media_cover_file_references_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    media_ids: &[MediaId],
+) -> Result<Vec<crate::models::FileReferenceTarget>> {
+    if media_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
+    let rows = sqlx::query_as::<_, (i64, String, String)>(
+        r"
+        SELECT m.id,
+               fr.storage_backend,
+               fr.object_key
+          FROM media m
+          JOIN file_references fr
+            ON fr.id = m.cover_file_reference_id
+           AND fr.released_at IS NULL
+         WHERE m.room_id = $1
+           AND m.id = ANY($2)
+        ",
+    )
+    .bind(room_id.as_i64())
+    .bind(&media_id_strs)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, storage_backend, object_key)| crate::models::FileReferenceTarget {
+                storage_backend,
+                object_key,
+                reference_kind: "media_cover".to_string(),
+                reference_id: id.to_string(),
+            },
+        )
+        .collect())
+}
+
 async fn plan_playback_reset_for_deleted_entries_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
@@ -8890,6 +9218,8 @@ async fn plan_delete_entries_in_room_in_tx(
     let deleted_media_ids =
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, explicit_media_ids)
             .await?;
+    let deleted_media_file_references =
+        collect_media_cover_file_references_in_tx(tx, room_id, &deleted_media_ids).await?;
     let playback_reset = plan_playback_reset_for_deleted_entries_in_tx(
         tx,
         room_id,
@@ -8903,6 +9233,7 @@ async fn plan_delete_entries_in_room_in_tx(
         playlist_nodes,
         deleted_playlist_ids,
         deleted_media_ids,
+        deleted_media_file_references,
         playback_reset,
         playback_state: None,
     })
@@ -8950,7 +9281,7 @@ async fn collect_direct_scope_media_ids_in_tx(
     room_id: &RoomId,
     playlist_id: Option<PlaylistId>,
 ) -> Result<Vec<MediaId>> {
-    let media_ids = sqlx::query_scalar::<_, MediaId>(
+    let media_ids = sqlx::query_scalar_unchecked!(
         r#"SELECT id AS "id: MediaId"
          FROM media
          WHERE room_id = $1
@@ -8959,9 +9290,9 @@ async fn collect_direct_scope_media_ids_in_tx(
                OR playlist_id = $2
          )
          ORDER BY id"#,
+        room_id.as_i64(),
+        playlist_id.map(|playlist_id| playlist_id.as_i64())
     )
-    .bind(room_id.as_i64())
-    .bind(playlist_id.map(|playlist_id| playlist_id.as_i64()))
     .fetch_all(&mut **tx)
     .await?;
 
@@ -8982,6 +9313,8 @@ async fn plan_clear_playlist_scope_in_tx(
     let deleted_media_ids =
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &direct_media_ids)
             .await?;
+    let deleted_media_file_references =
+        collect_media_cover_file_references_in_tx(tx, room_id, &deleted_media_ids).await?;
     let playback_reset = plan_playback_reset_for_deleted_entries_in_tx(
         tx,
         room_id,
@@ -8995,6 +9328,7 @@ async fn plan_clear_playlist_scope_in_tx(
         playlist_nodes,
         deleted_playlist_ids,
         deleted_media_ids,
+        deleted_media_file_references,
         playback_reset,
         playback_state: None,
     })
@@ -9198,8 +9532,8 @@ mod tests {
     use super::RoomService;
     use crate::models::{
         room_settings::{
-            AllowGuestJoin, ChatEnabled, DanmakuEnabled, GuestAddedPermissions, MaxMembers,
-            MemberAddedPermissions, RequirePassword,
+            AllowGuestJoin, ChatEnabled, GuestAddedPermissions, MaxMembers, MemberAddedPermissions,
+            RequirePassword,
         },
         RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
         RoomRole, RoomSettings, RoomStatus, UserId,
@@ -9437,7 +9771,6 @@ mod tests {
         use crate::models::room_settings::RoomSettingsRegistry;
         let known_keys = [
             ("chat_enabled", "true"),
-            ("danmaku_enabled", "false"),
             (
                 "auto_play",
                 r#"{"enabled":true,"mode":"sequential","delay":3}"#,
@@ -9604,7 +9937,6 @@ mod tests {
     fn test_room_settings_custom_values_roundtrip() {
         let settings = RoomSettings {
             chat_enabled: ChatEnabled(false),
-            danmaku_enabled: DanmakuEnabled(true),
             allow_guest_join: AllowGuestJoin(false),
             require_password: RequirePassword(true),
             max_members: MaxMembers(42),
@@ -9613,7 +9945,6 @@ mod tests {
         let json = serde_json::to_string(&settings).expect("serialize");
         let deserialized: RoomSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(!deserialized.chat_enabled.0);
-        assert!(deserialized.danmaku_enabled.0);
         assert!(!deserialized.allow_guest_join.0);
         assert!(deserialized.require_password.0);
         assert_eq!(deserialized.max_members.0, 42);

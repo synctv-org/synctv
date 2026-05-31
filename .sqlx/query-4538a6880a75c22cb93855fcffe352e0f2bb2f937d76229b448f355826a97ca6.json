@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_email_bind_requests\n            WHERE token = $1\n              AND user_id = $2\n              AND LOWER(email) = LOWER($3)\n              AND used_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4538a6880a75c22cb93855fcffe352e0f2bb2f937d76229b448f355826a97ca6"
+}

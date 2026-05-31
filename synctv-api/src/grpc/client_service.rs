@@ -20,51 +20,64 @@ use crate::proto::client::{
     public_service_server::PublicService, room_service_server::RoomService,
     user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
     AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
-    ApproveRoomJoinReviewResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
+    ApproveRoomJoinReviewResponse, ChatImageObjectResponse, ChatMessageEventResponse,
+    ChatReadStateResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
     ClearPlaylistResponse, ClientMessage, CloseAccountRequest, CloseAccountResponse,
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, ConfirmEmailLoginRequest,
-    ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
+    ConfirmPasswordResetResponse, CreateChatImageUploadSessionRequest,
+    CreateChatImageUploadSessionResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
     CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
-    CreateWebSocketTicketRequest, CreateWebSocketTicketResponse, DeleteEntriesRequest,
-    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePasskeyRequest,
-    DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
-    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, FinishMfaPasskeyRequest,
-    FinishOpaqueLoginRequest, FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
+    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
+    CreateVideoCoverUploadSessionRequest, CreateVideoCoverUploadSessionResponse,
+    CreateWebSocketTicketRequest, CreateWebSocketTicketResponse, DeleteChatMessageRequest,
+    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
+    DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse,
+    DeleteRoomRequest, DeleteRoomResponse, EditChatMessageRequest, EditMediaRequest,
+    EditMediaResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
+    FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
     FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
-    GetIceServersResponse, GetMediaRequest, GetPlaybackRequest, GetPlaybackResponse,
-    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
-    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
-    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, GetRoomStreamInfoRequest, GetRoomStreamInfoResponse,
-    GetServerInfoRequest, GetServerInfoResponse, GetUserPreferencesRequest,
-    GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
+    GetChatHistoryResponse, GetChatImageObjectRequest, GetChatMessageContextRequest,
+    GetChatMessageContextResponse, GetChatMessageRequest, GetChatMessageResponse,
+    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
+    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
+    GetMediaRequest, GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest,
+    GetPlaylistResponse, GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest,
+    GetPublicSettingsResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
+    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetRoomStreamInfoRequest,
+    GetRoomStreamInfoResponse, GetServerInfoRequest, GetServerInfoResponse,
+    GetUserAvatarObjectRequest, GetUserPreferencesRequest, GetUserPreferencesResponse,
+    GetVideoCoverObjectRequest, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
     KickMemberResponse, KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomRequest,
     LeaveRoomResponse, ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest,
     ListPasskeysResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
     ListPlaylistsRequest, ListPlaylistsResponse, ListRoomJoinReviewsRequest,
     ListRoomJoinReviewsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
-    ListRoomsResponse, LoginResponse, LogoutRequest, LogoutResponse, Media, MoveMediaRequest,
-    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, PasskeyCredentialResponse,
-    RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RejectRoomJoinReviewRequest,
-    RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
-    RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse, RequestPasswordResetRequest,
-    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    ServerMessage, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
-    SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse, StartMfaPasskeyRequest,
-    StartMfaPasskeyResponse, StartOpaqueLoginRequest, StartOpaqueLoginResponse,
-    StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse,
-    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
-    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
-    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
-    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
-    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    ListRoomsResponse, LoginResponse, LogoutRequest, LogoutResponse, MarkChatReadRequest, Media,
+    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
+    PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterResponse,
+    RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RequestEmailLoginRequest,
+    RequestEmailLoginResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
+    RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
+    ResetRoomSettingsResponse, SendChatMessageRequest, ServerMessage, SetRoomPasswordRequest,
+    SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest,
+    StartEmailBindResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse, StartOpaquePasswordUpdateRequest,
+    StartOpaquePasswordUpdateResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
+    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
+    StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
+    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UnbindEmailRequest, UnbindEmailResponse,
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaybackRequest,
     UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    VerifyMfaEmailCodeRequest, WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest,
+    UpdateRoomSettingsResponse, UpdateUserAvatarRequest, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse, UpdateVideoCoverRequest, UploadChatImageObjectRequest,
+    UploadChatImageObjectResponse, UploadUserAvatarObjectRequest, UploadUserAvatarObjectResponse,
+    UploadVideoCoverObjectRequest, UploadVideoCoverObjectResponse, UserAvatarObjectResponse,
+    VerifyMfaEmailCodeRequest, VideoCoverObjectResponse, WatchChatEventsEvent,
+    WatchChatEventsRequest, WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest,
     WatchPlaybackStateEvent, WatchPlaybackStateRequest, WatchPlaylistItemsEvent,
     WatchPlaylistItemsRequest, WatchRoomMembersEvent, WatchRoomMembersRequest,
     WatchRoomSettingsEvent, WatchRoomSettingsRequest,
@@ -491,6 +504,7 @@ impl ClientServiceImpl {
             room_id,
             principal,
             room_service: self.room_service.clone(),
+            chat_service: Some(self.chat_service.clone()),
             event_service,
             connection_service: self.connection_service.clone(),
             public_id_codec: self.client_api.public_id_codec.clone(),
@@ -1025,6 +1039,106 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.set_username(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn create_user_avatar_upload_session(
+        &self,
+        request: Request<CreateUserAvatarUploadSessionRequest>,
+    ) -> Result<Response<CreateUserAvatarUploadSessionResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .create_user_avatar_upload_session(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn upload_user_avatar_object(
+        &self,
+        request: Request<UploadUserAvatarObjectRequest>,
+    ) -> Result<Response<UploadUserAvatarObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.upload_user_avatar_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_user_avatar_object(
+        &self,
+        request: Request<GetUserAvatarObjectRequest>,
+    ) -> Result<Response<UserAvatarObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.get_user_avatar_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_user_avatar(
+        &self,
+        request: Request<UpdateUserAvatarRequest>,
+    ) -> Result<Response<GetProfileResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .update_user_avatar(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn clear_user_avatar(
+        &self,
+        request: Request<crate::proto::client::ClearUserAvatarRequest>,
+    ) -> Result<Response<GetProfileResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api.clear_user_avatar(&authenticated.user_id).await
                 },
             )
             .await
@@ -1808,6 +1922,9 @@ impl RoomService for ClientServiceImpl {
             dyn tokio_stream::Stream<Item = Result<WatchRoomMembersEvent, Status>> + Send + 'static,
         >,
     >;
+    type WatchChatEventsStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<WatchChatEventsEvent, Status>> + Send + 'static>,
+    >;
 
     async fn create_web_socket_ticket(
         &self,
@@ -2094,6 +2211,71 @@ impl RoomService for ClientServiceImpl {
             .await
     }
 
+    async fn watch_chat_events(
+        &self,
+        request: Request<WatchChatEventsRequest>,
+    ) -> Result<Response<Self::WatchChatEventsStream>, Status> {
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let observe = crate::impls::messaging::watch_chat_events_observe(request.into_inner());
+        self.open_watch_stream(metadata, room_id, observe, watch_chat_events_event)
+            .await
+    }
+
+    async fn create_chat_image_upload_session(
+        &self,
+        request: Request<CreateChatImageUploadSessionRequest>,
+    ) -> Result<Response<CreateChatImageUploadSessionResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Write,
+                move |client_api, actor| async move {
+                    client_api
+                        .create_chat_image_upload_session_for_actor(&actor, req)
+                        .await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn upload_chat_image_object(
+        &self,
+        request: Request<UploadChatImageObjectRequest>,
+    ) -> Result<Response<UploadChatImageObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.upload_chat_image_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_chat_image_object(
+        &self,
+        request: Request<GetChatImageObjectRequest>,
+    ) -> Result<Response<ChatImageObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.get_chat_image_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn get_chat_history(
         &self,
         request: Request<GetChatHistoryRequest>,
@@ -2107,6 +2289,162 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |client_api, actor| async move {
                     client_api.get_chat_history_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_chat_message(
+        &self,
+        request: Request<GetChatMessageRequest>,
+    ) -> Result<Response<GetChatMessageResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Read,
+                move |client_api, actor| async move {
+                    client_api.get_chat_message_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_chat_message_context(
+        &self,
+        request: Request<GetChatMessageContextRequest>,
+    ) -> Result<Response<GetChatMessageContextResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Read,
+                move |client_api, actor| async move {
+                    client_api
+                        .get_chat_message_context_for_actor(&actor, req)
+                        .await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_chat_playback_messages(
+        &self,
+        request: Request<GetChatPlaybackMessagesRequest>,
+    ) -> Result<Response<GetChatPlaybackMessagesResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Read,
+                move |client_api, actor| async move {
+                    client_api
+                        .get_chat_playback_messages_for_actor(&actor, req)
+                        .await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn mark_chat_read(
+        &self,
+        request: Request<MarkChatReadRequest>,
+    ) -> Result<Response<ChatReadStateResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Write,
+                move |client_api, actor| async move {
+                    client_api.mark_chat_read_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_chat_read_state(
+        &self,
+        request: Request<GetChatReadStateRequest>,
+    ) -> Result<Response<ChatReadStateResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Read,
+                move |client_api, actor| async move {
+                    client_api.get_chat_read_state_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn send_chat_message(
+        &self,
+        request: Request<SendChatMessageRequest>,
+    ) -> Result<Response<ChatMessageEventResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Write,
+                move |client_api, actor| async move {
+                    client_api.send_chat_message_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn edit_chat_message(
+        &self,
+        request: Request<EditChatMessageRequest>,
+    ) -> Result<Response<ChatMessageEventResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Write,
+                move |client_api, actor| async move {
+                    client_api.edit_chat_message_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn delete_chat_message(
+        &self,
+        request: Request<DeleteChatMessageRequest>,
+    ) -> Result<Response<ChatMessageEventResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Write,
+                move |client_api, actor| async move {
+                    client_api.delete_chat_message_for_actor(&actor, req).await
                 },
             )
             .await?;
@@ -2170,6 +2508,320 @@ impl RoomService for ClientServiceImpl {
                 },
             )
             .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn create_video_cover_upload_session(
+        &self,
+        request: Request<CreateVideoCoverUploadSessionRequest>,
+    ) -> Result<Response<CreateVideoCoverUploadSessionResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Media,
+                move |authenticated| async move {
+                    client_api
+                        .create_video_cover_upload_session(
+                            &authenticated.user_id,
+                            room_id.as_str(),
+                            req,
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn create_room_cover_upload_session(
+        &self,
+        request: Request<crate::proto::client::CreateRoomCoverUploadSessionRequest>,
+    ) -> Result<Response<crate::proto::client::CreateRoomCoverUploadSessionResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .create_room_cover_upload_session(&authenticated.user_id, &room_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn upload_room_cover_object(
+        &self,
+        request: Request<crate::proto::client::UploadRoomCoverObjectRequest>,
+    ) -> Result<Response<crate::proto::client::UploadRoomCoverObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.upload_room_cover_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_room_cover_object(
+        &self,
+        request: Request<crate::proto::client::GetRoomCoverObjectRequest>,
+    ) -> Result<Response<crate::proto::client::RoomCoverObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.get_room_cover_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_room_cover(
+        &self,
+        request: Request<crate::proto::client::UpdateRoomCoverRequest>,
+    ) -> Result<Response<GetRoomResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .update_room_cover(&authenticated.user_id, &room_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn clear_room_cover(
+        &self,
+        request: Request<crate::proto::client::ClearRoomCoverRequest>,
+    ) -> Result<Response<GetRoomResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .clear_room_cover(&authenticated.user_id, &room_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn upload_video_cover_object(
+        &self,
+        request: Request<UploadVideoCoverObjectRequest>,
+    ) -> Result<Response<UploadVideoCoverObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.upload_video_cover_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_video_cover_object(
+        &self,
+        request: Request<GetVideoCoverObjectRequest>,
+    ) -> Result<Response<VideoCoverObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.get_video_cover_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_video_cover(
+        &self,
+        request: Request<UpdateVideoCoverRequest>,
+    ) -> Result<Response<EditMediaResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Media,
+                move |authenticated| async move {
+                    client_api
+                        .update_video_cover(&authenticated.user_id, room_id.as_str(), req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn clear_video_cover(
+        &self,
+        request: Request<crate::proto::client::ClearVideoCoverRequest>,
+    ) -> Result<Response<EditMediaResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Media,
+                move |authenticated| async move {
+                    client_api
+                        .clear_video_cover(&authenticated.user_id, room_id.as_str(), req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn create_playlist_cover_upload_session(
+        &self,
+        request: Request<crate::proto::client::CreatePlaylistCoverUploadSessionRequest>,
+    ) -> Result<Response<crate::proto::client::CreatePlaylistCoverUploadSessionResponse>, Status>
+    {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .create_playlist_cover_upload_session(&authenticated.user_id, &room_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn upload_playlist_cover_object(
+        &self,
+        request: Request<crate::proto::client::UploadPlaylistCoverObjectRequest>,
+    ) -> Result<Response<crate::proto::client::UploadPlaylistCoverObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.upload_playlist_cover_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_playlist_cover_object(
+        &self,
+        request: Request<crate::proto::client::GetPlaylistCoverObjectRequest>,
+    ) -> Result<Response<crate::proto::client::PlaylistCoverObjectResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.get_playlist_cover_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_playlist_cover(
+        &self,
+        request: Request<crate::proto::client::UpdatePlaylistCoverRequest>,
+    ) -> Result<Response<UpdatePlaylistResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .update_playlist_cover(&authenticated.user_id, &room_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn clear_playlist_cover(
+        &self,
+        request: Request<crate::proto::client::ClearPlaylistCoverRequest>,
+    ) -> Result<Response<UpdatePlaylistResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .clear_playlist_cover(&authenticated.user_id, &room_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2656,6 +3308,17 @@ fn watch_playlist_items_event(message: ServerMessage) -> Option<WatchPlaylistIte
 fn watch_room_members_event(message: ServerMessage) -> Option<WatchRoomMembersEvent> {
     use crate::proto::client::watch_room_members_event::Event;
     watch_event_from_server_message(message, |event| WatchRoomMembersEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
+}
+
+fn watch_chat_events_event(message: ServerMessage) -> Option<WatchChatEventsEvent> {
+    use crate::proto::client::watch_chat_events_event::Event;
+    watch_event_from_server_message(message, |event| WatchChatEventsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
             GrpcWatchEvent::Changed(value) => Event::Changed(*value),
@@ -3208,6 +3871,15 @@ mod tests {
             status.message(),
             "Server at capacity across all replicas (42 connections)"
         );
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_invalid_watch_cursor() {
+        let status = map_message_stream_join_error(RealtimeJoinError::InvalidInput(
+            "Invalid chat event cursor".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "Invalid chat event cursor");
     }
 
     #[test]

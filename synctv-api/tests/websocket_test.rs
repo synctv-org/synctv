@@ -722,6 +722,7 @@ mod websocket_e2e {
                         "test_chat:".to_string(),
                     ),
                 )),
+                audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
             },
         ))
@@ -1577,7 +1578,7 @@ mod websocket_e2e {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_ws_chat_message_broadcast() {
+    async fn test_ws_chat_presentation_fields_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
@@ -1610,8 +1611,11 @@ mod websocket_e2e {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
                     content: "Hello from user1!".to_string(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -1627,12 +1631,13 @@ mod websocket_e2e {
         .expect("stream ended");
 
         match received.message {
-            Some(server_message::Message::Chat(chat)) => {
+            Some(server_message::Message::ChatEvent(event)) => {
+                let chat = event.message.expect("chat event should include message");
                 assert_eq!(chat.content, "Hello from user1!");
                 assert_eq!(chat.room_id, room_id);
                 assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
             }
-            other => panic!("Expected Chat message, got: {other:?}"),
+            other => panic!("Expected ChatEvent message, got: {other:?}"),
         }
 
         ws1.close(None).await.expect("close ws1");
@@ -1768,8 +1773,11 @@ mod websocket_e2e {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
                     content: "Room A only".to_string(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -1789,7 +1797,8 @@ mod websocket_e2e {
             }
             Ok(Some(msg)) => {
                 // If we got a message, it must NOT be the chat from room A
-                if let Some(server_message::Message::Chat(chat)) = msg.message {
+                if let Some(server_message::Message::ChatEvent(event)) = msg.message {
+                    let chat = event.message.expect("chat event should include message");
                     panic!(
                         "Room isolation violated: user2 in Room B received chat from Room A: {:?}",
                         chat.content
@@ -2118,8 +2127,11 @@ mod websocket_e2e {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
                     content: "Cross-replica hello!".to_string(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -2135,12 +2147,13 @@ mod websocket_e2e {
         .expect("stream ended");
 
         match received.message {
-            Some(server_message::Message::Chat(chat)) => {
+            Some(server_message::Message::ChatEvent(event)) => {
+                let chat = event.message.expect("chat event should include message");
                 assert_eq!(chat.content, "Cross-replica hello!");
                 assert_eq!(chat.room_id, room_id);
                 assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
             }
-            other => panic!("Expected Chat message via cross-replica, got: {other:?}"),
+            other => panic!("Expected ChatEvent message via cross-replica, got: {other:?}"),
         }
 
         ws1.close(None).await.expect("close ws1");
@@ -2376,6 +2389,8 @@ mod websocket_e2e {
             room_id: room,
             creator_id: Some(owner_id),
             name: "Realtime Playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 1024.0,
             source_provider: None,
@@ -2398,30 +2413,40 @@ mod websocket_e2e {
                 room_id: room,
                 user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                message: "cross-replica danmaku".to_string(),
+                message: "cross-replica chat".to_string(),
                 timestamp: chrono::Utc::now(),
-                position: Some(12.5),
-                color: Some("#ff6600".to_string()),
+                display_position: Some("top".to_string()),
+                display_color: Some("#ff6600".to_string()),
             });
-        let danmaku_msg = recv_matching_server_message(
+        let chat_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::Chat(chat))
-                        if chat.content == "cross-replica danmaku"
+            |message| match &message.message {
+                Some(server_message::Message::Chat(chat)) => {
+                    chat.content == "cross-replica chat"
+                        && chat.user_id == public_owner_id
+                        && chat.display_position == "top"
+                        && chat.display_color == "#ff6600"
+                }
+                Some(server_message::Message::ChatEvent(event)) => {
+                    event.message.as_ref().is_some_and(|chat| {
+                        chat.content == "cross-replica chat"
                             && chat.user_id == public_owner_id
-                            && chat.position.is_some_and(|position| (position - 12.5).abs() < 0.01)
-                            && chat.color.as_deref() == Some("#ff6600")
-                )
+                            && chat.display_position == "top"
+                            && chat.display_color == "#ff6600"
+                    })
+                }
+                _ => false,
             },
-            "cross-replica danmaku",
+            "cross-replica chat",
         )
         .await;
         assert!(
-            matches!(danmaku_msg.message, Some(server_message::Message::Chat(_))),
-            "danmaku event should arrive as Chat message"
+            matches!(
+                chat_msg.message,
+                Some(server_message::Message::Chat(_) | server_message::Message::ChatEvent(_))
+            ),
+            "chat event should arrive as a chat payload"
         );
 
         server1
@@ -3076,7 +3101,6 @@ mod websocket_e2e {
             synctv_core::service::RateLimitConfig {
                 chat_per_second: 2,
                 window_seconds: 60,
-                ..Default::default()
             },
         )
         .await;
@@ -3095,8 +3119,11 @@ mod websocket_e2e {
                 message: Some(client_message::Message::Chat(
                     synctv_proto::client::ChatMessageSend {
                         content: format!("Spam message {i}"),
-                        position: None,
-                        color: None,
+                        display_position: String::new(),
+                        display_color: String::new(),
+                        client_message_id: String::new(),
+                        images: Vec::new(),
+                        reply_to_message_id: String::new(),
                     },
                 )),
             };
@@ -3115,7 +3142,9 @@ mod websocket_e2e {
             }
             match tokio::time::timeout(remaining, recv_server_message(&mut ws)).await {
                 Ok(Some(msg)) => match msg.message {
-                    Some(server_message::Message::Chat(_)) => {
+                    Some(
+                        server_message::Message::Chat(_) | server_message::Message::ChatEvent(_),
+                    ) => {
                         chat_count += 1;
                     }
                     Some(server_message::Message::Error(_)) => {
@@ -3176,8 +3205,11 @@ mod websocket_e2e {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
                     content: "<script>alert('xss')</script>Hello safe world".to_string(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -3193,8 +3225,8 @@ mod websocket_e2e {
         .expect("stream ended");
 
         match received.message {
-            Some(server_message::Message::Chat(chat)) => {
-                // The content filter should have stripped the <script> tag
+            Some(server_message::Message::ChatEvent(event)) => {
+                let chat = event.message.expect("chat event should include message");
                 assert!(
                     !chat.content.contains("<script>"),
                     "XSS script tag should be stripped, got: {}",
@@ -3206,7 +3238,7 @@ mod websocket_e2e {
                     chat.content,
                 );
             }
-            other => panic!("Expected Chat message, got: {other:?}"),
+            other => panic!("Expected ChatEvent message, got: {other:?}"),
         }
 
         ws1.close(None).await.expect("close ws1");
@@ -3332,8 +3364,11 @@ mod websocket_e2e {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
                     content: String::new(),
-                    position: None,
-                    color: None,
+                    display_position: String::new(),
+                    display_color: String::new(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
@@ -3385,20 +3420,16 @@ mod websocket_e2e {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_ws_danmaku_broadcast() {
+    async fn test_ws_chat_presentation_fields_broadcast_via_event() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
         let (user1_id, user1_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "danmaku_sender").await;
-        let room_id = create_test_room(&server.room_service, &user1_id, "Danmaku Room").await;
+            register_test_user(&server.user_service, &server.jwt_service, "chat_sender").await;
+        let room_id = create_test_room(&server.room_service, &user1_id, "Chat Room").await;
 
-        let (user2_id, user2_token) = register_test_user(
-            &server.user_service,
-            &server.jwt_service,
-            "danmaku_receiver",
-        )
-        .await;
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "chat_receiver").await;
         let rid = decode_test_room_id(&room_id);
         server
             .room_service
@@ -3416,44 +3447,38 @@ mod websocket_e2e {
 
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        // user1 sends a danmaku (chat with position)
-        let danmaku_msg = ClientMessage {
+        let chat_msg = ClientMessage {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
                     content: "LOL".to_string(),
-                    position: Some(42.5),
-                    color: Some("#FF0000".to_string()),
+                    display_position: "top".to_string(),
+                    display_color: "#FF0000".to_string(),
+                    client_message_id: String::new(),
+                    images: Vec::new(),
+                    reply_to_message_id: String::new(),
                 },
             )),
         };
-        send_client_message(&mut ws1, &danmaku_msg).await;
+        send_client_message(&mut ws1, &chat_msg).await;
 
-        // user2 should receive the danmaku with position and color (skip membership events)
         let received = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             recv_server_message_skip_membership(&mut ws2),
         )
         .await
-        .expect("timeout waiting for danmaku")
+        .expect("timeout waiting for chat")
         .expect("stream ended");
 
         match received.message {
-            Some(server_message::Message::Chat(chat)) => {
+            Some(server_message::Message::ChatEvent(event)) => {
+                let chat = event.message.expect("chat event should include message");
                 assert_eq!(chat.content, "LOL");
                 assert_eq!(chat.room_id, room_id);
                 assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
-                assert!(chat.position.is_some(), "Danmaku should have a position");
-                assert!(
-                    (chat.position.unwrap() - 42.5).abs() < f64::EPSILON,
-                    "Position should be 42.5"
-                );
-                assert_eq!(
-                    chat.color.as_deref(),
-                    Some("#FF0000"),
-                    "Danmaku should have the specified color"
-                );
+                assert_eq!(chat.display_position, "top");
+                assert_eq!(chat.display_color, "#FF0000");
             }
-            other => panic!("Expected Chat (danmaku) message, got: {other:?}"),
+            other => panic!("Expected ChatEvent message, got: {other:?}"),
         }
 
         ws1.close(None).await.expect("close ws1");
@@ -4422,6 +4447,7 @@ mod websocket_connection_limit_timing {
                         "test_chat:".to_string(),
                     ),
                 )),
+                audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
             },
         ))
@@ -5183,4 +5209,4 @@ mod membership_cache_ttl_tests {
     }
 }
 
-mod danmu_sse_tests {}
+mod chat_sse_tests {}

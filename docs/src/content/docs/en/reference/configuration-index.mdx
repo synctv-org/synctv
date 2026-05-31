@@ -71,6 +71,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `jwt` | object | see below | [Security and Secrets](../../configuration/security/) |
 | `logging` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
 | `livestream` | object | see below | [Livestream Configuration](../../configuration/livestream/) |
+| `chat` | object | see below | [Chat](../../use/chat/) |
 | `webauthn` | object | see below | [WebAuthn and Passkeys](../../configuration/webauthn/) |
 | `email` | object | see below | [Email and OAuth2](../../configuration/email-oauth2/) |
 | `media_providers` | object | see below | [Media Providers](../../configuration/media-providers/) |
@@ -218,6 +219,74 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `livestream.flv_max_connection_duration_seconds` | seconds | `86400` | Maximum HTTP-FLV connection duration |
 | `livestream.flv_write_timeout_seconds` | seconds | `30` | HTTP-FLV write timeout |
 
+## `file_storage`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `file_storage.default_backend` | backend name | `disabled` | Fallback backend used by product features |
+| `file_storage.chat_images_backend` | backend name or empty | `""` | Backend for chat images; empty inherits `default_backend` |
+| `file_storage.user_avatars_backend` | backend name or empty | `""` | Backend for user avatars; empty inherits `default_backend` |
+| `file_storage.video_covers_backend` | backend name or empty | `""` | Backend for video covers; empty inherits `default_backend` |
+| `file_storage.room_covers_backend` | backend name or empty | `""` | Backend for room covers; empty inherits `default_backend` |
+| `file_storage.playlist_covers_backend` | backend name or empty | `""` | Backend for playlist covers; empty inherits `default_backend` |
+| `file_storage.upload_token_secret` | secret string | `""` | Signing secret for file upload/read tokens; empty value derives from `jwt.secret` at startup |
+| `file_storage.unreferenced_object_retention_seconds` | seconds | `86400` | Grace period before uploaded objects with no active product reference are cleaned; `0` disables orphan cleanup |
+| `file_storage.backends.<name>.type` | `disabled`, `database`, or `s3` | `disabled` | Registered backend implementation type |
+| `file_storage.backends.<name>.s3.*` | S3 config | default S3 fields | S3-compatible settings for backends with `type: "s3"` |
+
+Clients provide `checksum_sha256` in upload-session requests. The selected backend stores content-addressed objects by `(storage_backend, checksum_sha256, size_bytes)`, so duplicate files return `upload_required=false` with an ownership proof challenge. Reads and cleanup use each object's stored `storage_backend`, allowing product data to mix backends across configuration changes.
+
+### File Storage Examples
+
+Disable file storage:
+
+```yaml
+file_storage:
+  default_backend: "disabled"
+  backends: {}
+```
+
+Store file bytes in PostgreSQL:
+
+```yaml
+file_storage:
+  default_backend: "database"
+  chat_images_backend: "database"
+  user_avatars_backend: "database"
+  video_covers_backend: "database"
+  room_covers_backend: "database"
+  playlist_covers_backend: "database"
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  backends:
+    database:
+      type: "database"
+```
+
+Use S3-compatible object storage:
+
+```yaml
+file_storage:
+  default_backend: "s3_public"
+  chat_images_backend: "s3_public"
+  user_avatars_backend: "s3_public"
+  video_covers_backend: "s3_public"
+  room_covers_backend: "s3_public"
+  playlist_covers_backend: "s3_public"
+  upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  backends:
+    s3_public:
+      type: "s3"
+      s3:
+        endpoint: "https://s3.example.com"
+        access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+        secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+        bucket: "synctv-files"
+        region: "auto"
+        base_path: "files/"
+        public_base_url: "https://cdn.example.com/files"
+        upload_expires_seconds: 900
+```
+
 ## `webauthn` and `email`
 
 | Field | Type / values | Default | Meaning |
@@ -317,8 +386,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `messaging_rate_limits.chat_per_second` | integer | `10` | Maximum chat messages per window |
-| `messaging_rate_limits.danmaku_per_second` | integer | `3` | Maximum danmaku messages per window |
-| `messaging_rate_limits.window_seconds` | seconds | `1` | Chat/danmaku rate-limit window |
+| `messaging_rate_limits.window_seconds` | seconds | `1` | Chat rate-limit window |
 
 ## `http_rate_limits`
 

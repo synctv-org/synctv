@@ -34,35 +34,37 @@ impl EmailBindRepository {
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1::text), $2)")
-            .bind(user_id.to_string())
-            .bind(i32::from(i16::from(EmailTokenType::EmailBind)))
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock(hashtext($1::text), $2)",
+            user_id.to_string(),
+            i32::from(i16::from(EmailTokenType::EmailBind))
+        )
+        .execute(&mut *tx)
+        .await?;
 
-        sqlx::query(
+        sqlx::query!(
             r"
             DELETE FROM auth_email_bind_requests
             WHERE user_id = $1
               AND used_at IS NULL
             ",
+            user_id as &UserId,
         )
-        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
-        sqlx::query(
+        sqlx::query!(
             r"
             INSERT INTO auth_email_bind_requests (
                 user_id, email, token, expires_at, created_at
             )
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
             ",
+            user_id as &UserId,
+            email,
+            Self::hash_token(token),
+            expires_at,
         )
-        .bind(user_id)
-        .bind(email)
-        .bind(Self::hash_token(token))
-        .bind(expires_at)
         .execute(&mut *tx)
         .await?;
 
@@ -72,7 +74,7 @@ impl EmailBindRepository {
     }
 
     pub async fn delete_unused(&self, token: &str, user_id: &UserId, email: &str) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM auth_email_bind_requests
             WHERE token = $1
@@ -80,10 +82,10 @@ impl EmailBindRepository {
               AND LOWER(email) = LOWER($3)
               AND used_at IS NULL
             ",
+            Self::hash_token(token),
+            user_id as &UserId,
+            email,
         )
-        .bind(Self::hash_token(token))
-        .bind(user_id)
-        .bind(email)
         .execute(&self.pool)
         .await?;
 
@@ -100,7 +102,7 @@ impl EmailBindRepository {
         let now = Utc::now();
         let token_hash = Self::hash_token(token);
 
-        let email = sqlx::query_scalar::<_, String>(
+        let email = sqlx::query_scalar!(
             r"
             UPDATE auth_email_bind_requests
             SET used_at = $4
@@ -111,11 +113,11 @@ impl EmailBindRepository {
               AND expires_at > CURRENT_TIMESTAMP
             RETURNING email
             ",
+            token_hash,
+            user_id as &UserId,
+            email,
+            now,
         )
-        .bind(token_hash)
-        .bind(user_id)
-        .bind(email)
-        .bind(now)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| {

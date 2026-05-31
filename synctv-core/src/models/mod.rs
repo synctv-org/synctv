@@ -110,6 +110,7 @@ macro_rules! sqlx_i16_enum {
 pub mod audit;
 pub mod chat;
 pub mod email_token;
+pub mod file_storage;
 pub mod id;
 pub mod media;
 pub mod notification;
@@ -131,10 +132,18 @@ pub mod user_preferences;
 
 pub use audit::{AuditAction, AuditTargetType};
 pub use chat::{
-    ChatMessage, ChatMessageType, DanmakuMessage, DanmakuPosition, SendChatRequest,
-    SendDanmakuRequest,
+    ChatEventKind, ChatHistoryCursor, ChatImage, ChatImageBlob, ChatImageObject,
+    ChatImageOwnershipProofRange, ChatImageUploadSession, ChatMessage, ChatMessageContext,
+    ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus, ChatMessageType,
+    ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReadState, ChatReadStateWithUnread,
+    CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage, MarkChatRead, NewChatImage,
+    SendChatMessage, SendChatRequest,
 };
 pub use email_token::EmailTokenType;
+pub use file_storage::{
+    CreateFileUploadSession, FileBlob, FileCleanupJob, FileObject, FileOwnershipProofRange,
+    FileReferenceTarget, FileUploadPolicy, FileUploadSession, NewStoredFile, StoredFileReference,
+};
 pub use id::{
     generate_id, BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId,
 };

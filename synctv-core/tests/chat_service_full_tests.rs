@@ -1,7 +1,7 @@
 //! `ChatService` integration tests
 //!
 //! Tests `send_message` permission check, `chat_enabled` setting, rate limit mapping,
-//! `danmaku_enabled` check, and `delete_message` permission logic with real `PostgreSQL`
+//! and `delete_message` permission logic with real `PostgreSQL`
 //! via testcontainers.
 //!
 //! Run with: cargo test -p synctv-core --test `chat_service_full_tests` -- --nocapture
@@ -10,30 +10,35 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use sha2::Digest;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::{ChatEnabled, DanmakuEnabled},
-        DanmakuPosition, RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits, RoomSettings,
-        SendDanmakuRequest, User, UserId, UserRole, UserStatus,
+        room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind, ChatMessage,
+        ChatMessageStatus, ChatMessageType, DeleteChatMessage, EditChatMessage,
+        FileReferenceTarget, NewChatImage, RoomAdminPermissionBits, RoomId,
+        RoomMemberPermissionBits, RoomSettings, SendChatMessage, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{
-        ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
-        UserRepository,
+        ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
+        RoomSettingsRepository, UserRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         chat::{ChatDependencies, ChatRuntime},
+        file_storage::{FileStorageCleanupOrigin, FileStorageService},
         notification::RoomEvent,
-        ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
+        AuditService, ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
         PermissionService, RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService,
         RoomSettingsService, UserService,
     },
     Error,
 };
 use synctv_core_testing::create_test_pool;
+
 fn make_user_service(pool: &PgPool) -> UserService {
     make_user_service_with_username_cache(
         pool,
@@ -75,6 +80,14 @@ fn make_room_service(pool: PgPool) -> RoomService {
 fn make_chat_service_with_config(
     pool: &PgPool,
     rate_limit_config: RateLimitConfig,
+) -> (ChatService, UsernameCache) {
+    make_chat_service_with_config_and_audit(pool, rate_limit_config, None)
+}
+
+fn make_chat_service_with_config_and_audit(
+    pool: &PgPool,
+    rate_limit_config: RateLimitConfig,
+    audit_service: Option<Arc<AuditService>>,
 ) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter: Arc<dyn RequestRateLimiterService> =
@@ -118,6 +131,7 @@ fn make_chat_service_with_config(
                 pool,
                 username_cache.clone(),
             )),
+            audit_service,
             notification_service,
         },
     );
@@ -128,6 +142,50 @@ fn make_chat_service(pool: &PgPool) -> (ChatService, UsernameCache) {
     make_chat_service_with_config(pool, RateLimitConfig::default())
 }
 
+fn make_chat_service_with_database_storage(pool: &PgPool) -> (ChatService, UsernameCache) {
+    let (service, username_cache) = make_chat_service(pool);
+    (
+        service.with_file_storage_service(Arc::new(
+            synctv_core::service::file_storage::DatabaseFileStorageService::new(
+                "database",
+                Arc::new(FileStorageRepository::new(pool.clone())),
+                "test-file-storage-secret",
+            ),
+        )),
+        username_cache,
+    )
+}
+
+async fn upload_chat_image_file(
+    chat_service: &ChatService,
+    session: &synctv_core::models::FileUploadSession,
+    payload: Vec<u8>,
+) {
+    let upload_url = session
+        .upload_url
+        .as_deref()
+        .expect("database upload url should be returned");
+    let parsed = url::Url::parse(&format!("http://localhost{upload_url}"))
+        .expect("relative database object URL should parse with base");
+    let encoded_object_key = parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .expect("encoded object key path segment should exist");
+    let upload_token = session
+        .upload_headers
+        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .expect("database upload token header should be returned");
+    chat_service
+        .store_image_upload_object(
+            encoded_object_key,
+            upload_token,
+            Some("image/webp"),
+            payload,
+        )
+        .await
+        .expect("database image object should store");
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -136,6 +194,7 @@ fn make_user(username: &str) -> User {
         email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
+        avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
@@ -157,7 +216,7 @@ async fn test_send_message_without_chat_permission_denied() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(&pool);
+    let (chat_service, username_cache) = make_chat_service_with_database_storage(&pool);
 
     let creator = user_repo
         .create(&make_user("chat_perm_creator"))
@@ -299,7 +358,6 @@ async fn test_send_message_rate_limit_triggers() {
         Arc::new(RateLimiter::local_only("test:chatrl:".to_string()));
     let rate_limit_config = RateLimitConfig {
         chat_per_second: 1,
-        danmaku_per_second: 1,
         window_seconds: 1,
     };
     let content_filter = ContentFilter::new();
@@ -337,6 +395,7 @@ async fn test_send_message_rate_limit_triggers() {
             permission_service,
             room_settings_service,
             user_service: Arc::new(make_user_service_with_username_cache(&pool, username_cache)),
+            audit_service: None,
             notification_service: NotificationService::default(),
         },
     );
@@ -353,64 +412,6 @@ async fn test_send_message_rate_limit_triggers() {
     }
 
     assert!(rate_limited, "Should hit rate limit after rapid messages");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_send_danmaku_disabled_rejected() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(&pool);
-
-    let creator = user_repo
-        .create(&make_user("danmakudis_creator"))
-        .await
-        .unwrap();
-    username_cache
-        .set(&creator.id, &creator.username)
-        .await
-        .unwrap();
-
-    let settings = RoomSettings {
-        danmaku_enabled: DanmakuEnabled(false),
-        ..Default::default()
-    };
-    let (room, _) = room_service
-        .create_room(
-            "Danmaku Disabled".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            Some(settings),
-        )
-        .await
-        .unwrap();
-
-    let request = SendDanmakuRequest {
-        room_id: room.id,
-        content: "Hello".to_string(),
-        color: "#FFFFFF".to_string(),
-        position: DanmakuPosition::Scroll,
-    };
-
-    let result = chat_service
-        .send_danmaku(room.id, creator.id, request)
-        .await;
-
-    assert!(
-        result.is_err(),
-        "send_danmaku should fail when danmaku is disabled"
-    );
-    match result.unwrap_err() {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("disabled") || msg.contains("Danmaku"),
-                "Error should mention danmaku disabled: {msg}"
-            );
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
-    }
 }
 
 #[tokio::test]
@@ -590,6 +591,143 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_records_actor_reason_and_original_author() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
+    let (chat_service, username_cache) = make_chat_service_with_config_and_audit(
+        &pool,
+        RateLimitConfig::default(),
+        Some(audit_service),
+    );
+
+    let creator = user_repo
+        .create(&make_user("admin_delete_author"))
+        .await
+        .unwrap();
+    let admin = user_repo
+        .create(&make_user("admin_delete_moderator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    username_cache
+        .set(&admin.id, &admin.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Admin Delete Audit Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .join_room(room.id, admin.id, None)
+        .await
+        .unwrap();
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id,
+            creator.id,
+            admin.id,
+            synctv_core::models::RoomRole::Admin,
+        )
+        .await
+        .unwrap();
+    room_service
+        .member_service()
+        .grant_permission(
+            room.id,
+            creator.id,
+            admin.id,
+            RoomAdminPermissionBits::DELETE_CHAT,
+        )
+        .await
+        .unwrap();
+
+    let msg = chat_service
+        .send_message(room.id, creator.id, "moderate me".to_string())
+        .await
+        .unwrap();
+    let deleted = chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: msg.id,
+            user_id: admin.id,
+            client_operation_id: Some("admin-delete-op".to_string()),
+            reason: Some("policy violation".to_string()),
+            expected_version: Some(msg.version),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.actor_user_id, admin.id);
+    assert_eq!(deleted.message.message.user_id, Some(creator.id));
+    assert_eq!(deleted.message.message.deleted_by, Some(admin.id));
+    assert_eq!(
+        deleted.message.message.delete_reason.as_deref(),
+        Some("policy violation")
+    );
+
+    let audit_row: (String, Option<i16>, Option<String>, serde_json::Value) = sqlx::query_as(
+        r"
+        SELECT actor_username, target_type, target_id, details
+        FROM audit_logs
+        WHERE actor_id = $1 AND action = $2
+        ",
+    )
+    .bind(admin.id.as_i64())
+    .bind(AuditAction::ChatMessageDeleted.as_i16())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(audit_row.0, admin.username);
+    assert_eq!(
+        audit_row
+            .1
+            .map(|value| AuditTargetType::try_from(value).unwrap()),
+        Some(AuditTargetType::ChatMessage)
+    );
+    assert_eq!(audit_row.2, Some(format!("{}:{}", room.id, msg.id)));
+    let expected_room_id = room.id.to_string();
+    let expected_creator_id = creator.id.to_string();
+    let expected_admin_id = admin.id.to_string();
+    assert_eq!(
+        audit_row.3["room_id"].as_str(),
+        Some(expected_room_id.as_str())
+    );
+    assert_eq!(audit_row.3["message_id"].as_i64(), Some(msg.id));
+    assert_eq!(
+        audit_row.3["original_author_id"].as_str(),
+        Some(expected_creator_id.as_str())
+    );
+    assert_eq!(
+        audit_row.3["deleted_by"].as_str(),
+        Some(expected_admin_id.as_str())
+    );
+    assert_eq!(audit_row.3["reason"].as_str(), Some("policy violation"));
+    assert_eq!(
+        audit_row.3["event_id"].as_str(),
+        Some(deleted.event_id.as_str())
+    );
+    assert_eq!(
+        audit_row.3["client_operation_id"].as_str(),
+        Some("admin-delete-op")
+    );
+}
+
 /// Mock broadcaster that tracks broadcast calls
 struct NotificationObserver {
     event_count: std::sync::Mutex<usize>,
@@ -674,6 +812,7 @@ fn make_chat_service_with_observer(
                 pool,
                 username_cache.clone(),
             )),
+            audit_service: None,
             notification_service: notification_service.clone(),
         },
     );
@@ -741,6 +880,7 @@ async fn test_send_message_broadcasts_to_room_members() {
             permission_service,
             room_settings_service,
             user_service: Arc::new(make_user_service_with_username_cache(&pool, username_cache)),
+            audit_service: None,
             notification_service,
         },
     );
@@ -979,7 +1119,6 @@ async fn test_get_history_limit_capped_at_100() {
     // Use a high rate limit config to avoid hitting rate limits during bulk insert
     let rate_limit_config = RateLimitConfig {
         chat_per_second: 200,
-        danmaku_per_second: 50,
         window_seconds: 1,
     };
     let (chat_service, username_cache) = make_chat_service_with_config(&pool, rate_limit_config);
@@ -1082,92 +1221,6 @@ async fn test_get_history_messages_from_correct_room() {
         history2[0].content, "room2_message",
         "Room2 history should only contain room2 messages"
     );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_send_danmaku_broadcasts_to_room_members() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("danmaku_broadcast_creator"))
-        .await
-        .unwrap();
-
-    let observer = Arc::new(NotificationObserver::new());
-
-    // Build chat service with the counting broadcaster
-    let (chat_service, username_cache, notification_service) =
-        make_chat_service_with_observer(&pool, observer.clone());
-
-    username_cache
-        .set(&creator.id, &creator.username)
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Danmaku Broadcast Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Verify no broadcasts before sending
-    assert_eq!(
-        observer.get_event_count(),
-        0,
-        "No broadcasts should have occurred yet"
-    );
-
-    let mut notification_rx = notification_service.subscribe();
-
-    let request = SendDanmakuRequest {
-        room_id: room.id,
-        content: "Test danmaku".to_string(),
-        color: "#FF0000".to_string(),
-        position: DanmakuPosition::Top,
-    };
-
-    let danmaku = chat_service
-        .send_danmaku(room.id, creator.id, request)
-        .await
-        .expect("send_danmaku should succeed");
-
-    // Verify broadcast was triggered
-    let (event_room_id, event) =
-        tokio::time::timeout(std::time::Duration::from_secs(2), notification_rx.recv())
-            .await
-            .expect("danmaku notification should arrive")
-            .expect("notification channel should remain open");
-    observer.observe(&event_room_id, &event);
-
-    assert!(
-        observer.get_event_count() > 0,
-        "At least one event should have been published for danmaku"
-    );
-    assert_eq!(
-        observer.get_last_room_id(),
-        Some(room.id.to_string()),
-        "Event should be published for the correct room"
-    );
-    assert_eq!(
-        observer.get_last_event_type().as_deref(),
-        Some("danmaku"),
-        "Event type should be danmaku"
-    );
-
-    // Verify the danmaku message content
-    assert_eq!(
-        danmaku.content, "Test danmaku",
-        "Danmaku content should match"
-    );
-    assert_eq!(danmaku.color, "#FF0000", "Danmaku color should match");
 }
 
 #[tokio::test]
@@ -1326,6 +1379,1139 @@ async fn test_send_message_valid_content_persisted() {
     let (history, _) = chat_service.get_history(&room.id, None, 10).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].content, "Hello, valid message!");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_event_idempotency_returns_existing_message() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("idempotent_chat_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Idempotent Chat Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let request = SendChatMessage {
+        room_id: room.id,
+        user_id: creator.id,
+        client_message_id: Some("client-msg-1".to_string()),
+        content: "same payload".to_string(),
+        message_type: ChatMessageType::Text,
+        reply_to_message_id: None,
+        metadata: serde_json::Value::Object(Default::default()),
+        images: Vec::new(),
+    };
+
+    let first = chat_service
+        .send_message_event(request.clone())
+        .await
+        .unwrap();
+    let second = chat_service.send_message_event(request).await.unwrap();
+
+    assert_eq!(first.event_id, second.event_id);
+    assert_eq!(first.message.message.id, second.message.message.id);
+    assert_eq!(
+        first.message.message.created_at,
+        second.message.message.created_at
+    );
+    assert_eq!(
+        first.message.message.client_message_id.as_deref(),
+        Some("client-msg-1")
+    );
+
+    let replay = chat_service
+        .get_events_after(&room.id, Some(&first.event_id), 10)
+        .await
+        .unwrap();
+    assert!(replay.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_events_after_unknown_event_id_returns_invalid_cursor() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("chat_event_cursor_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Chat Event Cursor Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let error = chat_service
+        .get_events_after(&room.id, Some("missing-chat-event"), 10)
+        .await
+        .expect_err("unknown event cursor should be invalid input");
+
+    assert!(
+        matches!(error, Error::InvalidInput(message) if message == "Invalid chat event cursor")
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_event_idempotency_rejects_different_payload() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("idempotent_conflict_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Idempotent Conflict Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut request = SendChatMessage {
+        room_id: room.id,
+        user_id: creator.id,
+        client_message_id: Some("client-msg-conflict".to_string()),
+        content: "original payload".to_string(),
+        message_type: ChatMessageType::Text,
+        reply_to_message_id: None,
+        metadata: serde_json::Value::Object(Default::default()),
+        images: Vec::new(),
+    };
+    chat_service
+        .send_message_event(request.clone())
+        .await
+        .unwrap();
+
+    request.content = "changed payload".to_string();
+    let error = chat_service
+        .send_message_event(request)
+        .await
+        .expect_err("different idempotent payload should conflict");
+
+    match error {
+        Error::Conflict(message) => {
+            assert!(message.contains("client_message_id"));
+        }
+        other => panic!("Expected Conflict error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_edit_message_increments_version_and_checks_expected_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("edit_version_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Edit Version Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let created = chat_service
+        .send_message(room.id, creator.id, "before edit".to_string())
+        .await
+        .unwrap();
+    let edited = chat_service
+        .edit_message(EditChatMessage {
+            room_id: room.id,
+            message_id: created.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            content: "after edit".to_string(),
+            metadata: serde_json::json!({"edited": true}),
+            expected_version: Some(created.version),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(edited.message.message.content, "after edit");
+    assert_eq!(edited.message.message.status, ChatMessageStatus::Edited);
+    assert_eq!(edited.message.message.version, created.version + 1);
+    assert!(edited.message.message.edited_at.is_some());
+
+    let retry = chat_service
+        .edit_message(EditChatMessage {
+            room_id: room.id,
+            message_id: created.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            content: "after edit".to_string(),
+            metadata: serde_json::json!({"edited": true}),
+            expected_version: Some(created.version),
+        })
+        .await
+        .expect("same edit retry should return the durable edit event");
+    assert_eq!(retry.event_id, edited.event_id);
+    assert_eq!(
+        retry.message.message.version,
+        edited.message.message.version
+    );
+
+    let replay = chat_service
+        .get_events_after(&room.id, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 2);
+    assert_eq!(replay[0].event.kind, ChatEventKind::Created);
+    assert_eq!(replay[1].event.kind, ChatEventKind::Edited);
+    assert_eq!(replay[1].event.event_id, edited.event_id);
+
+    let stale = chat_service
+        .edit_message(EditChatMessage {
+            room_id: room.id,
+            message_id: created.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            content: "stale edit".to_string(),
+            metadata: serde_json::Value::Object(Default::default()),
+            expected_version: Some(created.version),
+        })
+        .await
+        .expect_err("stale version should conflict");
+    assert!(matches!(stale, Error::OptimisticLockConflict));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_edit_message_client_operation_id_replays_without_expected_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("edit_operation_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Edit Operation Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let created = chat_service
+        .send_message(room.id, creator.id, "before edit".to_string())
+        .await
+        .unwrap();
+    let request = EditChatMessage {
+        room_id: room.id,
+        message_id: created.id,
+        user_id: creator.id,
+        client_operation_id: Some("edit-op-1".to_string()),
+        content: "after edit".to_string(),
+        metadata: serde_json::json!({"edited": true}),
+        expected_version: None,
+    };
+
+    let first = chat_service
+        .edit_message_outcome(request.clone())
+        .await
+        .unwrap();
+    let replay = chat_service
+        .edit_message_outcome(request.clone())
+        .await
+        .unwrap();
+    assert!(first.inserted);
+    assert!(!replay.inserted);
+    assert_eq!(first.event.event_id, replay.event.event_id);
+    assert_eq!(replay.event.message.message.content, "after edit");
+
+    let mut changed = request;
+    changed.content = "changed payload".to_string();
+    let conflict = chat_service
+        .edit_message_outcome(changed)
+        .await
+        .expect_err("same client operation id with different payload should conflict");
+    assert!(matches!(conflict, Error::Conflict(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_message_event_soft_deletes_and_checks_expected_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("delete_event_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Event Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let created = chat_service
+        .send_message(room.id, creator.id, "delete me".to_string())
+        .await
+        .unwrap();
+    let deleted = chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: created.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            reason: Some("cleanup".to_string()),
+            expected_version: Some(created.version),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.message.message.status, ChatMessageStatus::Deleted);
+    assert_eq!(deleted.message.message.version, created.version + 1);
+    assert_eq!(deleted.message.message.deleted_by, Some(creator.id));
+    assert_eq!(
+        deleted.message.message.delete_reason.as_deref(),
+        Some("cleanup")
+    );
+    assert!(deleted.message.message.deleted_at.is_some());
+
+    let retry = chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: created.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            reason: Some("cleanup".to_string()),
+            expected_version: Some(created.version),
+        })
+        .await
+        .expect("same delete retry should return the durable delete event");
+    assert_eq!(retry.event_id, deleted.event_id);
+    assert_eq!(retry.kind, ChatEventKind::Deleted);
+
+    let replay = chat_service
+        .get_events_after(&room.id, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 2);
+    assert_eq!(replay[0].event.kind, ChatEventKind::Created);
+    assert_eq!(replay[1].event.kind, ChatEventKind::Deleted);
+    assert_eq!(replay[1].event.event_id, deleted.event_id);
+
+    let stale = chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: created.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            reason: None,
+            expected_version: Some(created.version),
+        })
+        .await
+        .expect_err("second delete should conflict");
+    assert!(matches!(stale, Error::Conflict(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_message_client_operation_id_replays_without_expected_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("delete_operation_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Operation Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let created = chat_service
+        .send_message(room.id, creator.id, "delete me".to_string())
+        .await
+        .unwrap();
+    let request = DeleteChatMessage {
+        room_id: room.id,
+        message_id: created.id,
+        user_id: creator.id,
+        client_operation_id: Some("delete-op-1".to_string()),
+        reason: Some("cleanup".to_string()),
+        expected_version: None,
+    };
+
+    let first = chat_service
+        .delete_message_event_outcome(request.clone())
+        .await
+        .unwrap();
+    let replay = chat_service
+        .delete_message_event_outcome(request.clone())
+        .await
+        .unwrap();
+    assert!(first.inserted);
+    assert!(!replay.inserted);
+    assert_eq!(first.event.event_id, replay.event.event_id);
+    assert_eq!(
+        replay.event.message.message.status,
+        ChatMessageStatus::Deleted
+    );
+
+    let mut changed = request;
+    changed.reason = Some("different cleanup".to_string());
+    let conflict = chat_service
+        .delete_message_event_outcome(changed)
+        .await
+        .expect_err("same client operation id with different payload should conflict");
+    assert!(matches!(conflict, Error::Conflict(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_image_message_history_returns_image_metadata() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service_with_database_storage(&pool);
+
+    let creator = user_repo
+        .create(&make_user("image_history_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Image History Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let payload = b"image-1".to_vec();
+    let session = chat_service
+        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+            room_id: room.id,
+            user_id: creator.id,
+            client_image_id: Some("image-1".to_string()),
+            mime_type: "image/webp".to_string(),
+            size_bytes: i64::try_from(payload.len()).unwrap(),
+            width: Some(640),
+            height: Some(480),
+            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&payload))),
+            metadata: serde_json::json!({"blurhash": "abc"}),
+        })
+        .await
+        .unwrap();
+    upload_chat_image_file(&chat_service, &session, payload).await;
+
+    let event = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("image-msg-1".to_string()),
+            content: String::new(),
+            message_type: ChatMessageType::Image,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: vec![session.file],
+        })
+        .await
+        .unwrap();
+
+    let (history, _) = chat_service
+        .get_history_with_images(&room.id, None, 10, true)
+        .await
+        .unwrap();
+
+    assert_eq!(event.message.message.message_type, ChatMessageType::Image);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].images.len(), 1);
+    assert_eq!(history[0].images[0].id, "image-1");
+    assert_eq!(
+        history[0].images[0].mime_type.as_deref(),
+        Some("image/webp")
+    );
+    assert_eq!(history[0].images[0].width, Some(640));
+    assert_eq!(history[0].images[0].height, Some(480));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_released() {
+    let (_container, pool) = create_test_pool().await;
+    let file_repo = FileStorageRepository::new(pool.clone());
+    let object_key = "database/chat/images/shared.webp";
+    let payload = b"shared-image";
+
+    file_repo
+        .upsert_blob(
+            "database",
+            object_key,
+            "image/webp",
+            payload.to_vec(),
+            &serde_json::Value::Object(Default::default()),
+        )
+        .await
+        .unwrap();
+    file_repo
+        .upsert_object(
+            "database",
+            object_key,
+            "image/webp",
+            i64::try_from(payload.len()).unwrap(),
+            &hex::encode(sha2::Sha256::digest(payload)),
+            &serde_json::Value::Object(Default::default()),
+        )
+        .await
+        .unwrap();
+
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (_chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("shared_image_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Shared Image Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let image = |id: &str| NewChatImage {
+        id: id.to_string(),
+        storage_backend: "database".to_string(),
+        object_key: object_key.to_string(),
+        url: Some("https://example.invalid/shared.webp".to_string()),
+        mime_type: Some("image/webp".to_string()),
+        size_bytes: Some(i64::try_from(payload.len()).unwrap()),
+        width: Some(640),
+        height: Some(480),
+        metadata: serde_json::Value::Object(Default::default()),
+    };
+
+    let mut first_message = ChatMessage::new(room.id, creator.id, String::new());
+    first_message.client_message_id = Some("shared-image-msg-1".to_string());
+    first_message.message_type = ChatMessageType::Image;
+    let first = chat_repo
+        .insert_message_event_idempotent(
+            &first_message,
+            &[image("shared-image-1")],
+            "shared-image-hash-1",
+            "shared-image-event-1",
+            Utc::now(),
+        )
+        .await
+        .unwrap()
+        .event;
+    let mut second_message = ChatMessage::new(room.id, creator.id, String::new());
+    second_message.client_message_id = Some("shared-image-msg-2".to_string());
+    second_message.message_type = ChatMessageType::Image;
+    let second = chat_repo
+        .insert_message_event_idempotent(
+            &second_message,
+            &[image("shared-image-2")],
+            "shared-image-hash-2",
+            "shared-image-event-2",
+            Utc::now(),
+        )
+        .await
+        .unwrap()
+        .event;
+
+    assert_ne!(
+        first.event.message.message.id,
+        second.event.message.message.id
+    );
+    assert_eq!(
+        file_repo
+            .object_reference_count("database", object_key)
+            .await
+            .unwrap(),
+        2
+    );
+
+    let storage = synctv_core::service::file_storage::DatabaseFileStorageService::new(
+        "database",
+        Arc::new(FileStorageRepository::new(pool.clone())),
+        "test-file-storage-secret",
+    );
+    storage
+        .delete_files(
+            FileStorageCleanupOrigin::ReferenceReleased,
+            &[FileReferenceTarget {
+                storage_backend: "database".to_string(),
+                object_key: object_key.to_string(),
+                reference_kind: "chat_message_image".to_string(),
+                reference_id: format!(
+                    "{}:{}:{}:{}",
+                    first.event.message.message.room_id.as_i64(),
+                    first.event.message.message.id,
+                    first.event.message.message.created_at.timestamp_micros(),
+                    "shared-image-1"
+                ),
+            }],
+        )
+        .await
+        .unwrap();
+
+    assert!(file_repo.blob_exists("database", object_key).await.unwrap());
+    assert!(file_repo
+        .object_exists("database", object_key)
+        .await
+        .unwrap());
+    assert_eq!(
+        file_repo
+            .object_reference_count("database", object_key)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service_with_database_storage(&pool);
+
+    let creator = user_repo
+        .create(&make_user("image_idempotent_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Image Idempotent Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let payload = b"idempotent-image-1".to_vec();
+    let session = chat_service
+        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+            room_id: room.id,
+            user_id: creator.id,
+            client_image_id: Some("idempotent-image-1".to_string()),
+            mime_type: "image/webp".to_string(),
+            size_bytes: i64::try_from(payload.len()).unwrap(),
+            width: Some(640),
+            height: Some(480),
+            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&payload))),
+            metadata: serde_json::json!({"blurhash": "abc"}),
+        })
+        .await
+        .unwrap();
+    upload_chat_image_file(&chat_service, &session, payload).await;
+
+    let mut request = SendChatMessage {
+        room_id: room.id,
+        user_id: creator.id,
+        client_message_id: Some("image-idempotent-msg".to_string()),
+        content: String::new(),
+        message_type: ChatMessageType::Image,
+        reply_to_message_id: None,
+        metadata: serde_json::Value::Object(Default::default()),
+        images: vec![session.file],
+    };
+
+    let first = chat_service
+        .send_message_event_outcome(request.clone())
+        .await
+        .unwrap();
+    let replay = chat_service
+        .send_message_event_outcome(request.clone())
+        .await
+        .unwrap();
+
+    assert!(first.inserted);
+    assert!(!replay.inserted);
+    assert_eq!(first.event.event_id, replay.event.event_id);
+    assert_eq!(replay.event.message.images.len(), 1);
+    assert_eq!(
+        replay.event.message.images[0].object_key,
+        request.images[0].object_key
+    );
+
+    let changed_payload = b"idempotent-image-2".to_vec();
+    let changed_session = chat_service
+        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+            room_id: room.id,
+            user_id: creator.id,
+            client_image_id: Some("idempotent-image-2".to_string()),
+            mime_type: "image/webp".to_string(),
+            size_bytes: i64::try_from(changed_payload.len()).unwrap(),
+            width: Some(640),
+            height: Some(480),
+            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&changed_payload))),
+            metadata: serde_json::json!({"blurhash": "abc"}),
+        })
+        .await
+        .unwrap();
+    upload_chat_image_file(&chat_service, &changed_session, changed_payload).await;
+    request.images[0] = changed_session.file;
+    let changed = chat_service
+        .send_message_event_outcome(request)
+        .await
+        .expect_err("same client_message_id with changed image should conflict");
+    assert!(matches!(changed, Error::Conflict(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_chat_message_images_require_matching_room_id() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("image_room_fk_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Image Room FK".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let (other_room, _) = room_service
+        .create_room(
+            "Other Image Room FK".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let event = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("image-room-fk-message".to_string()),
+            content: "message".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    let result = sqlx::query(
+        r"
+        INSERT INTO chat_message_images (
+            id, room_id, message_id, message_created_at, storage_backend,
+            object_key, url, mime_type, size_bytes, width, height, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11)
+        ",
+    )
+    .bind("wrong-room-image")
+    .bind(other_room.id)
+    .bind(event.message.message.id)
+    .bind(event.message.message.created_at)
+    .bind("local")
+    .bind("rooms/wrong/image.webp")
+    .bind("image/webp")
+    .bind(42_i64)
+    .bind(640_i32)
+    .bind(480_i32)
+    .bind(serde_json::Value::Object(Default::default()))
+    .execute(&pool)
+    .await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_deleted_image_message_history_hides_image_metadata() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service_with_database_storage(&pool);
+
+    let creator = user_repo
+        .create(&make_user("deleted_image_history_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Deleted Image History Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let payload = b"deleted-image-1".to_vec();
+    let session = chat_service
+        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+            room_id: room.id,
+            user_id: creator.id,
+            client_image_id: Some("deleted-image-1".to_string()),
+            mime_type: "image/webp".to_string(),
+            size_bytes: i64::try_from(payload.len()).unwrap(),
+            width: Some(640),
+            height: Some(480),
+            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&payload))),
+            metadata: serde_json::json!({"blurhash": "abc"}),
+        })
+        .await
+        .unwrap();
+    upload_chat_image_file(&chat_service, &session, payload).await;
+
+    let event = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("deleted-image-msg-1".to_string()),
+            content: String::new(),
+            message_type: ChatMessageType::Image,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: vec![session.file],
+        })
+        .await
+        .unwrap();
+
+    chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: event.message.message.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            reason: Some("cleanup".to_string()),
+            expected_version: Some(event.message.message.version),
+        })
+        .await
+        .unwrap();
+
+    let (history, _) = chat_service
+        .get_history_with_images(&room.id, None, 10, true)
+        .await
+        .unwrap();
+
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].message.status, ChatMessageStatus::Deleted);
+    assert!(history[0].message.content.is_empty());
+    assert!(history[0].images.is_empty());
+
+    let (visible_history, _) = chat_service
+        .get_history_with_images(&room.id, None, 10, false)
+        .await
+        .unwrap();
+    assert!(visible_history.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_rejects_missing_or_deleted_reply_target() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("reply_target_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Reply Target Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let missing = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("missing-reply".to_string()),
+            content: "reply".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: Some(9_999_999),
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect_err("missing reply target should be rejected");
+    assert!(matches!(missing, Error::NotFound(_)));
+
+    let target = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("reply-target".to_string()),
+            content: "target".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let reply = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("valid-reply".to_string()),
+            content: "valid reply".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: Some(target.message.message.id),
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        reply.message.message.reply_to_message_id,
+        Some(target.message.message.id)
+    );
+    assert_eq!(
+        reply.message.message.reply_to_message_created_at,
+        Some(target.message.message.created_at)
+    );
+
+    chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: target.message.message.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            reason: None,
+            expected_version: Some(target.message.message.version),
+        })
+        .await
+        .unwrap();
+
+    let deleted = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("deleted-reply".to_string()),
+            content: "reply".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: Some(target.message.message.id),
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect_err("deleted reply target should be rejected");
+    assert!(matches!(deleted, Error::Conflict(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("reply_replay_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Reply Replay Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let target = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("reply-replay-target".to_string()),
+            content: "target".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let reply_request = SendChatMessage {
+        room_id: room.id,
+        user_id: creator.id,
+        client_message_id: Some("reply-replay".to_string()),
+        content: "reply".to_string(),
+        message_type: ChatMessageType::Text,
+        reply_to_message_id: Some(target.message.message.id),
+        metadata: serde_json::Value::Object(Default::default()),
+        images: Vec::new(),
+    };
+
+    let first = chat_service
+        .send_message_event_outcome(reply_request.clone())
+        .await
+        .unwrap();
+    assert!(first.inserted);
+
+    chat_service
+        .delete_message_event(DeleteChatMessage {
+            room_id: room.id,
+            message_id: target.message.message.id,
+            user_id: creator.id,
+            client_operation_id: None,
+            reason: None,
+            expected_version: Some(target.message.message.version),
+        })
+        .await
+        .unwrap();
+
+    let replay = chat_service
+        .send_message_event_outcome(reply_request)
+        .await
+        .unwrap();
+    assert!(!replay.inserted);
+    assert_eq!(replay.event.event_id, first.event.event_id);
+    assert_eq!(
+        replay.event.message.message.id,
+        first.event.message.message.id
+    );
+    assert_eq!(
+        replay.event.message.message.reply_to_message_created_at,
+        Some(target.message.message.created_at)
+    );
 }
 
 #[tokio::test]

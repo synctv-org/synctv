@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS media (
     creator_id BIGINT REFERENCES users(id) ON DELETE RESTRICT,
 
     name VARCHAR(500) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
 
     position DOUBLE PRECISION NOT NULL,
 
@@ -15,6 +16,8 @@ CREATE TABLE IF NOT EXISTS media (
     source_config JSONB NOT NULL,
 
     provider_instance_name VARCHAR(64),
+
+    cover_file_reference_id BIGINT NULL,
 
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -39,6 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_media_added_at ON media(added_at DESC);
 CREATE INDEX IF NOT EXISTS idx_media_source_provider ON media(source_provider);
 CREATE INDEX IF NOT EXISTS idx_media_provider_name ON media(provider_instance_name);
 CREATE INDEX IF NOT EXISTS idx_media_source_config ON media USING gin(source_config);
+CREATE INDEX IF NOT EXISTS idx_media_description_trgm ON media USING gin(description gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_media_playlist_covering ON media(playlist_id, position, id, source_provider, name);
 CREATE INDEX IF NOT EXISTS idx_media_room_root_covering ON media(room_id, position, id, source_provider, name)
     WHERE playlist_id IS NULL;

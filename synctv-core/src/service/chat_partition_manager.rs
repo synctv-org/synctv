@@ -93,7 +93,7 @@ impl ChatPartitionManager {
             .map_err(|e| Error::Internal(format!("Failed to create chat partition: {e}")))?;
 
             sqlx::query(&format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, created_at DESC, user_id)",
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, created_at DESC, id DESC)",
                 quote_ident(&format!("{partition_name}_idx_room_pagination"))
             ))
             .execute(&mut *conn)
@@ -111,6 +111,14 @@ impl ChatPartitionManager {
             sqlx::query(&format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(created_at DESC)",
                 quote_ident(&format!("{partition_name}_idx_created_at"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, status, created_at DESC, id DESC)",
+                quote_ident(&format!("{partition_name}_idx_status"))
             ))
             .execute(&mut *conn)
             .await
@@ -139,7 +147,7 @@ impl ChatPartitionManager {
         let current_date = current_database_date(&self.pool).await?;
         let cutoff_date = current_date - chrono::Duration::days(i64::from(keep_days));
         let cutoff_name = format!("chat_messages_{}", cutoff_date.format("%Y_%m_%d"));
-        let partitions = sqlx::query_scalar::<_, String>(
+        let partitions = sqlx::query_scalar_unchecked!(
             "SELECT tablename
              FROM pg_tables
              WHERE schemaname = 'public'
@@ -147,11 +155,14 @@ impl ChatPartitionManager {
                AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'
                AND tablename < $1
              ORDER BY tablename",
+            cutoff_name
         )
-        .bind(cutoff_name)
         .fetch_all(&mut *conn)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to drop old chat partitions: {e}")))?;
+        .map_err(|e| Error::Internal(format!("Failed to drop old chat partitions: {e}")))?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
         for partition in &partitions {
             sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))

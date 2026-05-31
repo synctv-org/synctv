@@ -287,8 +287,8 @@ mod tests {
             username: "runtime-user".to_string(),
             message: "hello".to_string(),
             timestamp: chrono::Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         assert_eq!(event_service.broadcast_local(&room_id(), &event), 1);

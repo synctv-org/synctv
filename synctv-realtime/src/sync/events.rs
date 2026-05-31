@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synctv_core::models::id::{MediaId, PlaylistId, RoomId, UserId};
 use synctv_core::models::playback::RoomPlaybackState;
-use synctv_core::models::Playlist;
 use synctv_core::models::RoomPermissionSet;
+use synctv_core::models::{ChatMessageEvent, Playlist};
 
 /// The kind of cache to invalidate in a `CacheInvalidate` realtime event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,8 +47,7 @@ pub enum WebRTCSignalKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RealtimeEvent {
-    /// Chat message sent in a room
-    /// If position is set, this can be displayed as a danmaku (bullet comment)
+    /// Chat message sent in a room.
     ChatMessage {
         event_id: String,
         room_id: RoomId,
@@ -56,10 +55,19 @@ pub enum RealtimeEvent {
         username: String,
         message: String,
         timestamp: DateTime<Utc>,
-        /// Video position in seconds (for danmaku display)
-        position: Option<f64>,
-        /// Hex color (for danmaku display)
-        color: Option<String>,
+        /// Optional chat presentation placement.
+        display_position: Option<String>,
+        /// Optional chat presentation color.
+        display_color: Option<String>,
+    },
+
+    /// Durable chat event for create/edit/delete message state changes.
+    ChatMessageEvent {
+        event_id: String,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        event: ChatMessageEvent,
+        timestamp: DateTime<Utc>,
     },
 
     /// Room playback state changed (play, pause, seek, etc.)
@@ -427,6 +435,7 @@ impl RealtimeEvent {
     pub fn event_id(&self) -> &str {
         match self {
             Self::ChatMessage { event_id, .. }
+            | Self::ChatMessageEvent { event_id, .. }
             | Self::PlaybackStateChanged { event_id, .. }
             | Self::UserJoined { event_id, .. }
             | Self::GuestJoined { event_id, .. }
@@ -464,6 +473,7 @@ impl RealtimeEvent {
     pub const fn room_id(&self) -> Option<&RoomId> {
         match self {
             Self::ChatMessage { room_id, .. }
+            | Self::ChatMessageEvent { room_id, .. }
             | Self::PlaybackStateChanged { room_id, .. }
             | Self::UserJoined { room_id, .. }
             | Self::GuestJoined { room_id, .. }
@@ -512,6 +522,7 @@ impl RealtimeEvent {
             | Self::CacheInvalidate { .. }
             | Self::SystemNotification { .. } => RealtimeDeliveryRoute::Admin,
             Self::ChatMessage { .. }
+            | Self::ChatMessageEvent { .. }
             | Self::PlaybackStateChanged { .. }
             | Self::UserJoined { .. }
             | Self::GuestJoined { .. }
@@ -570,6 +581,7 @@ impl RealtimeEvent {
             | Self::KickUserFromRoom { user_id, .. }
             | Self::UserNotification { user_id, .. }
             | Self::ProviderCredentialChanged { user_id, .. } => Some(user_id),
+            Self::ChatMessageEvent { actor_user_id, .. } => Some(actor_user_id),
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::RoomBanned { banned_by, .. } => Some(banned_by),
@@ -591,6 +603,7 @@ impl RealtimeEvent {
     pub const fn timestamp(&self) -> &DateTime<Utc> {
         match self {
             Self::ChatMessage { timestamp, .. }
+            | Self::ChatMessageEvent { timestamp, .. }
             | Self::PlaybackStateChanged { timestamp, .. }
             | Self::UserJoined { timestamp, .. }
             | Self::GuestJoined { timestamp, .. }
@@ -676,6 +689,7 @@ impl RealtimeEvent {
     pub const fn event_type(&self) -> &'static str {
         match self {
             Self::ChatMessage { .. } => "chat_message",
+            Self::ChatMessageEvent { .. } => "chat_message_event",
             Self::PlaybackStateChanged { .. } => "playback_state_changed",
             Self::UserJoined { .. } => "user_joined",
             Self::GuestJoined { .. } => "guest_joined",
@@ -722,8 +736,8 @@ mod tests {
             username: "testuser".to_string(),
             message: "Hello world!".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         // Serialize to JSON
@@ -795,8 +809,8 @@ mod tests {
             "username": "testuser",
             "message": "Hello world!",
             "timestamp": Utc::now(),
-            "position": null,
-            "color": null
+            "display_position": null,
+            "display_color": null
         });
 
         let err = serde_json::from_value::<RealtimeEvent>(json)

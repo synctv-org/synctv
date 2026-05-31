@@ -323,8 +323,11 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "jwt.secret"
             | "livestream.hls_oss.access_key_id"
             | "livestream.hls_oss.secret_access_key"
+            | "file_storage.upload_token_secret"
             | "bootstrap.root_password"
-    ) || (current_path.starts_with("media_providers.") && is_secret_like_provider_key(base_key))
+    ) || (current_path.starts_with("file_storage.backends.")
+        && matches!(base_key, "access_key_id" | "secret_access_key"))
+        || (current_path.starts_with("media_providers.") && is_secret_like_provider_key(base_key))
 }
 
 fn resolve_secret_file_references_in_json_value(
@@ -518,6 +521,8 @@ pub struct Config {
     pub jwt: JwtConfig,
     pub logging: LoggingConfig,
     pub livestream: LivestreamConfig,
+    pub file_storage: FileStorageConfig,
+    pub chat: ChatConfig,
     pub webauthn: WebAuthnConfig,
     pub media_providers: MediaProvidersConfig,
     pub webrtc: WebRTCConfig,
@@ -548,6 +553,8 @@ impl std::fmt::Debug for Config {
             .field("jwt", &"<redacted>")
             .field("logging", &self.logging)
             .field("livestream", &self.livestream)
+            .field("file_storage", &self.file_storage)
+            .field("chat", &self.chat)
             .field("webauthn", &self.webauthn)
             .field("media_providers", &self.media_providers)
             .field("webrtc", &self.webrtc)
@@ -580,6 +587,8 @@ impl Default for Config {
             jwt: JwtConfig::default(),
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
+            file_storage: FileStorageConfig::default(),
+            chat: ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
@@ -691,7 +700,7 @@ pub struct TimeConfig {
     pub timezone: String,
 }
 
-/// Domain-level messaging rate limits for chat and danmaku.
+/// Domain-level messaging rate limits for chat.
 ///
 /// These limits are enforced by the shared chat/messaging business logic and
 /// therefore must come from configuration rather than hard-coded defaults.
@@ -700,9 +709,7 @@ pub struct TimeConfig {
 pub struct MessagingRateLimitConfig {
     /// Maximum chat messages allowed within the configured window.
     pub chat_per_second: u32,
-    /// Maximum danmaku messages allowed within the configured window.
-    pub danmaku_per_second: u32,
-    /// Sliding-window size for chat/danmaku enforcement.
+    /// Sliding-window size for chat enforcement.
     pub window_seconds: u64,
 }
 
@@ -710,7 +717,6 @@ impl Default for MessagingRateLimitConfig {
     fn default() -> Self {
         Self {
             chat_per_second: 10,
-            danmaku_per_second: 3,
             window_seconds: 1,
         }
     }
@@ -1399,6 +1405,221 @@ impl Default for LivestreamConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum FileStorageBackendType {
+    #[default]
+    Disabled,
+    Database,
+    S3,
+}
+
+impl FromStr for FileStorageBackendType {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "database" => Ok(Self::Database),
+            "s3" => Ok(Self::S3),
+            _ => Err(ConfigError::Message(format!(
+                "file storage backend type '{value}' must be one of: disabled, database, s3"
+            ))),
+        }
+    }
+}
+
+impl FileStorageBackendType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Database => "database",
+            Self::S3 => "s3",
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileStorageS3Config {
+    /// S3-compatible endpoint, for example `https://s3.amazonaws.com` or `https://minio.example.com`.
+    pub endpoint: String,
+    /// Access key ID used to presign file uploads.
+    pub access_key_id: String,
+    /// Secret access key used to presign file uploads.
+    pub secret_access_key: String,
+    /// Bucket name.
+    pub bucket: String,
+    /// S3 region. Use `auto` for providers that accept it.
+    pub region: String,
+    /// Object key prefix inside the bucket, for example `files/`.
+    pub base_path: String,
+    /// Optional public base URL for serving file objects.
+    pub public_base_url: Option<String>,
+    /// Presigned upload URL TTL in seconds.
+    pub upload_expires_seconds: i64,
+}
+
+impl Default for FileStorageS3Config {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            bucket: String::new(),
+            region: "auto".to_string(),
+            base_path: "files/".to_string(),
+            public_base_url: None,
+            upload_expires_seconds: 900,
+        }
+    }
+}
+
+impl std::fmt::Debug for FileStorageS3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileStorageS3Config")
+            .field("endpoint", &self.endpoint)
+            .field("access_key_id", &"<redacted>")
+            .field("secret_access_key", &"<redacted>")
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("base_path", &self.base_path)
+            .field("public_base_url", &self.public_base_url)
+            .field("upload_expires_seconds", &self.upload_expires_seconds)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileStorageBackendConfig {
+    /// Backend implementation type.
+    #[serde(rename = "type")]
+    pub backend_type: FileStorageBackendType,
+    /// S3-compatible settings used when `type=s3`.
+    pub s3: FileStorageS3Config,
+}
+
+impl Default for FileStorageBackendConfig {
+    fn default() -> Self {
+        Self {
+            backend_type: FileStorageBackendType::Disabled,
+            s3: FileStorageS3Config::default(),
+        }
+    }
+}
+
+impl std::fmt::Debug for FileStorageBackendConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileStorageBackendConfig")
+            .field("type", &self.backend_type)
+            .field("s3", &self.s3)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileStorageConfig {
+    /// Secret used to sign short-lived file upload session tokens.
+    /// When empty, startup derives a stable secret from `jwt.secret`.
+    pub upload_token_secret: String,
+    /// Fallback backend name used by product features with no explicit selection.
+    pub default_backend: String,
+    /// Backend name for chat image uploads.
+    pub chat_images_backend: String,
+    /// Backend name for user avatar uploads.
+    pub user_avatars_backend: String,
+    /// Backend name for video cover uploads.
+    pub video_covers_backend: String,
+    /// Backend name for room cover uploads.
+    pub room_covers_backend: String,
+    /// Backend name for playlist cover uploads.
+    pub playlist_covers_backend: String,
+    /// Seconds to keep uploaded file objects that have no active product reference.
+    /// Set to 0 to disable orphan cleanup.
+    pub unreferenced_object_retention_seconds: u64,
+    /// Registered file storage backends keyed by stable storage name.
+    pub backends: HashMap<String, FileStorageBackendConfig>,
+}
+
+impl Default for FileStorageConfig {
+    fn default() -> Self {
+        Self {
+            upload_token_secret: String::new(),
+            default_backend: "disabled".to_string(),
+            chat_images_backend: String::new(),
+            user_avatars_backend: String::new(),
+            video_covers_backend: String::new(),
+            room_covers_backend: String::new(),
+            playlist_covers_backend: String::new(),
+            unreferenced_object_retention_seconds: 86_400,
+            backends: HashMap::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for FileStorageConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileStorageConfig")
+            .field("upload_token_secret", &"<redacted>")
+            .field("default_backend", &self.default_backend)
+            .field("chat_images_backend", &self.chat_images_backend)
+            .field("user_avatars_backend", &self.user_avatars_backend)
+            .field("video_covers_backend", &self.video_covers_backend)
+            .field("room_covers_backend", &self.room_covers_backend)
+            .field("playlist_covers_backend", &self.playlist_covers_backend)
+            .field(
+                "unreferenced_object_retention_seconds",
+                &self.unreferenced_object_retention_seconds,
+            )
+            .field("backends", &self.backends)
+            .finish()
+    }
+}
+
+impl FileStorageConfig {
+    #[must_use]
+    pub fn backend_for_chat_images(&self) -> &str {
+        self.selected_backend_or_default(&self.chat_images_backend)
+    }
+
+    #[must_use]
+    pub fn backend_for_user_avatars(&self) -> &str {
+        self.selected_backend_or_default(&self.user_avatars_backend)
+    }
+
+    #[must_use]
+    pub fn backend_for_video_covers(&self) -> &str {
+        self.selected_backend_or_default(&self.video_covers_backend)
+    }
+
+    #[must_use]
+    pub fn backend_for_room_covers(&self) -> &str {
+        self.selected_backend_or_default(&self.room_covers_backend)
+    }
+
+    #[must_use]
+    pub fn backend_for_playlist_covers(&self) -> &str {
+        self.selected_backend_or_default(&self.playlist_covers_backend)
+    }
+
+    fn selected_backend_or_default<'a>(&'a self, selected: &'a str) -> &'a str {
+        let selected = selected.trim();
+        if selected.is_empty() {
+            self.default_backend.trim()
+        } else {
+            selected
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ChatConfig {}
 
 /// WebAuthn/passkey configuration.
 ///
@@ -2172,6 +2393,29 @@ impl Config {
                 }
             }
         };
+        let env_override_json = |name: &str,
+                                 target: &mut dyn std::any::Any|
+         -> Result<(), ConfigError> {
+            macro_rules! parse_json_into {
+                    ($ty:ty) => {
+                        if let Some(target) = target.downcast_mut::<$ty>() {
+                            if let Some(val) = get_env(name) {
+                                let parsed = serde_json::from_str::<$ty>(&val).map_err(|error| {
+                                    ConfigError::Message(format!(
+                                        "Invalid JSON value for environment variable {name}: {error}"
+                                    ))
+                                })?;
+                                *target = parsed;
+                            }
+                            return Ok(());
+                        }
+                    };
+                }
+            parse_json_into!(HashMap<String, FileStorageBackendConfig>);
+            Err(ConfigError::Message(format!(
+                "Unsupported environment JSON override target type for {name}"
+            )))
+        };
 
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
 
@@ -2573,6 +2817,49 @@ impl Config {
             "SYNCTV_LIVESTREAM_HLS_OSS_BASE_PATH",
             &mut self.livestream.hls_oss.base_path,
         );
+
+        env_override_str(
+            "SYNCTV_FILE_UPLOAD_TOKEN_SECRET",
+            &mut self.file_storage.upload_token_secret,
+        );
+        env_override_str_file(
+            "SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE",
+            "file_storage.upload_token_secret",
+            &mut self.file_storage.upload_token_secret,
+        )?;
+        env_override_str(
+            "SYNCTV_FILE_STORAGE_DEFAULT_BACKEND",
+            &mut self.file_storage.default_backend,
+        );
+        env_override_str(
+            "SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND",
+            &mut self.file_storage.chat_images_backend,
+        );
+        env_override_str(
+            "SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND",
+            &mut self.file_storage.user_avatars_backend,
+        );
+        env_override_str(
+            "SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND",
+            &mut self.file_storage.video_covers_backend,
+        );
+        env_override_str(
+            "SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND",
+            &mut self.file_storage.room_covers_backend,
+        );
+        env_override_str(
+            "SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND",
+            &mut self.file_storage.playlist_covers_backend,
+        );
+        env_override_parse(
+            "SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS",
+            &mut self.file_storage.unreferenced_object_retention_seconds,
+        )?;
+        env_override_json(
+            "SYNCTV_FILE_STORAGE_BACKENDS",
+            &mut self.file_storage.backends,
+        )?;
+
         env_override_parse(
             "SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS",
             &mut self.livestream.flv_max_connection_duration_seconds,
@@ -2662,10 +2949,6 @@ impl Config {
         env_override_parse(
             "SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND",
             &mut self.messaging_rate_limits.chat_per_second,
-        )?;
-        env_override_parse(
-            "SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND",
-            &mut self.messaging_rate_limits.danmaku_per_second,
         )?;
         env_override_parse(
             "SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS",
@@ -3054,6 +3337,17 @@ impl Config {
         } else {
             format!("{hls_oss_base_path}/")
         };
+
+        for backend in self.file_storage.backends.values_mut() {
+            let file_storage_s3_base_path = backend.s3.base_path.trim().trim_start_matches('/');
+            backend.s3.base_path = if file_storage_s3_base_path.is_empty() {
+                String::new()
+            } else if file_storage_s3_base_path.ends_with('/') {
+                file_storage_s3_base_path.to_string()
+            } else {
+                format!("{file_storage_s3_base_path}/")
+            };
+        }
 
         let proxy_slice_cache_dir = self.proxy_slice_cache.file_cache_dir.trim();
         self.proxy_slice_cache.file_cache_dir = if proxy_slice_cache_dir.is_empty() {
@@ -3705,11 +3999,6 @@ impl Config {
         if self.messaging_rate_limits.chat_per_second == 0 {
             errors.push("messaging_rate_limits.chat_per_second must be greater than 0".to_string());
         }
-        if self.messaging_rate_limits.danmaku_per_second == 0 {
-            errors.push(
-                "messaging_rate_limits.danmaku_per_second must be greater than 0".to_string(),
-            );
-        }
         if self.messaging_rate_limits.window_seconds == 0 {
             errors.push("messaging_rate_limits.window_seconds must be greater than 0".to_string());
         }
@@ -3792,6 +4081,93 @@ impl Config {
                     );
                 }
             }
+        }
+
+        let mut validate_selected_file_backend = |field: &str, name: &str| {
+            let name = name.trim();
+            if name.is_empty() {
+                errors.push(format!("{field} must not be empty"));
+            } else if name != "disabled" && !self.file_storage.backends.contains_key(name) {
+                errors.push(format!(
+                    "{field} references unknown file storage backend '{name}'"
+                ));
+            }
+        };
+        validate_selected_file_backend(
+            "file_storage.default_backend",
+            &self.file_storage.default_backend,
+        );
+        validate_selected_file_backend(
+            "file_storage.chat_images_backend",
+            self.file_storage.backend_for_chat_images(),
+        );
+        validate_selected_file_backend(
+            "file_storage.user_avatars_backend",
+            self.file_storage.backend_for_user_avatars(),
+        );
+        validate_selected_file_backend(
+            "file_storage.video_covers_backend",
+            self.file_storage.backend_for_video_covers(),
+        );
+        validate_selected_file_backend(
+            "file_storage.room_covers_backend",
+            self.file_storage.backend_for_room_covers(),
+        );
+        validate_selected_file_backend(
+            "file_storage.playlist_covers_backend",
+            self.file_storage.backend_for_playlist_covers(),
+        );
+
+        for (name, backend) in &self.file_storage.backends {
+            let trimmed_name = name.trim();
+            if trimmed_name.is_empty() || trimmed_name != name {
+                errors
+                    .push("file_storage.backends keys must be non-empty trimmed names".to_string());
+            }
+            if name == "disabled" && backend.backend_type != FileStorageBackendType::Disabled {
+                errors.push("file_storage.backends.disabled must use type='disabled'".to_string());
+            }
+            if backend.backend_type == FileStorageBackendType::S3 {
+                let s3 = &backend.s3;
+                if s3.endpoint.trim().is_empty() {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.endpoint must be set when type='s3'"
+                    ));
+                }
+                if s3.bucket.trim().is_empty() {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.bucket must be set when type='s3'"
+                    ));
+                }
+                if s3.access_key_id.trim().is_empty() {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.access_key_id must be set when type='s3'"
+                    ));
+                }
+                if s3.secret_access_key.trim().is_empty() {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.secret_access_key must be set when type='s3'"
+                    ));
+                }
+                if s3.region.trim().is_empty() {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.region must be set when type='s3'"
+                    ));
+                }
+                if s3.upload_expires_seconds <= 0 {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.upload_expires_seconds must be greater than 0"
+                    ));
+                }
+            }
+        }
+        if self.file_storage.unreferenced_object_retention_seconds > 0
+            && self.file_storage.unreferenced_object_retention_seconds < 3600
+        {
+            errors.push(
+                "file_storage.unreferenced_object_retention_seconds must be 0 or at least 3600"
+                    .to_string(),
+            );
         }
 
         if self.proxy_slice_cache.file_backend_enabled {
@@ -4495,7 +4871,7 @@ impl Default for ProxySliceCacheConfig {
 /// HTTP API rate limit configuration for different endpoint categories.
 ///
 /// This is separate from the domain-level `RateLimitConfig` in
-/// `synctv_core::service::rate_limit` (which controls chat/danmaku rates).
+/// `synctv_core::service::rate_limit` (which controls chat rates).
 /// This struct configures the per-category request rate limits applied by the
 /// shared HTTP request execution path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4755,6 +5131,8 @@ mod tests {
             jwt: JwtConfig::default(),
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
+            file_storage: FileStorageConfig::default(),
+            chat: ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
@@ -4797,6 +5175,8 @@ mod tests {
             jwt: JwtConfig::default(),
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
+            file_storage: FileStorageConfig::default(),
+            chat: ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
@@ -5173,6 +5553,8 @@ mod tests {
                 hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },
+            file_storage: FileStorageConfig::default(),
+            chat: ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
@@ -6211,15 +6593,6 @@ jwt:
             .any(|e| e.contains("messaging_rate_limits.chat_per_second")));
 
         config.messaging_rate_limits.chat_per_second = 1;
-        config.messaging_rate_limits.danmaku_per_second = 0;
-        let errors = config
-            .validate()
-            .expect_err("danmaku rate limit must be validated");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("messaging_rate_limits.danmaku_per_second")));
-
-        config.messaging_rate_limits.danmaku_per_second = 1;
         config.messaging_rate_limits.window_seconds = 0;
         let errors = config.validate().expect_err("window must be validated");
         assert!(errors
@@ -6231,13 +6604,11 @@ jwt:
     fn test_from_env_overrides_messaging_rate_limits() {
         let config = Config::from_env_map(&env_map(&[
             ("SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND", "17"),
-            ("SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND", "9"),
             ("SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS", "4"),
         ]))
         .expect("messaging rate env overrides should parse");
 
         assert_eq!(config.messaging_rate_limits.chat_per_second, 17);
-        assert_eq!(config.messaging_rate_limits.danmaku_per_second, 9);
         assert_eq!(config.messaging_rate_limits.window_seconds, 4);
     }
 
@@ -6535,6 +6906,10 @@ jwt:
             write_secret("database.password", "database-password-from-env-file");
         let redis_url = write_secret("redis.url", "redis://:secret@redis.example.com:6379/0");
         let redis_password = write_secret("redis.password", "redis-password-from-env-file");
+        let chat_upload_token_secret = write_secret(
+            "file-upload-token.secret",
+            "chat-upload-token-secret-from-env-file",
+        );
         let root_password = write_secret("root.password", "RootPassword12345");
 
         let config = Config::from_env_map(&env_map(&[
@@ -6579,6 +6954,10 @@ jwt:
                 redis_password.to_str().expect("utf-8 path"),
             ),
             (
+                "SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE",
+                chat_upload_token_secret.to_str().expect("utf-8 path"),
+            ),
+            (
                 "SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE",
                 root_password.to_str().expect("utf-8 path"),
             ),
@@ -6610,6 +6989,10 @@ jwt:
         assert_eq!(config.database.password, "database-password-from-env-file");
         assert_eq!(config.redis.url, "redis://:secret@redis.example.com:6379/0");
         assert_eq!(config.redis.password, "redis-password-from-env-file");
+        assert_eq!(
+            config.file_storage.upload_token_secret,
+            "chat-upload-token-secret-from-env-file"
+        );
         assert_eq!(config.bootstrap.root_password, "RootPassword12345");
     }
 
@@ -6947,6 +7330,92 @@ jwt:
         assert_eq!(config.livestream.flv_max_connection_duration_seconds, 7200);
         assert_eq!(config.livestream.flv_write_timeout_seconds, 45);
         assert_eq!(config.livestream.public_rtmp_host, "stream.example.com");
+    }
+
+    #[test]
+    fn test_from_env_overrides_file_s3_storage() {
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_FILE_STORAGE_DEFAULT_BACKEND", "s3_public"),
+            ("SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND", "s3_public"),
+            (
+                "SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS",
+                "7200",
+            ),
+            ("SYNCTV_FILE_UPLOAD_TOKEN_SECRET", "upload-token-secret"),
+            (
+                "SYNCTV_FILE_STORAGE_BACKENDS",
+                r#"{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","bucket":"synctv-files","region":"auto","base_path":"/synctv/files","access_key_id":"access-key","secret_access_key":"secret-key","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":600}}}"#,
+            ),
+        ]))
+        .expect("file storage S3 env overrides should parse");
+
+        assert_eq!(config.file_storage.default_backend, "s3_public");
+        assert_eq!(config.file_storage.backend_for_chat_images(), "s3_public");
+        assert_eq!(
+            config.file_storage.upload_token_secret,
+            "upload-token-secret"
+        );
+        assert_eq!(
+            config.file_storage.unreferenced_object_retention_seconds,
+            7200
+        );
+        let s3 = &config
+            .file_storage
+            .backends
+            .get("s3_public")
+            .expect("s3 backend")
+            .s3;
+        assert_eq!(s3.endpoint, "https://s3.example.com");
+        assert_eq!(s3.bucket, "synctv-files");
+        assert_eq!(s3.region, "auto");
+        assert_eq!(s3.base_path, "synctv/files/");
+        assert_eq!(s3.access_key_id, "access-key");
+        assert_eq!(s3.secret_access_key, "secret-key");
+        assert_eq!(
+            s3.public_base_url.as_deref(),
+            Some("https://cdn.example.com/files")
+        );
+        assert_eq!(s3.upload_expires_seconds, 600);
+    }
+
+    #[test]
+    fn test_file_storage_backend_accepts_disabled_database_and_s3() {
+        assert_eq!(
+            "disabled".parse::<FileStorageBackendType>().unwrap(),
+            FileStorageBackendType::Disabled
+        );
+        assert_eq!(
+            "database".parse::<FileStorageBackendType>().unwrap(),
+            FileStorageBackendType::Database
+        );
+        assert_eq!(
+            "s3".parse::<FileStorageBackendType>().unwrap(),
+            FileStorageBackendType::S3
+        );
+        assert!("metadata".parse::<FileStorageBackendType>().is_err());
+        assert_eq!(
+            FileStorageConfig::default().backend_for_chat_images(),
+            "disabled"
+        );
+        assert_eq!(
+            FileStorageConfig::default().unreferenced_object_retention_seconds,
+            86_400
+        );
+    }
+
+    #[test]
+    fn test_validate_file_storage_unreferenced_retention_floor() {
+        let mut config = valid_prod_config();
+        config.file_storage.unreferenced_object_retention_seconds = 3599;
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("file_storage.unreferenced_object_retention_seconds")),
+            "Expected unreferenced file retention validation error, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -7537,6 +8006,58 @@ jwt:
                 .iter()
                 .any(|e| e.contains("hls_oss.secret_access_key")),
             "Expected hls_oss.secret_access_key validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_file_s3_storage_requires_required_fields() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = false;
+        config.cluster.secret.clear();
+        config.file_storage.default_backend = "broken_s3".to_string();
+        config.file_storage.chat_images_backend = "broken_s3".to_string();
+        config.file_storage.backends.insert(
+            "broken_s3".to_string(),
+            FileStorageBackendConfig {
+                backend_type: FileStorageBackendType::S3,
+                s3: FileStorageS3Config {
+                    upload_expires_seconds: 0,
+                    ..FileStorageS3Config::default()
+                },
+            },
+        );
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("file_storage.backends.broken_s3.s3.endpoint")),
+            "Expected chat S3 endpoint validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("file_storage.backends.broken_s3.s3.bucket")),
+            "Expected chat S3 bucket validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("file_storage.backends.broken_s3.s3.access_key_id")),
+            "Expected chat S3 access_key_id validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("file_storage.backends.broken_s3.s3.secret_access_key")),
+            "Expected chat S3 secret_access_key validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("file_storage.backends.broken_s3.s3.upload_expires_seconds")),
+            "Expected chat S3 upload_expires_seconds validation error, got: {errors:?}"
         );
     }
 }

@@ -2330,6 +2330,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::CreatePlaylistRequest {
                     name: req.name,
+                    description: String::new(),
                     parent_id: req.parent_id,
                     source_provider: req.source_provider,
                     source_config: req.source_config_json,
@@ -2355,6 +2356,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::CreatePlaylistRequest {
                     name: req.name,
+                    description: String::new(),
                     parent_id: req.parent_id,
                     source_provider: "alist".to_string(),
                     source_config: Self::alist_source_config(
@@ -2384,6 +2386,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::CreatePlaylistRequest {
                     name: req.name,
+                    description: String::new(),
                     parent_id: req.parent_id,
                     source_provider: "emby".to_string(),
                     source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
@@ -2408,6 +2411,7 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::UpdatePlaylistRequest {
                     playlist_id: req.playlist_id,
                     name: req.name.unwrap_or_default(),
+                    description: String::new(),
                 },
                 &validated.user_id,
             )
@@ -2509,6 +2513,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: req.source_provider,
                     provider_instance_name: req.provider_instance_name,
                     source_config: req.source_config_json,
@@ -2534,6 +2539,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: "direct_url".to_string(),
                     provider_instance_name: String::new(),
                     source_config: serde_json::to_vec(&serde_json::json!({ "url": req.url }))
@@ -2563,6 +2569,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: "alist".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::alist_source_config(
@@ -2592,6 +2599,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: "emby".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
@@ -2617,6 +2625,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::bilibili_video_source_config(
@@ -2644,6 +2653,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::bilibili_pgc_source_config(req.epid, req.cid, req.shared)?,
@@ -2669,6 +2679,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    description: String::new(),
                     source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::bilibili_live_source_config(req.room_live_id, req.shared)?,
@@ -2693,6 +2704,7 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::EditMediaRequest {
                     media_id: req.media_id,
                     name: req.name,
+                    description: String::new(),
                 },
                 &validated.user_id,
             )

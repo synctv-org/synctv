@@ -1,19 +1,56 @@
-use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
+use synctv_core::models::{ChatMessageEvent, MediaId, PlaylistId, RoomId, UserId};
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ResourceInvalidation {
     PlaybackState,
     PlaybackSnapshot(PlaybackSnapshotInvalidation),
     RoomSettings,
     PlaylistItems,
     RoomMembers,
+    ChatEvents {
+        event: Box<ChatMessageEvent>,
+    },
     ProviderCredential {
         user_id: UserId,
         provider: String,
         server_id: String,
     },
 }
+
+impl PartialEq for ResourceInvalidation {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::PlaybackState, Self::PlaybackState)
+            | (Self::RoomSettings, Self::RoomSettings)
+            | (Self::PlaylistItems, Self::PlaylistItems)
+            | (Self::RoomMembers, Self::RoomMembers) => true,
+            (Self::PlaybackSnapshot(left), Self::PlaybackSnapshot(right)) => left == right,
+            (Self::ChatEvents { event: left }, Self::ChatEvents { event: right }) => {
+                left.event_id == right.event_id
+            }
+            (
+                Self::ProviderCredential {
+                    user_id: left_user,
+                    provider: left_provider,
+                    server_id: left_server,
+                },
+                Self::ProviderCredential {
+                    user_id: right_user,
+                    provider: right_provider,
+                    server_id: right_server,
+                },
+            ) => {
+                left_user == right_user
+                    && left_provider == right_provider
+                    && left_server == right_server
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ResourceInvalidation {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaybackSnapshotInvalidation {
@@ -60,6 +97,11 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
         | RealtimeEvent::UserLeft { .. }
         | RealtimeEvent::GuestLeft { .. }
         | RealtimeEvent::PermissionChanged { .. } => vec![ResourceInvalidation::RoomMembers],
+        RealtimeEvent::ChatMessageEvent { event, .. } => {
+            vec![ResourceInvalidation::ChatEvents {
+                event: Box::new(event.clone()),
+            }]
+        }
         _ => Vec::new(),
     }
 }
@@ -132,7 +174,10 @@ fn push_unique(invalidations: &mut Vec<ResourceInvalidation>, invalidation: Reso
 mod tests {
     use super::*;
     use chrono::Utc;
-    use synctv_core::models::{Playlist, RoomPlaybackState};
+    use synctv_core::models::{
+        ChatEventKind, ChatMessage, ChatMessageStatus, ChatMessageType, ChatMessageWithImages,
+        Playlist, RoomPlaybackState,
+    };
 
     fn room_id() -> RoomId {
         RoomId::expect_positive(101)
@@ -140,6 +185,38 @@ mod tests {
 
     fn user_id() -> UserId {
         UserId::expect_positive(202)
+    }
+
+    fn chat_event() -> ChatMessageEvent {
+        let now = Utc::now();
+        ChatMessageEvent {
+            event_id: "chat-event".to_string(),
+            room_id: room_id(),
+            actor_user_id: user_id(),
+            kind: ChatEventKind::Created,
+            message: ChatMessageWithImages {
+                message: ChatMessage {
+                    id: 1,
+                    room_id: room_id(),
+                    user_id: Some(user_id()),
+                    client_message_id: Some("client-message".to_string()),
+                    content: "hello".to_string(),
+                    message_type: ChatMessageType::Text,
+                    status: ChatMessageStatus::Active,
+                    version: 1,
+                    reply_to_message_id: None,
+                    reply_to_message_created_at: None,
+                    metadata: serde_json::Value::Object(Default::default()),
+                    edited_at: None,
+                    deleted_at: None,
+                    deleted_by: None,
+                    delete_reason: None,
+                    created_at: now,
+                },
+                images: Vec::new(),
+            },
+            occurred_at: now,
+        }
     }
 
     #[test]
@@ -165,6 +242,25 @@ mod tests {
     }
 
     #[test]
+    fn chat_message_event_invalidates_chat_events() {
+        let event = chat_event();
+        let realtime = RealtimeEvent::ChatMessageEvent {
+            event_id: event.event_id.clone(),
+            room_id: event.room_id,
+            actor_user_id: event.actor_user_id,
+            event: event.clone(),
+            timestamp: event.occurred_at,
+        };
+
+        assert_eq!(
+            resource_invalidations_for_room_event(&realtime),
+            vec![ResourceInvalidation::ChatEvents {
+                event: Box::new(event)
+            }]
+        );
+    }
+
+    #[test]
     fn playlist_update_invalidates_items_and_dependent_snapshot() {
         let playlist_id = PlaylistId::expect_positive(303);
         let event = RealtimeEvent::PlaylistUpdated {
@@ -177,6 +273,8 @@ mod tests {
                 room_id: room_id(),
                 creator_id: Some(user_id()),
                 name: "list".to_string(),
+                description: String::new(),
+                cover_file_reference_id: None,
                 parent_id: None,
                 position: 0.0,
                 source_provider: None,

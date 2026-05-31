@@ -102,7 +102,9 @@ pub mod test_helpers;
 
 pub use cache::KeyBuilder;
 pub use config::{
-    Config, GrpcRateLimitConfig, HttpRateLimitConfig, PublicIdsConfig, PublicIdsSqidsConfig,
+    ChatConfig, Config, FileStorageBackendConfig, FileStorageBackendType, FileStorageConfig,
+    FileStorageS3Config, GrpcRateLimitConfig, HttpRateLimitConfig, PublicIdsConfig,
+    PublicIdsSqidsConfig,
 };
 pub use error::{Error, InternalExt, Result};
 pub use public_id::{PublicIdCodec, PublicIdKind, PublicIdType};

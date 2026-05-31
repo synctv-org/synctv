@@ -194,7 +194,6 @@ fn mask_database_url(url: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::LoggingConfig;
-    use sqlx::Row;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
@@ -233,13 +232,12 @@ mod tests {
             .await
             .expect("should acquire dedicated ddl connection");
 
-        let row = sqlx::query("SHOW statement_timeout")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("should query session statement timeout");
-        let timeout: String = row
-            .try_get(0)
-            .expect("statement_timeout should be returned");
+        let timeout = sqlx::query_scalar!(
+            r#"SELECT current_setting('statement_timeout') as "statement_timeout!""#
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("should query session statement timeout");
 
         assert_eq!(
             timeout, "0",
@@ -275,7 +273,7 @@ mod tests {
             let mut conn = acquire_unbounded_ddl_connection(&pool)
                 .await
                 .expect("should acquire dedicated ddl connection");
-            sqlx::query("SELECT 1")
+            sqlx::query_scalar!(r#"SELECT 1 as "one!""#)
                 .fetch_one(&mut *conn)
                 .await
                 .expect("ddl connection should stay usable");
@@ -285,13 +283,12 @@ mod tests {
             .acquire()
             .await
             .expect("should reacquire pooled connection");
-        let row = sqlx::query("SHOW statement_timeout")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("should query reset statement timeout");
-        let timeout: String = row
-            .try_get(0)
-            .expect("statement_timeout should be returned");
+        let timeout = sqlx::query_scalar!(
+            r#"SELECT current_setting('statement_timeout') as "statement_timeout!""#
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("should query reset statement timeout");
 
         assert_ne!(
             timeout, "0",
@@ -333,13 +330,12 @@ mod tests {
             .acquire()
             .await
             .expect("should acquire pooled connection");
-        let row = sqlx::query("SHOW client_min_messages")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("should query session client_min_messages");
-        let level: String = row
-            .try_get(0)
-            .expect("client_min_messages should be returned");
+        let level = sqlx::query_scalar!(
+            r#"SELECT current_setting('client_min_messages') as "client_min_messages!""#
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("should query session client_min_messages");
 
         assert_eq!(
             level, "warning",
@@ -381,7 +377,7 @@ mod tests {
             let mut conn = acquire_unbounded_ddl_connection(&pool)
                 .await
                 .expect("should acquire dedicated ddl connection");
-            sqlx::query("SET client_min_messages = 'notice'")
+            sqlx::query!("SET client_min_messages = 'notice'")
                 .execute(&mut *conn)
                 .await
                 .expect("ddl connection should allow session-level override during migration work");
@@ -391,13 +387,12 @@ mod tests {
             .acquire()
             .await
             .expect("should reacquire pooled connection");
-        let row = sqlx::query("SHOW client_min_messages")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("should query reset client_min_messages");
-        let level: String = row
-            .try_get(0)
-            .expect("client_min_messages should be returned");
+        let level = sqlx::query_scalar!(
+            r#"SELECT current_setting('client_min_messages') as "client_min_messages!""#
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("should query reset client_min_messages");
 
         assert_eq!(
             level, "warning",

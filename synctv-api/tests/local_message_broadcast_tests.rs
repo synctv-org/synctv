@@ -86,8 +86,8 @@ async fn test_local_subscribe_and_broadcast() {
         username: "test_user".to_string(),
         message: "Hello local!".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let result = manager.broadcast(event.clone());
@@ -159,8 +159,8 @@ async fn test_multiple_subscribers_receive_broadcasts() {
         username: "broadcaster".to_string(),
         message: "Hello everyone!".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let result = manager.broadcast(event);
@@ -288,8 +288,8 @@ async fn test_local_message_broadcaster_basic() {
         username: "user1".to_string(),
         message: "Hello from local!".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let sent = broadcaster.broadcast(&room_id, &event);
@@ -333,8 +333,8 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
         username: "broadcaster".to_string(),
         message: "Broadcast to all".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let sent = broadcaster.broadcast(&room_id, &event);

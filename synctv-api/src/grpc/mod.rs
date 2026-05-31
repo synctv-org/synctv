@@ -1334,6 +1334,8 @@ mod tests {
         validate_cluster_grpc_runtime_requirements, wait_for_grpc_shutdown,
         FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
+    use crate::grpc::ClientServiceImpl;
+    use crate::impls::{client::RoomActor, ClientApiImpl, RequestExecutor};
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
         RealtimeEventService, RealtimeMetrics,
@@ -1341,22 +1343,160 @@ mod tests {
     use async_trait::async_trait;
     use std::net::SocketAddr;
     use std::sync::Arc;
+    use std::time::Duration;
     use synctv_core::cache::UsernameCache;
-    use synctv_core::models::{RoomId, UserId};
+    use synctv_core::models::{RoomId, SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::provider::{
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderSet, RtmpProvider,
     };
-    use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
+    use synctv_core::repository::{
+        ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
+        SettingsRepository, UserProviderCredentialRepository, UserRepository,
+    };
     use synctv_core::service::{
-        auth::JwtService, AuditService, ContentFilter, RateLimitConfig, RateLimiter,
-        RemoteProviderManager, RoomService, SettingsRegistry, SettingsService, UserService,
+        auth::{BruteForceProtection, JwtService, JwtValidator},
+        AuditService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
+        PermissionService, RateLimitConfig, RateLimiter, RemoteProviderManager,
+        RequestRateLimiterService, RoomService, RoomSettingsService, SettingsRegistry,
+        SettingsService, UserService,
     };
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
-    use synctv_realtime::sync::{BroadcastResult, RealtimeEvent};
+    use synctv_proto::client::room_service_server::RoomService as GrpcRoomService;
+    use synctv_realtime::sync::{
+        BroadcastResult, ConnectionLimits, ConnectionManager, RealtimeEvent, RealtimeManager,
+    };
     use tokio::sync::{broadcast, mpsc};
+    use tokio_stream::StreamExt;
+    use tonic::Request;
+
+    fn make_chat_watch_user(username: &str) -> User {
+        let now = chrono::Utc::now();
+        User {
+            id: UserId::new(),
+            username: username.to_string(),
+            email: Some(format!("{username}@test.com")),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            avatar_file_reference_id: None,
+            status: UserStatus::Active,
+            signup_method: SignupMethod::Email,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+        }
+    }
+
+    fn make_chat_watch_user_service(pool: &sqlx::PgPool) -> UserService {
+        let jwt_service =
+            JwtService::new("test-secret-key-for-grpc-chat-watch-minimum-32-chars").expect("jwt");
+        let username_cache =
+            UsernameCache::local_only("test:grpc-chat:username:".to_string(), 128, 60);
+        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
+        let mut user_service = UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            synctv_core::config::PasswordComplexityConfig::default(),
+            token_blacklist,
+            synctv_core::cache::KeyBuilder::new("test:grpc-chat"),
+            BruteForceProtection::in_memory("test:grpc-chat:auth".to_string()),
+        );
+        user_service.set_password_hasher(Arc::new(
+            synctv_core::service::auth::TestPasswordHasher::new(),
+        ));
+        user_service
+    }
+
+    fn make_chat_watch_chat_service(
+        pool: &sqlx::PgPool,
+        user_service: Arc<UserService>,
+        audit_service: Option<Arc<AuditService>>,
+    ) -> Arc<synctv_core::service::ChatService> {
+        let room_settings_repo = RoomSettingsRepository::new(pool.clone());
+        let mut permission_service = PermissionService::new(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool.clone()),
+            None,
+            1000,
+            300,
+        );
+        permission_service.set_room_settings_repo(room_settings_repo.clone());
+
+        Arc::new(synctv_core::service::ChatService::new(
+            Arc::new(ChatRepository::new(pool.clone())),
+            synctv_core::service::chat::ChatRuntime {
+                rate_limiter: Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string()))
+                    as Arc<dyn RequestRateLimiterService>,
+                rate_limit_config: RateLimitConfig::default(),
+                content_filter: ContentFilter::new(),
+            },
+            synctv_core::service::chat::ChatDependencies {
+                permission_service,
+                room_settings_service: RoomSettingsService::new(
+                    room_settings_repo,
+                    None,
+                    Arc::new(NotificationService::default()),
+                    None,
+                    None,
+                ),
+                user_service,
+                audit_service,
+                notification_service: NotificationService::default(),
+            },
+        ))
+    }
+
+    fn make_chat_watch_client_api(
+        user_service: Arc<UserService>,
+        room_service: Arc<RoomService>,
+        chat_service: Arc<synctv_core::service::ChatService>,
+        event_service: Arc<dyn RealtimeEventService>,
+    ) -> ClientApiImpl {
+        let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+        connection_manager.start();
+        let security_pipeline =
+            synctv_core::service::auth::SecurityPipelineBuilder::new(user_service.clone())
+                .with_token_blacklist(
+                    user_service.token_blacklist_store(),
+                    user_service.key_builder().clone(),
+                )
+                .build()
+                .expect("test security pipeline");
+        let request_executor = Arc::new(RequestExecutor::new(
+            Arc::new(synctv_core::Config::default()),
+            Arc::new(JwtValidator::new(Arc::new(
+                JwtService::new("test-secret-key-for-grpc-chat-watch-minimum-32-chars")
+                    .expect("jwt"),
+            ))),
+            Arc::new(security_pipeline),
+            Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string())),
+        ));
+        ClientApiImpl::new(
+            user_service,
+            room_service,
+            connection_manager,
+            Arc::new(synctv_core::Config::default()),
+            None,
+            JwtService::new("test-secret-key-for-grpc-chat-watch-minimum-32-chars").expect("jwt"),
+            None,
+            None,
+            None,
+            Arc::new(crate::PublicIdCodec::default_for_tests()),
+        )
+        .with_chat_service(Some(chat_service))
+        .with_realtime_event_service(event_service)
+        .with_request_executor(request_executor)
+    }
 
     #[test]
     fn test_map_api_error_timeout_maps_to_deadline_exceeded() {
@@ -1694,10 +1834,9 @@ mod tests {
                 b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
             ));
         let content_filter =
-            ContentFilter::with_config(17, 9, Some(vec!["blocked".to_string()]), false);
+            ContentFilter::with_config(17, Some(vec!["blocked".to_string()]), false);
         let messaging_rate_limit_config = RateLimitConfig {
             chat_per_second: 23,
-            danmaku_per_second: 7,
             window_seconds: 11,
         };
         let mut fallback_config = context.config.as_ref().clone();
@@ -1812,26 +1951,10 @@ mod tests {
         assert_eq!(
             http_state
                 .shared_api_runtime
-                .content_filter
-                .max_danmaku_length,
-            content_filter.max_danmaku_length,
-            "fallback HTTP state must preserve custom danmaku filtering limits"
-        );
-        assert_eq!(
-            http_state
-                .shared_api_runtime
                 .messaging_rate_limit_config
                 .chat_per_second,
             messaging_rate_limit_config.chat_per_second,
             "fallback HTTP state must preserve configured chat rate limits"
-        );
-        assert_eq!(
-            http_state
-                .shared_api_runtime
-                .messaging_rate_limit_config
-                .danmaku_per_second,
-            messaging_rate_limit_config.danmaku_per_second,
-            "fallback HTTP state must preserve configured danmaku rate limits"
         );
         assert_eq!(
             http_state
@@ -1885,6 +2008,159 @@ mod tests {
                 < f64::EPSILON,
             "fallback HTTP state must preserve cache watermark"
         );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_watch_chat_events_receives_live_send_event() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let user_service = Arc::new(make_chat_watch_user_service(&pool));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
+        let chat_service =
+            make_chat_watch_chat_service(&pool, user_service.clone(), Some(audit_service));
+        let event_service: Arc<dyn RealtimeEventService> = Arc::new(
+            RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
+                distributed_enabled: false,
+                node_id: "grpc-chat-watch".to_string(),
+                dedup_window: Duration::from_secs(30),
+                critical_channel_capacity: 64,
+                publish_channel_capacity: 256,
+                key_prefix: "test:grpc-chat:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 256,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
+            .await
+            .expect("realtime manager"),
+        );
+        let client_api = Arc::new(make_chat_watch_client_api(
+            user_service.clone(),
+            room_service.clone(),
+            chat_service.clone(),
+            event_service.clone(),
+        ));
+        let client_service = ClientServiceImpl::new(
+            (*user_service).clone(),
+            (*room_service).clone(),
+            chat_service.clone(),
+            Some(event_service),
+            Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string())),
+            RateLimitConfig::default(),
+            ContentFilter::new(),
+            Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+            None,
+            None,
+            None,
+            Arc::new(synctv_core::Config::default()),
+            client_api.clone(),
+        );
+
+        let owner = user_repo
+            .create(&make_chat_watch_user("grpc_watch_owner"))
+            .await
+            .unwrap();
+        let token = client_api
+            .jwt_service
+            .sign_token(
+                &owner.id,
+                synctv_core::service::auth::TokenType::Access,
+                owner.password_version,
+            )
+            .expect("access token");
+        let (room, _) = room_service
+            .create_room(
+                "gRPC Chat Watch Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let public_room_id = client_api
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id should encode");
+        let mut request = Request::new(crate::proto::client::WatchChatEventsRequest::default());
+        request.metadata_mut().insert(
+            "x-room-id",
+            MetadataValue::try_from(public_room_id.as_str()).unwrap(),
+        );
+        request.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {token}")).unwrap(),
+        );
+
+        let response = client_service
+            .watch_chat_events(request)
+            .await
+            .expect("watch should start");
+        let mut stream = response.into_inner();
+        let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("initial observed event")
+            .expect("stream item")
+            .expect("watch event");
+        assert!(matches!(
+            first.event,
+            Some(crate::proto::client::watch_chat_events_event::Event::Observed(_))
+        ));
+
+        let sent = client_api
+            .send_chat_message_for_actor(
+                &RoomActor::User {
+                    room_id: room.id,
+                    user_id: owner.id,
+                },
+                crate::proto::client::SendChatMessageRequest {
+                    client_message_id: "grpc-chat-live-send-1".to_string(),
+                    content: "grpc live push".to_string(),
+                    metadata: br"{}".to_vec(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("chat send should succeed")
+            .event
+            .expect("chat send should return event");
+
+        let mut rendered = String::new();
+        for _ in 0..8 {
+            let item = tokio::time::timeout(Duration::from_secs(2), stream.next())
+                .await
+                .expect("grpc watch event should arrive")
+                .expect("stream item")
+                .expect("watch event");
+            if let Some(event) = item.event.as_ref() {
+                match event {
+                    crate::proto::client::watch_chat_events_event::Event::Changed(changed) => {
+                        if let Some(crate::proto::client::resource_changed::Payload::ChatEvent(
+                            chat,
+                        )) = changed.payload.as_ref()
+                        {
+                            if let Some(message) = chat.message.as_ref() {
+                                rendered.push_str(&message.content);
+                            }
+                        }
+                    }
+                    crate::proto::client::watch_chat_events_event::Event::Observed(_) => {}
+                    crate::proto::client::watch_chat_events_event::Event::Error(error) => {
+                        panic!("watch returned error: {error:?}");
+                    }
+                }
+            }
+            if rendered.contains("grpc live push") {
+                break;
+            }
+        }
+
+        assert!(rendered.contains("grpc live push"));
+        assert_eq!(sent.event_id.trim(), sent.event_id.as_str());
     }
 
     #[test]

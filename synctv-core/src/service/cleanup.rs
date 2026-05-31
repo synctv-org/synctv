@@ -21,8 +21,12 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{LeaderCheck, SettingsRegistry};
-use crate::{InternalExt, Result};
+use super::{FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry};
+use crate::{
+    models::{ChatImage, FileReferenceTarget},
+    repository::FileStorageRepository,
+    InternalExt, Result,
+};
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -41,6 +45,8 @@ pub struct CleanupConfig {
     pub notification_max_retention_days: u32,
     /// Maximum chat messages to keep per room (0 = unlimited)
     pub chat_max_messages_per_room: i64,
+    /// Seconds to keep uploaded file objects that have no active product reference (0 = disabled)
+    pub unreferenced_file_retention_seconds: u64,
 }
 
 impl Default for CleanupConfig {
@@ -53,6 +59,7 @@ impl Default for CleanupConfig {
             notification_retention_days: 30,
             notification_max_retention_days: 90,
             chat_max_messages_per_room: 0, // unlimited by default
+            unreferenced_file_retention_seconds: 86_400,
         }
     }
 }
@@ -74,6 +81,8 @@ pub struct CleanupResult {
     pub chat_messages_deleted: u64,
     /// Number of expired token blacklist entries deleted
     pub token_blacklist_deleted: u64,
+    /// Number of unreferenced file objects cleaned
+    pub unreferenced_files_deleted: u64,
 }
 
 /// Data cleanup service
@@ -83,6 +92,7 @@ pub struct CleanupService {
     leader_check: Arc<dyn LeaderCheck>,
     /// Optional settings registry for dynamic `chat_max_messages_per_room`
     settings_registry: Option<Arc<SettingsRegistry>>,
+    file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
 impl CleanupService {
@@ -101,6 +111,7 @@ impl CleanupService {
             config,
             leader_check,
             settings_registry: None,
+            file_storage_service: None,
         }
     }
 
@@ -111,6 +122,14 @@ impl CleanupService {
     #[must_use]
     pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
         self.settings_registry = Some(registry);
+        self
+    }
+
+    /// Set the file storage service used to clean file objects when
+    /// per-room chat message cap cleanup purges file-backed messages.
+    #[must_use]
+    pub fn with_file_storage_service(mut self, service: Arc<dyn FileStorageService>) -> Self {
+        self.file_storage_service = Some(service);
         self
     }
 
@@ -249,6 +268,28 @@ impl CleanupService {
                 }
             }
             Err(e) => warn!(error = %e, "Failed to cleanup token blacklist"),
+        }
+
+        // 8. Cleanup uploaded file objects that were never attached to a product row.
+        match self.cleanup_expired_file_references().await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(count, "Released expired file references");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to cleanup expired file references"),
+        }
+
+        if self.config.unreferenced_file_retention_seconds > 0 {
+            match self.cleanup_unreferenced_files().await {
+                Ok(count) => {
+                    result.unreferenced_files_deleted = count;
+                    if count > 0 {
+                        info!(count, "Deleted unreferenced file objects");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to cleanup unreferenced file objects"),
+            }
         }
 
         result
@@ -431,7 +472,7 @@ impl CleanupService {
     ///
     /// Deletes expired token blacklist rows directly in PostgreSQL.
     async fn cleanup_token_blacklist(&self) -> Result<u64> {
-        let deleted_count = sqlx::query_scalar::<_, i64>(
+        let deleted_count = sqlx::query_scalar_unchecked!(
             r"
             WITH deleted AS (
                 DELETE FROM auth_token_blacklist
@@ -439,12 +480,85 @@ impl CleanupService {
                 RETURNING 1
             )
             SELECT COUNT(*)::BIGINT
-            ",
+            "
         )
         .fetch_one(&self.pool)
         .await
-        .internal_with_err("Failed to cleanup token blacklist")?;
+        .internal_with_err("Failed to cleanup token blacklist")?
+        .unwrap_or(0);
         Ok(deleted_count.max(0).cast_unsigned())
+    }
+
+    async fn cleanup_expired_file_references(&self) -> Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        let repository = FileStorageRepository::new(self.pool.clone());
+        let references = repository.list_expired_references(100).await?;
+        if references.is_empty() {
+            return Ok(0);
+        }
+
+        match storage
+            .delete_files(FileStorageCleanupOrigin::ReferenceExpired, &references)
+            .await
+        {
+            Ok(()) => Ok(u64::try_from(references.len()).unwrap_or(u64::MAX)),
+            Err(error) => {
+                repository
+                    .enqueue_cleanup_jobs(
+                        FileStorageCleanupOrigin::ReferenceExpired.as_str(),
+                        &references,
+                        &serde_json::Value::Object(Default::default()),
+                        &error.to_string(),
+                    )
+                    .await?;
+                Err(error).internal_with_err("Failed to cleanup expired file references")
+            }
+        }
+    }
+
+    async fn cleanup_unreferenced_files(&self) -> Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        let repository = FileStorageRepository::new(self.pool.clone());
+        let older_than_seconds =
+            i64::try_from(self.config.unreferenced_file_retention_seconds).unwrap_or(i64::MAX);
+        let files = repository
+            .list_unreferenced_objects(older_than_seconds, 100)
+            .await?;
+        if files.is_empty() {
+            return Ok(0);
+        }
+
+        let references = files
+            .into_iter()
+            .map(|file| FileReferenceTarget {
+                storage_backend: file.storage_backend,
+                object_key: file.object_key.clone(),
+                reference_kind: "unreferenced_file".to_string(),
+                reference_id: file.object_key,
+            })
+            .collect::<Vec<_>>();
+
+        match storage
+            .delete_files(FileStorageCleanupOrigin::UnreferencedObject, &references)
+            .await
+        {
+            Ok(()) => Ok(u64::try_from(references.len()).unwrap_or(u64::MAX)),
+            Err(error) => {
+                repository
+                    .enqueue_cleanup_jobs(
+                        FileStorageCleanupOrigin::UnreferencedObject.as_str(),
+                        &references,
+                        &serde_json::Value::Object(Default::default()),
+                        &error.to_string(),
+                    )
+                    .await?;
+                Err(error).internal_with_err("Failed to cleanup unreferenced file objects")
+            }
+        }
     }
 
     /// Cleanup chat messages exceeding per-room cap
@@ -455,23 +569,100 @@ impl CleanupService {
             return Ok(0);
         }
 
-        let result = sqlx::query!(
-            r"
-            DELETE FROM chat_messages
-            WHERE id IN (
-                SELECT id FROM (
-                    SELECT id,
-                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) as rn
+        let images = if let Some(storage) = &self.file_storage_service {
+            let images = sqlx::query_as_unchecked!(
+ChatImage,
+r"
+                WITH ranked AS (
+                    SELECT id, created_at,
+                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
                     FROM chat_messages
-                ) ranked
+                ),
+                candidates AS (
+                    SELECT id, created_at
+                    FROM ranked
+                    WHERE rn > $1
+                )
+                SELECT i.id, i.room_id, i.message_id, i.message_created_at, i.storage_backend,
+                       i.object_key, i.url, i.mime_type, i.size_bytes, i.width, i.height,
+                       i.metadata, i.created_at
+                FROM chat_message_images i
+                INNER JOIN candidates c
+                    ON c.id = i.message_id AND c.created_at = i.message_created_at
+                ORDER BY i.message_created_at, i.message_id, i.created_at
+                ",
+keep_count
+)
+            .fetch_all(&self.pool)
+            .await
+            .internal_with_err("Failed to collect chat image cleanup candidates")?;
+            if images.is_empty() {
+                None
+            } else {
+                Some((storage.clone(), images))
+            }
+        } else {
+            None
+        };
+
+        let result = sqlx::query!(
+r"
+            WITH ranked AS (
+                    SELECT id,
+                           created_at,
+                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
+                    FROM chat_messages
+            ),
+            candidates AS (
+                SELECT id, created_at
+                FROM ranked
                 WHERE rn > $1
             )
+            DELETE FROM chat_messages m
+            USING candidates c
+            WHERE m.id = c.id AND m.created_at = c.created_at
             ",
-            keep_count,
-        )
+keep_count
+)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to cleanup chat messages")?;
+
+        if let Some((storage, images)) = images {
+            let file_references = images
+                .iter()
+                .map(crate::models::ChatImage::file_reference_target)
+                .collect::<Vec<_>>();
+            if let Err(error) = storage
+                .delete_files(
+                    FileStorageCleanupOrigin::ReferenceCapExceeded,
+                    &file_references,
+                )
+                .await
+            {
+                warn!(
+                    error = %error,
+                    deleted = result.rows_affected(),
+                    keep_count,
+                    "Chat image cleanup after per-room cap purge failed"
+                );
+                if let Err(enqueue_error) = FileStorageRepository::new(self.pool.clone())
+                    .enqueue_cleanup_jobs(
+                        FileStorageCleanupOrigin::ReferenceCapExceeded.as_str(),
+                        &file_references,
+                        &serde_json::Value::Object(Default::default()),
+                        &error.to_string(),
+                    )
+                    .await
+                {
+                    warn!(
+                        error = %enqueue_error,
+                        keep_count,
+                        "Failed to enqueue chat image cleanup retry after per-room cap purge"
+                    );
+                }
+            }
+        }
 
         Ok(result.rows_affected())
     }
@@ -495,6 +686,7 @@ impl CleanupService {
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
             settings_registry: self.settings_registry.clone(),
+            file_storage_service: self.file_storage_service.clone(),
         };
 
         crate::spawn::spawn_monitored("data_cleanup", async move {

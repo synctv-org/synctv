@@ -79,8 +79,8 @@ async fn test_redis_pubsub_no_message_loss() {
             username: "sender".to_string(),
             message: "baseline no-loss message".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         "baseline no-loss message",
     )
@@ -96,8 +96,8 @@ async fn test_redis_pubsub_no_message_loss() {
             username: "sender".to_string(),
             message: format!("Message {i}"),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
         node_b.broadcast(event);
     }
@@ -171,8 +171,8 @@ async fn test_redis_stream_catchup() {
             username: "publisher".to_string(),
             message: format!("Catchup message {i}"),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
         publisher.broadcast(event);
     }
@@ -245,8 +245,8 @@ async fn test_redis_stream_catchup() {
             username: "publisher".to_string(),
             message: "Live message after subscriber connect".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         |event| {
             matches!(event, RealtimeEvent::ChatMessage { message, .. }
@@ -281,8 +281,8 @@ async fn test_room_stream_key_uses_ttl_for_inactive_room_cleanup() {
         username: "publisher".to_string(),
         message: "ttl check".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
     let _ = node.broadcast(event);
 
@@ -343,8 +343,8 @@ async fn test_redis_failure_and_recovery() {
             username: "user_a".to_string(),
             message: "Normal message".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         |event| matches!(event, RealtimeEvent::ChatMessage { message, .. } if message == "Normal message"),
         "normal cross-replica message",
@@ -387,8 +387,8 @@ async fn test_redis_failure_and_recovery() {
         username: "user_b".to_string(),
         message: "Local broadcast test".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let result = node_a.broadcast(local_event);
@@ -428,8 +428,8 @@ async fn test_redis_failure_and_recovery() {
             username: "user_a".to_string(),
             message: format!("Ordered message {i}"),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
         node_a.broadcast(ordered_event);
     }
@@ -495,8 +495,8 @@ async fn test_redis_reconnection_event_preservation() {
             username: "sender".to_string(),
             message: "Baseline message".to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         "baseline reconnect message",
     )
@@ -516,8 +516,8 @@ async fn test_redis_reconnection_event_preservation() {
             username: "sender".to_string(),
             message: format!("Rapid message {i}"),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         };
 
         node_a.broadcast(rapid_event);
@@ -577,8 +577,8 @@ async fn test_cross_replica_deduplication() {
         username: "sender".to_string(),
         message: "Duplicate test".to_string(),
         timestamp: Utc::now(),
-        position: None,
-        color: None,
+        display_position: None,
+        display_color: None,
     };
 
     let result1 = node_a.broadcast(event.clone());

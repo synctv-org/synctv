@@ -98,6 +98,7 @@ fn make_user(status: UserStatus, password_version: i32) -> User {
         email: Some(format!("{}@test.com", synctv_common::snanoid!(8))),
         password_hash: "$argon2id$v=19$m=16384,t=3,p=1$fake$fakehash".to_string(),
         role: UserRole::User,
+        avatar_file_reference_id: None,
         status,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),

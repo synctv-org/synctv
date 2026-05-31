@@ -41,7 +41,7 @@ use futures::future::BoxFuture;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
 use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
-use synctv_core::service::{ReviewService, RoomService, UserService};
+use synctv_core::service::{ChatService, ReviewService, RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
 
 // Re-export public items from convert module
@@ -53,6 +53,9 @@ pub use convert::{
 // Room password limits imported from the single source of truth in synctv-core
 use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
+use crate::chat_event_dispatcher::{
+    default_chat_event_dispatcher, noop_chat_event_dispatcher, ChatEventDispatcher,
+};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::{
     ApiError, EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata,
@@ -110,6 +113,7 @@ fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
 pub struct ClientApiConfig {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
+    pub chat_service: Option<Arc<ChatService>>,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
@@ -174,6 +178,7 @@ impl RoomActor {
 pub struct ClientApiImpl {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
+    pub chat_service: Option<Arc<ChatService>>,
     pub review_service: Arc<ReviewService>,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
@@ -192,6 +197,7 @@ pub struct ClientApiImpl {
     pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
     pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     /// Redis runtime abstraction derived from the shared connection when available.
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
@@ -226,6 +232,162 @@ pub struct ClientApiImpl {
 }
 
 impl ClientApiImpl {
+    pub(crate) async fn load_stored_file_reference(
+        &self,
+        file_reference_id: Option<i64>,
+    ) -> Result<Option<synctv_core::models::StoredFileReference>, ApiError> {
+        let Some(file_reference_id) = file_reference_id else {
+            return Ok(None);
+        };
+        synctv_core::repository::FileStorageRepository::new(self.user_service.pool().clone())
+            .get_reference_by_id(file_reference_id)
+            .await
+            .map_err(ApiError::from)
+    }
+
+    pub(crate) fn stored_file_reference_url(
+        &self,
+        file: &synctv_core::models::StoredFileReference,
+        policy: &synctv_core::models::FileUploadPolicy,
+    ) -> Result<Option<String>, ApiError> {
+        let Some(storage) = self
+            .user_service
+            .file_storage_service()
+            .or_else(|| self.room_service.file_storage_service())
+            .or_else(|| self.room_service.playlist_service().file_storage_service())
+            .or_else(|| self.room_service.media_service().file_storage_service())
+        else {
+            return Ok(None);
+        };
+        storage
+            .object_url(
+                &file.storage_backend,
+                &file.object_key,
+                &policy.database_object_route_prefix,
+            )
+            .map_err(ApiError::from)
+    }
+
+    pub(crate) async fn room_to_proto_basic_with_loaded_cover(
+        &self,
+        room: &synctv_core::models::Room,
+        settings: Option<&synctv_core::models::RoomSettings>,
+        member_count: Option<i32>,
+    ) -> Result<crate::proto::client::Room, ApiError> {
+        let cover = self
+            .load_stored_file_reference(room.cover_file_reference_id)
+            .await?;
+        let cover_url = cover
+            .as_ref()
+            .map(|file| {
+                self.stored_file_reference_url(
+                    file,
+                    &synctv_core::service::room_cover_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        Ok(convert::room_to_proto_basic_with_cover(
+            room,
+            settings,
+            member_count,
+            cover.as_ref(),
+            cover_url,
+            &self.public_id_codec,
+        ))
+    }
+
+    pub(crate) async fn room_to_proto_with_availability_and_loaded_cover(
+        &self,
+        room: &synctv_core::models::Room,
+        settings: Option<&synctv_core::models::RoomSettings>,
+        member_count: Option<i32>,
+        availability: synctv_core::service::room::ClientResourceAvailability,
+    ) -> Result<crate::proto::client::Room, ApiError> {
+        let cover = self
+            .load_stored_file_reference(room.cover_file_reference_id)
+            .await?;
+        let cover_url = cover
+            .as_ref()
+            .map(|file| {
+                self.stored_file_reference_url(
+                    file,
+                    &synctv_core::service::room_cover_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        Ok(convert::room_to_proto_with_availability_and_cover(
+            room,
+            settings,
+            member_count,
+            availability,
+            cover.as_ref(),
+            cover_url,
+            &self.public_id_codec,
+        ))
+    }
+
+    pub(crate) async fn media_to_proto_for_viewer_with_loaded_cover(
+        &self,
+        media: &synctv_core::models::Media,
+        is_available: bool,
+        viewer_id: Option<synctv_core::models::UserId>,
+    ) -> Result<crate::proto::client::Media, ApiError> {
+        let cover = self
+            .load_stored_file_reference(media.cover_file_reference_id)
+            .await?;
+        let cover_url = cover
+            .as_ref()
+            .map(|file| {
+                self.stored_file_reference_url(
+                    file,
+                    &synctv_core::service::video_cover_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        Ok(convert::media_to_proto_for_viewer_with_cover(
+            media,
+            is_available,
+            viewer_id,
+            cover.as_ref(),
+            cover_url,
+            &self.public_id_codec,
+        ))
+    }
+
+    pub(crate) async fn playlist_to_proto_for_viewer_with_loaded_cover(
+        &self,
+        playlist: &synctv_core::models::Playlist,
+        item_count: i32,
+        is_available: bool,
+        viewer_id: Option<synctv_core::models::UserId>,
+    ) -> Result<crate::proto::client::Playlist, ApiError> {
+        let cover = self
+            .load_stored_file_reference(playlist.cover_file_reference_id)
+            .await?;
+        let cover_url = cover
+            .as_ref()
+            .map(|file| {
+                self.stored_file_reference_url(
+                    file,
+                    &synctv_core::service::playlist_cover_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        Ok(convert::playlist_to_proto_for_viewer_with_cover(
+            playlist,
+            item_count,
+            is_available,
+            viewer_id,
+            cover.as_ref(),
+            cover_url,
+            &self.public_id_codec,
+        ))
+    }
+
     fn parse_room_id(&self, room_id: &str) -> Result<RoomId, ApiError> {
         self.public_id_codec
             .decode_room_id(room_id)
@@ -462,6 +624,7 @@ impl ClientApiImpl {
         Self {
             user_service,
             room_service,
+            chat_service: None,
             review_service,
             connection_service,
             config,
@@ -479,6 +642,7 @@ impl ClientApiImpl {
             realtime_lifecycle,
             room_lifecycle_fanout,
             realtime_event_service: None,
+            chat_event_dispatcher: noop_chat_event_dispatcher(),
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
@@ -522,6 +686,7 @@ impl ClientApiImpl {
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
+            chat_service: config.chat_service,
             review_service,
             connection_service: config.connection_service,
             config: config.config,
@@ -539,6 +704,7 @@ impl ClientApiImpl {
             realtime_lifecycle,
             room_lifecycle_fanout,
             realtime_event_service: None,
+            chat_event_dispatcher: noop_chat_event_dispatcher(),
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
@@ -587,6 +753,18 @@ impl ClientApiImpl {
     }
 
     #[must_use]
+    pub fn with_chat_service(mut self, chat_service: Option<Arc<ChatService>>) -> Self {
+        self.chat_service = chat_service;
+        self
+    }
+
+    #[must_use]
+    pub fn with_chat_event_dispatcher(mut self, dispatcher: Arc<dyn ChatEventDispatcher>) -> Self {
+        self.chat_event_dispatcher = dispatcher;
+        self
+    }
+
+    #[must_use]
     pub fn with_email_api(mut self, email_api: Option<Arc<crate::impls::EmailApiImpl>>) -> Self {
         self.email_api = email_api;
         self
@@ -626,6 +804,7 @@ impl ClientApiImpl {
             self.realtime_fanout.clone(),
             Some(event_service.clone()),
         );
+        self.chat_event_dispatcher = default_chat_event_dispatcher(event_service.clone());
         self.realtime_event_service = Some(event_service);
         self
     }

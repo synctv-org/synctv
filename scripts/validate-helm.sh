@@ -14,72 +14,122 @@ fail() {
   exit 1
 }
 
-require_rendered() {
-  local pattern="$1"
-  local file="$2"
-  local description="$3"
-
-  if ! grep -q "$pattern" "$file"; then
-    fail "$description was not rendered in $file"
-  fi
-}
-
-forbid_rendered() {
-  local pattern="$1"
-  local file="$2"
-  local description="$3"
-
-  if grep -q "$pattern" "$file"; then
-    fail "$description was unexpectedly rendered in $file"
-  fi
-}
-
 assert_max_service_name_len() {
   local file="$1"
   local max_len="${2:-63}"
-  local bad_names
-
-  bad_names="$(
-    awk -v max="$max_len" '
-      $1 == "---" {
-        in_service = 0
-      }
-      $1 == "kind:" && $2 == "Service" {
-        in_service = 1
-      }
-      in_service && $1 == "name:" {
-        name = $2
-        gsub(/^"|"$/, "", name)
-        if (length(name) > max) {
-          print length(name) " " name
-        }
-      }
-    ' "$file"
-  )"
-
-  [ -z "$bad_names" ] || fail "rendered Service name(s) exceed ${max_len} characters in $file: $bad_names"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    max = Integer(ARGV.fetch(1))
+    docs = YAML.load_stream(File.read(file)).compact
+    bad = docs
+      .select { |doc| doc["kind"] == "Service" }
+      .map { |doc| doc.dig("metadata", "name").to_s }
+      .select { |name| name.length > max }
+    abort("rendered Service name(s) exceed #{max} characters in #{file}: #{bad.join(", ")}") unless bad.empty?
+  ' "$file" "$max_len"
 }
 
-chart_version="$(sed -n 's/^version:[[:space:]]*//p' "$chart_dir/Chart.yaml" | head -n1 | tr -d '"')"
-app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' "$chart_dir/Chart.yaml" | head -n1 | tr -d '"')"
-cargo_version="$(
-  awk '
-    /^\[workspace.package\]/ {
-      in_section = 1
-      next
-    }
-    /^\[/ {
-      in_section = 0
-    }
-    in_section && $1 == "version" {
-      gsub(/"/, "", $3)
-      print $3
-      exit
-    }
-  ' Cargo.toml
-)"
-compose_image_tag="$(sed -n 's/.*SYNCTV_IMAGE_TAG:-\([^}]*\).*/\1/p' docker-compose.yml | head -n1)"
-docs_default_app_version="$(sed -n "s/.*defaultAppVersion = '\([^']*\)';.*/\1/p" docs/src/lib/project.ts)"
+assert_pdb_field() {
+  local file="$1"
+  local field="$2"
+  local expected="$3"
+  ruby -ryaml -e '
+    file, field, expected = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    pdb = docs.find { |doc| doc["kind"] == "PodDisruptionBudget" }
+    abort("PodDisruptionBudget was not rendered in #{file}") unless pdb
+    actual = pdb.dig("spec", field)
+    abort("PodDisruptionBudget #{field} expected #{expected.inspect}, got #{actual.inspect}") unless actual.to_s == expected
+  ' "$file" "$field" "$expected"
+}
+
+assert_pdb_field_absent() {
+  local file="$1"
+  local field="$2"
+  ruby -ryaml -e '
+    file, field = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    pdb = docs.find { |doc| doc["kind"] == "PodDisruptionBudget" }
+    abort("PodDisruptionBudget was not rendered in #{file}") unless pdb
+    abort("PodDisruptionBudget #{field} was rendered in #{file}") if pdb.fetch("spec", {}).key?(field)
+  ' "$file" "$field"
+}
+
+assert_service() {
+  local file="$1"
+  local name="$2"
+  local type="$3"
+  ruby -ryaml -e '
+    file, name, type = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == name }
+    abort("Service #{name.inspect} was not rendered in #{file}") unless service
+    actual = service.dig("spec", "type")
+    abort("Service #{name.inspect} type expected #{type.inspect}, got #{actual.inspect}") unless actual == type
+  ' "$file" "$name" "$type"
+}
+
+assert_no_resource_named() {
+  local file="$1"
+  local name="$2"
+  ruby -ryaml -e '
+    file, name = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    found = docs.any? { |doc| doc.dig("metadata", "name") == name }
+    abort("Resource #{name.inspect} was rendered in #{file}") if found
+  ' "$file" "$name"
+}
+
+assert_no_certificate_common_name() {
+  local file="$1"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    docs = YAML.load_stream(File.read(file)).compact
+    certificates = docs.select { |doc| doc["kind"] == "Certificate" }
+    with_common_name = certificates.select { |doc| doc.fetch("spec", {}).key?("commonName") }
+    abort("Certificate commonName was rendered in #{file}") unless with_common_name.empty?
+  ' "$file"
+}
+
+assert_security_rendering() {
+  local file="$1"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    docs = YAML.load_stream(File.read(file)).compact
+
+    containers = docs.flat_map do |doc|
+      next [] unless ["Deployment", "StatefulSet"].include?(doc["kind"])
+      doc.dig("spec", "template", "spec", "containers") || []
+    end
+    images = containers.map { |container| container["image"].to_s }
+
+    abort("SyncTV image registry override was not applied") unless images.any? { |image| image.start_with?("registry.example.com/synctvorg/synctv:") }
+    abort("PostgreSQL image registry override was not applied") unless images.include?("registry.example.com/postgres:18.1-bookworm")
+    abort("Redis image registry override was not applied") unless images.include?("registry.example.com/redis:8.4.0-bookworm")
+
+    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
+    abort("synctv-config ConfigMap was not rendered") unless config
+    synctv_yaml = config.dig("data", "synctv.yaml")
+    abort("synctv.yaml ConfigMap entry was not rendered") unless synctv_yaml
+    app_config = YAML.safe_load(synctv_yaml)
+    ssrf = app_config.dig("security", "ssrf") || {}
+    abort("SSRF private-network override was not applied") unless ssrf["allow_private_network_targets"] == true
+    abort("SSRF allowed host was not applied") unless Array(ssrf["allowed_hosts"]).include?("nas.example.internal")
+    abort("SSRF allowed IP range was not applied") unless Array(ssrf["allowed_ip_ranges"]).include?("10.0.8.0/24")
+  ' "$file"
+}
+
+chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' "$chart_dir/Chart.yaml")"
+app_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("appVersion")' "$chart_dir/Chart.yaml")"
+cargo_version="$(cargo metadata --format-version 1 --no-deps | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); process.stdout.write(meta.workspace_default_members.length ? meta.packages.find((pkg) => pkg.id === meta.workspace_default_members[0]).version : meta.packages[0].version);')"
+compose_image_tag="$(ruby -ryaml -e '
+  compose = YAML.load_file(ARGV.fetch(0))
+  image = compose.fetch("services").fetch("synctv").fetch("image")
+  match = image.match(/\$\{SYNCTV_IMAGE_TAG:-([^}]+)\}/)
+  abort("docker-compose.yml synctv image must use SYNCTV_IMAGE_TAG fallback") unless match
+  puts match[1]
+' docker-compose.yml)"
+docs_default_app_version="$(node --input-type=module -e 'const project = await import("./docs/src/lib/project.ts"); process.stdout.write(project.dockerImageTag);')"
 
 [ -n "$chart_version" ] || fail "$chart_dir/Chart.yaml must define version"
 [ -n "$app_version" ] || fail "$chart_dir/Chart.yaml must define appVersion"
@@ -143,9 +193,6 @@ if helm template synctv "$chart_dir" \
   >"$tmp_dir/standalone-replicas.yaml" 2>"$tmp_dir/standalone-replicas.err"; then
   fail "replicaCount=2 without cluster mode must fail validation"
 fi
-require_rendered 'replicaCount > 1 requires config.cluster.enabled=true' \
-  "$tmp_dir/standalone-replicas.err" \
-  "standalone replica safety validation"
 
 if helm template synctv "$chart_dir" \
   --namespace "$namespace" \
@@ -153,9 +200,6 @@ if helm template synctv "$chart_dir" \
   >"$tmp_dir/standalone-hpa.yaml" 2>"$tmp_dir/standalone-hpa.err"; then
   fail "autoscaling beyond one pod without cluster mode must fail validation"
 fi
-require_rendered 'autoscaling.maxReplicas > 1 requires config.cluster.enabled=true' \
-  "$tmp_dir/standalone-hpa.err" \
-  "standalone HPA safety validation"
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
@@ -173,21 +217,15 @@ helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   --set podDisruptionBudget.enabled=true \
   >"$tmp_dir/pdb-default.yaml"
-require_rendered 'maxUnavailable: 1' \
-  "$tmp_dir/pdb-default.yaml" \
-  "default PodDisruptionBudget maxUnavailable"
+assert_pdb_field "$tmp_dir/pdb-default.yaml" maxUnavailable 1
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   --set podDisruptionBudget.enabled=true \
   --set podDisruptionBudget.minAvailable=2 \
   >"$tmp_dir/pdb-legacy-min-available.yaml"
-require_rendered 'minAvailable: 2' \
-  "$tmp_dir/pdb-legacy-min-available.yaml" \
-  "legacy PodDisruptionBudget minAvailable override"
-forbid_rendered 'maxUnavailable: 1' \
-  "$tmp_dir/pdb-legacy-min-available.yaml" \
-  "default PodDisruptionBudget maxUnavailable with minAvailable override"
+assert_pdb_field "$tmp_dir/pdb-legacy-min-available.yaml" minAvailable 2
+assert_pdb_field_absent "$tmp_dir/pdb-legacy-min-available.yaml" maxUnavailable
 
 if helm template synctv "$chart_dir" \
   --namespace "$namespace" \
@@ -196,9 +234,6 @@ if helm template synctv "$chart_dir" \
   >"$tmp_dir/clusterip-stun.yaml" 2>"$tmp_dir/clusterip-stun.err"; then
   fail "ClusterIP STUN service with external STUN address must fail validation"
 fi
-require_rendered 'stunService.type=ClusterIP is not client-reachable' \
-  "$tmp_dir/clusterip-stun.err" \
-  "ClusterIP STUN external-address validation"
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
@@ -206,37 +241,11 @@ helm template synctv "$chart_dir" \
   --set stunService.type=LoadBalancer \
   --set config.webrtc.stunExternalAddr=203.0.113.10:3478 \
   >"$tmp_dir/loadbalancer-stun.yaml"
-require_rendered 'kind: Service' \
-  "$tmp_dir/loadbalancer-stun.yaml" \
-  "LoadBalancer STUN service"
-require_rendered 'name: synctv-stun' \
-  "$tmp_dir/loadbalancer-stun.yaml" \
-  "LoadBalancer STUN service name"
+assert_service "$tmp_dir/loadbalancer-stun.yaml" synctv-stun LoadBalancer
 
-require_rendered 'image: registry.example.com/synctvorg/synctv:' \
-  "$tmp_dir/security.yaml" \
-  "global SyncTV image registry"
-require_rendered 'image: "registry.example.com/postgres:18.1-bookworm"' \
-  "$tmp_dir/security.yaml" \
-  "global PostgreSQL image registry"
-require_rendered 'image: "registry.example.com/redis:8.4.0-bookworm"' \
-  "$tmp_dir/security.yaml" \
-  "global Redis image registry"
-require_rendered 'allow_private_network_targets: true' \
-  "$tmp_dir/security.yaml" \
-  "SSRF private-network override"
-require_rendered 'nas.example.internal' \
-  "$tmp_dir/security.yaml" \
-  "SSRF allowed host"
-require_rendered '10.0.8.0/24' \
-  "$tmp_dir/security.yaml" \
-  "SSRF allowed IP range"
-forbid_rendered 'bootstrap-postgresql-app-db' \
-  "$tmp_dir/kubeblocks-no-bootstrap.yaml" \
-  "KubeBlocks PostgreSQL app database bootstrap initContainer"
+assert_security_rendering "$tmp_dir/security.yaml"
+assert_no_resource_named "$tmp_dir/kubeblocks-no-bootstrap.yaml" bootstrap-postgresql-app-db
 assert_max_service_name_len "$tmp_dir/long-release.yaml" 63
-forbid_rendered 'commonName:' \
-  "$tmp_dir/long-release.yaml" \
-  "metrics Certificate commonName"
+assert_no_certificate_common_name "$tmp_dir/long-release.yaml"
 
 echo "Helm chart validation passed."

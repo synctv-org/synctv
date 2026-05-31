@@ -140,7 +140,7 @@ impl NotificationPartitionManager {
             "notifications_{}",
             add_months(current_month, -retain_months).format("%Y_%m")
         );
-        let partitions = sqlx::query_scalar::<_, String>(
+        let partitions = sqlx::query_scalar_unchecked!(
             "SELECT tablename
              FROM pg_tables
              WHERE schemaname = 'public'
@@ -149,11 +149,14 @@ impl NotificationPartitionManager {
                AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'
                AND tablename < $1
              ORDER BY tablename",
+            cutoff_name
         )
-        .bind(cutoff_name)
         .fetch_all(&mut *conn)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to drop old notification partitions: {e}")))?;
+        .map_err(|e| Error::Internal(format!("Failed to drop old notification partitions: {e}")))?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
         for partition in &partitions {
             sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))

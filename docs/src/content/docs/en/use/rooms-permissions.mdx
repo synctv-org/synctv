@@ -56,7 +56,7 @@ Guests can enter public rooms that explicitly allow guest access, but they do no
 | Chat history | No | `view_chat_history` | Read-only |
 | WebRTC signaling | No | `use_webrtc` | Allows signaling participation only; does not grant room administration |
 | Media resources | No | No | Guests cannot read, browse, or manage media resources |
-| Chat and danmaku sending | No | No | `send_chat` is only for signed-in members |
+| Chat sending | No | No | `send_chat` is only for signed-in members |
 | Playback control, member management, room settings | No | No | Requires a signed-in member with the matching permission |
 
 ## Permission Evaluation
@@ -84,7 +84,7 @@ Runtime settings and administration surfaces use stable snake_case permission na
 
 | Permission name | Meaning |
 | --- | --- |
-| `send_chat` | Send chat and danmaku messages |
+| `send_chat` | Send chat messages |
 | `create_media_resource` | Create media resources and edit media resources created by the actor |
 | `delete_media_resource_any` | Delete media resources created by other users or without a recorded creator |
 | `reorder_media_resources` | Reorder media resources |
@@ -119,7 +119,6 @@ Room settings control join policy, room features, and default permissions.
 | `require_approval` | `false` | Require join approval |
 | `allow_auto_join` | `true` | Allow eligible users to auto-join |
 | `chat_enabled` | `true` | Enable chat |
-| `danmaku_enabled` | `true` | Enable danmaku |
 | `auto_play` | `{}` | Auto-play policy JSON |
 | `admin_added_permissions` / `admin_removed_permissions` | Empty permission set | Admin default permission changes |
 | `member_added_permissions` / `member_removed_permissions` | Empty permission set | Member default permission changes |

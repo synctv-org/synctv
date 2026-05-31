@@ -341,6 +341,75 @@ livestream:
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
 
+file_storage:
+  # Named backend selected by product features when they do not override it.
+  # The built-in "disabled" backend always exists and rejects uploads.
+  default_backend: "disabled"
+  # Product-level backend choices. Empty values inherit default_backend.
+  chat_images_backend: ""
+  user_avatars_backend: ""
+  video_covers_backend: ""
+  room_covers_backend: ""
+  playlist_covers_backend: ""
+  # Optional signing secret for upload/read tokens. When empty, startup derives
+  # a stable secret from jwt.secret.
+  # Environment variables:
+  #   SYNCTV_FILE_UPLOAD_TOKEN_SECRET
+  #   SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE
+  upload_token_secret: ""
+  # Uploaded objects with no active product reference are cleaned after this
+  # grace period. Set to 0 to disable orphan cleanup.
+  unreferenced_object_retention_seconds: 86400
+  # upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+  # Registry of storage backends keyed by stable storage name.
+  backends: {}
+
+# Example: store files in PostgreSQL.
+# file_storage:
+#   default_backend: "database"
+#   chat_images_backend: "database"
+#   user_avatars_backend: "database"
+#   video_covers_backend: "database"
+#   room_covers_backend: "database"
+#   playlist_covers_backend: "database"
+#   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+#   backends:
+#     database:
+#       type: "database"
+
+# Example: store files in multiple S3-compatible backends.
+# file_storage:
+#   default_backend: "s3_public"
+#   chat_images_backend: "s3_public"
+#   user_avatars_backend: "s3_private"
+#   video_covers_backend: "s3_public"
+#   room_covers_backend: "s3_public"
+#   playlist_covers_backend: "s3_public"
+#   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
+#   backends:
+#     s3_public:
+#       type: "s3"
+#       s3:
+#         endpoint: "https://s3.example.com"
+#         access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+#         secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+#         bucket: "synctv-files"
+#         region: "auto"
+#         base_path: "files/"
+#         public_base_url: "https://cdn.example.com/files"
+#         upload_expires_seconds: 900
+#     s3_private:
+#       type: "s3"
+#       s3:
+#         endpoint: "https://s3.example.com"
+#         access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+#         secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+#         bucket: "synctv-private-files"
+#         region: "auto"
+#         base_path: "private-files/"
+#         public_base_url: null
+#         upload_expires_seconds: 900
+
 # ============================================================================
 # Password Complexity Requirements
 # ============================================================================
@@ -394,13 +463,11 @@ connection_limits:
 # Messaging Rate Limits
 # ============================================================================
 #
-# Domain-level chat and danmaku limits enforced by the shared messaging logic.
+# Domain-level chat limits enforced by the shared messaging logic.
 
 messaging_rate_limits:
   # Maximum chat messages per sliding window.
   chat_per_second: 10
-  # Maximum danmaku messages per sliding window.
-  danmaku_per_second: 3
   # Sliding-window size in seconds.
   window_seconds: 1
 

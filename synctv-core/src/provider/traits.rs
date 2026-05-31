@@ -188,6 +188,10 @@ pub struct DirectoryItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<String>,
 
+    /// Upstream item description or summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
     /// Modified time (Unix timestamp)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_at: Option<i64>,

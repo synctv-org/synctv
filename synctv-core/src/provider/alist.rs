@@ -1420,6 +1420,7 @@ impl DynamicFolder for AlistProvider {
                         target: Self::encode_target(&item_relative_path).ok()?,
                         size: Some(file_item.size),
                         thumbnail: None,
+                        description: None,
                         modified_at: None,
                     })
                 })
@@ -1458,6 +1459,7 @@ impl DynamicFolder for AlistProvider {
                         } else {
                             Some(file_item.thumb)
                         },
+                        description: None,
                         modified_at: Some(alist_modified_to_i64(file_item.modified)),
                     })
                 })

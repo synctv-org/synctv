@@ -631,7 +631,8 @@ impl SettingsService {
         value: String,
     ) -> Result<SettingsGroup, Error> {
         let group_name = group_name_from_setting_key(key);
-        let setting = sqlx::query_as::<_, SettingsGroup>(
+        let setting = sqlx::query_as_unchecked!(
+            SettingsGroup,
             r"
             INSERT INTO settings (key, group_name, value, version)
             VALUES ($1, $2, $3, 0)
@@ -639,10 +640,10 @@ impl SettingsService {
             SET updated_at = settings.updated_at
             RETURNING key, group_name, value, version, created_at, updated_at
             ",
+            key,
+            group_name,
+            value
         )
-        .bind(key)
-        .bind(group_name)
-        .bind(value)
         .fetch_one(&self.pool)
         .await
         .map_err(|error| {

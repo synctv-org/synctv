@@ -55,6 +55,7 @@ message MediaItem {
   string series_id = 6;
   string season_name = 7;
   string thumbnail = 8; // Server-relative thumbnail URL when available
+  string description = 9;
 }
 
 // Get user info request

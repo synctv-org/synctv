@@ -53,8 +53,8 @@ async fn test_three_node_cluster() {
             username: "user_b".to_string(),
             message: message_from_b.to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         "node A receiving node B broadcast",
     )
@@ -71,8 +71,8 @@ async fn test_three_node_cluster() {
             username: "user_b".to_string(),
             message: message_from_b.to_string(),
             timestamp: Utc::now(),
-            position: None,
-            color: None,
+            display_position: None,
+            display_color: None,
         },
         "node C receiving node B broadcast",
     )

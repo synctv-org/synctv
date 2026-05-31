@@ -198,7 +198,6 @@ mod tests {
         EmbeddedMigrationsStatus, MigrationHistoryIssue,
     };
     use sqlx::postgres::PgPoolOptions;
-    use sqlx::Row;
 
     #[test]
     fn version_mismatch_error_includes_rebuild_guidance() {
@@ -274,23 +273,22 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let mut conn = pool.acquire().await.expect("should acquire connection");
 
-        sqlx::query("SET statement_timeout = 1")
+        sqlx::query!("SET statement_timeout = 1")
             .execute(&mut *conn)
             .await
             .expect("should set an aggressive timeout for the session");
 
-        sqlx::query("SET statement_timeout = 0")
+        sqlx::query!("SET statement_timeout = 0")
             .execute(&mut *conn)
             .await
             .expect("migrations must be able to disable session statement timeout");
 
-        let row = sqlx::query("SHOW statement_timeout")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("should read statement_timeout");
-        let timeout: String = row
-            .try_get(0)
-            .expect("statement_timeout should be returned");
+        let timeout = sqlx::query_scalar!(
+            r#"SELECT current_setting('statement_timeout') as "statement_timeout!""#
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("should read statement_timeout");
 
         assert_eq!(
             timeout, "0",

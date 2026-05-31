@@ -32,12 +32,13 @@ pub async fn bootstrap_root_user(
     let repository = UserRepository::new(pool.clone());
 
     // Check if any root user exists
-    let root_exists = sqlx::query_scalar::<_, bool>(
+    let root_exists = sqlx::query_scalar_unchecked!(
         "SELECT EXISTS(SELECT 1 FROM users WHERE role = $1 AND deleted_at IS NULL LIMIT 1)",
+        UserRole::Root
     )
-    .bind(UserRole::Root)
     .fetch_one(pool)
-    .await?;
+    .await?
+    .unwrap_or(false);
 
     if root_exists {
         info!("Root user already exists, skipping bootstrap");
@@ -102,11 +103,12 @@ pub async fn bootstrap_root_user(
 /// Used during startup to distinguish first deployment (no users) from
 /// subsequent starts. On first deployment, root bootstrap failure is fatal.
 pub async fn has_any_users(pool: &PgPool) -> bool {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1)",
+    sqlx::query_scalar_unchecked!(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1)"
     )
     .fetch_one(pool)
     .await
+    .unwrap_or(None)
     .unwrap_or(false)
 }
 
@@ -115,7 +117,7 @@ pub async fn has_any_users(pool: &PgPool) -> bool {
 /// Startup may continue after bootstrap failure only when the system already has
 /// an existing administrative account (`root` or `admin`) that can manage it.
 pub async fn has_any_admin_users(pool: &PgPool) -> bool {
-    sqlx::query_scalar::<_, bool>(
+    sqlx::query_scalar_unchecked!(
         "SELECT EXISTS(
             SELECT 1
             FROM users
@@ -123,10 +125,11 @@ pub async fn has_any_admin_users(pool: &PgPool) -> bool {
               AND (role = $1 OR role = $2)
             LIMIT 1
         )",
+        UserRole::Root,
+        UserRole::Admin
     )
-    .bind(UserRole::Root)
-    .bind(UserRole::Admin)
     .fetch_one(pool)
     .await
+    .unwrap_or(None)
     .unwrap_or(false)
 }

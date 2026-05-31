@@ -9,7 +9,10 @@
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
-    models::{ChatMessage, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
+    models::{
+        ChatMessage, ChatPlaybackMessagesQuery, MediaId, PlaylistId, Room, RoomId, RoomStatus,
+        User, UserId, UserRole, UserStatus,
+    },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
@@ -21,6 +24,7 @@ fn make_user(username: &str) -> User {
         email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
+        avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
@@ -42,6 +46,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
+        cover_file_reference_id: None,
         created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
@@ -90,7 +95,7 @@ async fn test_list_by_room_cursor_pagination() {
 
     // Page 1: newest 2 messages (no cursor)
     let (page1, cursor1) = chat_repo
-        .list_by_room_cursor(&room.id, None, 2)
+        .list_by_room_cursor(&room.id, None, 2, false)
         .await
         .unwrap();
     assert_eq!(page1.len(), 2);
@@ -99,13 +104,13 @@ async fn test_list_by_room_cursor_pagination() {
         "Should have next cursor since there are more messages"
     );
     // Messages should be in reverse chronological order
-    assert_eq!(page1[0].content, "msg_4");
-    assert_eq!(page1[1].content, "msg_3");
+    assert_eq!(page1[0].message.content, "msg_4");
+    assert_eq!(page1[1].message.content, "msg_3");
 
     // Page 2: next 2 messages
     let cursor1_val = cursor1.unwrap();
     let (page2, cursor2) = chat_repo
-        .list_by_room_cursor(&room.id, Some((cursor1_val.0, cursor1_val.1)), 2)
+        .list_by_room_cursor(&room.id, Some(cursor1_val), 2, false)
         .await
         .unwrap();
     assert_eq!(page2.len(), 2);
@@ -113,18 +118,90 @@ async fn test_list_by_room_cursor_pagination() {
         cursor2.is_some(),
         "Should still have a cursor (1 more message)"
     );
-    assert_eq!(page2[0].content, "msg_2");
-    assert_eq!(page2[1].content, "msg_1");
+    assert_eq!(page2[0].message.content, "msg_2");
+    assert_eq!(page2[1].message.content, "msg_1");
 
     // Page 3: last page (1 message)
     let cursor2_val = cursor2.unwrap();
     let (page3, cursor3) = chat_repo
-        .list_by_room_cursor(&room.id, Some((cursor2_val.0, cursor2_val.1)), 2)
+        .list_by_room_cursor(&room.id, Some(cursor2_val), 2, false)
         .await
         .unwrap();
     assert_eq!(page3.len(), 1);
     assert!(cursor3.is_none(), "Last page should have no next cursor");
-    assert_eq!(page3[0].content, "msg_0");
+    assert_eq!(page3[0].message.content, "msg_0");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_playback_messages_filters_by_context_and_time_window() {
+    let (_container, pool) = create_test_pool().await;
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (user, room) = setup_room(&pool, "chat_playback_user", "chat_playback_room").await;
+    let media_id = MediaId::expect_positive(300_001);
+    let playlist_id = PlaylistId::expect_positive(300_002);
+    let target_hash = "target-hash-1".to_string();
+
+    for (content, position_seconds, status) in [
+        (
+            "before",
+            8.0,
+            synctv_core::models::ChatMessageStatus::Active,
+        ),
+        (
+            "inside-a",
+            10.0,
+            synctv_core::models::ChatMessageStatus::Active,
+        ),
+        (
+            "inside-b",
+            12.0,
+            synctv_core::models::ChatMessageStatus::Active,
+        ),
+        (
+            "deleted",
+            11.0,
+            synctv_core::models::ChatMessageStatus::Deleted,
+        ),
+        (
+            "after",
+            20.0,
+            synctv_core::models::ChatMessageStatus::Active,
+        ),
+    ] {
+        let mut msg = make_chat_message(&room.id, &user.id, content);
+        msg.status = status;
+        msg.metadata = serde_json::json!({
+            "playback": {
+                "media_id": media_id.as_i64().to_string(),
+                "playlist_id": playlist_id.as_i64().to_string(),
+                "target_hash": target_hash.clone(),
+                "position_seconds": position_seconds
+            }
+        });
+        chat_repo.create(&msg).await.unwrap();
+    }
+
+    let messages = chat_repo
+        .list_playback_messages(&ChatPlaybackMessagesQuery {
+            room_id: room.id,
+            media_id: Some(media_id),
+            playlist_id: Some(playlist_id),
+            target_hash: Some(target_hash),
+            position_seconds: 11.0,
+            before_seconds: 1.0,
+            after_seconds: 1.0,
+            limit: 100,
+            include_deleted: false,
+        })
+        .await
+        .unwrap();
+
+    let contents = messages
+        .into_iter()
+        .map(|message| message.message.content)
+        .collect::<Vec<_>>();
+    assert_eq!(contents, vec!["inside-a", "inside-b"]);
 }
 
 // ─── get_by_id without time restriction ─────────────────────────────────────────
@@ -631,7 +708,7 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
 
     // Initial load (no cursor) should only return recent messages
     let (messages, next_cursor) = chat_repo
-        .list_by_room_cursor(&room.id, None, 100)
+        .list_by_room_cursor(&room.id, None, 100, false)
         .await
         .unwrap();
 
@@ -641,7 +718,7 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
         1,
         "Initial load should only return messages within 90-day window"
     );
-    assert_eq!(messages[0].content, "recent message");
+    assert_eq!(messages[0].message.content, "recent message");
     assert!(
         next_cursor.is_none(),
         "Single-message initial load should not expose a next cursor"
@@ -678,7 +755,7 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
 
     // Initial load (no cursor) should only return recent messages
     let (messages, _cursor) = chat_repo
-        .list_by_room_cursor(&room.id, None, 100)
+        .list_by_room_cursor(&room.id, None, 100, false)
         .await
         .unwrap();
 
@@ -687,7 +764,7 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
         1,
         "Initial cursor load should only return messages within 90-day window"
     );
-    assert_eq!(messages[0].content, "recent cursor message");
+    assert_eq!(messages[0].message.content, "recent cursor message");
 }
 
 /// Regression guard: cleanup query must keep the partition-pruning filter.

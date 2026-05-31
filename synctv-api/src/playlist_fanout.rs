@@ -238,6 +238,8 @@ mod tests {
             room_id: room_id(),
             creator_id: Some(user_id()),
             name: "fanout playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id: None,
             position: 0.0,
             source_provider: None,

@@ -214,18 +214,21 @@ impl AuditPartitionManager {
             "audit_logs_{}",
             add_months(current_month, -keep_months).format("%Y_%m")
         );
-        let dropped_partitions = sqlx::query_scalar::<_, String>(
+        let dropped_partitions = sqlx::query_scalar_unchecked!(
             "SELECT tablename
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
                AND tablename < $1
              ORDER BY tablename",
+            cutoff_name
         )
-        .bind(cutoff_name)
         .fetch_all(&mut *conn)
         .await
-        .internal_with_err("Failed to list old audit partitions")?;
+        .internal_with_err("Failed to list old audit partitions")?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
         for partition in &dropped_partitions {
             sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))

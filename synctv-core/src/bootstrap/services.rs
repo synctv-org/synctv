@@ -11,20 +11,23 @@ use crate::{
         CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, RoomCache,
         UserCache, UsernameCache, VersionFenceStore,
     },
+    config::FileStorageBackendType,
     repository::{
-        realtime_outbox::RealtimeOutboxRepository, ChatRepository, NotificationRepository,
-        ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
+        realtime_outbox::RealtimeOutboxRepository, ChatRepository, FileStorageRepository,
+        NotificationRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
         RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
         WebAuthnCredentialRepository,
     },
     service::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
-        AuditService, ChatService, ContentFilter, EmailService, EmailTokenService, JwtService,
-        OAuth2Service, PasskeyService, PermissionService, ProvidersManager, RateLimitConfig,
-        RemoteProviderManager, RequestRateLimiterService, RoomService, RoomSettingsService,
-        RuntimeEmailConfigProvider, SettingsRegistry, SettingsService, StreamingPublishKeyService,
-        UserNotificationService, UserService,
+        AuditService, ChatService, ContentFilter, DatabaseFileStorageService,
+        DisabledFileStorageService, EmailService, EmailTokenService, FileStorageBackendRegistry,
+        FileStorageService, JwtService, OAuth2Service, PasskeyService, PermissionService,
+        ProvidersManager, RateLimitConfig, RemoteProviderManager, RequestRateLimiterService,
+        RoomService, RoomSettingsService, RuntimeEmailConfigProvider,
+        S3CompatibleFileStorageService, S3FileStorageConfig, SettingsRegistry, SettingsService,
+        StreamingPublishKeyService, UserNotificationService, UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
 };
@@ -42,6 +45,14 @@ const WEAK_JWT_SECRETS: &[&str] = &[
     "default",
 ];
 
+fn file_upload_token_secret(configured: &str, jwt_secret: &str) -> String {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+    format!("synctv:file-upload:{jwt_secret}")
+}
+
 /// Container for all initialized services
 #[derive(Clone)]
 pub struct Services {
@@ -55,7 +66,7 @@ pub struct Services {
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     /// Rate limit configuration
     pub rate_limit_config: RateLimitConfig,
-    /// Content filter for chat and danmaku
+    /// Content filter for chat
     pub content_filter: ContentFilter,
     /// Provider instance manager
     pub provider_instance_manager: Arc<RemoteProviderManager>,
@@ -460,19 +471,18 @@ pub async fn init_services_with_options(
     let rate_limiter = build_request_rate_limiter(&shared_state_profile)?;
     let rate_limit_config = RateLimitConfig {
         chat_per_second: config.messaging_rate_limits.chat_per_second,
-        danmaku_per_second: config.messaging_rate_limits.danmaku_per_second,
         window_seconds: config.messaging_rate_limits.window_seconds,
     };
     info!(
-        "Rate limiter initialized (chat: {}/s, danmaku: {}/s)",
-        rate_limit_config.chat_per_second, rate_limit_config.danmaku_per_second
+        "Rate limiter initialized (chat: {}/s)",
+        rate_limit_config.chat_per_second
     );
 
     // Initialize content filter
     let content_filter = ContentFilter::new();
     info!(
-        "Content filter initialized (max chat: {} chars, max danmaku: {} chars)",
-        content_filter.max_chat_length, content_filter.max_danmaku_length
+        "Content filter initialized (max chat: {} chars)",
+        content_filter.max_chat_length
     );
 
     // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation when available)
@@ -618,6 +628,69 @@ pub async fn init_services_with_options(
     )?;
     info!("OAuth2 service initialized");
 
+    let file_storage_repo = Arc::new(FileStorageRepository::new(pool.clone()));
+    let file_upload_token_secret =
+        file_upload_token_secret(&config.file_storage.upload_token_secret, &config.jwt.secret);
+    let mut file_storage_backends: HashMap<String, Arc<dyn FileStorageService>> = HashMap::new();
+    file_storage_backends.insert("disabled".to_string(), Arc::new(DisabledFileStorageService));
+    for (name, backend_config) in &config.file_storage.backends {
+        let service: Arc<dyn FileStorageService> = match backend_config.backend_type {
+            FileStorageBackendType::Disabled => Arc::new(DisabledFileStorageService),
+            FileStorageBackendType::Database => Arc::new(DatabaseFileStorageService::new(
+                name.clone(),
+                file_storage_repo.clone(),
+                file_upload_token_secret.clone(),
+            )),
+            FileStorageBackendType::S3 => {
+                let s3 = &backend_config.s3;
+                let file_storage = S3CompatibleFileStorageService::new(S3FileStorageConfig {
+                    endpoint: s3.endpoint.clone(),
+                    access_key_id: s3.access_key_id.clone(),
+                    secret_access_key: s3.secret_access_key.clone(),
+                    bucket: s3.bucket.clone(),
+                    region: s3.region.clone(),
+                    base_path: s3.base_path.clone(),
+                    public_base_url: s3.public_base_url.clone(),
+                    upload_expires_seconds: s3.upload_expires_seconds,
+                    storage_backend: name.clone(),
+                    upload_token_secret: file_upload_token_secret.clone(),
+                })
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to initialize file storage backend '{name}': {error}")
+                })?
+                .with_repository(file_storage_repo.clone());
+                Arc::new(file_storage)
+            }
+        };
+        file_storage_backends.insert(name.clone(), service);
+    }
+    let file_storage_registry = FileStorageBackendRegistry::new(file_storage_backends);
+    let user_avatar_file_storage: Arc<dyn FileStorageService> = Arc::new(
+        file_storage_registry
+            .routed(config.file_storage.backend_for_user_avatars().to_string())
+            .map_err(|error| anyhow::anyhow!("failed to route user avatar storage: {error}"))?,
+    );
+    let video_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
+        file_storage_registry
+            .routed(config.file_storage.backend_for_video_covers().to_string())
+            .map_err(|error| anyhow::anyhow!("failed to route video cover storage: {error}"))?,
+    );
+    let room_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
+        file_storage_registry
+            .routed(config.file_storage.backend_for_room_covers().to_string())
+            .map_err(|error| anyhow::anyhow!("failed to route room cover storage: {error}"))?,
+    );
+    let playlist_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
+        file_storage_registry
+            .routed(
+                config
+                    .file_storage
+                    .backend_for_playlist_covers()
+                    .to_string(),
+            )
+            .map_err(|error| anyhow::anyhow!("failed to route playlist cover storage: {error}"))?,
+    );
+
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
         &pool,
         crate::service::user::UserServiceDependencies {
@@ -676,6 +749,7 @@ pub async fn init_services_with_options(
                     ..crate::service::permission::PermissionServiceRuntime::default()
                 },
             )),
+            file_storage_service: Some(user_avatar_file_storage),
         },
     ));
     info!("UserService initialized with construction-time dependencies");
@@ -711,6 +785,9 @@ pub async fn init_services_with_options(
         user_notification_service: Some(Arc::clone(&notification_service)),
         password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
         realtime_outbox: options.realtime_outbox.clone(),
+        media_file_storage_service: Some(video_cover_file_storage),
+        room_file_storage_service: Some(room_cover_file_storage),
+        playlist_file_storage_service: Some(playlist_cover_file_storage),
         runtime: room_runtime,
         version_fence: version_fence.clone(),
     });
@@ -735,8 +812,8 @@ pub async fn init_services_with_options(
         },
     );
     let permission_service_for_chat = room_service.permission_service().clone();
-    let chat_service = ChatService::new(
-        chat_repo,
+    let mut chat_service = ChatService::new(
+        chat_repo.clone(),
         crate::service::chat::ChatRuntime {
             rate_limiter: rate_limiter.clone(),
             rate_limit_config: rate_limit_config.clone(),
@@ -746,9 +823,14 @@ pub async fn init_services_with_options(
             permission_service: permission_service_for_chat,
             room_settings_service: room_settings_service_for_chat,
             user_service: user_service.clone(),
+            audit_service: Some(audit_service.clone()),
             notification_service: (*room_service.notification_service()).clone(),
         },
     );
+    let chat_file_storage = file_storage_registry
+        .routed(config.file_storage.backend_for_chat_images().to_string())
+        .map_err(|error| anyhow::anyhow!("failed to route chat image storage: {error}"))?;
+    chat_service = chat_service.with_file_storage_service(Arc::new(chat_file_storage));
     info!("ChatService initialized");
 
     let provider_invalidation_cancel = provider_instance_manager.invalidation_cancel_token();
@@ -869,6 +951,9 @@ struct RoomServiceBuildArgs {
     user_notification_service: Option<Arc<UserNotificationService>>,
     password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    media_file_storage_service: Option<Arc<dyn FileStorageService>>,
+    room_file_storage_service: Option<Arc<dyn FileStorageService>>,
+    playlist_file_storage_service: Option<Arc<dyn FileStorageService>>,
     runtime: RoomServiceRuntime,
     version_fence: Arc<dyn VersionFenceStore>,
 }
@@ -951,6 +1036,9 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         user_notification_service,
         password_hasher,
         realtime_outbox,
+        media_file_storage_service,
+        room_file_storage_service,
+        playlist_file_storage_service,
         runtime,
         version_fence,
     } = args;
@@ -989,6 +1077,9 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
             user_notification_service,
             password_hasher,
             realtime_outbox,
+            media_file_storage_service,
+            room_file_storage_service,
+            playlist_file_storage_service,
         },
     )
 }
@@ -1323,6 +1414,9 @@ mod tests {
             user_notification_service: None,
             password_hasher: None,
             realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1403,6 +1497,9 @@ mod tests {
             user_notification_service: None,
             password_hasher: None,
             realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1435,6 +1532,9 @@ mod tests {
             user_notification_service: None,
             password_hasher: None,
             realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1508,6 +1608,9 @@ mod tests {
             user_notification_service: None,
             password_hasher: None,
             realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1569,6 +1672,9 @@ mod tests {
             user_notification_service: None,
             password_hasher: None,
             realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1630,6 +1736,9 @@ mod tests {
             user_notification_service: None,
             password_hasher: None,
             realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1730,18 +1839,31 @@ mod tests {
     fn test_init_services_uses_configured_messaging_rate_limits() {
         let mut config = Config::default();
         config.messaging_rate_limits.chat_per_second = 21;
-        config.messaging_rate_limits.danmaku_per_second = 8;
         config.messaging_rate_limits.window_seconds = 5;
 
         let rate_limit_config = RateLimitConfig {
             chat_per_second: config.messaging_rate_limits.chat_per_second,
-            danmaku_per_second: config.messaging_rate_limits.danmaku_per_second,
             window_seconds: config.messaging_rate_limits.window_seconds,
         };
 
         assert_eq!(rate_limit_config.chat_per_second, 21);
-        assert_eq!(rate_limit_config.danmaku_per_second, 8);
         assert_eq!(rate_limit_config.window_seconds, 5);
+    }
+
+    #[test]
+    fn test_file_upload_token_secret_uses_explicit_config() {
+        assert_eq!(
+            file_upload_token_secret(" configured-secret ", "jwt-secret"),
+            "configured-secret"
+        );
+    }
+
+    #[test]
+    fn test_file_upload_token_secret_falls_back_to_jwt_secret() {
+        assert_eq!(
+            file_upload_token_secret("", "jwt-secret"),
+            "synctv:file-upload:jwt-secret"
+        );
     }
 
     #[tokio::test]

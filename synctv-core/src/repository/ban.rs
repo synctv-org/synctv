@@ -67,8 +67,7 @@ impl BanRecordRepository {
 
     pub async fn list(&self, query: &BanRecordListQuery) -> Result<BanRecordPage> {
         let target_type = query.target_type.map(BanRecordTargetType::discriminator);
-        let total = sqlx::query_scalar::<_, i64>(
-            r"
+        let total = sqlx::query_scalar_unchecked!(r"
             SELECT COUNT(*) FROM (
                 SELECT 1::int4 AS target_type, user_id, NULL::bigint AS room_id,
                        revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
@@ -83,16 +82,17 @@ impl BanRecordRepository {
               AND ($3::bigint IS NULL OR user_id = $3)
               AND ($4::bigint IS NULL OR room_id = $4)
             ",
-        )
-        .bind(target_type)
-        .bind(query.active)
-        .bind(query.user_id)
-        .bind(query.room_id)
-        .fetch_one(&self.pool)
-        .await?;
+target_type,
+query.active,
+query.user_id,
+query.room_id)
 
-        let rows = sqlx::query_as::<_, BanRecordRow>(
-            r"
+        .fetch_one(&self.pool)
+        .await?.unwrap_or(0);
+
+        let rows = sqlx::query_as_unchecked!(
+BanRecordRow,
+r"
             SELECT * FROM (
                 SELECT ub.id, 1::int4 AS target_type, ub.user_id, COALESCE(u.username, '') AS username,
                        NULL::bigint AS room_id, ''::text AS room_name, ub.banned_by,
@@ -119,13 +119,13 @@ impl BanRecordRepository {
             ORDER BY starts_at DESC, id DESC
             LIMIT $5 OFFSET $6
             ",
-        )
-        .bind(target_type)
-        .bind(query.active)
-        .bind(query.user_id)
-        .bind(query.room_id)
-        .bind(query.limit)
-        .bind(query.offset)
+target_type,
+query.active,
+query.user_id,
+query.room_id,
+query.limit,
+query.offset
+)
         .fetch_all(&self.pool)
         .await?;
 

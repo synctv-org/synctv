@@ -95,7 +95,7 @@ pub struct RouterConfig {
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     /// Shared outbound HTTP client used by proxy handlers and cache fills.
     pub proxy_http_client: reqwest::Client,
-    /// Rate limit configuration for WebSocket messaging (chat/danmaku).
+    /// Rate limit configuration for WebSocket chat messaging.
     /// This is separate from the HTTP request rate limit config used by the
     /// shared request execution path.
     pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
@@ -116,7 +116,7 @@ pub struct SharedApiRuntime {
     pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     /// Shared rate limit config (created once at startup, not per-request)
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
-    /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
+    /// Shared messaging rate limit config for WebSocket chat messages.
     pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
     /// Shared content filter configured at startup.
     pub content_filter: Arc<synctv_core::service::ContentFilter>,
@@ -303,6 +303,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             public_id_codec.clone(),
         )
         .with_realtime_fanout_service(config.realtime_fanout_service.clone())
+        .with_chat_service(config.chat_service.clone())
         .with_shared_runtime(redis_runtime.clone())
         .with_rate_limiter(config.rate_limiter.clone())
         .with_credential_encryption(config.credential_encryption.clone())
@@ -401,7 +402,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     // Create shared RateLimitConfig from the config file.
     let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
 
-    // Create shared messaging rate limit config for WebSocket (chat/danmaku)
+    // Create shared messaging rate limit config for WebSocket chat messages.
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
 
     // Create shared provider API implementations once at startup.
@@ -500,6 +501,15 @@ pub(crate) mod body_limits {
     /// Media add / edit requests: 512 KB (media metadata may include longer URLs or
     /// subtitles, but should never be megabyte-scale).
     pub const MEDIA: usize = 512 * 1024;
+
+    /// Chat image database uploads: match the service-level image cap.
+    pub const CHAT_IMAGE: usize = 20 * 1024 * 1024;
+
+    /// User avatar database uploads: match the service-level avatar cap.
+    pub const USER_AVATAR: usize = 5 * 1024 * 1024;
+
+    /// Video cover database uploads: match the service-level cover cap.
+    pub const VIDEO_COVER: usize = 10 * 1024 * 1024;
 }
 
 /// Authentication routes (register, login, refresh, `OAuth2` exchange).
@@ -593,6 +603,30 @@ fn register_media_routes(_state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/media/{media_id}",
             axum::routing::patch(room::edit_media),
         )
+        .route(
+            "/api/rooms/{room_id}/media/{media_id}/cover/upload-session",
+            post(room::create_video_cover_upload_session),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/{media_id}/cover",
+            axum::routing::put(room::update_video_cover).delete(room::clear_video_cover),
+        )
+        .route(
+            "/api/rooms/{room_id}/cover/upload-session",
+            post(room::create_room_cover_upload_session),
+        )
+        .route(
+            "/api/rooms/{room_id}/cover",
+            axum::routing::put(room::update_room_cover).delete(room::clear_room_cover),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}/cover/upload-session",
+            post(room::create_playlist_cover_upload_session),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}/cover",
+            axum::routing::put(room::update_playlist_cover).delete(room::clear_playlist_cover),
+        )
         // Media metadata bodies are small (URLs, titles, subtitles)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::MEDIA))
 }
@@ -665,6 +699,26 @@ fn register_write_routes(_state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/settings/reset",
             post(room::reset_room_settings),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages",
+            post(room::send_chat_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/images/upload-session",
+            post(room::create_chat_image_upload_session),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            axum::routing::patch(room::edit_chat_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            axum::routing::delete(room::delete_chat_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/read-state",
+            post(room::mark_chat_read),
         );
 
     router
@@ -693,6 +747,22 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/chat/history",
             get(room::get_chat_history),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/playback-messages",
+            get(room::get_chat_playback_messages),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            get(room::get_chat_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}/context",
+            get(room::get_chat_message_context),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/read-state",
+            get(room::get_chat_read_state),
         )
         // Playlist and Media APIs
         .route("/api/rooms/{room_id}/playlists", get(room::list_playlists))
@@ -729,6 +799,55 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/watch/room-members",
             get(room::watch_room_members),
         )
+        .route(
+            "/api/rooms/{room_id}/watch/chat-events",
+            get(room::watch_chat_events),
+        )
+}
+
+fn register_chat_image_object_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/chat/image-objects/{encoded_object_key}",
+            axum::routing::put(room::upload_chat_image_object).get(room::get_chat_image_object),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::CHAT_IMAGE,
+        ))
+}
+
+fn register_video_cover_object_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/video/cover-objects/{encoded_object_key}",
+            axum::routing::put(room::upload_video_cover_object).get(room::get_video_cover_object),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::VIDEO_COVER,
+        ))
+}
+
+fn register_room_cover_object_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/room/cover-objects/{encoded_object_key}",
+            axum::routing::put(room::upload_room_cover_object).get(room::get_room_cover_object),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::VIDEO_COVER,
+        ))
+}
+
+fn register_playlist_cover_object_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/playlist/cover-objects/{encoded_object_key}",
+            axum::routing::put(room::upload_playlist_cover_object)
+                .get(room::get_playlist_cover_object),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::VIDEO_COVER,
+        ))
 }
 
 fn register_extracted_user_routes() -> Router<AppState> {
@@ -736,6 +855,14 @@ fn register_extracted_user_routes() -> Router<AppState> {
         .route("/api/user", get(user::get_me))
         .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/user", axum::routing::patch(user::update_user))
+        .route(
+            "/api/user/avatar/upload-session",
+            post(user::create_user_avatar_upload_session),
+        )
+        .route(
+            "/api/user/avatar",
+            axum::routing::put(user::update_user_avatar).delete(user::clear_user_avatar),
+        )
         .route("/api/user/email/bind/start", post(user::start_email_bind))
         .route(
             "/api/user/email/bind/confirm",
@@ -771,6 +898,17 @@ fn register_extracted_user_routes() -> Router<AppState> {
         .route("/api/user/logout", post(auth::logout))
 }
 
+fn register_user_avatar_object_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/user/avatar-objects/{encoded_object_key}",
+            axum::routing::put(user::upload_user_avatar_object).get(user::get_user_avatar_object),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::USER_AVATAR,
+        ))
+}
+
 /// Assemble all route groups into a single router.
 fn register_websocket_routes(_state: &AppState) -> Router<AppState> {
     Router::new().route(
@@ -792,6 +930,7 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
         .merge(register_extracted_auth_routes())
         .merge(register_auth_routes(state))
         .merge(register_extracted_user_routes())
+        .merge(register_user_avatar_object_routes())
         .merge(
             Router::new()
                 .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
@@ -832,6 +971,10 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
         .merge(register_media_routes(state))
         .merge(register_write_routes(state))
         .merge(register_read_routes(state))
+        .merge(register_chat_image_object_routes())
+        .merge(register_video_cover_object_routes())
+        .merge(register_room_cover_object_routes())
+        .merge(register_playlist_cover_object_routes())
         // WebRTC configuration endpoints
         .merge(Router::new().route(
             "/api/rooms/{room_id}/webrtc/ice-servers",
@@ -1070,6 +1213,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::{routing::get, Router};
     use bytes::Bytes;
+    use http_body_util::BodyExt as _;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
     use synctv_core::cache::{KeyBuilder, UsernameCache};
@@ -1319,6 +1463,7 @@ mod tests {
                 permission_service: router_config.room_service.permission_service().clone(),
                 room_settings_service,
                 user_service: router_config.user_service.clone(),
+                audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
             },
         );
@@ -1342,6 +1487,97 @@ mod tests {
             .expect("realtime manager"),
         );
         router_config.event_service = Some(realtime_manager);
+        build_app_state(router_config)
+    }
+
+    async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::AppState {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig::default(),
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let mut router_config = state.router_config.as_ref().clone();
+
+        let username_cache =
+            UsernameCache::local_only("test:http-chat:username:".to_string(), 128, 60);
+        let mut user_service = UserService::new(
+            &pool,
+            router_config.jwt_service.clone(),
+            username_cache,
+            synctv_core::config::PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test:http-chat"),
+            synctv_core::service::BruteForceProtection::in_memory(
+                "test:http-chat:auth".to_string(),
+            ),
+        );
+        user_service.set_password_hasher(Arc::new(
+            synctv_core::service::auth::TestPasswordHasher::new(),
+        ));
+        let user_service = Arc::new(user_service);
+
+        let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
+        room_service.set_password_hasher(Arc::new(
+            synctv_core::service::auth::TestPasswordHasher::new(),
+        ));
+        let room_service = Arc::new(room_service);
+
+        let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
+        let mut permission_service = room_service.permission_service().clone();
+        permission_service.set_room_settings_repo(room_settings_repo.clone());
+        let notification_service = synctv_core::service::NotificationService::default();
+        let room_settings_service = synctv_core::service::RoomSettingsService::new(
+            room_settings_repo,
+            None,
+            Arc::new(notification_service.clone()),
+            None,
+            None,
+        );
+        let chat_service = synctv_core::service::ChatService::new(
+            Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
+            synctv_core::service::chat::ChatRuntime {
+                rate_limiter: Arc::new(RateLimiter::local_only("test:http-chat:".to_string())),
+                rate_limit_config: RateLimitConfig::default(),
+                content_filter: ContentFilter::new(),
+            },
+            synctv_core::service::chat::ChatDependencies {
+                permission_service,
+                room_settings_service,
+                user_service: Arc::clone(&user_service),
+                audit_service: None,
+                notification_service,
+            },
+        );
+
+        let realtime_manager = Arc::new(
+            synctv_realtime::sync::RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
+                distributed_enabled: false,
+                node_id: "test-http-chat-node".to_string(),
+                dedup_window: Duration::from_secs(30),
+                critical_channel_capacity: 8,
+                publish_channel_capacity: 8,
+                key_prefix: "test:http-chat:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
+            .await
+            .expect("realtime manager"),
+        );
+
+        router_config.user_service = user_service;
+        router_config.room_service = room_service;
+        router_config.chat_service = Some(Arc::new(chat_service));
+        router_config.event_service = Some(realtime_manager);
+        router_config.connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
+            synctv_realtime::sync::ConnectionLimits::default(),
+        ));
+        router_config.audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
+        router_config.user_provider_credential_repository =
+            Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool));
+
         build_app_state(router_config)
     }
 
@@ -1597,6 +1833,413 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "request should reach the registered route and follow the normal auth path; playback PATCH is not gated by websocket-runtime-only middleware"
         );
+    }
+
+    #[tokio::test]
+    async fn test_chat_message_patch_route_is_reachable_via_project_router() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/rooms/room_123/chat/messages/msg_456")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"content":"edited","expected_version":1}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "chat message PATCH route must be registered in the project router"
+        );
+        assert_ne!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "chat message PATCH route must accept PATCH requests"
+        );
+        assert!(
+            matches!(response.status(), StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED),
+            "request should reach the registered route and be handled by the normal request pipeline"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_message_delete_route_is_reachable_via_project_router() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/rooms/room_123/chat/messages/msg_456")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"expected_version":1,"reason":"cleanup"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "chat message DELETE route must be registered in the project router"
+        );
+        assert_ne!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "chat message DELETE route must accept DELETE requests"
+        );
+        assert!(
+            matches!(response.status(), StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED),
+            "request should reach the registered route and be handled by the normal request pipeline"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_chat_events_sse_receives_live_send_event() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
+        let now = chrono::Utc::now();
+        let owner = synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "http_sse_chat_live_owner".to_string(),
+                email: Some("http-sse-chat-live-owner@test.invalid".to_string()),
+                password_hash: "hash".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                password_changed_at: now,
+                password_version: 0,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await
+            .expect("owner should be created");
+        let access_token = state
+            .jwt_service
+            .sign_token(
+                &owner.id,
+                synctv_core::service::auth::TokenType::Access,
+                owner.password_version,
+            )
+            .expect("access token should sign");
+        let (room, _) = state
+            .room_service
+            .create_room(
+                "HTTP SSE Chat Live Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        let public_room_id = state
+            .shared_api_runtime
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id should encode");
+        let app = register_all_routes_for_test(&state).with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/rooms/{public_room_id}/watch/chat-events?format=json"
+                    ))
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {access_token}"),
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let first_frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+            .await
+            .expect("initial SSE frame should arrive")
+            .expect("SSE stream should remain open")
+            .expect("SSE frame should be readable");
+        let mut rendered = String::new();
+        if let Some(data) = first_frame.data_ref() {
+            rendered.push_str(std::str::from_utf8(data).expect("SSE frame should be utf-8"));
+        }
+        assert!(rendered.contains("event: observed\n"));
+
+        let sent = state
+            .shared_api_runtime
+            .client_api
+            .send_chat_message_for_actor(
+                &crate::impls::client::RoomActor::User {
+                    room_id: room.id,
+                    user_id: owner.id,
+                },
+                crate::proto::client::SendChatMessageRequest {
+                    client_message_id: "http-sse-live-send-1".to_string(),
+                    content: "live push event".to_string(),
+                    metadata: br"{}".to_vec(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("chat send should succeed")
+            .event
+            .expect("chat send should return event");
+
+        for _ in 0..8 {
+            let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+                .await
+                .expect("SSE frame should arrive")
+                .expect("SSE stream should remain open")
+                .expect("SSE frame should be readable");
+            if let Some(data) = frame.data_ref() {
+                rendered.push_str(std::str::from_utf8(data).expect("SSE frame should be utf-8"));
+            }
+            if rendered.contains("live push event") {
+                break;
+            }
+        }
+
+        assert!(rendered.contains("event: changed\n"));
+        assert!(rendered.contains(&format!("id: {}\n", sent.event_id)));
+        assert!(rendered.contains("live push event"));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_chat_events_sse_replays_after_last_event_id_header() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
+        let now = chrono::Utc::now();
+        let owner = synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "http_sse_chat_owner".to_string(),
+                email: Some("http-sse-chat-owner@test.invalid".to_string()),
+                password_hash: "hash".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                password_changed_at: now,
+                password_version: 0,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await
+            .expect("owner should be created");
+        let access_token = state
+            .jwt_service
+            .sign_token(
+                &owner.id,
+                synctv_core::service::auth::TokenType::Access,
+                owner.password_version,
+            )
+            .expect("access token should sign");
+        let (room, _) = state
+            .room_service
+            .create_room(
+                "HTTP SSE Chat Replay Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        let chat_service = state.chat_service.as_ref().expect("chat service").clone();
+
+        let first = chat_service
+            .send_message_event(synctv_core::models::SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("http-sse-chat-1".to_string()),
+                content: "first replay".to_string(),
+                message_type: synctv_core::models::ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await
+            .expect("first message should be stored");
+        chat_service
+            .send_message_event(synctv_core::models::SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("http-sse-chat-2".to_string()),
+                content: "second replay".to_string(),
+                message_type: synctv_core::models::ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await
+            .expect("second message should be stored");
+        chat_service
+            .send_message_event(synctv_core::models::SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("http-sse-chat-3".to_string()),
+                content: "third replay".to_string(),
+                message_type: synctv_core::models::ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await
+            .expect("third message should be stored");
+
+        let public_room_id = state
+            .shared_api_runtime
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id should encode");
+        let app = register_all_routes_for_test(&state).with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/rooms/{public_room_id}/watch/chat-events?format=json"
+                    ))
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {access_token}"),
+                    )
+                    .header("last-event-id", first.event_id)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let mut rendered = String::new();
+        for _ in 0..8 {
+            let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+                .await
+                .expect("SSE frame should arrive")
+                .expect("SSE stream should remain open")
+                .expect("SSE frame should be readable");
+            if let Some(data) = frame.data_ref() {
+                rendered.push_str(std::str::from_utf8(data).expect("SSE frame should be utf-8"));
+            }
+            if rendered.contains("second replay") && rendered.contains("third replay") {
+                break;
+            }
+        }
+
+        assert!(rendered.contains("event: observed\n"));
+        assert!(rendered.contains("event: changed\n"));
+        assert!(rendered.contains("id: "));
+        assert!(rendered.contains("second replay"));
+        assert!(rendered.contains("third replay"));
+        assert!(
+            !rendered.contains("first replay"),
+            "Last-Event-ID should replay events strictly after the supplied event id"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
+        let now = chrono::Utc::now();
+        let owner = synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "http_sse_chat_bad_cursor_owner".to_string(),
+                email: Some("http-sse-chat-bad-cursor-owner@test.invalid".to_string()),
+                password_hash: "hash".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                password_changed_at: now,
+                password_version: 0,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await
+            .expect("owner should be created");
+        let access_token = state
+            .jwt_service
+            .sign_token(
+                &owner.id,
+                synctv_core::service::auth::TokenType::Access,
+                owner.password_version,
+            )
+            .expect("access token should sign");
+        let (room, _) = state
+            .room_service
+            .create_room(
+                "HTTP SSE Chat Bad Cursor Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        let public_room_id = state
+            .shared_api_runtime
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id should encode");
+        let app = register_all_routes_for_test(&state).with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/rooms/{public_room_id}/watch/chat-events?format=json"
+                    ))
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {access_token}"),
+                    )
+                    .header("last-event-id", "missing-chat-event")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

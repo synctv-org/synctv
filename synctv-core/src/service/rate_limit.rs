@@ -5,8 +5,8 @@
 //! This module lives in `synctv-core` because it serves **both** domain-level
 //! and API-level rate limiting:
 //!
-//! - **Domain-level**: `ChatService` uses `RateLimiter` for per-user chat and
-//!   danmaku throttling (business logic).
+//! - **Domain-level**: `ChatService` uses `RateLimiter` for per-user chat
+//!   throttling.
 //! - **API-level**: `synctv-api` uses `RateLimiter` from shared request
 //!   execution paths and transport-adjacent helpers for request-level
 //!   throttling.
@@ -173,7 +173,6 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
         "write",
         "media",
         "chat",
-        "danmaku",
         "room_password_check",
         "grpc",
         "api",
@@ -1092,7 +1091,6 @@ impl RequestRateLimiterService for RateLimiter {
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     pub chat_per_second: u32,
-    pub danmaku_per_second: u32,
     pub window_seconds: u64,
 }
 
@@ -1100,7 +1098,6 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             chat_per_second: 10,
-            danmaku_per_second: 3,
             window_seconds: 1,
         }
     }

@@ -2329,6 +2329,7 @@ impl RoomMemberRepository {
                     id: row.try_get("id")?,
                     name: row.try_get("name")?,
                     description: row.try_get("description")?,
+                    cover_file_reference_id: None,
                     created_by: row.try_get("created_by")?,
                     status: if row
                         .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("closed_at")?
@@ -2417,6 +2418,7 @@ impl RoomMemberRepository {
                     id: row.try_get("id")?,
                     name: row.try_get("name")?,
                     description: row.try_get("description")?,
+                    cover_file_reference_id: None,
                     created_by: row.try_get("created_by")?,
                     status: if row
                         .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("closed_at")?

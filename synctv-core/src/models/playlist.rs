@@ -60,6 +60,9 @@ pub struct Playlist {
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub cover_file_reference_id: Option<i64>,
     pub parent_id: Option<PlaylistId>,
     pub position: f64,
 
@@ -103,6 +106,8 @@ impl Playlist {
 pub struct CreatePlaylistRequest {
     pub room_id: RoomId,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub parent_id: Option<PlaylistId>,
 
     // Dynamic folder fields
@@ -115,6 +120,7 @@ pub struct CreatePlaylistRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatePlaylistRequest {
     pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 /// Playlist with media count (for efficient queries)
@@ -141,6 +147,8 @@ mod tests {
             room_id: RoomId::expect_positive(1),
             creator_id: Some(UserId::expect_positive(1)),
             name: name.to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
             parent_id,
             position: 0.0,
             source_provider,

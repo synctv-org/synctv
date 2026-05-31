@@ -3097,7 +3097,6 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         .expect("room settings get should return settings object")
         .clone();
     full_room_settings.insert("chat_enabled".to_string(), Value::Bool(false));
-    full_room_settings.insert("danmaku_enabled".to_string(), Value::Bool(false));
     full_room_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
     let full_room_settings_json = Value::Object(full_room_settings).to_string();
 
@@ -3152,7 +3151,6 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
     assert_eq!(fetched_room_settings["settings"]["chat_enabled"], true);
-    assert_eq!(fetched_room_settings["settings"]["danmaku_enabled"], true);
     assert_eq!(fetched_room_settings["settings"]["allow_guest_join"], false);
 }
 
@@ -7609,8 +7607,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         ClientMessage {
             message: Some(client_message::Message::Chat(ChatMessageSend {
                 content: chat_content.to_string(),
-                position: None,
-                color: None,
+                display_position: String::new(),
+                display_color: String::new(),
+                client_message_id: String::new(),
+                images: Vec::new(),
+                reply_to_message_id: String::new(),
             })),
         },
     )
@@ -7618,25 +7619,31 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::Chat(chat))
-                    if chat.content == chat_content && chat.username == owner_username
-            )
+        |message| match &message.message {
+            Some(server_message::Message::Chat(chat)) => {
+                chat.content == chat_content && chat.username == owner_username
+            }
+            Some(server_message::Message::ChatEvent(event)) => event
+                .message
+                .as_ref()
+                .is_some_and(|chat| chat.content == chat_content),
+            _ => false,
         },
         "chat websocket broadcast",
     )
     .await;
 
-    let danmaku_content = "full stack websocket danmaku";
+    let second_chat_content = "full stack websocket chat follow-up";
     send_client_message(
         &mut owner_ws,
         ClientMessage {
             message: Some(client_message::Message::Chat(ChatMessageSend {
-                content: danmaku_content.to_string(),
-                position: Some(12.5),
-                color: Some("#ff6600".to_string()),
+                content: second_chat_content.to_string(),
+                display_position: String::new(),
+                display_color: String::new(),
+                client_message_id: String::new(),
+                images: Vec::new(),
+                reply_to_message_id: String::new(),
             })),
         },
     )
@@ -7644,17 +7651,17 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::Chat(chat))
-                    if chat.content == danmaku_content
-                        && chat.username == owner_username
-                        && chat.position.is_some_and(|position| (position - 12.5).abs() < 0.01)
-                        && chat.color.as_deref() == Some("#ff6600")
-            )
+        |message| match &message.message {
+            Some(server_message::Message::Chat(chat)) => {
+                chat.content == second_chat_content && chat.username == owner_username
+            }
+            Some(server_message::Message::ChatEvent(event)) => event
+                .message
+                .as_ref()
+                .is_some_and(|chat| chat.content == second_chat_content),
+            _ => false,
         },
-        "danmaku chat websocket broadcast",
+        "second chat websocket broadcast",
     )
     .await;
 

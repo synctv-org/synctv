@@ -129,7 +129,16 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         room::stop_playback,
         room::update_playback,
         room::set_room_password,
+        room::watch_chat_events,
         room::get_chat_history,
+        room::get_chat_message,
+        room::get_chat_message_context,
+        room::send_chat_message,
+        room::create_chat_image_upload_session,
+        room::edit_chat_message,
+        room::delete_chat_message,
+        room::mark_chat_read,
+        room::get_chat_read_state,
         room::list_playlist_items,
         room::delete_playlist,
         room::update_playlist,
@@ -648,6 +657,76 @@ mod tests {
         assert!(
             path["options"].is_object(),
             "provider proxy OPTIONS route should be documented"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_chat_routes() {
+        let doc = openapi_json();
+
+        for (path, method, responses) in [
+            (
+                "/api/rooms/{room_id}/chat/messages",
+                "post",
+                &["200", "400", "401", "403", "429"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/images/upload-session",
+                "post",
+                &["200", "400", "401", "403", "429"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/messages/{message_id}",
+                "get",
+                &["200", "400", "401", "403", "404"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/messages/{message_id}",
+                "patch",
+                &["200", "400", "401", "403", "404", "409"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/messages/{message_id}",
+                "delete",
+                &["200", "400", "401", "403", "404", "409"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/messages/{message_id}/context",
+                "get",
+                &["200", "400", "401", "403", "404"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/read-state",
+                "post",
+                &["200", "400", "401", "403", "404"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/chat/read-state",
+                "get",
+                &["200", "401", "403"][..],
+            ),
+            (
+                "/api/rooms/{room_id}/watch/chat-events",
+                "get",
+                &["200", "400", "401", "403", "503"][..],
+            ),
+        ] {
+            assert_response_codes(&doc, path, method, responses);
+        }
+
+        assert_parameter_location(
+            &doc,
+            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            "get",
+            "include_deleted",
+            "query",
+        );
+        assert_parameter_location(
+            &doc,
+            "/api/rooms/{room_id}/watch/chat-events",
+            "get",
+            "after_event_id",
+            "query",
         );
     }
 

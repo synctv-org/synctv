@@ -16,7 +16,7 @@ Current playback state answers “what is the room watching and where is it?”.
 
 ## Realtime Flow
 
-Room WebSocket connections carry playback controls, chat, danmaku, WebRTC signaling, and resource observation events. After reconnecting, clients should fetch key resources again instead of assuming old subscriptions are still active.
+Room WebSocket connections carry playback controls, chat, WebRTC signaling, and resource observation events. After reconnecting, clients should fetch key resources again instead of assuming old subscriptions are still active.
 
 1. Enter a room.
 2. Fetch current playback state and a playback snapshot.

@@ -1175,7 +1175,7 @@ impl OAuth2Service {
 
             let mut pending_request_id = None;
             for candidate in &candidates {
-                let username_in_use = sqlx::query_scalar::<_, bool>(
+                let username_in_use = sqlx::query_scalar_unchecked!(
                     r"
                     SELECT EXISTS(
                         SELECT 1
@@ -1184,10 +1184,11 @@ impl OAuth2Service {
                           AND deleted_at IS NULL
                     )
                     ",
+                    candidate
                 )
-                .bind(candidate)
                 .fetch_one(&mut *tx)
-                .await?;
+                .await?
+                .unwrap_or(false);
                 if username_in_use {
                     continue;
                 }

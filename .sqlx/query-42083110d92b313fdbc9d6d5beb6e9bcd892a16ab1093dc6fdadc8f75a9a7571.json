@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT r.id AS file_reference_id,\n                   o.storage_backend,\n                   o.object_key,\n                   o.mime_type,\n                   o.size_bytes,\n                   o.checksum_sha256,\n                   o.metadata as \"metadata: serde_json::Value\",\n                   o.created_at,\n                   o.validated_at\n            FROM file_references r\n            JOIN file_objects o\n              ON o.storage_backend = r.storage_backend\n             AND o.object_key = r.object_key\n            WHERE r.reference_kind = $1\n              AND r.reference_id = $2\n              AND r.released_at IS NULL\n            ORDER BY r.updated_at DESC, r.id DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_backend",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "object_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "mime_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "size_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "checksum_sha256",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "metadata: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "validated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "42083110d92b313fdbc9d6d5beb6e9bcd892a16ab1093dc6fdadc8f75a9a7571"
+}

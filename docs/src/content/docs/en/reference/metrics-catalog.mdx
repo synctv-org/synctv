@@ -58,6 +58,10 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `chat_messages_total` | counter | none | Persisted chat messages |
+| `synctv_file_object_delete_attempts_total` | counter | `origin`, `backend` | File object delete attempts |
+| `synctv_file_object_delete_failures_total` | counter | `origin`, `backend` | File object delete failures |
+| `synctv_file_cleanup_jobs_due` | gauge | none | Due file cleanup jobs waiting for retry |
+| `synctv_file_cleanup_jobs_total` | counter | `action`, `origin`, `backend` | File cleanup retry job actions |
 | `playlist_items_total` | counter | none | Added playlist items |
 | `webrtc_peers_active` | gauge | none | Active WebRTC peers |
 | `active_connections` | gauge | none | Active connections |

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE realtime_outbox\n            SET status = $2,\n                locked_by = NULL,\n                locked_at = NULL,\n                next_retry_at = NOW()\n            WHERE status = $3\n              AND locked_at < NOW() - ($1::BIGINT::TEXT || ' seconds')::INTERVAL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "57c247e9f4d5f82859d12055a3767bead07cb05ecd7d0cd3084d071912b7f497"
+}

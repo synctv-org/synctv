@@ -6447,6 +6447,7 @@ dependencies = [
  "nonzero_ext",
  "oauth2",
  "opaque-ke",
+ "opendal",
  "parking_lot",
  "paste",
  "prometheus",

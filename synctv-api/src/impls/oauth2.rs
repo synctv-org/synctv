@@ -818,6 +818,7 @@ mod tests {
             email: None,
             password_hash: "$argon2id$v=19$m=16384,t=3,p=1$random$hash".to_string(),
             role: UserRole::User,
+            avatar_file_reference_id: None,
             status: UserStatus::Active,
             is_banned: false,
             banned_at: None,

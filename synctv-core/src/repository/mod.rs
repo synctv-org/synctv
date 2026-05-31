@@ -3,6 +3,7 @@ pub mod ban;
 pub mod chat;
 pub mod email_bind;
 pub mod email_token;
+pub mod file_storage;
 pub mod media;
 pub mod notification;
 pub mod playback;
@@ -27,9 +28,13 @@ pub use audit::{AuditLogQuery, AuditLogRepository, AuditLogRow};
 pub use ban::{
     BanRecordListQuery, BanRecordPage, BanRecordRepository, BanRecordRow, BanRecordTargetType,
 };
-pub use chat::ChatRepository;
+pub use chat::{
+    ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
+    EditChatMessageEventRequest,
+};
 pub use email_bind::EmailBindRepository;
 pub use email_token::EmailTokenRepository;
+pub use file_storage::FileStorageRepository;
 pub use media::MediaRepository;
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;

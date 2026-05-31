@@ -307,6 +307,7 @@ pub struct User {
 
     /// User RBAC role (global access level) - SEPARATE from status
     pub role: UserRole,
+    pub avatar_file_reference_id: Option<i64>,
 
     #[serde(skip)]
     pub status: UserStatus,
@@ -357,6 +358,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
             email: row.try_get("email")?,
             password_hash: row.try_get("password_hash")?,
             role: row.try_get("role")?,
+            avatar_file_reference_id: row.try_get("avatar_file_reference_id")?,
             status: if is_banned {
                 UserStatus::Banned
             } else {
@@ -392,6 +394,7 @@ impl User {
             email,
             password_hash,
             role: UserRole::User, // Default role
+            avatar_file_reference_id: None,
             status: UserStatus::Active,
             is_banned: false,
             banned_at: None,
@@ -574,6 +577,7 @@ mod tests {
             email: Some("test@example.com".to_string()),
             password_hash: password_hash.to_string(),
             role: UserRole::User,
+            avatar_file_reference_id: None,
             signup_method,
             created_at: now,
             updated_at: now,

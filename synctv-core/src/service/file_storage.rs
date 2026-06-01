@@ -539,7 +539,7 @@ impl FileStorageService for DatabaseFileStorageService {
     async fn prepare_files(
         &self,
         context: FileStorageContext<'_>,
-        files: Vec<NewStoredFile>,
+        mut files: Vec<NewStoredFile>,
     ) -> Result<Vec<NewStoredFile>> {
         validate_stored_files(&files)?;
         for file in &files {
@@ -597,6 +597,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 }
             }
         }
+        strip_internal_file_metadata(&mut files);
         Ok(files)
     }
 
@@ -918,7 +919,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
     async fn prepare_files(
         &self,
         context: FileStorageContext<'_>,
-        files: Vec<NewStoredFile>,
+        mut files: Vec<NewStoredFile>,
     ) -> Result<Vec<NewStoredFile>> {
         validate_stored_files(&files)?;
         for file in &files {
@@ -1020,6 +1021,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 )
                 .await?;
         }
+        strip_internal_file_metadata(&mut files);
         Ok(files)
     }
 
@@ -1361,6 +1363,15 @@ fn validate_file_metadata(metadata: &serde_json::Value) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn strip_internal_file_metadata(files: &mut [NewStoredFile]) {
+    for file in files {
+        if let Some(metadata) = file.metadata.as_object_mut() {
+            metadata.remove(FILE_UPLOAD_TOKEN_KEY);
+            metadata.remove(FILE_OWNERSHIP_PROOF_KEY);
+        }
+    }
 }
 
 fn validate_stored_files(files: &[NewStoredFile]) -> Result<()> {
@@ -2163,6 +2174,169 @@ mod tests {
 
         assert!(!session.upload_required);
         assert_eq!(session.file.mime_type.as_deref(), Some("image/gif"));
+    }
+
+    #[tokio::test]
+    async fn database_storage_strips_upload_token_from_prepared_files() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let repository = Arc::new(FileStorageRepository::new(pool));
+        let storage = DatabaseFileStorageService::new(
+            "database",
+            repository.clone(),
+            "test-file-storage-secret",
+        );
+        let payload = b"avatar";
+        let checksum = hex::encode(Sha256::digest(payload));
+        let session = storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id: UserId::expect_positive(1),
+                storage_scope: "users/1/avatars".to_string(),
+                client_file_id: Some("avatar-1".to_string()),
+                mime_type: "image/png".to_string(),
+                size_bytes: i64::try_from(payload.len()).expect("payload length should fit"),
+                width: Some(16),
+                height: Some(16),
+                checksum_sha256: Some(checksum),
+                metadata: serde_json::json!({"blurhash": "abc"}),
+                policy: user_avatar_upload_policy(),
+            })
+            .await
+            .expect("upload session should be created");
+        assert!(session.file.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_some());
+
+        let upload_url = session
+            .upload_url
+            .as_deref()
+            .expect("database upload url should be returned");
+        let parsed = url::Url::parse(&format!("http://localhost{upload_url}"))
+            .expect("upload url should parse");
+        let encoded_object_key = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .expect("encoded object key should exist");
+        let upload_token = session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .expect("upload token should exist");
+        storage
+            .store_upload_object(
+                encoded_object_key,
+                upload_token,
+                Some("image/png"),
+                payload.to_vec(),
+            )
+            .await
+            .expect("object should store");
+
+        let prepared = storage
+            .prepare_files(
+                FileStorageContext {
+                    user_id: UserId::expect_positive(1),
+                    storage_scope: "users/1/avatars",
+                    client_request_id: None,
+                },
+                vec![session.file],
+            )
+            .await
+            .expect("file should prepare");
+        let metadata = &prepared[0].metadata;
+        assert!(metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
+        assert!(metadata.get(FILE_OWNERSHIP_PROOF_KEY).is_none());
+        assert_eq!(
+            metadata.get("blurhash").and_then(serde_json::Value::as_str),
+            Some("abc")
+        );
+    }
+
+    #[tokio::test]
+    async fn database_storage_strips_ownership_proof_from_prepared_files() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let repository = Arc::new(FileStorageRepository::new(pool));
+        let storage = DatabaseFileStorageService::new(
+            "database",
+            repository.clone(),
+            "test-file-storage-secret",
+        );
+        let payload = b"avatar";
+        let checksum = hex::encode(Sha256::digest(payload));
+        repository
+            .upsert_blob(
+                "database",
+                "database/users/avatars/avatar.png",
+                "image/png",
+                payload.to_vec(),
+                &serde_json::Value::Object(Default::default()),
+            )
+            .await
+            .expect("blob should be inserted");
+        repository
+            .upsert_object(
+                "database",
+                "database/users/avatars/avatar.png",
+                "image/png",
+                i64::try_from(payload.len()).expect("payload length should fit"),
+                &checksum,
+                &serde_json::Value::Object(Default::default()),
+            )
+            .await
+            .expect("object should be inserted");
+
+        let mut session = storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id: UserId::expect_positive(1),
+                storage_scope: "users/1/avatars".to_string(),
+                client_file_id: Some("avatar-1".to_string()),
+                mime_type: "image/png".to_string(),
+                size_bytes: i64::try_from(payload.len()).expect("payload length should fit"),
+                width: Some(16),
+                height: Some(16),
+                checksum_sha256: Some(checksum),
+                metadata: serde_json::json!({"blurhash": "abc"}),
+                policy: user_avatar_upload_policy(),
+            })
+            .await
+            .expect("upload session should be created");
+        assert!(!session.upload_required);
+        assert!(session.file.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_some());
+        let nonce = session
+            .ownership_proof_nonce
+            .as_deref()
+            .expect("ownership proof nonce should exist");
+        let chunks = ownership_proof_chunks_from_bytes(payload, &session.ownership_proof_ranges)
+            .expect("proof chunks should build");
+        let proof = file_ownership_proof_digest(
+            nonce,
+            &session.ownership_proof_ranges,
+            chunks.iter().map(Vec::as_slice),
+        );
+        session
+            .file
+            .metadata
+            .as_object_mut()
+            .expect("metadata should be object")
+            .insert(
+                FILE_OWNERSHIP_PROOF_KEY.to_string(),
+                serde_json::Value::String(proof),
+            );
+
+        let prepared = storage
+            .prepare_files(
+                FileStorageContext {
+                    user_id: UserId::expect_positive(1),
+                    storage_scope: "users/1/avatars",
+                    client_request_id: None,
+                },
+                vec![session.file],
+            )
+            .await
+            .expect("file should prepare");
+        let metadata = &prepared[0].metadata;
+        assert!(metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
+        assert!(metadata.get(FILE_OWNERSHIP_PROOF_KEY).is_none());
+        assert_eq!(
+            metadata.get("blurhash").and_then(serde_json::Value::as_str),
+            Some("abc")
+        );
     }
 
     #[tokio::test]

@@ -22,8 +22,7 @@ use futures::FutureExt;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ProtoJson, AppError, AppResult,
-    AppState,
+    error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState,
 };
 use crate::impls::{EmailApiImpl, EndpointRateLimitCategory};
 use crate::proto::client::{
@@ -126,7 +125,7 @@ pub fn create_email_router() -> Router<AppState> {
 pub async fn request_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<RequestPasswordResetRequest>,
+    Json(req): Json<RequestPasswordResetRequest>,
 ) -> AppResult<Json<RequestPasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,
@@ -162,7 +161,7 @@ pub async fn request_password_reset(
 pub async fn start_opaque_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<StartOpaquePasswordResetRequest>,
+    Json(req): Json<StartOpaquePasswordResetRequest>,
 ) -> AppResult<Json<StartOpaquePasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,
@@ -198,7 +197,7 @@ pub async fn start_opaque_password_reset(
 pub async fn finish_opaque_password_reset(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<FinishOpaquePasswordResetRequest>,
+    Json(req): Json<FinishOpaquePasswordResetRequest>,
 ) -> AppResult<Json<ConfirmPasswordResetResponse>> {
     let result = execute_email_endpoint(
         &state,

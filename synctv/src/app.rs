@@ -1490,10 +1490,9 @@ mod tests {
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
-        JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, PasswordComplexityConfig,
-        ProxySliceCacheConfig, PublicIdsConfig, RedisConfig, ServerConfig, WebAuthnConfig,
-        WebRTCConfig,
+        ConnectionLimitsConfig, DatabaseConfig, JwtConfig, LivestreamConfig, LoggingConfig,
+        MediaProvidersConfig, PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig,
+        RedisConfig, RequestRateLimitConfig, ServerConfig, WebAuthnConfig, WebRTCConfig,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
@@ -1640,8 +1639,7 @@ mod tests {
             cache: CacheConfig::default(),
             proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
-            http_rate_limits: HttpRateLimitConfig::default(),
-            grpc_rate_limits: GrpcRateLimitConfig::default(),
+            request_rate_limits: RequestRateLimitConfig::default(),
             public_ids: PublicIdsConfig::default(),
             security: synctv_core::config::SecurityConfig {
                 opaque_server_setup_secret: "test-opaque-server-setup-secret-for-app-startup-tests"

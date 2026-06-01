@@ -12,7 +12,7 @@
 
 use synctv_core::service::rate_limit::{RateLimitError, RateLimiter};
 
-/// Admin rate limit constants (must match the values in HttpRateLimitConfig::default())
+/// Admin rate limit constants (must match the values in RequestRateLimitConfig::default())
 const ADMIN_MAX_REQUESTS: u32 = 30;
 const ADMIN_WINDOW_SECONDS: u64 = 60;
 

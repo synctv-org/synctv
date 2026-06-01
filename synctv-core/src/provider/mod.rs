@@ -61,6 +61,14 @@ pub use emby::EmbyProvider;
 pub use live_proxy::LiveProxyProvider;
 pub use rtmp::RtmpProvider;
 
+fn playback_info_needs_proxy(info: &PlaybackInfo) -> bool {
+    info.cors_proxy_required || !info.headers.is_empty()
+}
+
+fn playback_info_is_hls(mode_name: &str, info: &PlaybackInfo) -> bool {
+    info.format == "m3u8" || info.format == "hls" || mode_name.contains("hls")
+}
+
 /// Bundle of all in-process provider adapters.
 ///
 /// `ProvidersManager` remains the source of truth for provider type
@@ -311,7 +319,11 @@ pub fn sign_playback_urls(
             continue;
         }
 
-        if info.format == "mpd" {
+        let needs_proxy = playback_info_needs_proxy(info);
+        let is_hls = playback_info_is_hls(mode_name, info);
+        let is_mpd = info.format == "mpd";
+
+        if is_mpd {
             info.urls = info
                 .urls
                 .iter()
@@ -330,7 +342,7 @@ pub fn sign_playback_urls(
                 .collect();
             info.headers.clear();
             info.cors_proxy_required = false;
-        } else if info.format == "m3u8" || info.format == "hls" || mode_name.contains("hls") {
+        } else if is_hls && needs_proxy {
             if mode_name == &default_mode && info.urls.len() == 1 {
                 info.urls = vec![build_signed_proxy_url(
                     provider_name,
@@ -359,10 +371,9 @@ pub fn sign_playback_urls(
                     })
                     .collect();
             }
-            // Proxy handles headers — client doesn't need them
             info.headers.clear();
             info.cors_proxy_required = false;
-        } else if mode_name == &default_mode && info.urls.len() == 1 {
+        } else if needs_proxy && mode_name == &default_mode && info.urls.len() == 1 {
             info.urls = vec![build_signed_proxy_url(
                 provider_name,
                 version,
@@ -372,10 +383,9 @@ pub fn sign_playback_urls(
                 user_id,
                 expires_at,
             )];
-            // Proxy handles headers — client doesn't need them
             info.headers.clear();
             info.cors_proxy_required = false;
-        } else {
+        } else if needs_proxy {
             info.urls = info
                 .urls
                 .iter()
@@ -392,13 +402,14 @@ pub fn sign_playback_urls(
                     )
                 })
                 .collect();
-            // Proxy handles headers — client doesn't need them
             info.headers.clear();
             info.cors_proxy_required = false;
         }
 
-        // Also sign subtitle URLs
         for (idx, subtitle) in info.subtitles.iter_mut().enumerate() {
+            if subtitle.headers.is_empty() {
+                continue;
+            }
             subtitle.url = build_signed_proxy_url(
                 provider_name,
                 version,
@@ -733,6 +744,85 @@ mod tests {
             "second direct stream should use an indexed signed proxy URL"
         );
         assert!(direct.headers.is_empty(), "proxy should own stream headers");
+        assert!(!direct.cors_proxy_required);
+    }
+
+    #[test]
+    fn test_sign_playback_urls_keeps_plain_direct_hls_urls_unproxied() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let mut result = PlaybackResult {
+            playback_infos: std::collections::HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://cdn.example.com/playlist.m3u8".to_string()],
+                    format: "m3u8".to_string(),
+                    headers: std::collections::HashMap::new(),
+                    subtitles: Vec::new(),
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+
+        sign_playback_urls(
+            &mut result,
+            "direct_url",
+            "ver-1",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        let direct = &result.playback_infos["direct"];
+        assert_eq!(
+            direct.urls,
+            vec!["https://cdn.example.com/playlist.m3u8".to_string()]
+        );
+        assert!(direct.headers.is_empty());
+        assert!(!direct.cors_proxy_required);
+    }
+
+    #[test]
+    fn test_sign_playback_urls_proxies_direct_hls_with_headers() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let mut result = PlaybackResult {
+            playback_infos: std::collections::HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://cdn.example.com/playlist.m3u8".to_string()],
+                    format: "m3u8".to_string(),
+                    headers: std::collections::HashMap::from([(
+                        "Referer".to_string(),
+                        "https://cdn.example.com".to_string(),
+                    )]),
+                    subtitles: Vec::new(),
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+
+        sign_playback_urls(
+            &mut result,
+            "direct_url",
+            "ver-1",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        let direct = &result.playback_infos["direct"];
+        assert!(
+            direct.urls[0].starts_with("/api/providers/proxy/direct_url/ver-1/m3u8?"),
+            "headered direct HLS should use signed proxy URL"
+        );
+        assert!(direct.headers.is_empty());
         assert!(!direct.cors_proxy_required);
     }
 

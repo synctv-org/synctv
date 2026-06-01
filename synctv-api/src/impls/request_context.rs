@@ -10,7 +10,7 @@ use synctv_core::service::auth::{
     AuthErrorCategory, AuthenticatedToken, JwtValidator, SecurityPipeline,
 };
 use synctv_core::service::{RateLimitError, RequestRateLimiterService};
-use synctv_core::Config;
+use synctv_core::{Config, RateLimitScopeStrategy};
 
 use super::{ApiError, ErrorKind};
 
@@ -58,12 +58,111 @@ impl EndpointRateLimitCategory {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointRateLimitScope {
+    AuthOpaqueRegistrationStart,
+    AuthOpaqueRegistrationFinish,
+    AuthOpaqueLoginStart,
+    AuthOpaqueLoginFinish,
+    AuthPasskeyRegistrationStart,
+    AuthPasskeyRegistrationFinish,
+    AuthPasskeyLoginStart,
+    AuthPasskeyLoginFinish,
+    AuthEmailLoginRequest,
+    AuthEmailLoginConfirm,
+    AuthMfaEmailRequest,
+    AuthMfaEmailVerify,
+    AuthMfaPasskeyStart,
+    AuthMfaPasskeyFinish,
+    AuthRefreshToken,
+    AuthLogout,
+    RoomCreate,
+    RoomGet,
+    RoomList,
+    RoomJoin,
+    RoomSettings,
+    RoomMembers,
+    RoomPlaylist,
+    RoomPlayback,
+    RoomChat,
+    RoomMedia,
+    RoomCover,
+    PlaylistCover,
+    MediaCover,
+    UserProfile,
+    UserPreferences,
+    UserAvatar,
+    Notifications,
+    ProviderAccount,
+    ProviderBind,
+    AdminSettings,
+    AdminUsers,
+    AdminRooms,
+    AdminProviders,
+    EmailDelivery,
+    WebRtc,
+    Ticket,
+    Realtime,
+}
+
+impl EndpointRateLimitScope {
+    #[must_use]
+    pub const fn key_suffix(self) -> &'static str {
+        match self {
+            Self::AuthOpaqueRegistrationStart => "auth_opaque_registration_start",
+            Self::AuthOpaqueRegistrationFinish => "auth_opaque_registration_finish",
+            Self::AuthOpaqueLoginStart => "auth_opaque_login_start",
+            Self::AuthOpaqueLoginFinish => "auth_opaque_login_finish",
+            Self::AuthPasskeyRegistrationStart => "auth_passkey_registration_start",
+            Self::AuthPasskeyRegistrationFinish => "auth_passkey_registration_finish",
+            Self::AuthPasskeyLoginStart => "auth_passkey_login_start",
+            Self::AuthPasskeyLoginFinish => "auth_passkey_login_finish",
+            Self::AuthEmailLoginRequest => "auth_email_login_request",
+            Self::AuthEmailLoginConfirm => "auth_email_login_confirm",
+            Self::AuthMfaEmailRequest => "auth_mfa_email_request",
+            Self::AuthMfaEmailVerify => "auth_mfa_email_verify",
+            Self::AuthMfaPasskeyStart => "auth_mfa_passkey_start",
+            Self::AuthMfaPasskeyFinish => "auth_mfa_passkey_finish",
+            Self::AuthRefreshToken => "auth_refresh_token",
+            Self::AuthLogout => "auth_logout",
+            Self::RoomCreate => "room_create",
+            Self::RoomGet => "room_get",
+            Self::RoomList => "room_list",
+            Self::RoomJoin => "room_join",
+            Self::RoomSettings => "room_settings",
+            Self::RoomMembers => "room_members",
+            Self::RoomPlaylist => "room_playlist",
+            Self::RoomPlayback => "room_playback",
+            Self::RoomChat => "room_chat",
+            Self::RoomMedia => "room_media",
+            Self::RoomCover => "room_cover",
+            Self::PlaylistCover => "playlist_cover",
+            Self::MediaCover => "media_cover",
+            Self::UserProfile => "user_profile",
+            Self::UserPreferences => "user_preferences",
+            Self::UserAvatar => "user_avatar",
+            Self::Notifications => "notifications",
+            Self::ProviderAccount => "provider_account",
+            Self::ProviderBind => "provider_bind",
+            Self::AdminSettings => "admin_settings",
+            Self::AdminUsers => "admin_users",
+            Self::AdminRooms => "admin_rooms",
+            Self::AdminProviders => "admin_providers",
+            Self::EmailDelivery => "email_delivery",
+            Self::WebRtc => "webrtc",
+            Self::Ticket => "ticket",
+            Self::Realtime => "realtime",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     pub transport: TransportProtocol,
     pub authorization: Option<String>,
     pub client_ip: Option<IpAddr>,
     pub user_agent: Option<String>,
+    pub endpoint_scope: Option<EndpointRateLimitScope>,
     /// Optional request budget extracted from the transport layer.
     ///
     /// This is intentionally metadata only. The impl layer may translate it
@@ -80,6 +179,7 @@ impl RequestMetadata {
             authorization: None,
             client_ip: None,
             user_agent: None,
+            endpoint_scope: None,
             timeout: None,
         }
     }
@@ -99,6 +199,15 @@ impl RequestMetadata {
     #[must_use]
     pub fn with_user_agent(mut self, user_agent: Option<String>) -> Self {
         self.user_agent = user_agent;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_endpoint_scope(
+        mut self,
+        endpoint_scope: Option<EndpointRateLimitScope>,
+    ) -> Self {
+        self.endpoint_scope = endpoint_scope;
         self
     }
 
@@ -637,7 +746,8 @@ impl RequestExecutor {
         authenticated: Option<&AuthenticatedToken>,
         control: Option<&ExecutionControl>,
     ) -> Result<(), ApiError> {
-        let (max_requests, window_seconds) = self.rate_limit_budget(metadata.transport, category);
+        let rate_limit =
+            rate_limit_policy_for_config(&self.config, category, metadata.endpoint_scope);
         let subject_key = authenticated.map_or_else(
             || {
                 metadata
@@ -646,97 +756,119 @@ impl RequestExecutor {
             },
             |authenticated| format!("user:{}", authenticated.user_id),
         );
-        let key = rate_limit_key(metadata.transport, category, &subject_key);
 
-        self.rate_limiter
-            .check_rate_limit_with_control(&key, max_requests, window_seconds, control)
-            .await
-            .map_err(map_rate_limit_error)
-    }
+        if rate_limit.strategy.enabled() {
+            let key = rate_limit_key(category, metadata.endpoint_scope, &subject_key);
+            self.rate_limiter
+                .check_rate_limit_with_control(
+                    &key,
+                    rate_limit.budget.max_requests,
+                    rate_limit.budget.window_seconds,
+                    control,
+                )
+                .await
+                .map_err(map_rate_limit_error)?;
+        }
 
-    fn rate_limit_budget(
-        &self,
-        transport: TransportProtocol,
-        category: EndpointRateLimitCategory,
-    ) -> (u32, u64) {
-        rate_limit_budget_for_config(&self.config, transport, category)
+        Ok(())
     }
 }
 
 fn rate_limit_key(
-    transport: TransportProtocol,
     category: EndpointRateLimitCategory,
+    endpoint_scope: Option<EndpointRateLimitScope>,
     subject_key: &str,
 ) -> String {
-    format!(
-        "ratelimit:{}:{}:{subject_key}",
-        transport.key_segment(),
-        category.key_suffix()
-    )
+    let scope =
+        endpoint_scope.map_or_else(|| category.key_suffix(), EndpointRateLimitScope::key_suffix);
+    format!("ratelimit:{scope}:{subject_key}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RateLimitBudget {
+    max_requests: u32,
+    window_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RateLimitPolicy {
+    budget: RateLimitBudget,
+    strategy: RateLimitScopeStrategy,
 }
 
 fn rate_limit_budget_for_config(
     config: &Config,
-    transport: TransportProtocol,
+    category: EndpointRateLimitCategory,
+) -> RateLimitBudget {
+    let config = &config.request_rate_limits;
+    let (max_requests, window_seconds) = match category {
+        EndpointRateLimitCategory::Auth | EndpointRateLimitCategory::Email => {
+            (config.auth_max_requests, config.auth_window_seconds)
+        }
+        EndpointRateLimitCategory::Write => {
+            (config.write_max_requests, config.write_window_seconds)
+        }
+        EndpointRateLimitCategory::Read => (config.read_max_requests, config.read_window_seconds),
+        EndpointRateLimitCategory::Media => {
+            (config.media_max_requests, config.media_window_seconds)
+        }
+        EndpointRateLimitCategory::Admin => {
+            (config.admin_max_requests, config.admin_window_seconds)
+        }
+        EndpointRateLimitCategory::Streaming => (
+            config.streaming_max_requests,
+            config.streaming_window_seconds,
+        ),
+        EndpointRateLimitCategory::WebSocket => (
+            config.websocket_max_requests,
+            config.websocket_window_seconds,
+        ),
+    };
+    RateLimitBudget {
+        max_requests,
+        window_seconds,
+    }
+}
+
+fn rate_limit_policy_for_config(
+    config: &Config,
+    category: EndpointRateLimitCategory,
+    scope: Option<EndpointRateLimitScope>,
+) -> RateLimitPolicy {
+    let category_budget = rate_limit_budget_for_config(config, category);
+    let Some(scope) = scope else {
+        return RateLimitPolicy {
+            budget: category_budget,
+            strategy: RateLimitScopeStrategy::FixedWindow,
+        };
+    };
+    let scope_rule = config.request_rate_limits.scopes.get(scope.key_suffix());
+    let Some(scope_rule) = scope_rule else {
+        return RateLimitPolicy {
+            budget: category_budget,
+            strategy: RateLimitScopeStrategy::FixedWindow,
+        };
+    };
+    RateLimitPolicy {
+        budget: RateLimitBudget {
+            max_requests: scope_rule
+                .max_requests
+                .unwrap_or(category_budget.max_requests),
+            window_seconds: scope_rule
+                .window_seconds
+                .unwrap_or(category_budget.window_seconds),
+        },
+        strategy: scope_rule.strategy,
+    }
+}
+
+#[cfg(test)]
+fn rate_limit_budget_tuple_for_config(
+    config: &Config,
     category: EndpointRateLimitCategory,
 ) -> (u32, u64) {
-    match transport {
-        TransportProtocol::Http => {
-            let config = &config.http_rate_limits;
-            match category {
-                EndpointRateLimitCategory::Auth | EndpointRateLimitCategory::Email => {
-                    (config.auth_max_requests, config.auth_window_seconds)
-                }
-                EndpointRateLimitCategory::Write => {
-                    (config.write_max_requests, config.write_window_seconds)
-                }
-                EndpointRateLimitCategory::Read => {
-                    (config.read_max_requests, config.read_window_seconds)
-                }
-                EndpointRateLimitCategory::Media => {
-                    (config.media_max_requests, config.media_window_seconds)
-                }
-                EndpointRateLimitCategory::Admin => {
-                    (config.admin_max_requests, config.admin_window_seconds)
-                }
-                EndpointRateLimitCategory::Streaming => (
-                    config.streaming_max_requests,
-                    config.streaming_window_seconds,
-                ),
-                EndpointRateLimitCategory::WebSocket => (
-                    config.websocket_max_requests,
-                    config.websocket_window_seconds,
-                ),
-            }
-        }
-        TransportProtocol::Grpc => {
-            let config = &config.grpc_rate_limits;
-            match category {
-                EndpointRateLimitCategory::Auth => {
-                    (config.auth_max_requests, config.auth_window_seconds)
-                }
-                EndpointRateLimitCategory::Email => {
-                    (config.email_max_requests, config.email_window_seconds)
-                }
-                EndpointRateLimitCategory::Write => {
-                    (config.write_max_requests, config.write_window_seconds)
-                }
-                EndpointRateLimitCategory::Read | EndpointRateLimitCategory::Streaming => {
-                    (config.read_max_requests, config.read_window_seconds)
-                }
-                EndpointRateLimitCategory::Media => {
-                    (config.media_max_requests, config.media_window_seconds)
-                }
-                EndpointRateLimitCategory::Admin => {
-                    (config.admin_max_requests, config.admin_window_seconds)
-                }
-                EndpointRateLimitCategory::WebSocket => (
-                    config.websocket_max_requests,
-                    config.websocket_window_seconds,
-                ),
-            }
-        }
-    }
+    let budget = rate_limit_budget_for_config(config, category);
+    (budget.max_requests, budget.window_seconds)
 }
 
 fn map_security_pipeline_error(err: synctv_core::Error) -> ApiError {
@@ -771,6 +903,7 @@ fn map_rate_limit_error(err: RateLimitError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::RateLimitScopeRule;
 
     #[test]
     fn request_context_preserves_budget_metadata() {
@@ -782,6 +915,7 @@ mod tests {
 
         assert_eq!(context.metadata().transport, TransportProtocol::Http);
         assert_eq!(context.metadata().client_ip, metadata.client_ip);
+        assert_eq!(context.metadata().endpoint_scope, metadata.endpoint_scope);
         assert_eq!(context.timeout_budget(), Some(Duration::from_secs(5)));
         assert!(context.deadline().is_some());
         assert!(context.remaining_timeout().is_some());
@@ -811,56 +945,120 @@ mod tests {
     }
 
     #[test]
-    fn grpc_websocket_rate_limit_uses_message_stream_budget() {
+    fn request_websocket_rate_limit_uses_shared_request_budget() {
         let mut config = Config::default();
-        config.grpc_rate_limits.write_max_requests = 30;
-        config.grpc_rate_limits.write_window_seconds = 31;
-        config.grpc_rate_limits.read_max_requests = 100;
-        config.grpc_rate_limits.read_window_seconds = 101;
-        config.grpc_rate_limits.websocket_max_requests = 7;
-        config.grpc_rate_limits.websocket_window_seconds = 8;
+        config.request_rate_limits.write_max_requests = 30;
+        config.request_rate_limits.write_window_seconds = 31;
+        config.request_rate_limits.read_max_requests = 100;
+        config.request_rate_limits.read_window_seconds = 101;
+        config.request_rate_limits.streaming_max_requests = 200;
+        config.request_rate_limits.streaming_window_seconds = 201;
+        config.request_rate_limits.websocket_max_requests = 7;
+        config.request_rate_limits.websocket_window_seconds = 8;
 
         assert_eq!(
-            rate_limit_budget_for_config(
-                &config,
-                TransportProtocol::Grpc,
-                EndpointRateLimitCategory::WebSocket
-            ),
+            rate_limit_budget_tuple_for_config(&config, EndpointRateLimitCategory::WebSocket),
             (7, 8)
         );
         assert_eq!(
-            rate_limit_budget_for_config(
-                &config,
-                TransportProtocol::Grpc,
-                EndpointRateLimitCategory::Streaming
-            ),
-            (100, 101)
+            rate_limit_budget_tuple_for_config(&config, EndpointRateLimitCategory::Streaming),
+            (200, 201)
         );
         assert_eq!(
-            rate_limit_budget_for_config(
-                &config,
-                TransportProtocol::Grpc,
-                EndpointRateLimitCategory::Write
-            ),
+            rate_limit_budget_tuple_for_config(&config, EndpointRateLimitCategory::Write),
             (30, 31)
         );
     }
 
     #[test]
-    fn rate_limit_keys_include_transport_segment() {
-        let http_key = rate_limit_key(
-            TransportProtocol::Http,
+    fn rate_limit_keys_use_business_scope_only() {
+        let fallback_key = rate_limit_key(EndpointRateLimitCategory::Read, None, "user:42");
+        let scoped_key = rate_limit_key(
             EndpointRateLimitCategory::Read,
-            "user:42",
-        );
-        let grpc_key = rate_limit_key(
-            TransportProtocol::Grpc,
-            EndpointRateLimitCategory::Read,
+            Some(EndpointRateLimitScope::RoomMembers),
             "user:42",
         );
 
-        assert_eq!(http_key, "ratelimit:http:read:user:42");
-        assert_eq!(grpc_key, "ratelimit:grpc:read:user:42");
-        assert_ne!(http_key, grpc_key);
+        assert_eq!(fallback_key, "ratelimit:read:user:42");
+        assert_eq!(scoped_key, "ratelimit:room_members:user:42");
+    }
+
+    #[test]
+    fn scope_rate_limit_policy_uses_fixed_window_by_default() {
+        let mut config = Config::default();
+        config.request_rate_limits.read_max_requests = 600;
+        config.request_rate_limits.read_window_seconds = 60;
+
+        let policy = rate_limit_policy_for_config(
+            &config,
+            EndpointRateLimitCategory::Read,
+            Some(EndpointRateLimitScope::RoomMembers),
+        );
+
+        assert_eq!(policy.strategy, RateLimitScopeStrategy::FixedWindow);
+        assert_eq!(
+            policy.budget,
+            RateLimitBudget {
+                max_requests: 600,
+                window_seconds: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn scope_rate_limit_policy_uses_scope_override() {
+        let mut config = Config::default();
+        config.request_rate_limits.scopes.insert(
+            EndpointRateLimitScope::RoomMembers.key_suffix().to_string(),
+            RateLimitScopeRule {
+                max_requests: Some(90),
+                window_seconds: Some(15),
+                strategy: RateLimitScopeStrategy::FixedWindow,
+            },
+        );
+
+        let policy = rate_limit_policy_for_config(
+            &config,
+            EndpointRateLimitCategory::Read,
+            Some(EndpointRateLimitScope::RoomMembers),
+        );
+
+        assert_eq!(policy.strategy, RateLimitScopeStrategy::FixedWindow);
+        assert_eq!(
+            policy.budget,
+            RateLimitBudget {
+                max_requests: 90,
+                window_seconds: 15,
+            }
+        );
+    }
+
+    #[test]
+    fn scope_rate_limit_policy_falls_back_missing_rule_fields() {
+        let mut config = Config::default();
+        config.request_rate_limits.read_max_requests = 500;
+        config.request_rate_limits.read_window_seconds = 45;
+        config.request_rate_limits.scopes.insert(
+            EndpointRateLimitScope::RoomMembers.key_suffix().to_string(),
+            RateLimitScopeRule {
+                max_requests: Some(80),
+                window_seconds: None,
+                strategy: RateLimitScopeStrategy::FixedWindow,
+            },
+        );
+
+        let policy = rate_limit_policy_for_config(
+            &config,
+            EndpointRateLimitCategory::Read,
+            Some(EndpointRateLimitScope::RoomMembers),
+        );
+
+        assert_eq!(
+            policy.budget,
+            RateLimitBudget {
+                max_requests: 80,
+                window_seconds: 45,
+            }
+        );
     }
 }

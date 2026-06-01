@@ -96,6 +96,12 @@ fn bounded_test_username(label: &str, role: &str, suffix: &str) -> String {
     format!("{bounded_label}_{role}_{suffix}")
 }
 
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+}
+
 fn observe_playback_snapshot_message(
     observe_id: &str,
     version: impl Into<String>,
@@ -279,32 +285,20 @@ fn test_config(
 
     // Raise rate limits well above defaults for avoid cross-test interference
     // when 20 tests share the same Redis + server.
-    config.grpc_rate_limits.auth_max_requests = 10_000;
-    config.grpc_rate_limits.auth_window_seconds = 1;
-    config.grpc_rate_limits.email_max_requests = 5_000;
-    config.grpc_rate_limits.email_window_seconds = 1;
-    config.grpc_rate_limits.media_max_requests = 5_000;
-    config.grpc_rate_limits.media_window_seconds = 1;
-    config.grpc_rate_limits.write_max_requests = 5_000;
-    config.grpc_rate_limits.write_window_seconds = 1;
-    config.grpc_rate_limits.admin_max_requests = 5_000;
-    config.grpc_rate_limits.admin_window_seconds = 1;
-    config.grpc_rate_limits.read_max_requests = 5_000;
-    config.grpc_rate_limits.read_window_seconds = 1;
-    config.http_rate_limits.auth_max_requests = 5_000;
-    config.http_rate_limits.auth_window_seconds = 1;
-    config.http_rate_limits.write_max_requests = 5_000;
-    config.http_rate_limits.write_window_seconds = 1;
-    config.http_rate_limits.read_max_requests = 5_000;
-    config.http_rate_limits.read_window_seconds = 1;
-    config.http_rate_limits.media_max_requests = 5_000;
-    config.http_rate_limits.media_window_seconds = 1;
-    config.http_rate_limits.admin_max_requests = 5_000;
-    config.http_rate_limits.admin_window_seconds = 1;
-    config.http_rate_limits.streaming_max_requests = 5_000;
-    config.http_rate_limits.streaming_window_seconds = 1;
-    config.http_rate_limits.websocket_max_requests = 5_000;
-    config.http_rate_limits.websocket_window_seconds = 1;
+    config.request_rate_limits.auth_max_requests = 10_000;
+    config.request_rate_limits.auth_window_seconds = 1;
+    config.request_rate_limits.write_max_requests = 5_000;
+    config.request_rate_limits.write_window_seconds = 1;
+    config.request_rate_limits.read_max_requests = 5_000;
+    config.request_rate_limits.read_window_seconds = 1;
+    config.request_rate_limits.media_max_requests = 5_000;
+    config.request_rate_limits.media_window_seconds = 1;
+    config.request_rate_limits.admin_max_requests = 5_000;
+    config.request_rate_limits.admin_window_seconds = 1;
+    config.request_rate_limits.streaming_max_requests = 5_000;
+    config.request_rate_limits.streaming_window_seconds = 1;
+    config.request_rate_limits.websocket_max_requests = 5_000;
+    config.request_rate_limits.websocket_window_seconds = 1;
     config
 }
 
@@ -2675,8 +2669,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
     );
     let settings_get_body: Value = serde_json::from_slice(&settings_get.stdout)
         .expect("CLI room settings get output should be JSON");
-    let initial_settings_version = settings_get_body["version"]
-        .as_i64()
+    let initial_settings_version = json_i64(&settings_get_body["version"])
         .expect("CLI room settings get output should contain version");
     assert!(
         initial_settings_version > 0,
@@ -7134,8 +7127,7 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
         "get room settings before grpc watch",
     )
     .await;
-    let expected_initial_version = current_settings_response["version"]
-        .as_i64()
+    let expected_initial_version = json_i64(&current_settings_response["version"])
         .expect("room settings get should return version");
     let expected_initial_settings = current_settings_response["settings"].clone();
 
@@ -8407,8 +8399,7 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
         "get room settings before websocket watch",
     )
     .await;
-    let expected_initial_version = current_settings_response["version"]
-        .as_i64()
+    let expected_initial_version = json_i64(&current_settings_response["version"])
         .expect("room settings get should return version");
     let expected_initial_settings = current_settings_response["settings"].clone();
 

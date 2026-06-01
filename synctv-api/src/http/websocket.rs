@@ -40,7 +40,8 @@ use crate::impls::messaging::{
     StreamMessage, StreamMessageHandler,
 };
 use crate::impls::{
-    ApiError, EndpointRateLimitCategory, RequestMetadata as ApiRequestMetadata, TransportProtocol,
+    ApiError, EndpointRateLimitCategory, EndpointRateLimitScope,
+    RequestMetadata as ApiRequestMetadata, TransportProtocol,
 };
 use crate::proto::client::{ClientMessage, ServerMessage};
 use crate::runtime::RealtimeConnectionService;
@@ -239,6 +240,7 @@ fn websocket_request_metadata(
         .with_authorization(authorization)
         .with_client_ip(client_ip)
         .with_user_agent(user_agent)
+        .with_endpoint_scope(Some(EndpointRateLimitScope::Realtime))
         .with_timeout(Some(WEBSOCKET_HANDSHAKE_TIMEOUT)))
 }
 
@@ -871,6 +873,7 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
                 | Message::PermissionChanged(_)
                 | Message::RoomSettings(_)
                 | Message::ResourceObserved(_)
+                | Message::ResourceChanged(_)
                 | Message::ResourceObserveError(_)
         )
     )
@@ -894,7 +897,6 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::PlaylistItems(_)
                 | Message::PlaybackSnapshot(_)
                 | Message::RoomMembers(_)
-                | Message::ResourceChanged(_)
                 | Message::ChatEvent(_)
                 | Message::Notification(_)
         )

@@ -31,7 +31,8 @@ pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl, ProviderCommonApiImpl};
 pub use request_context::{
-    EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata, TransportProtocol,
+    EndpointRateLimitCategory, EndpointRateLimitScope, RequestContext, RequestExecutor,
+    RequestMetadata, TransportProtocol,
 };
 
 const LIVESTREAM_NOT_AVAILABLE_MESSAGE: &str = "Live stream is not currently available";

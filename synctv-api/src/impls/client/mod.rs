@@ -58,7 +58,8 @@ use crate::chat_event_dispatcher::{
 };
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::{
-    ApiError, EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata,
+    ApiError, EndpointRateLimitCategory, EndpointRateLimitScope, RequestContext, RequestExecutor,
+    RequestMetadata,
 };
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{
@@ -935,6 +936,26 @@ impl ClientApiImpl {
         }
     }
 
+    pub fn execute_scoped_public_endpoint<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        scope: EndpointRateLimitScope,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce() -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
+        Box::pin(async move {
+            self.execute_public_endpoint(&metadata, category, operation)
+                .await
+        })
+    }
+
     pub fn execute_public_endpoint_with_context<'a, T, E, F, Fut>(
         &'a self,
         metadata: &'a RequestMetadata,
@@ -981,6 +1002,26 @@ impl ClientApiImpl {
             ),
             Err(err) => Box::pin(async move { Err(err) }),
         }
+    }
+
+    pub fn execute_scoped_public_endpoint_with_control<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        scope: EndpointRateLimitScope,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(synctv_core::provider::ExecutionControl) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
+        Box::pin(async move {
+            self.execute_public_endpoint_with_control(&metadata, category, operation)
+                .await
+        })
     }
 
     pub fn execute_optional_user_endpoint<'a, T, E, F, Fut>(
@@ -1090,6 +1131,26 @@ impl ClientApiImpl {
         }
     }
 
+    pub fn execute_scoped_user_endpoint<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        scope: EndpointRateLimitScope,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
+        Box::pin(async move {
+            self.execute_user_endpoint(&metadata, category, operation)
+                .await
+        })
+    }
+
     pub fn execute_user_endpoint_with_context<'a, T, E, F, Fut>(
         &'a self,
         metadata: &'a RequestMetadata,
@@ -1145,6 +1206,31 @@ impl ClientApiImpl {
             ),
             Err(err) => Box::pin(async move { Err(err) }),
         }
+    }
+
+    pub fn execute_scoped_user_endpoint_with_control<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        scope: EndpointRateLimitScope,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(
+                synctv_core::provider::ExecutionControl,
+                synctv_core::service::AuthenticatedToken,
+            ) -> Fut
+            + Send
+            + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
+        Box::pin(async move {
+            self.execute_user_endpoint_with_control(&metadata, category, operation)
+                .await
+        })
     }
 
     pub fn execute_room_actor_endpoint<'a, T, E, F, Fut>(
@@ -1218,6 +1304,33 @@ impl ClientApiImpl {
                     }
                 }
             }
+        })
+    }
+
+    pub fn execute_scoped_room_actor_endpoint<'a, T, E, F, Fut>(
+        client_api: Arc<Self>,
+        metadata: &'a RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        scope: EndpointRateLimitScope,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(Arc<Self>, RoomActor) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
+        Box::pin(async move {
+            Self::execute_room_actor_endpoint(
+                client_api,
+                &metadata,
+                public_room_id,
+                category,
+                operation,
+            )
+            .await
         })
     }
 
@@ -1303,6 +1416,33 @@ impl ClientApiImpl {
                     }
                 }
             }
+        })
+    }
+
+    pub fn execute_scoped_room_actor_endpoint_with_control<'a, T, E, F, Fut>(
+        client_api: Arc<Self>,
+        metadata: &'a RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        scope: EndpointRateLimitScope,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(Arc<Self>, synctv_core::provider::ExecutionControl, RoomActor) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
+        Box::pin(async move {
+            Self::execute_room_actor_endpoint_with_control(
+                client_api,
+                &metadata,
+                public_room_id,
+                category,
+                operation,
+            )
+            .await
         })
     }
 }

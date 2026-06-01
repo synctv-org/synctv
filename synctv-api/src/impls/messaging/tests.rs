@@ -53,6 +53,79 @@ fn public_media_id() -> String {
 fn public_playlist_id() -> String {
     public_id_codec().encode_playlist_id(playlist().id).unwrap()
 }
+
+fn chat_event_with_content(
+    room_id: RoomId,
+    user_id: UserId,
+    event_id: impl Into<String>,
+    content: impl Into<String>,
+) -> ChatMessageEvent {
+    let now = chrono::Utc::now();
+    ChatMessageEvent {
+        event_id: event_id.into(),
+        room_id,
+        actor_user_id: user_id,
+        kind: ChatEventKind::Created,
+        message: ChatMessageWithImages {
+            message: ChatMessage {
+                id: 1,
+                room_id,
+                user_id: Some(user_id),
+                client_message_id: None,
+                content: content.into(),
+                message_type: ChatMessageType::Text,
+                status: ChatMessageStatus::Active,
+                version: 1,
+                reply_to_message_id: None,
+                reply_to_message_created_at: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                edited_at: None,
+                deleted_at: None,
+                deleted_by: None,
+                delete_reason: None,
+                created_at: now,
+            },
+            images: Vec::new(),
+        },
+        occurred_at: now,
+    }
+}
+
+fn server_message_contains_chat_event_content(
+    message: &crate::proto::client::ServerMessage,
+    content: &str,
+) -> bool {
+    match &message.message {
+        Some(Message::ChatEvent(event)) => event
+            .message
+            .as_ref()
+            .is_some_and(|message| message.content == content),
+        Some(Message::ResourceChanged(changed)) => matches!(
+            changed.payload.as_ref(),
+            Some(crate::proto::client::resource_changed::Payload::ChatEvent(event))
+                if event
+                    .message
+                    .as_ref()
+                    .is_some_and(|message| message.content == content)
+        ),
+        _ => false,
+    }
+}
+
+fn server_message_is_user_joined_for(
+    message: &crate::proto::client::ServerMessage,
+    user_id: &str,
+) -> bool {
+    matches!(
+        &message.message,
+        Some(Message::UserJoined(joined))
+            if joined
+                .member
+                .as_ref()
+                .is_some_and(|member| member.user_id == user_id)
+    )
+}
+
 fn empty_playlist_items_response(
     version: impl Into<String>,
 ) -> crate::proto::client::ListPlaylistItemsResponse {
@@ -1817,6 +1890,101 @@ async fn test_run_after_join_cleans_up_when_realtime_event_send_fails() {
 }
 
 #[tokio::test]
+async fn test_run_after_join_filters_own_join_broadcast() {
+    let event_service = test_realtime_manager("test_run_after_join_filters_own_join").await;
+    let connection_service = test_connection_manager();
+    let handler = test_message_handler(
+        RecordingMessageSender::new(),
+        event_service.clone(),
+        connection_service.clone(),
+    );
+    prepare_handler_for_run_after_join(&handler, &connection_service).await;
+
+    let (mut stream, stream_state) = RecordingStream::new();
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+    wait_for_recorded_message_count(&stream_state, 1).await;
+
+    event_service.broadcast(RealtimeEvent::UserJoined {
+        event_id: "evt-own-join".to_string(),
+        room_id: handler.room_id,
+        user_id: handler.user_id,
+        username: handler.username.clone(),
+        permissions: RoomPermissionSet::default_member(),
+        role: synctv_proto::common::RoomMemberRole::Member as i32,
+        added_permissions: RoomPermissionSet::default(),
+        removed_permissions: RoomPermissionSet::default(),
+        admin_added_permissions: RoomPermissionSet::default(),
+        admin_removed_permissions: RoomPermissionSet::default(),
+        joined_at: now(),
+        timestamp: now(),
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let public_user_id = handler
+        .public_id_codec
+        .encode_user_id(handler.user_id)
+        .expect("handler user id should encode");
+    let own_join_count = stream_state
+        .sent_messages()
+        .iter()
+        .filter(|message| server_message_is_user_joined_for(message, &public_user_id))
+        .count();
+    assert_eq!(
+        own_join_count, 1,
+        "the connection should keep the initial UserJoined payload and skip its own room broadcast"
+    );
+
+    connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
+#[tokio::test]
+async fn test_run_after_join_records_heartbeat_activity() {
+    let event_service = test_realtime_manager("test_run_after_join_records_heartbeat").await;
+    let connection_service = test_connection_manager();
+    let message_sender = RecordingMessageSender::new();
+    let handler = test_message_handler(
+        message_sender.clone(),
+        event_service.clone(),
+        connection_service.clone(),
+    );
+    prepare_handler_for_run_after_join(&handler, &connection_service).await;
+
+    let heartbeat = ClientMessage {
+        message: Some(crate::proto::client::client_message::Message::Heartbeat(
+            crate::proto::client::HeartbeatMessage { timestamp: 42 },
+        )),
+    };
+    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![heartbeat]);
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+    wait_for_recorded_message_count(&stream_state, 1).await;
+    let connection = connection_service
+        .get_connection(&handler.connection_id)
+        .expect("heartbeat should keep connection registered");
+    assert_eq!(
+        connection.message_count, 1,
+        "heartbeat must refresh connection activity"
+    );
+    assert!(
+        message_sender
+            .sent_messages()
+            .iter()
+            .any(|msg| matches!(msg.message, Some(Message::HeartbeatAck(_)))),
+        "heartbeat should receive an ack"
+    );
+
+    connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
+#[tokio::test]
 async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explicit_observe() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
@@ -1846,22 +2014,35 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
         .iter()
         .any(|msg| matches!(msg.message, Some(Message::ResourceObserved(_)))));
 
-    event_service.broadcast(RealtimeEvent::ChatMessage {
+    event_service.broadcast(RealtimeEvent::ChatMessageEvent {
         event_id: "evt-prejoin-window".to_string(),
         room_id: handler.room_id,
-        user_id: UserId::expect_positive(113_001),
-        username: "other".to_string(),
-        message: "arrived-before-run-after-join".to_string(),
+        actor_user_id: UserId::expect_positive(113_001),
+        event: chat_event_with_content(
+            handler.room_id,
+            UserId::expect_positive(113_001),
+            "evt-prejoin-window",
+            "arrived-before-run-after-join",
+        ),
         timestamp: now(),
-        display_position: None,
-        display_color: None,
     });
 
     let (mut stream, stream_state) = RecordingStream::new();
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 2).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if message_sender.sent_messages().iter().any(|msg| {
+                server_message_contains_chat_event_content(msg, "arrived-before-run-after-join")
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("chat event should be delivered through chat_events observation");
 
     let messages = stream_state.sent_messages();
     assert!(
@@ -1870,16 +2051,14 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
             .any(|msg| matches!(msg.message, Some(Message::UserJoined(_)))),
         "run_after_join should still send the initial UserJoined payload"
     );
+    let messages = message_sender.sent_messages();
     assert!(
-            messages.iter().any(|msg| {
-                matches!(
-                    &msg.message,
-                    Some(Message::Chat(chat))
-                    if chat.content == "arrived-before-run-after-join"
-                )
-            }),
-            "room event broadcast after caching the subscription but before run_after_join must not be lost"
-        );
+        messages.iter().any(|msg| server_message_contains_chat_event_content(
+            msg,
+            "arrived-before-run-after-join"
+        )),
+        "room event broadcast after caching the subscription but before run_after_join must not be lost"
+    );
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(handler, connection_service, event_service, run_task).await;
@@ -2015,15 +2194,17 @@ async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
 
     wait_for_recorded_message_count(&stream_state, 1).await;
 
-    event_service.broadcast(RealtimeEvent::ChatMessage {
+    event_service.broadcast(RealtimeEvent::ChatMessageEvent {
         event_id: "evt-filtered-chat".to_string(),
         room_id: handler.room_id,
-        user_id: UserId::expect_positive(113_002),
-        username: "other".to_string(),
-        message: "filtered-before-observe".to_string(),
+        actor_user_id: UserId::expect_positive(113_002),
+        event: chat_event_with_content(
+            handler.room_id,
+            UserId::expect_positive(113_002),
+            "evt-filtered-chat",
+            "filtered-before-observe",
+        ),
         timestamp: now(),
-        display_position: None,
-        display_color: None,
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2035,15 +2216,9 @@ async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
         "run_after_join should emit the initial UserJoined payload"
     );
     assert!(
-        messages.iter().all(|msg| {
-            !matches!(
-                &msg.message,
-                Some(Message::ChatEvent(event))
-                    if event.message.as_ref().is_some_and(|message| {
-                        message.content == "filtered-before-observe"
-                    })
-            )
-        }),
+        messages
+            .iter()
+            .all(|msg| !server_message_contains_chat_event_content(msg, "filtered-before-observe")),
         "chat events must wait for an explicit chat_events observation"
     );
 

@@ -1,7 +1,7 @@
 // ! Bootstrap user initialization
 
 use sqlx::PgPool;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
     config::BootstrapConfig,
@@ -59,6 +59,14 @@ pub async fn bootstrap_root_user(
         )));
     }
 
+    let password_errors = config.validate_root_password_for_creation();
+    if !password_errors.is_empty() {
+        return Err(Error::Internal(format!(
+            "Bootstrap failed: invalid root password: {}",
+            password_errors.join("; ")
+        )));
+    }
+
     info!("Creating root user '{}'...", config.root_username);
 
     let opaque_password_service =
@@ -89,11 +97,6 @@ pub async fn bootstrap_root_user(
     info!("  ID: {}", created_user.id);
     info!("  Username: {}", created_user.username);
     info!("  Role: {:?}", created_user.role);
-
-    if config.root_password == "root" {
-        warn!("WARNING: Root password is set to default value 'root'");
-        warn!("Please change the root password immediately after first login!");
-    }
 
     Ok(())
 }

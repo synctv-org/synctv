@@ -11,7 +11,7 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::middleware::RequestMetadata;
 use crate::http::{error::map_api_error, AppResult, AppState};
-use crate::impls::EndpointRateLimitCategory;
+use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 
 // Proto types already derive serde::Serialize/Deserialize.
 use crate::proto::client::GetIceServersResponse;
@@ -62,7 +62,8 @@ pub async fn get_ice_servers(
         request_meta,
         public_room_id,
         EndpointRateLimitCategory::Read,
-        move |client_api, actor| async move {
+        EndpointRateLimitScope::WebRtc,
+        move |client_api, actor: crate::impls::client::RoomActor| async move {
             debug_assert_eq!(actor.room_id(), room_id);
             client_api.get_ice_servers_for_actor(&actor).await
         },

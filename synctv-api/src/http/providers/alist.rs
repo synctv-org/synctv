@@ -10,11 +10,7 @@ use axum::{
 };
 use futures::FutureExt;
 
-use crate::http::{
-    middleware::RequestMetadata,
-    validation::{ProtoJson, ProtoQuery},
-    AppResult, AppState,
-};
+use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::alist::{
     GetBindsResponse, GetMeRequest, ListRequest, LoginRequest, LogoutRequest, SearchRequest,
@@ -71,7 +67,7 @@ pub fn alist_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<LoginRequest>,
+    Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
@@ -134,7 +130,7 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<ListRequest>,
+    Json(req): Json<ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
@@ -191,7 +187,7 @@ pub(crate) async fn list(
 pub(crate) async fn search(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<SearchRequest>,
+    Json(req): Json<SearchRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
@@ -248,7 +244,7 @@ pub(crate) async fn search(
 pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<GetMeRequest>,
+    Json(req): Json<GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
@@ -305,7 +301,7 @@ pub(crate) async fn me(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<LogoutRequest>,
+    Json(req): Json<LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 

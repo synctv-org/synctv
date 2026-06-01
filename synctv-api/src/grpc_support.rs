@@ -127,6 +127,16 @@ pub fn request_metadata<T>(
 }
 
 #[must_use]
+pub fn request_metadata_for_scope<T>(
+    request: &tonic::Request<T>,
+    config: &synctv_core::Config,
+    timeout: Option<std::time::Duration>,
+    scope: crate::impls::EndpointRateLimitScope,
+) -> crate::impls::RequestMetadata {
+    request_metadata(request, config, timeout).with_endpoint_scope(Some(scope))
+}
+
+#[must_use]
 pub const fn grpc_unary_request_timeout() -> std::time::Duration {
     synctv_core::resilience::timeout::GRPC_CALL_TIMEOUT
 }

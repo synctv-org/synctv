@@ -1859,6 +1859,18 @@ impl StreamMessageHandler {
         self.principal.public_actor_id(&self.public_id_codec)
     }
 
+    fn is_own_join_event(&self, event: &RealtimeEvent) -> bool {
+        match event {
+            RealtimeEvent::UserJoined { user_id, .. } => {
+                !self.principal.is_guest() && *user_id == self.user_id
+            }
+            RealtimeEvent::GuestJoined { guest_id, .. } => {
+                self.principal.is_guest() && guest_id == &self.public_actor_id()
+            }
+            _ => false,
+        }
+    }
+
     async fn guest_permissions(&self) -> Result<RoomPermissionSet, synctv_core::Error> {
         self.room_service.get_guest_permissions(&self.room_id).await
     }
@@ -2293,6 +2305,8 @@ impl StreamMessageHandler {
                 client_msg_result = stream.recv() => {
                     match client_msg_result {
                         Some(Ok(msg)) => {
+                            self.connection_service.record_message(&self.connection_id);
+
                             // Global per-connection rate limit check (before any processing)
                             let now = tokio::time::Instant::now();
                             if now.duration_since(global_msg_window_start) >= std::time::Duration::from_secs(1) {
@@ -2371,19 +2385,16 @@ impl StreamMessageHandler {
                         // Filter WebRTC signaling: only deliver to the intended recipient.
                         // SDP data contains IP addresses, so broadcasting to all room
                         // members is both a privacy leak and causes incorrect WebRTC behavior.
-                        if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
-                            if !self.current_connection_matches_webrtc_recipient(to) {
-                                continue;
-                            }
-                        }
-                        let send_direct_messages = if matches!(
-                            event,
-                            RealtimeEvent::ChatMessageEvent { .. }
-                        ) {
-                            !self.resource_observer.has_chat_events_observation().await
-                        } else {
-                            true
-                        };
+                                if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
+                                    if !self.current_connection_matches_webrtc_recipient(to) {
+                                        continue;
+                                    }
+                                }
+                                if self.is_own_join_event(&event) {
+                                    continue;
+                                }
+                        let send_direct_messages =
+                            !matches!(event, RealtimeEvent::ChatMessageEvent { .. });
 
                         let mut send_failed = false;
                         if send_direct_messages {
@@ -3422,6 +3433,9 @@ impl StreamMessageHandler {
                                         continue;
                                     }
                                 }
+                                if event_handler.is_own_join_event(&event) {
+                                    continue;
+                                }
 
                                 let is_room_shutdown = matches!(
                                     event,
@@ -3430,17 +3444,8 @@ impl StreamMessageHandler {
                                         | RealtimeEvent::RoomOwnerInactive { .. }
                                 );
 
-                                let send_direct_messages = if matches!(
-                                    event,
-                                    RealtimeEvent::ChatMessageEvent { .. }
-                                ) {
-                                    !event_handler
-                                        .resource_observer
-                                        .has_chat_events_observation()
-                                        .await
-                                } else {
-                                    true
-                                };
+                                let send_direct_messages =
+                                    !matches!(event, RealtimeEvent::ChatMessageEvent { .. });
 
                                 if send_direct_messages {
                                     for msg in realtime_event_to_server_messages(
@@ -3526,6 +3531,8 @@ impl StreamMessageHandler {
                     msg = rx.recv() => {
                         match msg {
                             Some(msg) => {
+                                handler.connection_service.record_message(&handler.connection_id);
+
                                 // Global per-connection rate limit check (matching run() logic)
                                 let now = tokio::time::Instant::now();
                                 if now.duration_since(global_msg_window_start) >= std::time::Duration::from_secs(1) {

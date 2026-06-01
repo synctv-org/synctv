@@ -877,22 +877,36 @@ impl AdminApiImpl {
     ) -> Result<std::collections::BTreeMap<String, String>, ApiError> {
         let mut effective = std::collections::BTreeMap::new();
         let mut registered_keys = None;
+        let mut visible_keys = None;
 
         if let Some(registry) = &self.settings_registry {
             let defaults = registry.storage.registered_defaults();
-            registered_keys = Some(
+            visible_keys = Some(
                 defaults
                     .iter()
                     .map(|(key, _)| key.clone())
                     .collect::<std::collections::HashSet<_>>(),
             );
             effective.extend(defaults);
+            registered_keys = Some(
+                registry
+                    .storage
+                    .registered_keys()
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>(),
+            );
         }
 
         for setting in self.settings_service.get_all().map_err(ApiError::from)? {
             if let Some(registered_keys) = &registered_keys {
-                if registered_keys.contains(&setting.key) {
+                if visible_keys
+                    .as_ref()
+                    .is_some_and(|visible_keys| visible_keys.contains(&setting.key))
+                {
                     effective.insert(setting.key, setting.value);
+                    continue;
+                }
+                if registered_keys.contains(&setting.key) {
                     continue;
                 }
                 tracing::warn!(
@@ -8003,6 +8017,41 @@ mod tests {
         assert!(
             payload.get("smtp_password").is_none(),
             "smtp password must not be returned in settings projection: {payload}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_settings_ignores_hidden_registered_settings_without_warning_path() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+
+        let server_id = admin_api
+            .settings_registry
+            .as_ref()
+            .expect("settings registry")
+            .get_or_initialize_server_id()
+            .await
+            .expect("server id should initialize");
+        assert!(server_id.starts_with("srv_"));
+
+        let response = admin_api
+            .get_settings_group(
+                crate::proto::admin::GetSettingsGroupRequest {
+                    group: "server".to_string(),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("hidden registered settings should not break projection");
+
+        let group = response.group.expect("settings group response");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
+        assert!(
+            payload.get("identity_id").is_none(),
+            "server identity must stay hidden from admin settings projection: {payload}"
         );
     }
 

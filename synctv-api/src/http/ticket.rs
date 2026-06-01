@@ -18,9 +18,8 @@ use axum::{extract::State, Json};
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::middleware::RequestMetadata;
-use super::validation::ProtoJson;
 use super::{AppResult, AppState};
-use crate::impls::EndpointRateLimitCategory;
+use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
 
 /// Create a room-bound WebSocket ticket for secure authentication
@@ -71,26 +70,32 @@ pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTick
 pub async fn create_ticket(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<CreateWebSocketTicketRequest>,
+    Json(req): Json<CreateWebSocketTicketRequest>,
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
     let client_api = state.shared_api_runtime.client_api.clone();
     let public_room_id = req.room_id.clone();
 
-    let ticket_response = crate::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
-        client_api.clone(),
-        &request_meta,
-        public_room_id,
-        EndpointRateLimitCategory::Write,
-        move |client_api, request_control, actor| async move {
-            client_api
-                .create_websocket_ticket_for_actor_with_control(actor, req, Some(&request_control))
-                .await
-        },
-    )
-    .await
-    .map_err(super::error::map_api_error)?;
+    let ticket_response =
+        crate::impls::ClientApiImpl::execute_scoped_room_actor_endpoint_with_control(
+            client_api.clone(),
+            &request_meta,
+            public_room_id,
+            EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::Ticket,
+            move |client_api, request_control, actor| async move {
+                client_api
+                    .create_websocket_ticket_for_actor_with_control(
+                        actor,
+                        req,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(ticket_response))
 }

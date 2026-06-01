@@ -3,12 +3,9 @@
 //! Transport handlers deserialize inputs and hand requests to `impls`; request
 //! validation belongs in the impl/core layers shared by HTTP and gRPC.
 
-use axum::{body::Body, extract::FromRequest};
 use axum::{
-    extract::rejection::JsonRejection,
     extract::{rejection::QueryRejection, FromRequestParts, Query},
     http::request::Parts,
-    Json,
 };
 use serde::de::DeserializeOwned;
 
@@ -29,31 +26,8 @@ impl<T> std::ops::DerefMut for ProtoQuery<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProtoJson<T>(pub T);
-
-impl<T> std::ops::Deref for ProtoJson<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> std::ops::DerefMut for ProtoJson<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 fn map_query_rejection(rejection: &QueryRejection) -> super::AppError {
     let mut error = super::AppError::new(rejection.status(), rejection.body_text());
-    error.error_code = Some(crate::impls::error_codes::INVALID_ARGUMENT);
-    error
-}
-
-fn map_json_rejection(rejection: &JsonRejection) -> super::AppError {
-    let mut error = super::AppError::bad_request(rejection.body_text());
     error.error_code = Some(crate::impls::error_codes::INVALID_ARGUMENT);
     error
 }
@@ -73,48 +47,24 @@ where
     }
 }
 
-impl<S, T> FromRequest<S, Body> for ProtoJson<T>
-where
-    S: Send + Sync,
-    T: DeserializeOwned + Send,
-{
-    type Rejection = super::AppError;
-
-    async fn from_request(
-        request: axum::extract::Request<Body>,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        let Json(value) = Json::<T>::from_request(request, state)
-            .await
-            .map_err(|rejection| map_json_rejection(&rejection))?;
-        Ok(Self(value))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{
         body::{to_bytes, Body},
-        http::{Method, Request, StatusCode},
+        http::{Request, StatusCode},
         response::IntoResponse,
-        routing::{get, post},
+        routing::get,
         Router,
     };
-    use serde::Deserialize;
     use tower::ServiceExt;
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, serde::Deserialize)]
     struct PageQuery {
         page: i32,
     }
 
     async fn query_handler(ProtoQuery(query): ProtoQuery<PageQuery>) -> &'static str {
-        assert_eq!(query.page, 1);
-        "ok"
-    }
-
-    async fn json_handler(ProtoJson(query): ProtoJson<PageQuery>) -> &'static str {
         assert_eq!(query.page, 1);
         "ok"
     }
@@ -138,24 +88,22 @@ mod tests {
         assert!(json["error"].as_str().unwrap_or_default().contains("page"));
     }
 
-    #[tokio::test]
-    async fn proto_json_rejection_uses_app_error_code() {
-        let app = Router::new().route("/test", post(json_handler));
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/test")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"page":"abc"}"#))
+    #[test]
+    fn protobuf_json_serde_accepts_proto3_int64_strings() {
+        let req =
+            serde_json::from_str::<crate::proto::client::CreateUserAvatarUploadSessionRequest>(
+                r#"{
+                    "client_avatar_id":"avatar-1",
+                    "mime_type":"image/png",
+                    "size_bytes":"1764839",
+                    "width":256,
+                    "height":256,
+                    "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "metadata":{}
+                }"#,
+            )
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap().into_response();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(json["status"], 400);
-        assert_eq!(json["code"], crate::impls::error_codes::INVALID_ARGUMENT);
-        assert!(json["error"].as_str().unwrap_or_default().contains("page"));
+        assert_eq!(req.size_bytes, 1_764_839);
     }
 }

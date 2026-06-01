@@ -151,6 +151,8 @@ pub trait ConnectionRuntime: Send + Sync {
 
     async fn unregister(&self, connection_id: &str);
 
+    fn record_message(&self, connection_id: &str);
+
     fn reserve_room_slot(&self, room_id: &RoomId) -> std::result::Result<(), String>;
 
     fn reserve_user_slot(&self, user_id: &UserId) -> std::result::Result<(), String>;
@@ -263,6 +265,10 @@ impl ConnectionRuntime for ConnectionManager {
 
     async fn unregister(&self, connection_id: &str) {
         ConnectionManager::unregister(self, connection_id).await;
+    }
+
+    fn record_message(&self, connection_id: &str) {
+        ConnectionManager::record_message(self, connection_id);
     }
 
     fn reserve_room_slot(&self, room_id: &RoomId) -> std::result::Result<(), String> {

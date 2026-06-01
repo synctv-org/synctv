@@ -519,6 +519,7 @@ impl ResourceObserver {
             .contains_key(observe_id)
     }
 
+    #[cfg(test)]
     pub(super) async fn has_chat_events_observation(&self) -> bool {
         self.state
             .lock()

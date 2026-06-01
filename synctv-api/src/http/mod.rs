@@ -400,7 +400,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     );
 
     // Create shared RateLimitConfig from the config file.
-    let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
+    let rate_limit_config = Arc::new(config.config.request_rate_limits.clone());
 
     // Create shared messaging rate limit config for WebSocket chat messages.
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
@@ -1329,15 +1329,11 @@ mod tests {
     }
 
     pub(crate) fn test_app_state() -> super::AppState {
-        test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig::default(),
-            synctv_core::GrpcRateLimitConfig::default(),
-        )
+        test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig::default())
     }
 
     fn test_app_state_with_rate_limits(
-        http_rate_limits: synctv_core::HttpRateLimitConfig,
-        grpc_rate_limits: synctv_core::GrpcRateLimitConfig,
+        request_rate_limits: synctv_core::RequestRateLimitConfig,
     ) -> super::AppState {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
@@ -1373,8 +1369,7 @@ mod tests {
         .expect("jwt");
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
         let config = synctv_core::Config {
-            http_rate_limits,
-            grpc_rate_limits,
+            request_rate_limits,
             ..synctv_core::Config::default()
         };
         let router_config = RouterConfig {
@@ -1432,10 +1427,9 @@ mod tests {
     }
 
     async fn test_app_state_with_websocket_runtime(
-        http_rate_limits: synctv_core::HttpRateLimitConfig,
-        grpc_rate_limits: synctv_core::GrpcRateLimitConfig,
+        request_rate_limits: synctv_core::RequestRateLimitConfig,
     ) -> super::AppState {
-        let state = test_app_state_with_rate_limits(http_rate_limits, grpc_rate_limits);
+        let state = test_app_state_with_rate_limits(request_rate_limits);
         let mut router_config = state.router_config.as_ref().clone();
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
@@ -1491,10 +1485,7 @@ mod tests {
     }
 
     async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::AppState {
-        let state = test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig::default(),
-            synctv_core::GrpcRateLimitConfig::default(),
-        );
+        let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig::default());
         let mut router_config = state.router_config.as_ref().clone();
 
         let username_cache =
@@ -1846,7 +1837,7 @@ mod tests {
                     .method("PATCH")
                     .uri("/api/rooms/room_123/chat/messages/msg_456")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"content":"edited","expected_version":1}"#))
+                    .body(Body::from(r#"{"content":"edited","expected_version":"1"}"#))
                     .expect("request"),
             )
             .await
@@ -1879,7 +1870,7 @@ mod tests {
                     .method("DELETE")
                     .uri("/api/rooms/room_123/chat/messages/msg_456")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"expected_version":1,"reason":"cleanup"}"#))
+                    .body(Body::from(r#"{"expected_version":"1","reason":"cleanup"}"#))
                     .expect("request"),
             )
             .await
@@ -2557,16 +2548,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting() {
-        let state = test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig {
-                auth_max_requests: 1,
-                auth_window_seconds: 60,
-                read_max_requests: 100,
-                read_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        );
+        let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+            auth_max_requests: 1,
+            auth_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        });
         let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
@@ -2609,16 +2597,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() {
-        let state = test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig {
-                auth_max_requests: 1,
-                auth_window_seconds: 60,
-                read_max_requests: 100,
-                read_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        );
+        let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+            auth_max_requests: 1,
+            auth_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        });
         let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
@@ -2678,16 +2663,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_ticket_route_uses_write_rate_limit_tier() {
-        let state = test_app_state_with_websocket_runtime(
-            synctv_core::HttpRateLimitConfig {
-                write_max_requests: 1,
-                write_window_seconds: 60,
-                read_max_requests: 100,
-                read_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        )
+        let state = test_app_state_with_websocket_runtime(synctv_core::RequestRateLimitConfig {
+            write_max_requests: 1,
+            write_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        })
         .await;
         let app = register_all_routes_for_test(&state).with_state(state);
 
@@ -2729,16 +2711,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() {
-        let state = test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig {
-                streaming_max_requests: 1,
-                streaming_window_seconds: 60,
-                read_max_requests: 100,
-                read_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        );
+        let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+            streaming_max_requests: 1,
+            streaming_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        });
         let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
@@ -3153,16 +3132,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() {
-        let state = test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig {
-                admin_max_requests: 1,
-                admin_window_seconds: 60,
-                auth_max_requests: 100,
-                auth_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        );
+        let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+            admin_max_requests: 1,
+            admin_window_seconds: 60,
+            auth_max_requests: 100,
+            auth_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        });
         let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
@@ -3203,16 +3179,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_management_routes_do_not_consume_outer_read_bucket() {
-        let state = test_app_state_with_rate_limits(
-            synctv_core::HttpRateLimitConfig {
-                read_max_requests: 1,
-                read_window_seconds: 60,
-                auth_max_requests: 100,
-                auth_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        );
+        let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+            read_max_requests: 1,
+            read_window_seconds: 60,
+            auth_max_requests: 100,
+            auth_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        });
         let app = register_all_routes_for_test(&state).with_state(state);
 
         let management = app
@@ -3256,16 +3229,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_ticket_routes_use_write_rate_limit_tier() {
-        let state = test_app_state_with_websocket_runtime(
-            synctv_core::HttpRateLimitConfig {
-                write_max_requests: 1,
-                write_window_seconds: 60,
-                read_max_requests: 100,
-                read_window_seconds: 60,
-                ..synctv_core::HttpRateLimitConfig::default()
-            },
-            synctv_core::GrpcRateLimitConfig::default(),
-        )
+        let state = test_app_state_with_websocket_runtime(synctv_core::RequestRateLimitConfig {
+            write_max_requests: 1,
+            write_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..synctv_core::RequestRateLimitConfig::default()
+        })
         .await;
         let app = register_all_routes_for_test(&state).with_state(state);
 

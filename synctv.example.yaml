@@ -472,10 +472,10 @@ messaging_rate_limits:
   window_seconds: 1
 
 # ============================================================================
-# HTTP API Rate Limits
+# Request API Rate Limits
 # ============================================================================
 
-http_rate_limits:
+request_rate_limits:
   auth_max_requests: 5
   auth_window_seconds: 60
   write_max_requests: 30
@@ -490,26 +490,11 @@ http_rate_limits:
   streaming_window_seconds: 60
   websocket_max_requests: 10
   websocket_window_seconds: 60
-
-# ============================================================================
-# gRPC API Rate Limits
-# ============================================================================
-
-grpc_rate_limits:
-  auth_max_requests: 5
-  auth_window_seconds: 60
-  email_max_requests: 5
-  email_window_seconds: 60
-  media_max_requests: 20
-  media_window_seconds: 60
-  write_max_requests: 30
-  write_window_seconds: 60
-  admin_max_requests: 30
-  admin_window_seconds: 60
-  read_max_requests: 100
-  read_window_seconds: 60
-  websocket_max_requests: 10
-  websocket_window_seconds: 60
+  scopes:
+    room_members:
+      max_requests: 90
+      window_seconds: 15
+      strategy: fixed_window
 
 # ============================================================================
 # Bootstrap Configuration

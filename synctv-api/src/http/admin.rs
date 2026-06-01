@@ -13,7 +13,7 @@ use std::sync::Arc;
 use super::{
     admin_execute::{execute_admin_endpoint, execute_root_endpoint, request_metadata},
     middleware::RequestMetadata,
-    validation::{ProtoJson, ProtoQuery},
+    validation::ProtoQuery,
     AppError, AppResult, AppState,
 };
 use crate::proto::admin;
@@ -169,7 +169,7 @@ pub(crate) async fn list_user_registration_reviews(
 pub(crate) async fn approve_user_registration_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::ApproveUserRegistrationReviewRequest>,
+    Json(req): Json<admin::ApproveUserRegistrationReviewRequest>,
 ) -> AppResult<Json<admin::ApproveUserRegistrationReviewResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -201,7 +201,7 @@ pub(crate) async fn approve_user_registration_review(
 pub(crate) async fn reject_user_registration_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::RejectUserRegistrationReviewRequest>,
+    Json(req): Json<admin::RejectUserRegistrationReviewRequest>,
 ) -> AppResult<Json<admin::RejectUserRegistrationReviewResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -259,7 +259,7 @@ pub(crate) async fn list_room_creation_reviews(
 pub(crate) async fn approve_room_creation_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::ApproveRoomCreationReviewRequest>,
+    Json(req): Json<admin::ApproveRoomCreationReviewRequest>,
 ) -> AppResult<Json<admin::ApproveRoomCreationReviewResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -288,7 +288,7 @@ pub(crate) async fn approve_room_creation_review(
 pub(crate) async fn reject_room_creation_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::RejectRoomCreationReviewRequest>,
+    Json(req): Json<admin::RejectRoomCreationReviewRequest>,
 ) -> AppResult<Json<admin::RejectRoomCreationReviewResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -345,7 +345,7 @@ pub(crate) async fn list_room_join_reviews(
 pub(crate) async fn approve_room_join_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::ApproveRoomJoinReviewRequest>,
+    Json(req): Json<admin::ApproveRoomJoinReviewRequest>,
 ) -> AppResult<Json<admin::ApproveRoomJoinReviewResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -374,7 +374,7 @@ pub(crate) async fn approve_room_join_review(
 pub(crate) async fn reject_room_join_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::RejectRoomJoinReviewRequest>,
+    Json(req): Json<admin::RejectRoomJoinReviewRequest>,
 ) -> AppResult<Json<admin::RejectRoomJoinReviewResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -529,7 +529,7 @@ pub(crate) async fn get_settings_group(
 pub(crate) async fn set_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::UpdateSettingsRequest>,
+    Json(req): Json<admin::UpdateSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateSettingsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -563,7 +563,7 @@ pub(crate) async fn set_settings(
 pub(crate) async fn send_test_email(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::SendTestEmailRequest>,
+    Json(req): Json<admin::SendTestEmailRequest>,
 ) -> AppResult<Json<admin::SendTestEmailResponse>> {
     let request_meta = request_metadata(request_meta);
     let api = require_admin_api(&state)?.clone();
@@ -690,7 +690,7 @@ pub(crate) async fn update_user_preferences(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateUserPreferencesRequest>,
+    Json(mut req): Json<admin::UpdateUserPreferencesRequest>,
 ) -> AppResult<Json<admin::UpdateUserPreferencesResponse>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
@@ -724,7 +724,7 @@ pub(crate) async fn update_user_preferences(
 pub(crate) async fn create_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::CreateUserRequest>,
+    Json(req): Json<admin::CreateUserRequest>,
 ) -> AppResult<Json<admin::CreateUserResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -791,7 +791,7 @@ pub(crate) async fn set_user_role(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateUserRoleRequest>,
+    Json(mut req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
@@ -827,7 +827,7 @@ pub(crate) async fn set_user_password(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateUserPasswordRequest>,
+    Json(mut req): Json<admin::UpdateUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
     req.user_id = path.user_id;
     if req.reason.is_empty() {
@@ -866,7 +866,7 @@ pub(crate) async fn set_user_username(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateUserUsernameRequest>,
+    Json(mut req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
@@ -902,7 +902,7 @@ pub(crate) async fn ban_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::BanUserRequest>,
+    Json(mut req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
@@ -1004,7 +1004,7 @@ pub(crate) async fn get_user_rooms(
 pub(crate) async fn batch_ban_users(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::BatchBanUsersRequest>,
+    Json(req): Json<admin::BatchBanUsersRequest>,
 ) -> AppResult<Json<admin::BatchBanUsersResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -1037,7 +1037,7 @@ pub(crate) async fn batch_ban_users(
 pub(crate) async fn batch_delete_users(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::BatchDeleteUsersRequest>,
+    Json(req): Json<admin::BatchDeleteUsersRequest>,
 ) -> AppResult<Json<admin::BatchDeleteUsersResponse>> {
     let resp = execute_root_endpoint(
         &state,
@@ -1164,7 +1164,7 @@ pub(crate) async fn set_room_password(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateRoomPasswordRequest>,
+    Json(mut req): Json<admin::UpdateRoomPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
     req.room_id = path.room_id;
     let resp = execute_admin_endpoint(
@@ -1234,7 +1234,7 @@ pub(crate) async fn add_member(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::AddMemberRequest>,
+    Json(mut req): Json<admin::AddMemberRequest>,
 ) -> AppResult<Json<admin::AddMemberResponse>> {
     req.room_id = path.room_id;
     let resp =
@@ -1273,7 +1273,7 @@ pub(crate) async fn update_member_permissions(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomMemberTargetPath>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateMemberPermissionsRequest>,
+    Json(mut req): Json<admin::UpdateMemberPermissionsRequest>,
 ) -> AppResult<Json<admin::UpdateMemberPermissionsResponse>> {
     req.room_id = path.room_id;
     req.user_id = path.user_id;
@@ -1313,7 +1313,7 @@ pub(crate) async fn kick_member(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomMemberTargetPath>,
-    ProtoJson(mut req): ProtoJson<admin::KickMemberRequest>,
+    Json(mut req): Json<admin::KickMemberRequest>,
 ) -> AppResult<Json<admin::KickMemberResponse>> {
     req.room_id = path.room_id;
     req.user_id = path.user_id;
@@ -1350,7 +1350,7 @@ pub(crate) async fn ban_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::BanRoomRequest>,
+    Json(mut req): Json<admin::BanRoomRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
     req.room_id = path.room_id;
     let resp =
@@ -1447,7 +1447,7 @@ pub(crate) async fn set_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    ProtoJson(mut req): ProtoJson<admin::UpdateRoomSettingsRequest>,
+    Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
     req.room_id = path.room_id;
     let resp =
@@ -1515,7 +1515,7 @@ pub(crate) async fn reset_room_settings(
 pub(crate) async fn batch_ban_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::BatchBanRoomsRequest>,
+    Json(req): Json<admin::BatchBanRoomsRequest>,
 ) -> AppResult<Json<admin::BatchBanRoomsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -1547,7 +1547,7 @@ pub(crate) async fn batch_ban_rooms(
 pub(crate) async fn batch_delete_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::BatchDeleteRoomsRequest>,
+    Json(req): Json<admin::BatchDeleteRoomsRequest>,
 ) -> AppResult<Json<admin::BatchDeleteRoomsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -1610,7 +1610,7 @@ pub(crate) async fn list_streams(
 pub(crate) async fn kick_stream(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<admin::KickStreamRequest>,
+    Json(req): Json<admin::KickStreamRequest>,
 ) -> AppResult<Json<admin::KickStreamResponse>> {
     execute_admin_endpoint(&state, request_meta, require_admin_api, move |api, validated, rctx| async move {
         api.kick_stream(req, &validated.user_id, &rctx).await

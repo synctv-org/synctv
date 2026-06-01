@@ -9,12 +9,32 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ChatConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, FileStorageConfig, GrpcRateLimitConfig,
-    HlsStorageBackend, HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig,
-    MediaProvidersConfig, MessagingRateLimitConfig, PasswordComplexityConfig,
-    ProxySliceCacheConfig, PublicIdsConfig, RedisConfig, SecurityConfig, ServerConfig, TimeConfig,
-    WebAuthnConfig, WebRTCConfig,
+    ConnectionLimitsConfig, DatabaseConfig, FileStorageConfig, HlsStorageBackend, JwtConfig,
+    LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
+    PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig, RedisConfig,
+    RequestRateLimitConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig,
+    WebRTCConfig,
 };
+
+fn relaxed_request_rate_limits() -> RequestRateLimitConfig {
+    RequestRateLimitConfig {
+        auth_max_requests: 5000,
+        auth_window_seconds: 1,
+        write_max_requests: 5000,
+        write_window_seconds: 1,
+        read_max_requests: 5000,
+        read_window_seconds: 1,
+        media_max_requests: 5000,
+        media_window_seconds: 1,
+        admin_max_requests: 5000,
+        admin_window_seconds: 1,
+        streaming_max_requests: 5000,
+        streaming_window_seconds: 1,
+        websocket_max_requests: 5000,
+        websocket_window_seconds: 1,
+        ..RequestRateLimitConfig::default()
+    }
+}
 
 /// Create a minimal standalone config for testing (no Redis, no distributed mode)
 fn standalone_test_config() -> Config {
@@ -66,38 +86,7 @@ fn standalone_test_config() -> Config {
         proxy_slice_cache: ProxySliceCacheConfig::default(),
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
-        http_rate_limits: HttpRateLimitConfig {
-            auth_max_requests: 5000,
-            auth_window_seconds: 1,
-            write_max_requests: 5000,
-            write_window_seconds: 1,
-            read_max_requests: 5000,
-            read_window_seconds: 1,
-            media_max_requests: 5000,
-            media_window_seconds: 1,
-            admin_max_requests: 5000,
-            admin_window_seconds: 1,
-            streaming_max_requests: 5000,
-            streaming_window_seconds: 1,
-            websocket_max_requests: 5000,
-            websocket_window_seconds: 1,
-        },
-        grpc_rate_limits: GrpcRateLimitConfig {
-            auth_max_requests: 5000,
-            auth_window_seconds: 1,
-            email_max_requests: 5000,
-            email_window_seconds: 1,
-            media_max_requests: 5000,
-            media_window_seconds: 1,
-            write_max_requests: 5000,
-            write_window_seconds: 1,
-            admin_max_requests: 5000,
-            admin_window_seconds: 1,
-            read_max_requests: 5000,
-            read_window_seconds: 1,
-            websocket_max_requests: 5000,
-            websocket_window_seconds: 1,
-        },
+        request_rate_limits: relaxed_request_rate_limits(),
         public_ids: PublicIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
@@ -171,38 +160,7 @@ fn cluster_test_config() -> Config {
         proxy_slice_cache: ProxySliceCacheConfig::default(),
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
-        http_rate_limits: HttpRateLimitConfig {
-            auth_max_requests: 5000,
-            auth_window_seconds: 1,
-            write_max_requests: 5000,
-            write_window_seconds: 1,
-            read_max_requests: 5000,
-            read_window_seconds: 1,
-            media_max_requests: 5000,
-            media_window_seconds: 1,
-            admin_max_requests: 5000,
-            admin_window_seconds: 1,
-            streaming_max_requests: 5000,
-            streaming_window_seconds: 1,
-            websocket_max_requests: 5000,
-            websocket_window_seconds: 1,
-        },
-        grpc_rate_limits: GrpcRateLimitConfig {
-            auth_max_requests: 5000,
-            auth_window_seconds: 1,
-            email_max_requests: 5000,
-            email_window_seconds: 1,
-            media_max_requests: 5000,
-            media_window_seconds: 1,
-            write_max_requests: 5000,
-            write_window_seconds: 1,
-            admin_max_requests: 5000,
-            admin_window_seconds: 1,
-            read_max_requests: 5000,
-            read_window_seconds: 1,
-            websocket_max_requests: 5000,
-            websocket_window_seconds: 1,
-        },
+        request_rate_limits: relaxed_request_rate_limits(),
         public_ids: PublicIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"

@@ -132,12 +132,12 @@ static REFERRER_POLICY: LazyLock<axum::http::HeaderName> =
 static PERMISSIONS_POLICY: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("permissions-policy"));
 
-/// HTTP rate limiting configuration for different endpoint categories.
+/// Request rate limiting configuration for different endpoint categories.
 ///
 /// Type alias to the canonical config struct in `synctv_core::config`.
 /// Previously this was a duplicate struct with hardcoded defaults;
-/// now it comes from the config file via `Config.http_rate_limits`.
-pub type RateLimitConfig = synctv_core::HttpRateLimitConfig;
+/// now it comes from the config file via `Config.request_rate_limits`.
+pub type RateLimitConfig = synctv_core::RequestRateLimitConfig;
 
 /// Security headers middleware
 ///

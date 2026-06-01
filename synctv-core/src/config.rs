@@ -534,8 +534,7 @@ pub struct Config {
     pub cache: CacheConfig,
     pub proxy_slice_cache: ProxySliceCacheConfig,
     pub messaging_rate_limits: MessagingRateLimitConfig,
-    pub http_rate_limits: HttpRateLimitConfig,
-    pub grpc_rate_limits: GrpcRateLimitConfig,
+    pub request_rate_limits: RequestRateLimitConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -566,8 +565,7 @@ impl std::fmt::Debug for Config {
             .field("cache", &self.cache)
             .field("proxy_slice_cache", &self.proxy_slice_cache)
             .field("messaging_rate_limits", &self.messaging_rate_limits)
-            .field("http_rate_limits", &self.http_rate_limits)
-            .field("grpc_rate_limits", &self.grpc_rate_limits)
+            .field("request_rate_limits", &self.request_rate_limits)
             .finish()
     }
 }
@@ -600,8 +598,7 @@ impl Default for Config {
             cache: CacheConfig::default(),
             proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
-            http_rate_limits: HttpRateLimitConfig::default(),
-            grpc_rate_limits: GrpcRateLimitConfig::default(),
+            request_rate_limits: RequestRateLimitConfig::default(),
         }
     }
 }
@@ -2412,6 +2409,7 @@ impl Config {
                     };
                 }
             parse_json_into!(HashMap<String, FileStorageBackendConfig>);
+            parse_json_into!(HashMap<String, RateLimitScopeRule>);
             Err(ConfigError::Message(format!(
                 "Unsupported environment JSON override target type for {name}"
             )))
@@ -3121,117 +3119,64 @@ impl Config {
         )?;
 
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_AUTH_MAX_REQUESTS",
-            &mut self.http_rate_limits.auth_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_AUTH_MAX_REQUESTS",
+            &mut self.request_rate_limits.auth_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_AUTH_WINDOW_SECONDS",
-            &mut self.http_rate_limits.auth_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_AUTH_WINDOW_SECONDS",
+            &mut self.request_rate_limits.auth_window_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_WRITE_MAX_REQUESTS",
-            &mut self.http_rate_limits.write_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_WRITE_MAX_REQUESTS",
+            &mut self.request_rate_limits.write_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_WRITE_WINDOW_SECONDS",
-            &mut self.http_rate_limits.write_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_WRITE_WINDOW_SECONDS",
+            &mut self.request_rate_limits.write_window_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_READ_MAX_REQUESTS",
-            &mut self.http_rate_limits.read_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_READ_MAX_REQUESTS",
+            &mut self.request_rate_limits.read_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_READ_WINDOW_SECONDS",
-            &mut self.http_rate_limits.read_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_READ_WINDOW_SECONDS",
+            &mut self.request_rate_limits.read_window_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_MEDIA_MAX_REQUESTS",
-            &mut self.http_rate_limits.media_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_MEDIA_MAX_REQUESTS",
+            &mut self.request_rate_limits.media_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_MEDIA_WINDOW_SECONDS",
-            &mut self.http_rate_limits.media_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_MEDIA_WINDOW_SECONDS",
+            &mut self.request_rate_limits.media_window_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_ADMIN_MAX_REQUESTS",
-            &mut self.http_rate_limits.admin_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_ADMIN_MAX_REQUESTS",
+            &mut self.request_rate_limits.admin_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_ADMIN_WINDOW_SECONDS",
-            &mut self.http_rate_limits.admin_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_ADMIN_WINDOW_SECONDS",
+            &mut self.request_rate_limits.admin_window_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_STREAMING_MAX_REQUESTS",
-            &mut self.http_rate_limits.streaming_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_STREAMING_MAX_REQUESTS",
+            &mut self.request_rate_limits.streaming_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_STREAMING_WINDOW_SECONDS",
-            &mut self.http_rate_limits.streaming_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_STREAMING_WINDOW_SECONDS",
+            &mut self.request_rate_limits.streaming_window_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS",
-            &mut self.http_rate_limits.websocket_max_requests,
+            "SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS",
+            &mut self.request_rate_limits.websocket_max_requests,
         )?;
         env_override_parse(
-            "SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS",
-            &mut self.http_rate_limits.websocket_window_seconds,
+            "SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS",
+            &mut self.request_rate_limits.websocket_window_seconds,
         )?;
-
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_AUTH_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.auth_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_AUTH_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.auth_window_seconds,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_EMAIL_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.email_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_EMAIL_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.email_window_seconds,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_MEDIA_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.media_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_MEDIA_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.media_window_seconds,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_WRITE_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.write_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_WRITE_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.write_window_seconds,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_ADMIN_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.admin_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_ADMIN_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.admin_window_seconds,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_READ_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.read_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_READ_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.read_window_seconds,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS",
-            &mut self.grpc_rate_limits.websocket_max_requests,
-        )?;
-        env_override_parse(
-            "SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS",
-            &mut self.grpc_rate_limits.websocket_window_seconds,
+        env_override_json(
+            "SYNCTV_REQUEST_RATE_LIMITS_SCOPES",
+            &mut self.request_rate_limits.scopes,
         )?;
 
         Ok(())
@@ -3472,6 +3417,88 @@ impl Config {
                 "{path}.connect_timeout_seconds should not exceed request_timeout_seconds"
             ));
         }
+    }
+
+    fn validate_rate_limit_pair(
+        path: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        errors: &mut Vec<String>,
+    ) {
+        if max_requests == 0 {
+            errors.push(format!("{path}.max_requests must be greater than 0"));
+        }
+        if window_seconds == 0 {
+            errors.push(format!("{path}.window_seconds must be greater than 0"));
+        }
+    }
+
+    fn validate_rate_limit_scopes(
+        path: &str,
+        scopes: &HashMap<String, RateLimitScopeRule>,
+        errors: &mut Vec<String>,
+    ) {
+        for (scope, rule) in scopes {
+            let scope_path = format!("{path}.scopes.{scope}");
+            if scope.trim().is_empty() {
+                errors.push(format!("{path}.scopes contains an empty scope name"));
+            }
+            if matches!(rule.max_requests, Some(0)) {
+                errors.push(format!("{scope_path}.max_requests must be greater than 0"));
+            }
+            if matches!(rule.window_seconds, Some(0)) {
+                errors.push(format!(
+                    "{scope_path}.window_seconds must be greater than 0"
+                ));
+            }
+        }
+    }
+
+    fn validate_api_rate_limits(&self, errors: &mut Vec<String>) {
+        let config = &self.request_rate_limits;
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.auth",
+            config.auth_max_requests,
+            config.auth_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.write",
+            config.write_max_requests,
+            config.write_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.read",
+            config.read_max_requests,
+            config.read_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.media",
+            config.media_max_requests,
+            config.media_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.admin",
+            config.admin_max_requests,
+            config.admin_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.streaming",
+            config.streaming_max_requests,
+            config.streaming_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_pair(
+            "request_rate_limits.websocket",
+            config.websocket_max_requests,
+            config.websocket_window_seconds,
+            errors,
+        );
+        Self::validate_rate_limit_scopes("request_rate_limits", &config.scopes, errors);
     }
 
     fn validate_with_env(
@@ -3717,34 +3744,9 @@ impl Config {
             ));
         }
 
-        // Validate root credentials
+        // Validate root identity. Password validation runs only when bootstrap
+        // confirms it needs to create a root user.
         if self.bootstrap.create_root_user {
-            let pwd = &self.bootstrap.root_password;
-            if pwd.is_empty() {
-                errors.push("Root password is empty. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
-            } else if pwd == "root" || is_known_dev_secret(pwd, KNOWN_DEV_ROOT_PASSWORDS) {
-                errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
-            } else {
-                // Only run complexity checks once a non-empty, non-placeholder
-                // password is present; otherwise a single root cause fans out
-                // into multiple derivative errors.
-                if pwd.len() < 12 {
-                    errors.push("Root password must be at least 12 characters".to_string());
-                }
-                if !pwd.chars().any(char::is_uppercase) {
-                    errors.push(
-                        "Root password must contain at least one uppercase letter".to_string(),
-                    );
-                }
-                if !pwd.chars().any(char::is_lowercase) {
-                    errors.push(
-                        "Root password must contain at least one lowercase letter".to_string(),
-                    );
-                }
-                if !pwd.chars().any(|c| c.is_ascii_digit()) {
-                    errors.push("Root password must contain at least one digit".to_string());
-                }
-            }
             if self.bootstrap.root_username.len() < 3 {
                 errors.push("Root username must be at least 3 characters".to_string());
             }
@@ -4002,6 +4004,7 @@ impl Config {
         if self.messaging_rate_limits.window_seconds == 0 {
             errors.push("messaging_rate_limits.window_seconds must be greater than 0".to_string());
         }
+        self.validate_api_rate_limits(&mut errors);
 
         // Validate livestream config
         if self.livestream.stream_timeout_seconds == 0 {
@@ -4568,6 +4571,38 @@ impl Default for BootstrapConfig {
     }
 }
 
+impl BootstrapConfig {
+    #[must_use]
+    pub fn validate_root_password_for_creation(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let pwd = &self.root_password;
+        if pwd.is_empty() {
+            errors.push(
+                "Root password is empty. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable"
+                    .to_string(),
+            );
+            return errors;
+        }
+        if pwd == "root" || is_known_dev_secret(pwd, KNOWN_DEV_ROOT_PASSWORDS) {
+            errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
+            return errors;
+        }
+        if pwd.len() < 12 {
+            errors.push("Root password must be at least 12 characters".to_string());
+        }
+        if !pwd.chars().any(char::is_uppercase) {
+            errors.push("Root password must contain at least one uppercase letter".to_string());
+        }
+        if !pwd.chars().any(char::is_lowercase) {
+            errors.push("Root password must contain at least one lowercase letter".to_string());
+        }
+        if !pwd.chars().any(|c| c.is_ascii_digit()) {
+            errors.push("Root password must contain at least one digit".to_string());
+        }
+        errors
+    }
+}
+
 /// Cluster channel capacity configuration
 ///
 /// Controls the buffer sizes for internal channels used in cluster communication.
@@ -4868,15 +4903,14 @@ impl Default for ProxySliceCacheConfig {
     }
 }
 
-/// HTTP API rate limit configuration for different endpoint categories.
+/// Request API rate limit configuration.
 ///
 /// This is separate from the domain-level `RateLimitConfig` in
 /// `synctv_core::service::rate_limit` (which controls chat rates).
-/// This struct configures the per-category request rate limits applied by the
-/// shared HTTP request execution path.
+/// This struct configures the shared request limits used by all transports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct HttpRateLimitConfig {
+pub struct RequestRateLimitConfig {
     /// Authentication endpoints (login, register) - stricter limits
     pub auth_max_requests: u32,
     pub auth_window_seconds: u64,
@@ -4904,111 +4938,71 @@ pub struct HttpRateLimitConfig {
     /// WebSocket connection attempts
     pub websocket_max_requests: u32,
     pub websocket_window_seconds: u64,
+
+    /// Endpoint-level rules keyed by business scope name.
+    pub scopes: HashMap<String, RateLimitScopeRule>,
 }
 
-impl Default for HttpRateLimitConfig {
+impl Default for RequestRateLimitConfig {
     fn default() -> Self {
         Self {
             // Auth: 5 requests per minute
             auth_max_requests: 5,
             auth_window_seconds: 60,
 
-            // Write: 30 requests per minute
-            write_max_requests: 30,
+            // Write: 120 requests per minute
+            write_max_requests: 120,
             write_window_seconds: 60,
 
-            // Read: 100 requests per minute
-            read_max_requests: 100,
+            // Read: 600 requests per minute
+            read_max_requests: 600,
             read_window_seconds: 60,
 
-            // Media: 20 requests per minute
-            media_max_requests: 20,
+            // Media: 120 requests per minute
+            media_max_requests: 120,
             media_window_seconds: 60,
 
-            // Admin: 30 requests per minute
-            admin_max_requests: 30,
+            // Admin: 180 requests per minute
+            admin_max_requests: 180,
             admin_window_seconds: 60,
 
-            // Streaming: 200 requests per minute (playlist + segment fetches)
-            streaming_max_requests: 200,
+            // Streaming: 1200 requests per minute (playlist + segment fetches)
+            streaming_max_requests: 1200,
             streaming_window_seconds: 60,
 
-            // WebSocket: 10 connection attempts per minute
-            websocket_max_requests: 10,
+            // WebSocket: 60 connection attempts per minute
+            websocket_max_requests: 60,
             websocket_window_seconds: 60,
+
+            scopes: HashMap::new(),
         }
     }
 }
 
-/// gRPC API rate limit configuration for different endpoint tiers.
-///
-/// Mirrors the HTTP rate limit tiers but with separate values for the gRPC API.
-/// By default, gRPC limits are lower than HTTP because gRPC clients are typically
-/// automated (SDKs, bots) rather than human-driven browsers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitScopeStrategy {
+    #[default]
+    FixedWindow,
+    Disabled,
+}
+
+impl RateLimitScopeStrategy {
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        matches!(self, Self::FixedWindow)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct GrpcRateLimitConfig {
-    /// Authentication endpoints (Login, Register, `RefreshToken`)
-    pub auth_max_requests: u32,
-    pub auth_window_seconds: u64,
-
-    /// Email endpoints (`SendVerification`, `PasswordReset`)
-    pub email_max_requests: u32,
-    pub email_window_seconds: u64,
-
-    /// Media mutation endpoints (`AddMedia`, `RemoveMedia`, `BatchAdd`)
-    pub media_max_requests: u32,
-    pub media_window_seconds: u64,
-
-    /// Write endpoints (`CreateRoom`, `UpdateRoom`, `JoinRoom`, `SendChat`)
-    pub write_max_requests: u32,
-    pub write_window_seconds: u64,
-
-    /// Admin endpoints
-    pub admin_max_requests: u32,
-    pub admin_window_seconds: u64,
-
-    /// Read endpoints (`GetRoom`, `ListRooms`, `GetUser`, `GetPlaylist`)
-    pub read_max_requests: u32,
-    pub read_window_seconds: u64,
-
-    /// Bidirectional real-time `MessageStream` connection attempts
-    pub websocket_max_requests: u32,
-    pub websocket_window_seconds: u64,
-}
-
-impl Default for GrpcRateLimitConfig {
-    fn default() -> Self {
-        Self {
-            // Auth: 5 requests per 60 seconds
-            auth_max_requests: 5,
-            auth_window_seconds: 60,
-
-            // Email: 5 requests per 60 seconds
-            email_max_requests: 5,
-            email_window_seconds: 60,
-
-            // Media: 20 requests per 60 seconds
-            media_max_requests: 20,
-            media_window_seconds: 60,
-
-            // Write: 30 requests per 60 seconds
-            write_max_requests: 30,
-            write_window_seconds: 60,
-
-            // Admin: 30 requests per 60 seconds
-            admin_max_requests: 30,
-            admin_window_seconds: 60,
-
-            // Read: 100 requests per 60 seconds
-            read_max_requests: 100,
-            read_window_seconds: 60,
-
-            // Real-time stream connections: 10 connection attempts per 60 seconds
-            websocket_max_requests: 10,
-            websocket_window_seconds: 60,
-        }
-    }
+pub struct RateLimitScopeRule {
+    /// Scope max requests. Falls back to the category-derived default when unset.
+    pub max_requests: Option<u32>,
+    /// Scope window. Falls back to the category-derived default when unset.
+    pub window_seconds: Option<u64>,
+    /// Limiting strategy for this scope.
+    pub strategy: RateLimitScopeStrategy,
 }
 
 #[cfg(test)]
@@ -5144,8 +5138,7 @@ mod tests {
             cache: CacheConfig::default(),
             proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
-            http_rate_limits: HttpRateLimitConfig::default(),
-            grpc_rate_limits: GrpcRateLimitConfig::default(),
+            request_rate_limits: RequestRateLimitConfig::default(),
         };
 
         assert_eq!(config.api_address(), "127.0.0.1:8080");
@@ -5188,8 +5181,7 @@ mod tests {
             cache: CacheConfig::default(),
             proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
-            http_rate_limits: HttpRateLimitConfig::default(),
-            grpc_rate_limits: GrpcRateLimitConfig::default(),
+            request_rate_limits: RequestRateLimitConfig::default(),
         };
 
         assert_eq!(config.metrics_address(), "127.0.0.1:9090");
@@ -5579,8 +5571,7 @@ mod tests {
             cache: CacheConfig::default(),
             proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
-            http_rate_limits: HttpRateLimitConfig::default(),
-            grpc_rate_limits: GrpcRateLimitConfig::default(),
+            request_rate_limits: RequestRateLimitConfig::default(),
         }
     }
 
@@ -6400,21 +6391,30 @@ jwt:
     }
 
     #[test]
-    fn test_validate_default_root_password() {
+    fn test_validate_allows_empty_root_password_until_bootstrap_creation() {
+        let mut config = valid_prod_config();
+        config.bootstrap.root_password.clear();
+        config
+            .validate()
+            .expect("static config validation should not require a root password");
+    }
+
+    #[test]
+    fn test_validate_root_password_for_creation_rejects_default() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "root".to_string();
-        let errors = config.validate().unwrap_err();
+        let errors = config.bootstrap.validate_root_password_for_creation();
         assert!(errors
             .iter()
             .any(|e| e.contains("Root password") && e.contains("default")));
     }
 
     #[test]
-    fn test_validate_known_development_root_password() {
+    fn test_validate_root_password_for_creation_rejects_known_development_passwords() {
         let mut config = valid_prod_config();
         for known_password in KNOWN_DEV_ROOT_PASSWORDS {
             config.bootstrap.root_password = (*known_password).to_string();
-            let errors = config.validate().unwrap_err();
+            let errors = config.bootstrap.validate_root_password_for_creation();
             assert!(
                 errors
                     .iter()
@@ -6425,10 +6425,10 @@ jwt:
     }
 
     #[test]
-    fn test_validate_empty_root_password_reports_single_root_cause() {
+    fn test_validate_root_password_for_creation_rejects_empty_password_once() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password.clear();
-        let errors = config.validate().unwrap_err();
+        let errors = config.bootstrap.validate_root_password_for_creation();
 
         assert!(
             errors.iter().any(|e| e.contains("Root password is empty")),
@@ -6468,34 +6468,34 @@ jwt:
     }
 
     #[test]
-    fn test_validate_root_password_too_short() {
+    fn test_validate_root_password_for_creation_rejects_too_short() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "Short1aA".to_string(); // 8 chars, < 12
-        let errors = config.validate().unwrap_err();
+        let errors = config.bootstrap.validate_root_password_for_creation();
         assert!(errors.iter().any(|e| e.contains("12 characters")));
     }
 
     #[test]
-    fn test_validate_root_password_no_uppercase() {
+    fn test_validate_root_password_for_creation_rejects_no_uppercase() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "allowercase123".to_string();
-        let errors = config.validate().unwrap_err();
+        let errors = config.bootstrap.validate_root_password_for_creation();
         assert!(errors.iter().any(|e| e.contains("uppercase")));
     }
 
     #[test]
-    fn test_validate_root_password_no_lowercase() {
+    fn test_validate_root_password_for_creation_rejects_no_lowercase() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "ALLUPPERCASE123".to_string();
-        let errors = config.validate().unwrap_err();
+        let errors = config.bootstrap.validate_root_password_for_creation();
         assert!(errors.iter().any(|e| e.contains("lowercase")));
     }
 
     #[test]
-    fn test_validate_root_password_no_digit() {
+    fn test_validate_root_password_for_creation_rejects_no_digit() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "NoDigitsHereABC".to_string();
-        let errors = config.validate().unwrap_err();
+        let errors = config.bootstrap.validate_root_password_for_creation();
         assert!(errors.iter().any(|e| e.contains("digit")));
     }
 
@@ -6613,15 +6613,61 @@ jwt:
     }
 
     #[test]
-    fn test_from_env_overrides_grpc_websocket_rate_limits() {
+    fn test_from_env_overrides_request_websocket_rate_limits() {
         let config = Config::from_env_map(&env_map(&[
-            ("SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS", "13"),
-            ("SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS", "17"),
+            ("SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS", "13"),
+            ("SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS", "17"),
         ]))
-        .expect("gRPC websocket rate limit env overrides should parse");
+        .expect("request websocket rate limit env overrides should parse");
 
-        assert_eq!(config.grpc_rate_limits.websocket_max_requests, 13);
-        assert_eq!(config.grpc_rate_limits.websocket_window_seconds, 17);
+        assert_eq!(config.request_rate_limits.websocket_max_requests, 13);
+        assert_eq!(config.request_rate_limits.websocket_window_seconds, 17);
+    }
+
+    #[test]
+    fn test_from_env_overrides_request_rate_limit_scope_rules() {
+        let config = Config::from_env_map(&env_map(&[(
+            "SYNCTV_REQUEST_RATE_LIMITS_SCOPES",
+            r#"{"room_members":{"max_requests":90,"window_seconds":15,"strategy":"fixed_window"}}"#,
+        )]))
+        .expect("request scope rate limit env override should parse");
+
+        let rule = config
+            .request_rate_limits
+            .scopes
+            .get("room_members")
+            .expect("room_members scope should be configured");
+        assert_eq!(rule.max_requests, Some(90));
+        assert_eq!(rule.window_seconds, Some(15));
+        assert_eq!(rule.strategy, RateLimitScopeStrategy::FixedWindow);
+    }
+
+    #[test]
+    fn test_validate_api_rate_limits_zero() {
+        let mut config = valid_prod_config();
+        config.request_rate_limits.read_max_requests = 0;
+        config.request_rate_limits.websocket_window_seconds = 0;
+        config.request_rate_limits.scopes.insert(
+            "room_members".to_string(),
+            RateLimitScopeRule {
+                max_requests: Some(0),
+                window_seconds: Some(30),
+                strategy: RateLimitScopeStrategy::FixedWindow,
+            },
+        );
+
+        let errors = config
+            .validate()
+            .expect_err("zero API rate limits should be rejected");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("request_rate_limits.read.max_requests")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("request_rate_limits.websocket.window_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("request_rate_limits.scopes.room_members.max_requests")));
     }
 
     #[test]

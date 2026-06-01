@@ -4,7 +4,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const MAIN_PROTO_FILES: [&str; 3] = [
+const MAIN_PROTO_FILES: [&str; 4] = [
+    "proto/common.proto",
     "proto/client.proto",
     "proto/admin.proto",
     "proto/oauth2.proto",
@@ -97,7 +98,98 @@ fn collect_proto_fields(
     Ok(fields)
 }
 
+fn collect_proto_64bit_integer_field_attributes(
+    proto_files: &[&str],
+) -> Result<Vec<(String, &'static str)>, Box<dyn std::error::Error>> {
+    let mut fields = Vec::new();
+
+    for proto_file in proto_files {
+        let source = fs::read_to_string(proto_file)?;
+        let package = source
+            .lines()
+            .map(str::trim)
+            .find_map(|line| {
+                line.strip_prefix("package ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+            })
+            .ok_or_else(|| format!("missing package declaration in {proto_file}"))?;
+
+        let mut message_stack: Vec<(String, i32)> = Vec::new();
+        let mut pending_field = String::new();
+        let mut depth = 0_i32;
+        for raw_line in source.lines() {
+            let line = raw_line.trim();
+            let message_name = line
+                .strip_prefix("message ")
+                .and_then(|rest| rest.split_whitespace().next());
+            if let Some(message_name) = message_name {
+                pending_field.clear();
+                message_stack.push((message_name.to_string(), depth));
+            } else if let Some((message_name, _)) = message_stack.last() {
+                if let Some((field_type, field_name, repeated, optional)) =
+                    parse_proto_field(line, &mut pending_field)
+                {
+                    if let Some(attribute) =
+                        serde_attribute_for_64bit_integer(&field_type, repeated, optional)
+                    {
+                        fields.push((format!(".{package}.{message_name}.{field_name}"), attribute));
+                    }
+                }
+            }
+
+            depth += match_count_as_i32(raw_line, '{')?;
+            depth -= match_count_as_i32(raw_line, '}')?;
+            while message_stack
+                .last()
+                .is_some_and(|(_, message_depth)| depth <= *message_depth)
+            {
+                message_stack.pop();
+                pending_field.clear();
+            }
+        }
+    }
+
+    fields.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    fields.dedup_by(|left, right| left.0 == right.0);
+    Ok(fields)
+}
+
+fn serde_attribute_for_64bit_integer(
+    field_type: &str,
+    repeated: bool,
+    optional: bool,
+) -> Option<&'static str> {
+    match (field_type, repeated, optional) {
+        ("int64" | "sint64" | "sfixed64", true, _) => {
+            Some("#[serde(with = \"crate::http_serde::int64_string_vec\")]")
+        }
+        ("uint64" | "fixed64", true, _) => {
+            Some("#[serde(with = \"crate::http_serde::uint64_string_vec\")]")
+        }
+        ("int64" | "sint64" | "sfixed64", _, true) => {
+            Some("#[serde(with = \"crate::http_serde::int64_string_option\")]")
+        }
+        ("uint64" | "fixed64", _, true) => {
+            Some("#[serde(with = \"crate::http_serde::uint64_string_option\")]")
+        }
+        ("int64" | "sint64" | "sfixed64", _, _) => {
+            Some("#[serde(with = \"crate::http_serde::int64_string\")]")
+        }
+        ("uint64" | "fixed64", _, _) => {
+            Some("#[serde(with = \"crate::http_serde::uint64_string\")]")
+        }
+        _ => None,
+    }
+}
+
 fn parse_proto_field_name<'a>(line: &'a str, pending_field: &'a mut String) -> Option<String> {
+    parse_proto_field(line, pending_field).map(|(_, field_name, _, _)| field_name)
+}
+
+fn parse_proto_field<'a>(
+    line: &'a str,
+    pending_field: &'a mut String,
+) -> Option<(String, String, bool, bool)> {
     if line.is_empty()
         || line.starts_with("//")
         || line.starts_with("option ")
@@ -120,25 +212,34 @@ fn parse_proto_field_name<'a>(line: &'a str, pending_field: &'a mut String) -> O
 
     let candidate = std::mem::take(pending_field);
     let before_equals = candidate.split('=').next()?.trim();
-    if before_equals.is_empty() || before_equals.ends_with(')') {
+    if before_equals.is_empty() || before_equals.ends_with(')') || before_equals.starts_with("map<")
+    {
         return None;
     }
 
-    before_equals
-        .split_whitespace()
-        .last()
-        .map(ToOwned::to_owned)
+    let mut tokens = before_equals.split_whitespace().collect::<Vec<_>>();
+    let repeated = tokens.first().is_some_and(|token| *token == "repeated");
+    let optional = tokens.first().is_some_and(|token| *token == "optional");
+    if repeated || optional {
+        tokens.remove(0);
+    }
+    if tokens.len() < 2 {
+        return None;
+    }
+    let field_name = tokens.pop()?.to_string();
+    let field_type = tokens.pop()?.to_string();
+    Some((field_type, field_name, repeated, optional))
 }
 
 fn validate_field_attributes(
     proto_files: &[&str],
-    field_attributes: &HashMap<&'static str, Vec<&'static str>>,
+    field_attributes: &HashMap<String, Vec<&'static str>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let fields = collect_proto_fields(proto_files)?;
     let mut missing = field_attributes
         .keys()
-        .filter(|field| !fields.contains(**field))
-        .copied()
+        .filter(|field| !fields.contains(field.as_str()))
+        .cloned()
         .collect::<Vec<_>>();
     missing.sort_unstable();
 
@@ -154,15 +255,18 @@ fn validate_field_attributes(
 }
 
 fn add_field_attribute(
-    field_attributes: &mut HashMap<&'static str, Vec<&'static str>>,
+    field_attributes: &mut HashMap<String, Vec<&'static str>>,
     field: &'static str,
     attribute: &'static str,
 ) {
-    field_attributes.entry(field).or_default().push(attribute);
+    field_attributes
+        .entry(field.to_string())
+        .or_default()
+        .push(attribute);
 }
 
 fn add_field_attributes(
-    field_attributes: &mut HashMap<&'static str, Vec<&'static str>>,
+    field_attributes: &mut HashMap<String, Vec<&'static str>>,
     fields: &[&'static str],
     attribute: &'static str,
 ) {
@@ -171,11 +275,20 @@ fn add_field_attributes(
     }
 }
 
+fn add_owned_field_attributes(
+    field_attributes: &mut HashMap<String, Vec<&'static str>>,
+    fields: Vec<(String, &'static str)>,
+) {
+    for (field, attribute) in fields {
+        field_attributes.entry(field).or_default().push(attribute);
+    }
+}
+
 fn apply_main_field_attributes(
     prost_config: &mut tonic_prost_build::Config,
-    field_attributes: &HashMap<&'static str, Vec<&'static str>>,
+    field_attributes: &HashMap<String, Vec<&'static str>>,
 ) {
-    let mut fields = field_attributes.keys().copied().collect::<Vec<_>>();
+    let mut fields = field_attributes.keys().collect::<Vec<_>>();
     fields.sort_unstable();
     for field in fields {
         if let Some(attributes) = field_attributes.get(field) {
@@ -188,10 +301,10 @@ fn apply_main_field_attributes(
 
 fn apply_provider_field_attributes(
     provider_builder: tonic_prost_build::Builder,
-    field_attributes: &HashMap<&'static str, Vec<&'static str>>,
+    field_attributes: &HashMap<String, Vec<&'static str>>,
 ) -> tonic_prost_build::Builder {
     let mut builder = provider_builder;
-    let mut fields = field_attributes.keys().copied().collect::<Vec<_>>();
+    let mut fields = field_attributes.keys().collect::<Vec<_>>();
     fields.sort_unstable();
     for field in fields {
         if let Some(attributes) = field_attributes.get(field) {
@@ -279,6 +392,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flatten()
         .collect::<Vec<_>>();
     let mut main_field_attributes = HashMap::new();
+    add_owned_field_attributes(
+        &mut main_field_attributes,
+        collect_proto_64bit_integer_field_attributes(&MAIN_PROTO_FILES)?,
+    );
     add_field_attributes(
         &mut main_field_attributes,
         &[
@@ -300,6 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.JoinRoomRequest.room_id",
             ".synctv.admin.GetUserRoomsRequest.user_id",
             ".synctv.admin.GetRoomMembersRequest.room_id",
+            ".synctv.admin.RejectRoomJoinReviewRequest.request_id",
         ],
         "#[serde(default)]",
     );
@@ -410,6 +528,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.UnlinkProviderRequest.provider",
             ".synctv.client.UnlinkProviderRequest.provider_user_id",
             ".synctv.client.UnlinkProviderRequest.provider_instance_name",
+            ".synctv.client.CreateVideoCoverUploadSessionRequest.room_id",
+            ".synctv.client.CreateVideoCoverUploadSessionRequest.media_id",
+            ".synctv.client.UpdateVideoCoverRequest.room_id",
+            ".synctv.client.UpdateVideoCoverRequest.media_id",
+            ".synctv.client.CreateRoomCoverUploadSessionRequest.room_id",
+            ".synctv.client.UpdateRoomCoverRequest.room_id",
+            ".synctv.client.CreatePlaylistCoverUploadSessionRequest.room_id",
+            ".synctv.client.CreatePlaylistCoverUploadSessionRequest.playlist_id",
+            ".synctv.client.UpdatePlaylistCoverRequest.room_id",
+            ".synctv.client.UpdatePlaylistCoverRequest.playlist_id",
             ".synctv.admin.ListUsersRequest.page",
             ".synctv.admin.ListUsersRequest.page_size",
             ".synctv.admin.ListUsersRequest.status",
@@ -475,6 +603,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.CreateUserRequest.email",
             ".synctv.client.EditMediaRequest.media_id",
             ".synctv.client.EditMediaRequest.description",
+            ".synctv.client.EditChatMessageRequest.message_id",
+            ".synctv.client.EditChatMessageRequest.metadata",
+            ".synctv.client.EditChatMessageRequest.client_operation_id",
+            ".synctv.client.DeleteChatMessageRequest.message_id",
+            ".synctv.client.DeleteChatMessageRequest.client_operation_id",
             ".synctv.client.DeleteEntriesRequest.playlist_ids",
             ".synctv.client.DeleteEntriesRequest.media_ids",
             ".synctv.client.DeleteEntriesRequest.force",
@@ -499,6 +632,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.UpdateRoomPasswordRequest.room_id",
             ".synctv.admin.UpdateRoomPasswordRequest.new_password",
             ".synctv.admin.UpdateRoomSettingsRequest.room_id",
+            ".synctv.admin.AddMemberRequest.room_id",
+            ".synctv.admin.UpdateMemberPermissionsRequest.room_id",
+            ".synctv.admin.UpdateMemberPermissionsRequest.user_id",
+            ".synctv.admin.KickMemberRequest.room_id",
+            ".synctv.admin.KickMemberRequest.user_id",
             ".synctv.admin.BanRoomRequest.room_id",
         ],
         "#[serde(default)]",
@@ -580,6 +718,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.PlaylistBrowsePathNode.target",
             ".synctv.client.CreatePlaylistRequest.source_config",
             ".synctv.client.NotificationProto.data",
+            ".synctv.client.UserAvatar.metadata",
+            ".synctv.client.CreateUserAvatarUploadSessionRequest.metadata",
+            ".synctv.client.FileCover.metadata",
+            ".synctv.client.VideoCover.metadata",
+            ".synctv.client.CreateVideoCoverUploadSessionRequest.metadata",
+            ".synctv.client.CreateRoomCoverUploadSessionRequest.metadata",
+            ".synctv.client.CreatePlaylistCoverUploadSessionRequest.metadata",
+            ".synctv.client.ChatImage.metadata",
+            ".synctv.client.CreateChatImageUploadSessionRequest.metadata",
+            ".synctv.client.SendChatMessageRequest.metadata",
+            ".synctv.client.EditChatMessageRequest.metadata",
             ".synctv.admin.AdminRoom.settings",
             ".synctv.admin.SettingsGroup.settings",
             ".synctv.admin.GetRoomSettingsResponse.settings",
@@ -736,6 +885,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
     let mut provider_field_attributes = HashMap::new();
+    add_owned_field_attributes(
+        &mut provider_field_attributes,
+        collect_proto_64bit_integer_field_attributes(&PROVIDER_PROTO_FILES)?,
+    );
     add_field_attributes(
         &mut provider_field_attributes,
         &[

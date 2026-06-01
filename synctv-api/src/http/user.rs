@@ -9,11 +9,7 @@ use axum::{
     Json,
 };
 
-use super::{
-    middleware::RequestMetadata,
-    validation::{ProtoJson, ProtoQuery},
-    AppResult, AppState,
-};
+use super::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
@@ -141,7 +137,7 @@ pub async fn get_user_preferences(
 pub async fn update_user_preferences(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<UpdateUserPreferencesRequest>,
+    Json(req): Json<UpdateUserPreferencesRequest>,
 ) -> AppResult<Json<UpdateUserPreferencesResponse>> {
     let request_meta = request_meta
         .0
@@ -181,7 +177,7 @@ pub async fn update_user_preferences(
 pub async fn update_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<SetUsernameRequest>,
+    Json(req): Json<SetUsernameRequest>,
 ) -> AppResult<Json<SetUsernameResponse>> {
     let request_meta = request_meta
         .0
@@ -203,7 +199,7 @@ pub async fn update_user(
 pub async fn create_user_avatar_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<CreateUserAvatarUploadSessionRequest>,
+    Json(req): Json<CreateUserAvatarUploadSessionRequest>,
 ) -> AppResult<Json<CreateUserAvatarUploadSessionResponse>> {
     let request_meta = request_meta
         .0
@@ -229,7 +225,7 @@ pub async fn create_user_avatar_upload_session(
 pub async fn update_user_avatar(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<UpdateUserAvatarRequest>,
+    Json(req): Json<UpdateUserAvatarRequest>,
 ) -> AppResult<Json<UserAvatarUpdateResponse>> {
     let request_meta = request_meta
         .0
@@ -362,7 +358,7 @@ pub async fn get_user_avatar_object(
 pub async fn start_email_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<StartEmailBindRequest>,
+    Json(req): Json<StartEmailBindRequest>,
 ) -> AppResult<Json<StartEmailBindResponse>> {
     let request_meta = request_meta
         .0
@@ -401,7 +397,7 @@ pub async fn start_email_bind(
 pub async fn confirm_email_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<ConfirmEmailBindRequest>,
+    Json(req): Json<ConfirmEmailBindRequest>,
 ) -> AppResult<Json<ConfirmEmailBindResponse>> {
     let request_meta = request_meta
         .0
@@ -440,7 +436,7 @@ pub async fn confirm_email_bind(
 pub async fn unbind_email(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<UnbindEmailRequest>,
+    Json(req): Json<UnbindEmailRequest>,
 ) -> AppResult<Json<UnbindEmailResponse>> {
     let request_meta = request_meta
         .0
@@ -479,7 +475,7 @@ pub async fn unbind_email(
 pub async fn start_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<StartOpaquePasswordUpdateRequest>,
+    Json(req): Json<StartOpaquePasswordUpdateRequest>,
 ) -> AppResult<Json<StartOpaquePasswordUpdateResponse>> {
     let request_meta = request_meta
         .0
@@ -522,7 +518,7 @@ pub async fn start_opaque_password_update(
 pub async fn finish_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<FinishOpaquePasswordUpdateRequest>,
+    Json(req): Json<FinishOpaquePasswordUpdateRequest>,
 ) -> AppResult<Json<FinishOpaquePasswordUpdateResponse>> {
     let request_meta = request_meta
         .0
@@ -565,7 +561,7 @@ pub async fn finish_opaque_password_update(
 pub async fn start_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<StartPasskeyBindRequest>,
+    Json(req): Json<StartPasskeyBindRequest>,
 ) -> AppResult<Json<StartPasskeyBindResponse>> {
     let request_meta = request_meta
         .0
@@ -604,7 +600,7 @@ pub async fn start_passkey_bind(
 pub async fn finish_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<FinishPasskeyBindRequest>,
+    Json(req): Json<FinishPasskeyBindRequest>,
 ) -> AppResult<Json<PasskeyCredentialResponse>> {
     let request_meta = request_meta
         .0
@@ -769,7 +765,7 @@ pub async fn list_my_rooms(
 pub async fn close_account(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(_req): ProtoJson<CloseAccountRequest>,
+    Json(_req): Json<CloseAccountRequest>,
 ) -> AppResult<Json<CloseAccountResponse>> {
     let request_meta = request_meta
         .0

@@ -166,7 +166,7 @@ mod ticket_types {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ticket"], "ticket_abc123");
         assert_eq!(json["room_id"], "room_abc");
-        assert_eq!(json["expires_in_secs"], 30);
+        assert_eq!(json["expires_in_secs"], "30");
         assert!(json["usage"].as_str().unwrap().contains("WebSocket"));
     }
 

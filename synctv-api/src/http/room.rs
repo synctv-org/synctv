@@ -24,13 +24,13 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
-use super::validation::{ProtoJson, ProtoQuery};
+use super::validation::ProtoQuery;
 use super::websocket::RealtimeTransportFormat;
 use super::{middleware::RequestMetadata, AppError, AppResult, AppState};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
-use crate::impls::EndpointRateLimitCategory;
+use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, ChatMessageEventResponse,
     ChatReadStateResponse, CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse,
@@ -617,6 +617,7 @@ fn execute_public_endpoint<'a, T, F, Fut>(
     state: &'a AppState,
     request_meta: RequestMetadata,
     category: EndpointRateLimitCategory,
+    scope: EndpointRateLimitScope,
     operation: F,
 ) -> BoxFuture<'a, Result<T, super::AppError>>
 where
@@ -629,7 +630,9 @@ where
         let executor = state.shared_api_runtime.client_api.clone();
         let client_api = state.shared_api_runtime.client_api.clone();
         executor
-            .execute_public_endpoint(&request_meta, category, move || operation(client_api))
+            .execute_scoped_public_endpoint(&request_meta, category, scope, move || {
+                operation(client_api)
+            })
             .await
             .map_err(super::error::map_api_error)
     }
@@ -640,6 +643,7 @@ fn execute_user_endpoint<'a, T, F, Fut>(
     state: &'a AppState,
     request_meta: RequestMetadata,
     category: EndpointRateLimitCategory,
+    scope: EndpointRateLimitScope,
     operation: F,
 ) -> BoxFuture<'a, Result<T, super::AppError>>
 where
@@ -657,7 +661,7 @@ where
         let executor = state.shared_api_runtime.client_api.clone();
         let client_api = state.shared_api_runtime.client_api.clone();
         executor
-            .execute_user_endpoint(&request_meta, category, move |authenticated| {
+            .execute_scoped_user_endpoint(&request_meta, category, scope, move |authenticated| {
                 operation(client_api, authenticated)
             })
             .await
@@ -671,6 +675,7 @@ pub(super) fn execute_room_actor_endpoint<'a, T, F, Fut>(
     request_meta: RequestMetadata,
     public_room_id: String,
     category: EndpointRateLimitCategory,
+    scope: EndpointRateLimitScope,
     operation: F,
 ) -> BoxFuture<'a, Result<T, super::AppError>>
 where
@@ -683,11 +688,12 @@ where
     async move {
         let request_meta = request_metadata(request_meta);
         let client_api = state.shared_api_runtime.client_api.clone();
-        crate::impls::ClientApiImpl::execute_room_actor_endpoint(
+        crate::impls::ClientApiImpl::execute_scoped_room_actor_endpoint(
             client_api,
             &request_meta,
             public_room_id,
             category,
+            scope,
             operation,
         )
         .await
@@ -701,6 +707,7 @@ fn execute_room_actor_endpoint_with_control<'a, T, F, Fut>(
     request_meta: RequestMetadata,
     public_room_id: String,
     category: EndpointRateLimitCategory,
+    scope: EndpointRateLimitScope,
     operation: F,
 ) -> BoxFuture<'a, Result<T, super::AppError>>
 where
@@ -717,11 +724,12 @@ where
     async move {
         let request_meta = request_metadata(request_meta);
         let client_api = state.shared_api_runtime.client_api.clone();
-        crate::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+        crate::impls::ClientApiImpl::execute_scoped_room_actor_endpoint_with_control(
             client_api,
             &request_meta,
             public_room_id,
             category,
+            scope,
             operation,
         )
         .await
@@ -751,7 +759,7 @@ where
 pub async fn create_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoJson(req): ProtoJson<CreateRoomRequest>,
+    Json(req): Json<CreateRoomRequest>,
 ) -> AppResult<Json<CreateRoomResponse>> {
     tracing::info!(room_name = %req.name, "Creating new room");
 
@@ -759,6 +767,7 @@ pub async fn create_room(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCreate,
         move |client_api, authenticated| async move {
             client_api.create_room(&authenticated.user_id, req).await
         },
@@ -806,6 +815,7 @@ pub async fn get_room(
         request_meta,
         room_id.clone(),
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomGet,
         move |client_api, actor| async move { client_api.get_room_for_actor(&actor).await },
     )
     .await?;
@@ -840,7 +850,7 @@ pub async fn join_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(mut req): ProtoJson<crate::proto::client::JoinRoomRequest>,
+    Json(mut req): Json<crate::proto::client::JoinRoomRequest>,
 ) -> AppResult<Json<JoinRoomResponse>> {
     let request_meta = request_meta
         .0
@@ -851,9 +861,10 @@ pub async fn join_room(
     let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
-        .execute_user_endpoint_with_control(
+        .execute_scoped_user_endpoint_with_control(
             &request_meta,
             EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::RoomJoin,
             move |request_control, authenticated| async move {
                 client_api
                     .join_room_with_control(
@@ -901,6 +912,7 @@ pub async fn leave_room(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomJoin,
         move |client_api, authenticated| async move {
             client_api
                 .leave_room(&authenticated.user_id, &room_id)
@@ -946,6 +958,7 @@ pub async fn delete_room(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCreate,
         move |client_api, authenticated| async move {
             client_api
                 .delete_room(&authenticated.user_id, &room_id)
@@ -983,13 +996,14 @@ pub async fn add_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<AddMediaBody>,
+    Json(req): Json<AddMediaBody>,
 ) -> AppResult<Json<AddMediaResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .add_media(&authenticated.user_id, &room_id, req)
@@ -1038,6 +1052,7 @@ pub async fn delete_media(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .delete_media(&authenticated.user_id, &room_id, proto_req)
@@ -1074,13 +1089,14 @@ pub async fn delete_entries(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<DeleteEntriesBody>,
+    Json(req): Json<DeleteEntriesBody>,
 ) -> AppResult<Json<DeleteEntriesResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .delete_entries(&authenticated.user_id, &room_id, req)
@@ -1117,13 +1133,14 @@ pub async fn move_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<MoveMediaRequest>,
+    Json(req): Json<MoveMediaRequest>,
 ) -> AppResult<Json<MoveMediaResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .move_media(&authenticated.user_id, &room_id, req)
@@ -1160,7 +1177,7 @@ pub async fn list_playlist_items(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<ListPlaylistItemsRequest>,
+    Json(req): Json<ListPlaylistItemsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
@@ -1168,6 +1185,7 @@ pub async fn list_playlist_items(
         request_meta,
         room_id.clone(),
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomPlaylist,
         move |client_api, actor| async move {
             client_api.list_playlist_items_for_actor(&actor, req).await
         },
@@ -1203,13 +1221,14 @@ pub async fn start_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<StartPlaybackBody>,
+    Json(req): Json<StartPlaybackBody>,
 ) -> AppResult<Json<StartPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
                 .start_playback(&authenticated.user_id, &room_id, req)
@@ -1246,13 +1265,14 @@ pub async fn stop_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<StopPlaybackBody>,
+    Json(req): Json<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
                 .stop_playback(&authenticated.user_id, &room_id, req)
@@ -1298,6 +1318,7 @@ pub async fn get_playback(
         request_meta,
         room_id.clone(),
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomPlayback,
         move |client_api, request_control, actor| async move {
             client_api
                 .get_playback_for_actor(&actor, req, Some(&request_control))
@@ -1492,6 +1513,7 @@ pub async fn get_room_members(
             request_meta,
             room_id.clone(),
             EndpointRateLimitCategory::Read,
+            EndpointRateLimitScope::RoomMembers,
             move |client_api, actor| async move {
                 client_api.get_room_members_for_actor(&actor, req).await
             },
@@ -1533,6 +1555,7 @@ pub async fn list_room_streams(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .list_room_streams(&authenticated.user_id, &room_id, req)
@@ -1578,6 +1601,7 @@ pub async fn get_room_stream_info(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .get_room_stream_info(&authenticated.user_id, &room_id, req)
@@ -1616,7 +1640,7 @@ pub async fn kick_room_stream(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomStreamPath>,
-    ProtoJson(req): ProtoJson<KickRoomStreamBody>,
+    Json(req): Json<KickRoomStreamBody>,
 ) -> AppResult<Json<KickRoomStreamResponse>> {
     let room_id = path.room_id;
     let req = KickRoomStreamRequest {
@@ -1627,6 +1651,7 @@ pub async fn kick_room_stream(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .kick_room_stream(&authenticated.user_id, &room_id, req)
@@ -1663,6 +1688,7 @@ pub async fn check_room(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomGet,
         move |client_api| async move { client_api.check_room(req).await },
     )
     .await?;
@@ -1695,13 +1721,14 @@ pub async fn set_room_password(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<SetRoomPasswordBody>,
+    Json(req): Json<SetRoomPasswordBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
                 .set_room_password(&authenticated.user_id, &room_id, req)
@@ -1744,6 +1771,7 @@ pub async fn get_room_settings(
         request_meta,
         room_id.clone(),
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomSettings,
         move |client_api, actor| async move { client_api.get_room_settings_for_actor(&actor).await },
     )
     .await?;
@@ -1776,13 +1804,14 @@ pub async fn push_media_batch(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<AddMediaBatchBody>,
+    Json(req): Json<AddMediaBatchBody>,
 ) -> AppResult<Json<crate::proto::client::AddMediaBatchResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .add_media_batch(&authenticated.user_id, &room_id, req)
@@ -1820,7 +1849,7 @@ pub async fn edit_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<crate::proto::client::EditMediaRequest>,
+    Json(mut req): Json<crate::proto::client::EditMediaRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.media_id = media_id;
@@ -1828,6 +1857,7 @@ pub async fn edit_media(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .edit_media(&authenticated.user_id, &room_id, req)
@@ -1843,7 +1873,7 @@ pub async fn create_video_cover_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<CreateVideoCoverUploadSessionBody>,
+    Json(mut req): Json<CreateVideoCoverUploadSessionBody>,
 ) -> AppResult<Json<CreateVideoCoverUploadSessionResponse>> {
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.room_id = room_id.clone();
@@ -1852,6 +1882,7 @@ pub async fn create_video_cover_upload_session(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
                 .create_video_cover_upload_session(&authenticated.user_id, &room_id, req)
@@ -1867,7 +1898,7 @@ pub async fn update_video_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<UpdateVideoCoverBody>,
+    Json(mut req): Json<UpdateVideoCoverBody>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.room_id = room_id.clone();
@@ -1876,6 +1907,7 @@ pub async fn update_video_cover(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
                 .update_video_cover(&authenticated.user_id, &room_id, req)
@@ -1901,6 +1933,7 @@ pub async fn clear_video_cover(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
                 .clear_video_cover(&authenticated.user_id, &room_id, req)
@@ -1916,13 +1949,14 @@ pub async fn create_room_cover_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    ProtoJson(mut req): ProtoJson<CreateRoomCoverUploadSessionBody>,
+    Json(mut req): Json<CreateRoomCoverUploadSessionBody>,
 ) -> AppResult<Json<CreateRoomCoverUploadSessionResponse>> {
     req.room_id = room_id.clone();
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCover,
         move |client_api, authenticated| async move {
             client_api
                 .create_room_cover_upload_session(&authenticated.user_id, &room_id, req)
@@ -1938,13 +1972,14 @@ pub async fn update_room_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    ProtoJson(mut req): ProtoJson<UpdateRoomCoverBody>,
+    Json(mut req): Json<UpdateRoomCoverBody>,
 ) -> AppResult<Json<GetRoomResponse>> {
     req.room_id = room_id.clone();
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCover,
         move |client_api, authenticated| async move {
             client_api
                 .update_room_cover(&authenticated.user_id, &room_id, req)
@@ -1968,6 +2003,7 @@ pub async fn clear_room_cover(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCover,
         move |client_api, authenticated| async move {
             client_api
                 .clear_room_cover(&authenticated.user_id, &room_id, req)
@@ -1983,7 +2019,7 @@ pub async fn create_playlist_cover_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<CreatePlaylistCoverUploadSessionBody>,
+    Json(mut req): Json<CreatePlaylistCoverUploadSessionBody>,
 ) -> AppResult<Json<CreatePlaylistCoverUploadSessionResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
@@ -1995,6 +2031,7 @@ pub async fn create_playlist_cover_upload_session(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::PlaylistCover,
         move |client_api, authenticated| async move {
             client_api
                 .create_playlist_cover_upload_session(&authenticated.user_id, &room_id, req)
@@ -2010,7 +2047,7 @@ pub async fn update_playlist_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<UpdatePlaylistCoverBody>,
+    Json(mut req): Json<UpdatePlaylistCoverBody>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
@@ -2022,6 +2059,7 @@ pub async fn update_playlist_cover(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::PlaylistCover,
         move |client_api, authenticated| async move {
             client_api
                 .update_playlist_cover(&authenticated.user_id, &room_id, req)
@@ -2050,6 +2088,7 @@ pub async fn clear_playlist_cover(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::PlaylistCover,
         move |client_api, authenticated| async move {
             client_api
                 .clear_playlist_cover(&authenticated.user_id, &room_id, req)
@@ -2085,13 +2124,14 @@ pub async fn clear_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<ClearPlaylistRequest>,
+    Json(req): Json<ClearPlaylistRequest>,
 ) -> AppResult<Json<ClearPlaylistResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .clear_playlist(&authenticated.user_id, &room_id, req)
@@ -2136,6 +2176,7 @@ pub async fn get_media(
             request_meta,
             room_id.clone(),
             EndpointRateLimitCategory::Read,
+            EndpointRateLimitScope::RoomGet,
             move |client_api, actor| async move {
                 client_api.get_media_for_actor(&actor, &media_id).await
             },
@@ -2180,6 +2221,7 @@ pub async fn get_playlist(
         request_meta,
         room_id.clone(),
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomGet,
         move |client_api, actor| async move {
             client_api
                 .get_playlist_for_actor(&actor, &playlist_id)
@@ -2215,6 +2257,7 @@ pub async fn list_or_get_rooms(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomList,
         move |client_api| async move { client_api.list_rooms(req).await },
     )
     .await?;
@@ -2251,13 +2294,14 @@ pub async fn update_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<UpdateRoomSettingsBody>,
+    Json(req): Json<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
                 .update_room_settings(&authenticated.user_id, &room_id, req)
@@ -2294,13 +2338,14 @@ pub async fn transfer_room_ownership(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<TransferRoomOwnershipBody>,
+    Json(req): Json<TransferRoomOwnershipBody>,
 ) -> AppResult<Json<TransferRoomOwnershipResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
                 .transfer_room_ownership(&authenticated.user_id, &room_id, req)
@@ -2340,13 +2385,14 @@ pub async fn update_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<UpdatePlaybackRequest>,
+    Json(req): Json<UpdatePlaybackRequest>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
                 .update_playback(&authenticated.user_id, &room_id, req)
@@ -2387,6 +2433,7 @@ pub async fn reset_room_settings(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
                 .reset_room_settings(&authenticated.user_id, &room_id)
@@ -2433,6 +2480,7 @@ pub async fn get_chat_history(
             request_meta,
             room_id.clone(),
             EndpointRateLimitCategory::Read,
+            EndpointRateLimitScope::RoomChat,
             move |client_api, actor| async move {
                 client_api.get_chat_history_for_actor(&actor, req).await
             },
@@ -2479,6 +2527,7 @@ pub async fn get_chat_message(
             request_meta,
             room_id,
             EndpointRateLimitCategory::Read,
+            EndpointRateLimitScope::RoomChat,
             move |client_api, actor| async move {
                 client_api.get_chat_message_for_actor(&actor, req).await
             },
@@ -2526,6 +2575,7 @@ pub async fn get_chat_message_context(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api
                 .get_chat_message_context_for_actor(&actor, req)
@@ -2577,6 +2627,7 @@ pub async fn get_chat_playback_messages(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api
                 .get_chat_playback_messages_for_actor(&actor, req)
@@ -2614,7 +2665,7 @@ pub async fn send_chat_message(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<SendChatMessageBody>,
+    Json(req): Json<SendChatMessageBody>,
 ) -> AppResult<Json<ChatMessageEventResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
@@ -2622,6 +2673,7 @@ pub async fn send_chat_message(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.send_chat_message_for_actor(&actor, req).await
         },
@@ -2657,7 +2709,7 @@ pub async fn create_chat_image_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<CreateChatImageUploadSessionBody>,
+    Json(req): Json<CreateChatImageUploadSessionBody>,
 ) -> AppResult<Json<CreateChatImageUploadSessionResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
@@ -2665,6 +2717,7 @@ pub async fn create_chat_image_upload_session(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api
                 .create_chat_image_upload_session_for_actor(&actor, req)
@@ -2698,6 +2751,7 @@ pub async fn upload_chat_image_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
         move |client_api| async move {
             let chat_service = client_api.chat_service.as_ref().ok_or_else(|| {
                 crate::impls::ApiError::ServiceUnavailable(
@@ -2732,6 +2786,7 @@ pub async fn get_chat_image_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
         move |client_api| async move {
             let chat_service = client_api.chat_service.as_ref().ok_or_else(|| {
                 crate::impls::ApiError::ServiceUnavailable(
@@ -2779,6 +2834,7 @@ pub async fn upload_video_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::MediaCover,
         move |client_api| async move { client_api.upload_video_cover_object(req).await },
     )
     .await?;
@@ -2799,6 +2855,7 @@ pub async fn get_video_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
         move |client_api| async move { client_api.get_video_cover_object(req).await },
     )
     .await?;
@@ -2836,6 +2893,7 @@ pub async fn upload_room_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCover,
         move |client_api| async move { client_api.upload_room_cover_object(req).await },
     )
     .await?;
@@ -2856,6 +2914,7 @@ pub async fn get_room_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomCover,
         move |client_api| async move { client_api.get_room_cover_object(req).await },
     )
     .await?;
@@ -2893,6 +2952,7 @@ pub async fn upload_playlist_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::PlaylistCover,
         move |client_api| async move { client_api.upload_playlist_cover_object(req).await },
     )
     .await?;
@@ -2913,6 +2973,7 @@ pub async fn get_playlist_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::MediaCover,
         move |client_api| async move { client_api.get_playlist_cover_object(req).await },
     )
     .await?;
@@ -2954,7 +3015,7 @@ pub async fn edit_chat_message(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
-    ProtoJson(mut req): ProtoJson<EditChatMessageBody>,
+    Json(mut req): Json<EditChatMessageBody>,
 ) -> AppResult<Json<ChatMessageEventResponse>> {
     let room_id = path.room_id;
     req.message_id = path.message_id;
@@ -2963,6 +3024,7 @@ pub async fn edit_chat_message(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.edit_chat_message_for_actor(&actor, req).await
         },
@@ -3000,7 +3062,7 @@ pub async fn delete_chat_message(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
-    ProtoJson(mut req): ProtoJson<DeleteChatMessageBody>,
+    Json(mut req): Json<DeleteChatMessageBody>,
 ) -> AppResult<Json<ChatMessageEventResponse>> {
     let room_id = path.room_id;
     req.message_id = path.message_id;
@@ -3009,6 +3071,7 @@ pub async fn delete_chat_message(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.delete_chat_message_for_actor(&actor, req).await
         },
@@ -3044,7 +3107,7 @@ pub async fn mark_chat_read(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<MarkChatReadBody>,
+    Json(req): Json<MarkChatReadBody>,
 ) -> AppResult<Json<ChatReadStateResponse>> {
     let room_id = extract_room_id(path);
     let response =
@@ -3053,6 +3116,7 @@ pub async fn mark_chat_read(
             request_meta,
             room_id,
             EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::RoomChat,
             move |client_api, actor| async move {
                 client_api.mark_chat_read_for_actor(&actor, req).await
             },
@@ -3093,6 +3157,7 @@ pub async fn get_chat_read_state(
         request_meta,
         room_id,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.get_chat_read_state_for_actor(&actor, req).await
         },
@@ -3128,13 +3193,14 @@ pub async fn create_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ProtoJson(req): ProtoJson<CreatePlaylistBody>,
+    Json(req): Json<CreatePlaylistBody>,
 ) -> AppResult<Json<CreatePlaylistResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .create_playlist(&authenticated.user_id, &room_id, req)
@@ -3173,7 +3239,7 @@ pub async fn update_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<crate::proto::client::UpdatePlaylistRequest>,
+    Json(mut req): Json<crate::proto::client::UpdatePlaylistRequest>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
@@ -3184,6 +3250,7 @@ pub async fn update_playlist(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
                 .update_playlist(&authenticated.user_id, &room_id, req)
@@ -3220,7 +3287,7 @@ pub async fn move_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    ProtoJson(mut req): ProtoJson<crate::proto::client::MovePlaylistRequest>,
+    Json(mut req): Json<crate::proto::client::MovePlaylistRequest>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
@@ -3231,6 +3298,7 @@ pub async fn move_playlist(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlaylist,
         move |client_api, authenticated| async move {
             client_api
                 .move_playlist(&authenticated.user_id, &room_id, req)
@@ -3283,6 +3351,7 @@ pub async fn delete_playlist(
         &state,
         request_meta,
         EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlaylist,
         move |client_api, authenticated| async move {
             client_api
                 .delete_playlist(&authenticated.user_id, &room_id, req)
@@ -3328,6 +3397,7 @@ pub async fn list_playlists(
             request_meta,
             room_id.clone(),
             EndpointRateLimitCategory::Read,
+            EndpointRateLimitScope::RoomPlaylist,
             move |client_api, actor| async move {
                 client_api.list_playlists_for_actor(&actor, req).await
             },
@@ -3361,6 +3431,7 @@ pub async fn get_hot_rooms(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomList,
         move |client_api| async move { client_api.get_hot_rooms(req).await },
     )
     .await?;

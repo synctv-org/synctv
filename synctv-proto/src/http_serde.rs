@@ -53,6 +53,170 @@ pub mod json_bytes {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum Int64JsonValue {
+    String(String),
+    Number(i64),
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum Uint64JsonValue {
+    String(String),
+    Number(u64),
+}
+
+fn parse_i64_value<E>(value: Int64JsonValue) -> Result<i64, E>
+where
+    E: serde::de::Error,
+{
+    match value {
+        Int64JsonValue::String(value) => value.parse::<i64>().map_err(E::custom),
+        Int64JsonValue::Number(value) => Ok(value),
+    }
+}
+
+fn parse_u64_value<E>(value: Uint64JsonValue) -> Result<u64, E>
+where
+    E: serde::de::Error,
+{
+    match value {
+        Uint64JsonValue::String(value) => value.parse::<u64>().map_err(E::custom),
+        Uint64JsonValue::Number(value) => Ok(value),
+    }
+}
+
+pub mod int64_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<i64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = super::Int64JsonValue::deserialize(deserializer)?;
+        super::parse_i64_value(value)
+    }
+}
+
+pub mod uint64_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = super::Uint64JsonValue::deserialize(deserializer)?;
+        super::parse_u64_value(value)
+    }
+}
+
+pub mod int64_string_option {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_some(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(value) = Option::<super::Int64JsonValue>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        super::parse_i64_value(value).map(Some)
+    }
+}
+
+pub mod uint64_string_option {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_some(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(value) = Option::<super::Uint64JsonValue>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        super::parse_u64_value(value).map(Some)
+    }
+}
+
+pub mod int64_string_vec {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(values: &[i64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let values = values.iter().map(i64::to_string).collect::<Vec<_>>();
+        values.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<i64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<super::Int64JsonValue>::deserialize(deserializer)?
+            .into_iter()
+            .map(super::parse_i64_value)
+            .collect()
+    }
+}
+
+pub mod uint64_string_vec {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(values: &[u64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let values = values.iter().map(u64::to_string).collect::<Vec<_>>();
+        values.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<super::Uint64JsonValue>::deserialize(deserializer)?
+            .into_iter()
+            .map(super::parse_u64_value)
+            .collect()
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 pub enum ClientUpdateRoomSettingsRequestDef {

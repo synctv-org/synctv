@@ -18,7 +18,9 @@ pub mod room_member;
 pub mod room_settings;
 pub mod settings;
 pub mod user;
+pub mod user_email;
 pub mod user_oauth_provider;
+pub mod user_password;
 pub mod user_preferences;
 pub mod webauthn_credential;
 
@@ -50,8 +52,13 @@ pub use room::{JoinRoomContext, RoomRepository};
 pub use room_member::RoomMemberRepository;
 pub use room_settings::RoomSettingsRepository;
 pub use settings::SettingsRepository;
-pub use user::{PasswordCredentialMaterial, UserRepository};
+pub use user::UserRepository;
+pub use user_email::{UserEmailRepository, UserWithEmail};
 pub use user_oauth_provider::UserOAuthProviderRepository;
+pub use user_password::{
+    PasswordCredentialMaterial, PasswordCredentialState, UserPasswordRepository,
+    UserWithPasswordCredential,
+};
 pub use user_preferences::UserPreferencesRepository;
 pub use webauthn_credential::{WebAuthnCredential, WebAuthnCredentialRepository};
 

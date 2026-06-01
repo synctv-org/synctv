@@ -684,8 +684,6 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
     synctv_core::models::User {
         id: UserId::expect_positive(101),
         username: "testuser".to_string(),
-        email: Some("test@example.com".to_string()),
-        password_hash: "hash".to_string(),
         role,
         avatar_file_reference_id: None,
         status,
@@ -697,8 +695,6 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
-        password_changed_at: chrono::Utc::now(),
-        password_version: 0,
         version: 0,
     }
 }
@@ -707,7 +703,7 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
 fn test_user_to_proto_basic() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = user_to_proto(&user, &public_id_codec);
+    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
 
     assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
     assert_eq!(proto.username, "testuser");
@@ -794,7 +790,7 @@ fn test_provider_error_upstream_http_400_maps_to_invalid_input() {
 fn test_user_to_proto_admin_role() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = user_to_proto(&user, &public_id_codec);
+    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
     assert_eq!(proto.role, synctv_proto::common::UserRole::Admin as i32);
 }
 
@@ -802,7 +798,7 @@ fn test_user_to_proto_admin_role() {
 fn test_user_to_proto_root_role() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Root, UserStatus::Active);
-    let proto = user_to_proto(&user, &public_id_codec);
+    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
     assert_eq!(proto.role, synctv_proto::common::UserRole::Root as i32);
 }
 
@@ -810,7 +806,7 @@ fn test_user_to_proto_root_role() {
 fn test_user_to_proto_banned_status() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Banned);
-    let proto = user_to_proto(&user, &public_id_codec);
+    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
     assert_eq!(
         proto.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -820,9 +816,8 @@ fn test_user_to_proto_banned_status() {
 #[test]
 fn test_user_to_proto_no_email() {
     let public_id_codec = test_public_id_codec();
-    let mut user = make_test_user(UserRole::User, UserStatus::Active);
-    user.email = None;
-    let proto = user_to_proto(&user, &public_id_codec);
+    let user = make_test_user(UserRole::User, UserStatus::Active);
+    let proto = user_to_proto(&user, None, &public_id_codec);
     assert_eq!(proto.email, ""); // None -> empty string
 }
 

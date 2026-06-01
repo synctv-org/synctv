@@ -849,8 +849,6 @@ mod websocket_e2e {
             brute_force,
         );
         user_service.enable_password_registration_for_tests();
-        user_service.enable_legacy_password_login_for_tests();
-        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
@@ -1242,6 +1240,41 @@ mod websocket_e2e {
             .expect("send client message");
     }
 
+    fn observe_chat_events_message(observe_id: &str) -> ClientMessage {
+        ClientMessage {
+            message: Some(client_message::Message::ObserveResource(
+                synctv_proto::client::ObserveResource {
+                    observe_id: observe_id.to_string(),
+                    version: String::new(),
+                    delivery_mode: synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32,
+                    resource: Some(
+                        synctv_proto::client::observe_resource::Resource::ChatEvents(
+                            synctv_proto::client::ObserveChatEvents {
+                                after_event_id: String::new(),
+                            },
+                        ),
+                    ),
+                },
+            )),
+        }
+    }
+
+    fn resource_chat_event(
+        message: &ServerMessage,
+    ) -> Option<&synctv_proto::client::ChatMessageEvent> {
+        match &message.message {
+            Some(server_message::Message::ResourceChanged(changed)) => {
+                match changed.payload.as_ref() {
+                    Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => {
+                        Some(event)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_handshake_and_initial_user_joined() {
@@ -1602,6 +1635,19 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
         );
+        send_client_message(&mut ws2, &observe_chat_events_message("chat-events")).await;
+        recv_matching_server_message(
+            &mut ws2,
+            std::time::Duration::from_secs(5),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::ResourceObserved(_))
+                )
+            },
+            "chat_events observation acknowledgement",
+        )
+        .await;
 
         // Let subscriptions settle
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1621,24 +1667,24 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &chat_msg).await;
 
-        // user2 should receive the chat broadcast (skip any membership events)
-        let received = tokio::time::timeout(
+        // user2 should receive the chat event through explicit chat_events observation.
+        let received = recv_matching_server_message(
+            &mut ws2,
             std::time::Duration::from_secs(10),
-            recv_server_message_skip_membership(&mut ws2),
+            |message| {
+                resource_chat_event(message).is_some_and(|event| {
+                    event.message.as_ref().is_some_and(|chat| {
+                        chat.content == "Hello from user1!"
+                            && chat.room_id == room_id
+                            && chat.user_id == encode_test_user_id(&user1_id)
+                    })
+                })
+            },
+            "chat_events resource update on ws2",
         )
-        .await
-        .expect("timeout waiting for chat message on ws2")
-        .expect("stream ended");
+        .await;
 
-        match received.message {
-            Some(server_message::Message::ChatEvent(event)) => {
-                let chat = event.message.expect("chat event should include message");
-                assert_eq!(chat.content, "Hello from user1!");
-                assert_eq!(chat.room_id, room_id);
-                assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
-            }
-            other => panic!("Expected ChatEvent message, got: {other:?}"),
-        }
+        assert!(resource_chat_event(&received).is_some());
 
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
@@ -1797,12 +1843,13 @@ mod websocket_e2e {
             }
             Ok(Some(msg)) => {
                 // If we got a message, it must NOT be the chat from room A
-                if let Some(server_message::Message::ChatEvent(event)) = msg.message {
-                    let chat = event.message.expect("chat event should include message");
-                    panic!(
-                        "Room isolation violated: user2 in Room B received chat from Room A: {:?}",
-                        chat.content
-                    );
+                if resource_chat_event(&msg).is_some_and(|event| {
+                    event
+                        .message
+                        .as_ref()
+                        .is_some_and(|chat| chat.content == "Room A only")
+                }) {
+                    panic!("Room isolation violated: user2 in Room B received chat from Room A");
                 }
                 // Other message types (like a heartbeat timeout) are acceptable
             }
@@ -2119,6 +2166,19 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
         );
+        send_client_message(&mut ws2, &observe_chat_events_message("chat-events")).await;
+        recv_matching_server_message(
+            &mut ws2,
+            std::time::Duration::from_secs(5),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::ResourceObserved(_))
+                )
+            },
+            "chat_events observation acknowledgement",
+        )
+        .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -2137,24 +2197,24 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &chat_msg).await;
 
-        // user2 on replica_2 should receive it via Redis Pub/Sub (skip membership events)
-        let received = tokio::time::timeout(
+        // user2 on replica_2 should receive it via Redis Pub/Sub after observing chat_events.
+        let received = recv_matching_server_message(
+            &mut ws2,
             std::time::Duration::from_secs(30),
-            recv_server_message_skip_membership(&mut ws2),
+            |message| {
+                resource_chat_event(message).is_some_and(|event| {
+                    event.message.as_ref().is_some_and(|chat| {
+                        chat.content == "Cross-replica hello!"
+                            && chat.room_id == room_id
+                            && chat.user_id == encode_test_user_id(&user1_id)
+                    })
+                })
+            },
+            "cross-replica chat_events resource update",
         )
-        .await
-        .expect("timeout waiting for cross-replica chat message")
-        .expect("stream ended");
+        .await;
 
-        match received.message {
-            Some(server_message::Message::ChatEvent(event)) => {
-                let chat = event.message.expect("chat event should include message");
-                assert_eq!(chat.content, "Cross-replica hello!");
-                assert_eq!(chat.room_id, room_id);
-                assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
-            }
-            other => panic!("Expected ChatEvent message via cross-replica, got: {other:?}"),
-        }
+        assert!(resource_chat_event(&received).is_some());
 
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
@@ -2428,24 +2488,13 @@ mod websocket_e2e {
                         && chat.display_position == "top"
                         && chat.display_color == "#ff6600"
                 }
-                Some(server_message::Message::ChatEvent(event)) => {
-                    event.message.as_ref().is_some_and(|chat| {
-                        chat.content == "cross-replica chat"
-                            && chat.user_id == public_owner_id
-                            && chat.display_position == "top"
-                            && chat.display_color == "#ff6600"
-                    })
-                }
                 _ => false,
             },
             "cross-replica chat",
         )
         .await;
         assert!(
-            matches!(
-                chat_msg.message,
-                Some(server_message::Message::Chat(_) | server_message::Message::ChatEvent(_))
-            ),
+            matches!(chat_msg.message, Some(server_message::Message::Chat(_))),
             "chat event should arrive as a chat payload"
         );
 
@@ -3142,9 +3191,7 @@ mod websocket_e2e {
             }
             match tokio::time::timeout(remaining, recv_server_message(&mut ws)).await {
                 Ok(Some(msg)) => match msg.message {
-                    Some(
-                        server_message::Message::Chat(_) | server_message::Message::ChatEvent(_),
-                    ) => {
+                    Some(server_message::Message::Chat(_)) => {
                         chat_count += 1;
                     }
                     Some(server_message::Message::Error(_)) => {
@@ -3197,6 +3244,19 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
         );
+        send_client_message(&mut ws2, &observe_chat_events_message("chat-events")).await;
+        recv_matching_server_message(
+            &mut ws2,
+            std::time::Duration::from_secs(5),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::ResourceObserved(_))
+                )
+            },
+            "chat_events observation acknowledgement",
+        )
+        .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
@@ -3215,31 +3275,27 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &xss_msg).await;
 
-        // user2 should receive the sanitized chat (skip membership events)
-        let received = tokio::time::timeout(
+        // user2 should receive the sanitized chat through explicit chat_events observation.
+        let received = recv_matching_server_message(
+            &mut ws2,
             std::time::Duration::from_secs(10),
-            recv_server_message_skip_membership(&mut ws2),
+            |message| {
+                resource_chat_event(message).is_some_and(|event| {
+                    event.message.as_ref().is_some_and(|chat| {
+                        !chat.content.contains("<script>")
+                            && chat.content.contains("Hello safe world")
+                    })
+                })
+            },
+            "sanitized chat_events resource update",
         )
-        .await
-        .expect("timeout waiting for sanitized chat")
-        .expect("stream ended");
+        .await;
 
-        match received.message {
-            Some(server_message::Message::ChatEvent(event)) => {
-                let chat = event.message.expect("chat event should include message");
-                assert!(
-                    !chat.content.contains("<script>"),
-                    "XSS script tag should be stripped, got: {}",
-                    chat.content,
-                );
-                assert!(
-                    chat.content.contains("Hello safe world"),
-                    "Safe text should be preserved, got: {}",
-                    chat.content,
-                );
-            }
-            other => panic!("Expected ChatEvent message, got: {other:?}"),
-        }
+        let chat = resource_chat_event(&received)
+            .and_then(|event| event.message.as_ref())
+            .expect("chat event should include message");
+        assert!(!chat.content.contains("<script>"));
+        assert!(chat.content.contains("Hello safe world"));
 
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
@@ -3444,6 +3500,19 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
         );
+        send_client_message(&mut ws2, &observe_chat_events_message("chat-events")).await;
+        recv_matching_server_message(
+            &mut ws2,
+            std::time::Duration::from_secs(5),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::ResourceObserved(_))
+                )
+            },
+            "chat_events observation acknowledgement",
+        )
+        .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
@@ -3461,25 +3530,25 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &chat_msg).await;
 
-        let received = tokio::time::timeout(
+        let received = recv_matching_server_message(
+            &mut ws2,
             std::time::Duration::from_secs(5),
-            recv_server_message_skip_membership(&mut ws2),
+            |message| {
+                resource_chat_event(message).is_some_and(|event| {
+                    event.message.as_ref().is_some_and(|chat| {
+                        chat.content == "LOL"
+                            && chat.room_id == room_id
+                            && chat.user_id == encode_test_user_id(&user1_id)
+                            && chat.display_position == "top"
+                            && chat.display_color == "#FF0000"
+                    })
+                })
+            },
+            "chat presentation chat_events resource update",
         )
-        .await
-        .expect("timeout waiting for chat")
-        .expect("stream ended");
+        .await;
 
-        match received.message {
-            Some(server_message::Message::ChatEvent(event)) => {
-                let chat = event.message.expect("chat event should include message");
-                assert_eq!(chat.content, "LOL");
-                assert_eq!(chat.room_id, room_id);
-                assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
-                assert_eq!(chat.display_position, "top");
-                assert_eq!(chat.display_color, "#FF0000");
-            }
-            other => panic!("Expected ChatEvent message, got: {other:?}"),
-        }
+        assert!(resource_chat_event(&received).is_some());
 
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
@@ -4581,8 +4650,6 @@ mod websocket_connection_limit_timing {
             brute_force,
         );
         user_service.enable_password_registration_for_tests();
-        user_service.enable_legacy_password_login_for_tests();
-        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 

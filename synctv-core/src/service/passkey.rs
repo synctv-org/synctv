@@ -12,7 +12,7 @@ use webauthn_rs::prelude::{
 use crate::{
     config::WebAuthnConfig,
     models::{SignupMethod, User, UserId},
-    repository::{PasswordCredentialMaterial, WebAuthnCredential, WebAuthnCredentialRepository},
+    repository::{WebAuthnCredential, WebAuthnCredentialRepository},
     service::{session_store::RedisJsonSessionStore, RegistrationMode},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
@@ -507,18 +507,17 @@ impl PasskeyService {
             return Ok((pending_user, None, None));
         }
 
-        let user = User::new(
-            username.clone(),
-            email.clone(),
-            String::new(),
-            SignupMethod::WebAuthn,
-        );
+        let user = User::new(username.clone(), SignupMethod::WebAuthn);
 
         let mut tx: Transaction<'_, Postgres> = self.user_service.pool().begin().await?;
         let created_user = self
             .user_service
             .repository
-            .create_with_password_credentials(&user, PasswordCredentialMaterial::none(), &mut *tx)
+            .create_with_executor(&user, &mut *tx)
+            .await?;
+        self.user_service
+            .user_email_repository
+            .create_for_user_with_executor(&created_user, email.as_deref(), &mut *tx)
             .await?;
         self.repository
             .create_with_executor(
@@ -553,6 +552,7 @@ impl PasskeyService {
         match login {
             crate::service::AuthenticatedLogin::Complete {
                 user,
+                email: _,
                 access_token,
                 refresh_token,
             } => Ok((user, Some(access_token), Some(refresh_token))),

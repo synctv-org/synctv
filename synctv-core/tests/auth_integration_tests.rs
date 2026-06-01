@@ -22,7 +22,10 @@ use std::sync::Arc;
 use opaque_ke::argon2::Argon2;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
-use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
+use opaque_ke::{
+    ClientLogin, ClientLoginFinishParameters, ClientRegistration,
+    ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
+};
 use sqlx::PgPool;
 use synctv_core::{
     cache,
@@ -30,7 +33,7 @@ use synctv_core::{
     models::UserStatus,
     repository::UserRepository,
     service::{
-        auth::{jwt::JwtService, SecurityPipeline, TestPasswordHasher},
+        auth::{jwt::JwtService, SecurityPipeline},
         AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore,
         UserService,
     },
@@ -67,10 +70,7 @@ fn create_user_service(pool: &PgPool) -> UserService {
         key_builder,
         brute_force,
     );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
-    svc.enable_legacy_password_login_for_tests();
-    svc.enable_legacy_password_registration_for_tests();
     svc
 }
 
@@ -80,6 +80,7 @@ fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::Use
             user,
             access_token,
             refresh_token,
+            ..
         } => (user, access_token, refresh_token),
         AuthenticatedLogin::MfaRequired { .. } => {
             panic!("expected complete login, got MFA challenge")
@@ -129,11 +130,111 @@ async fn opaque_login(
             user,
             access_token,
             refresh_token,
+            ..
         } => Ok((user, access_token, refresh_token)),
         AuthenticatedLogin::MfaRequired { .. } => Err(Error::Authentication(
             "Unexpected MFA challenge in opaque_login test helper".to_string(),
         )),
     }
+}
+
+async fn opaque_register(
+    service: &UserService,
+    username: String,
+    email: Option<String>,
+    password: &str,
+) -> synctv_core::Result<(synctv_core::models::User, Option<String>, Option<String>)> {
+    let mut rng = OsRng;
+    let client_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+            .expect("client OPAQUE registration start should succeed");
+    let challenge = service
+        .start_opaque_registration_with_control(
+            username,
+            email,
+            client_start.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await?;
+    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+        &challenge.registration_response,
+    )
+    .expect("server registration response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+
+    service
+        .finish_opaque_registration_with_control(
+            &challenge.session_id,
+            client_finish.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await
+}
+
+async fn opaque_update_password(
+    service: &UserService,
+    user_id: &synctv_core::models::UserId,
+    old_password: &str,
+    new_password: &str,
+) -> synctv_core::Result<synctv_core::models::User> {
+    let mut rng = OsRng;
+    let login_start =
+        ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, old_password.as_bytes())
+            .expect("client OPAQUE login start should succeed");
+    let registration_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, new_password.as_bytes())
+            .expect("client OPAQUE registration start should succeed");
+    let challenge = service
+        .start_opaque_password_update(
+            user_id,
+            login_start.message.serialize().to_vec(),
+            registration_start.message.serialize().to_vec(),
+        )
+        .await?;
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("server credential response should deserialize");
+    let login_finish = login_start
+        .state
+        .finish(
+            &mut rng,
+            old_password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+        &challenge.registration_response,
+    )
+    .expect("server registration response should deserialize");
+    let registration_finish = registration_start
+        .state
+        .finish(
+            &mut rng,
+            new_password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+
+    service
+        .finish_opaque_password_update(
+            user_id,
+            &challenge.session_id,
+            login_finish.message.serialize().to_vec(),
+            registration_finish.message.serialize().to_vec(),
+        )
+        .await
 }
 
 // Test 1: Password Change Invalidates Old Tokens
@@ -201,6 +302,12 @@ async fn scenario_password_change_invalidates_old_tokens() {
         opaque_login(&user_service, username, new_password)
             .await
             .expect("Failed to login with new OPAQUE password");
+    expect_complete_login(
+        user_service
+            .login(user.username.clone(), new_password.to_string(), None)
+            .await
+            .expect("Failed to login with new plaintext password"),
+    );
 
     let new_claims = jwt_service
         .verify_access_token(&new_access_token)
@@ -211,6 +318,54 @@ async fn scenario_password_change_invalidates_old_tokens() {
         auth_result.is_ok(),
         "New token should work after password change"
     );
+}
+
+async fn scenario_opaque_registration_allows_plaintext_login() {
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(&pool));
+
+    let username = format!("opaque_user_{}", synctv_common::snanoid!(8));
+    let password = "OpaquePassword123!";
+
+    opaque_register(&user_service, username.clone(), None, password)
+        .await
+        .expect("Failed to register user with OPAQUE");
+
+    expect_complete_login(
+        user_service
+            .login(username.clone(), password.to_string(), None)
+            .await
+            .expect("Failed to login with plaintext password after OPAQUE registration"),
+    );
+    opaque_login(&user_service, username, password)
+        .await
+        .expect("Failed to login with OPAQUE password after OPAQUE registration");
+}
+
+async fn scenario_opaque_password_update_allows_plaintext_login() {
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(&pool));
+
+    let username = format!("opaque_update_user_{}", synctv_common::snanoid!(8));
+    let old_password = "OldOpaquePassword123!";
+    let new_password = "NewOpaquePassword456!";
+    let (user, _, _) = opaque_register(&user_service, username.clone(), None, old_password)
+        .await
+        .expect("Failed to register user with OPAQUE");
+
+    opaque_update_password(&user_service, &user.id, old_password, new_password)
+        .await
+        .expect("Failed to update password with OPAQUE");
+
+    expect_complete_login(
+        user_service
+            .login(username.clone(), new_password.to_string(), None)
+            .await
+            .expect("Failed to login with plaintext password after OPAQUE update"),
+    );
+    opaque_login(&user_service, username, new_password)
+        .await
+        .expect("Failed to login with OPAQUE password after OPAQUE update");
 }
 
 // Test 2: User Ban Invalidates Tokens
@@ -525,4 +680,16 @@ async fn test_login_wrong_password_fails() {
 #[ignore = "Requires Docker"]
 async fn test_deleted_user_cannot_authenticate() {
     scenario_deleted_user_cannot_authenticate().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_opaque_registration_allows_plaintext_login() {
+    scenario_opaque_registration_allows_plaintext_login().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_opaque_password_update_allows_plaintext_login() {
+    scenario_opaque_password_update_allows_plaintext_login().await;
 }

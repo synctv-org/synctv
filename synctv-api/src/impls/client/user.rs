@@ -207,7 +207,12 @@ impl ClientApiImpl {
         &self,
         user: &synctv_core::models::User,
     ) -> Result<crate::proto::client::User, ApiError> {
-        let mut proto = user_to_proto(user, &self.public_id_codec);
+        let email = self
+            .user_service
+            .get_email(&user.id)
+            .await
+            .map_err(ApiError::from)?;
+        let mut proto = user_to_proto(user, email.as_deref(), &self.public_id_codec);
         if let Some(file) = self
             .load_stored_file_reference(user.avatar_file_reference_id)
             .await?
@@ -529,7 +534,11 @@ impl ClientApiImpl {
             })?;
 
         Ok(crate::proto::client::ConfirmEmailBindResponse {
-            user: Some(user_to_proto(&updated_user, &self.public_id_codec)),
+            user: Some(user_to_proto(
+                &updated_user,
+                Some(&email),
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -542,7 +551,7 @@ impl ClientApiImpl {
         let updated_user = self.user_service.unbind_email(user_id).await?;
 
         Ok(crate::proto::client::UnbindEmailResponse {
-            user: Some(user_to_proto(&updated_user, &self.public_id_codec)),
+            user: Some(user_to_proto(&updated_user, None, &self.public_id_codec)),
         })
     }
 
@@ -671,7 +680,7 @@ impl ClientApiImpl {
         };
 
         Ok(crate::proto::client::FinishOpaquePasswordUpdateResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            user: Some(self.user_to_proto_with_avatar(&user).await?),
         })
     }
 }

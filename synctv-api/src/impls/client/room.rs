@@ -1085,16 +1085,17 @@ impl ClientApiImpl {
 
         let ticket = match actor {
             RoomActor::User { user_id, .. } => {
-                let current_user = self
+                let password_version = self
                     .user_service
-                    .get_user(&user_id)
+                    .get_password_credential_state(&user_id)
                     .await
-                    .map_err(ApiError::from)?;
+                    .map_err(ApiError::from)?
+                    .version;
                 ws_ticket_service
                     .create_ticket_with_control(
                         &user_id,
                         &room_id,
-                        current_user.password_version,
+                        password_version,
                         request_control,
                     )
                     .await

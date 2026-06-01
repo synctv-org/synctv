@@ -1,4 +1,4 @@
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -23,8 +23,8 @@ use crate::{
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
         EmailBindRepository, PasswordCredentialMaterial, ReviewRepository, RoomMemberRepository,
-        UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
-        WebAuthnCredentialRepository,
+        UserEmailRepository, UserOAuthProviderRepository, UserPasswordRepository,
+        UserPreferencesRepository, UserRepository, WebAuthnCredentialRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenAuthContext,
@@ -105,7 +105,6 @@ fn user_avatar_storage_scope(user_id: UserId) -> String {
 struct PendingRegistrationRequest {
     username: String,
     email: Option<String>,
-    legacy_password_hash: Option<String>,
     opaque_record: Option<Vec<u8>>,
     opaque_credential_identifier: Option<Vec<u8>>,
     opaque_ciphersuite: Option<String>,
@@ -123,10 +122,10 @@ struct PendingRegistrationRequest {
     signup_method: SignupMethod,
 }
 
+#[derive(sqlx::FromRow)]
 struct PendingRegistrationRequestRow {
     username: String,
     email: Option<String>,
-    legacy_password_hash: Option<String>,
     opaque_record: Option<Vec<u8>>,
     opaque_credential_identifier: Option<Vec<u8>>,
     opaque_ciphersuite: Option<String>,
@@ -186,11 +185,13 @@ pub struct MfaChallenge {
 pub enum AuthenticatedLogin {
     Complete {
         user: User,
+        email: Option<String>,
         access_token: String,
         refresh_token: String,
     },
     MfaRequired {
         user: User,
+        email: Option<String>,
         challenge: MfaChallenge,
     },
 }
@@ -876,6 +877,8 @@ struct UserOwnedRoomEntries {
 #[derive(Clone)]
 pub struct UserService {
     pub(crate) repository: UserRepository,
+    pub(crate) user_email_repository: UserEmailRepository,
+    pub(crate) user_password_repository: UserPasswordRepository,
     email_bind_repository: EmailBindRepository,
     pub(crate) user_preferences_repository: UserPreferencesRepository,
     jwt_service: JwtService,
@@ -899,9 +902,6 @@ pub struct UserService {
     /// Explicit registration policy override for tests that exercise public
     /// registration flows without bootstrapping runtime settings.
     password_registration_policy_override_for_tests: Option<RegistrationPolicy>,
-    /// Password hasher (Argon2id). Defaults to production params;
-    /// inject `TestPasswordHasher` in integration tests for speed.
-    password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
     opaque_password_service: Arc<OpaquePasswordService>,
     opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
@@ -916,7 +916,6 @@ pub struct UserServiceRuntimeOptions {
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub refresh_rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
-    pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
     pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
     pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
@@ -964,17 +963,15 @@ impl UserService {
         format!("synctv:user-id:{}", user_id.as_i64()).into_bytes()
     }
 
-    async fn build_password_credentials_for_new_user(
+    fn build_password_credentials_for_new_user(
         &self,
         username: &str,
         password: &str,
-    ) -> Result<(String, OpaquePasswordRecord)> {
-        let password_hash = self.password_hasher.hash_password(password).await?;
-        let opaque_record = self.opaque_password_service.register_password(
+    ) -> Result<OpaquePasswordRecord> {
+        self.opaque_password_service.register_password(
             &Self::opaque_credential_identifier_for_new_user(username),
             password,
-        )?;
-        Ok((password_hash, opaque_record))
+        )
     }
 
     fn normalize_login_identifier(identifier: &str) -> String {
@@ -999,9 +996,29 @@ impl UserService {
     async fn get_by_login_identifier(&self, identifier: &str) -> Result<Option<User>> {
         let normalized = Self::normalize_login_identifier(identifier);
         if normalized.contains('@') {
-            self.repository.get_by_email(&normalized).await
+            Ok(self
+                .user_email_repository
+                .get_by_email(&normalized)
+                .await?
+                .map(|user_with_email| user_with_email.user))
         } else {
             self.repository.get_by_username(&normalized).await
+        }
+    }
+
+    async fn get_by_login_identifier_with_password_credential(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<crate::repository::UserWithPasswordCredential>> {
+        let normalized = Self::normalize_login_identifier(identifier);
+        if normalized.contains('@') {
+            self.user_password_repository
+                .get_by_email_with_credential(&normalized)
+                .await
+        } else {
+            self.user_password_repository
+                .get_by_username_with_credential(&normalized)
+                .await
         }
     }
 
@@ -1055,14 +1072,29 @@ impl UserService {
                     Duration::from_secs(MFA_SESSION_TTL_SECS),
                 )
                 .await?;
-            let challenge =
-                Self::mfa_challenge_from_session(&session_id, &session, &user, available_methods);
-            return Ok(AuthenticatedLogin::MfaRequired { user, challenge });
+            let email = self.user_email_repository.get_email(&user.id).await?;
+            let challenge = Self::mfa_challenge_from_session(
+                &session_id,
+                &session,
+                email.as_deref(),
+                available_methods,
+            );
+            return Ok(AuthenticatedLogin::MfaRequired {
+                user,
+                email,
+                challenge,
+            });
         }
 
+        let password_version = self
+            .user_password_repository
+            .get_state(&user.id)
+            .await?
+            .version;
         let (access_token, refresh_token) = self
             .issue_tokens_after_successful_authentication(
                 &user,
+                password_version,
                 brute_force_key,
                 client_ip,
                 None,
@@ -1070,8 +1102,10 @@ impl UserService {
             )
             .await?;
 
+        let email = self.user_email_repository.get_email(&user.id).await?;
         Ok(AuthenticatedLogin::Complete {
             user,
+            email,
             access_token,
             refresh_token,
         })
@@ -1094,12 +1128,12 @@ impl UserService {
     fn mfa_challenge_from_session(
         session_id: &str,
         session: &MfaSession,
-        user: &User,
+        email: Option<&str>,
         available_methods: Vec<AuthFactorMethod>,
     ) -> MfaChallenge {
         let masked_email = available_methods
             .contains(&AuthFactorMethod::Email)
-            .then(|| user.email.as_deref().map(crate::service::mask_email))
+            .then(|| email.map(crate::service::mask_email))
             .flatten();
         MfaChallenge {
             session_id: session_id.to_string(),
@@ -1112,6 +1146,7 @@ impl UserService {
     async fn issue_tokens_after_successful_authentication(
         &self,
         user: &User,
+        password_version: i32,
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
         token_auth_context: Option<TokenAuthContext>,
@@ -1134,14 +1169,14 @@ impl UserService {
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Access,
-            user.password_version,
+            password_version,
             token_auth_context,
             Some(&session_id),
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Refresh,
-            user.password_version,
+            password_version,
             token_auth_context,
             Some(&session_id),
         )?;
@@ -1202,10 +1237,11 @@ impl UserService {
         if available_methods.is_empty() {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
+        let email = self.user_email_repository.get_email(&user.id).await?;
         Ok(Self::mfa_challenge_from_session(
             session_id,
             &session,
-            &user,
+            email.as_deref(),
             available_methods,
         ))
     }
@@ -1281,17 +1317,25 @@ impl UserService {
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
         self.ensure_mfa_method_available(&session, &user, method)
             .await?;
+        let password_version = self
+            .user_password_repository
+            .get_state(&user.id)
+            .await?
+            .version;
         let (access_token, refresh_token) = self
             .issue_tokens_after_successful_authentication(
                 &user,
+                password_version,
                 &session.brute_force_key,
                 client_ip,
                 Some(TokenAuthContext::LocalTwoFactor),
                 control,
             )
             .await?;
+        let email = self.user_email_repository.get_email(&user.id).await?;
         Ok(AuthenticatedLogin::Complete {
             user,
+            email,
             access_token,
             refresh_token,
         })
@@ -2236,6 +2280,8 @@ impl UserService {
 
         Self {
             repository: UserRepository::new(pool.clone()),
+            user_email_repository: UserEmailRepository::new(pool.clone()),
+            user_password_repository: UserPasswordRepository::new(pool.clone()),
             email_bind_repository: EmailBindRepository::new(pool.clone()),
             user_preferences_repository: UserPreferencesRepository::new(pool.clone()),
             jwt_service,
@@ -2250,9 +2296,6 @@ impl UserService {
             realtime_outbox: runtime.realtime_outbox,
             settings_registry: runtime.settings_registry,
             password_registration_policy_override_for_tests: None,
-            password_hasher: runtime
-                .password_hasher
-                .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
             opaque_password_service: runtime
                 .opaque_password_service
                 .unwrap_or_else(|| Arc::new(OpaquePasswordService::new_ephemeral_for_process())),
@@ -2271,14 +2314,6 @@ impl UserService {
         }
     }
 
-    /// Override the password hasher (e.g. inject `TestPasswordHasher` in tests).
-    pub fn set_password_hasher(
-        &mut self,
-        hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
-    ) {
-        self.password_hasher = hasher;
-    }
-
     pub fn set_opaque_password_service(&mut self, service: Arc<OpaquePasswordService>) {
         self.opaque_password_service = service;
     }
@@ -2291,14 +2326,6 @@ impl UserService {
             need_review: false,
         });
     }
-
-    /// Legacy password login is a product-supported compatibility/bootstrap mode
-    /// and is enabled by default.
-    pub const fn enable_legacy_password_login_for_tests(&mut self) {}
-
-    /// Legacy password registration is a product-supported compatibility/bootstrap
-    /// mode and is enabled by default.
-    pub const fn enable_legacy_password_registration_for_tests(&mut self) {}
 
     pub fn set_refresh_rate_limiter_for_tests<T>(&mut self, limiter: T)
     where
@@ -2482,7 +2509,6 @@ impl UserService {
         &self,
         username: &str,
         email: Option<&str>,
-        legacy_password_hash: Option<&str>,
         opaque_record: &OpaquePasswordRecord,
         signup_method: SignupMethod,
     ) -> Result<User> {
@@ -2497,26 +2523,25 @@ impl UserService {
             ));
         }
 
-        let request_id = sqlx::query_scalar!(
-            r#"
+        let request_id = sqlx::query_scalar::<_, UserId>(
+            r"
             INSERT INTO user_registration_requests (
-                username, email, legacy_password_hash, opaque_record,
+                username, email, opaque_record,
                 opaque_credential_identifier, opaque_ciphersuite,
                 opaque_server_setup_version, signup_method, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-            RETURNING id AS "id: UserId"
-            "#,
-            username,
-            email,
-            legacy_password_hash,
-            &opaque_record.record,
-            &opaque_record.credential_identifier,
-            opaque_record.ciphersuite.as_str(),
-            opaque_record.server_setup_version,
-            i16::from(signup_method),
-            i16::from(ReviewStatus::Pending)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+            RETURNING id
+            ",
         )
+        .bind(username)
+        .bind(email)
+        .bind(&opaque_record.record)
+        .bind(&opaque_record.credential_identifier)
+        .bind(opaque_record.ciphersuite.as_str())
+        .bind(opaque_record.server_setup_version)
+        .bind(i16::from(signup_method))
+        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match e {
@@ -2529,13 +2554,8 @@ impl UserService {
         })?;
         tx.commit().await?;
 
-        let mut user = User::new_with_status(
-            username.to_string(),
-            None,
-            String::new(),
-            signup_method,
-            UserStatus::Active,
-        );
+        let mut user =
+            User::new_with_status(username.to_string(), signup_method, UserStatus::Active);
         user.id = request_id;
         Ok(user)
     }
@@ -2649,8 +2669,6 @@ impl UserService {
 
         let mut user = User::new_with_status(
             username.to_string(),
-            None,
-            String::new(),
             SignupMethod::WebAuthn,
             UserStatus::Active,
         );
@@ -2689,17 +2707,15 @@ impl UserService {
         request_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRegistrationRequest>> {
-        let row = sqlx::query_as!(
-            PendingRegistrationRequestRow,
-            r#"SELECT username,
+        let row = sqlx::query_as::<_, PendingRegistrationRequestRow>(
+            r"SELECT username,
                    email,
-                   legacy_password_hash,
                    opaque_record,
                    opaque_credential_identifier,
                    opaque_ciphersuite,
                    opaque_server_setup_version,
-                   signup_method AS "signup_method: SignupMethod",
-                   oauth2_provider_type AS "oauth2_provider: crate::models::OAuth2ProviderTypeName",
+                   signup_method,
+                   oauth2_provider_type AS oauth2_provider,
                    oauth2_provider_instance_name,
                    oauth2_provider_issuer,
                    oauth2_provider_user_id,
@@ -2712,10 +2728,10 @@ impl UserService {
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            "#,
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Pending)
+            ",
         )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Pending))
         .fetch_optional(&mut **tx)
         .await?;
 
@@ -2739,7 +2755,6 @@ impl UserService {
             Ok(PendingRegistrationRequest {
                 username: row.username,
                 email: row.email,
-                legacy_password_hash: row.legacy_password_hash,
                 opaque_record: row.opaque_record,
                 opaque_credential_identifier: row.opaque_credential_identifier,
                 opaque_ciphersuite: row.opaque_ciphersuite,
@@ -2774,18 +2789,19 @@ impl UserService {
                 ))
             })?;
 
-        let trusted_email = (request.signup_method == SignupMethod::OAuth2
-            && request.oauth2_email_trusted)
-            .then(|| request.email.clone())
-            .flatten();
+        let approved_email = match request.signup_method {
+            SignupMethod::OAuth2 if request.oauth2_email_trusted => request.email.clone(),
+            SignupMethod::OAuth2 => None,
+            _ => request.email.clone(),
+        };
 
         if self
             .repository
             .get_by_username(&request.username)
             .await?
             .is_some()
-            || match trusted_email.as_deref() {
-                Some(email) => self.repository.get_by_email(email).await?.is_some(),
+            || match approved_email.as_deref() {
+                Some(email) => self.user_email_repository.email_exists(email).await?,
                 None => false,
             }
         {
@@ -2794,12 +2810,7 @@ impl UserService {
             ));
         }
 
-        let user = User::new(
-            request.username.clone(),
-            trusted_email,
-            request.legacy_password_hash.clone().unwrap_or_default(),
-            request.signup_method,
-        );
+        let user = User::new(request.username.clone(), request.signup_method);
         let created = match request.signup_method {
             SignupMethod::OAuth2 => {
                 let Some(provider) = request.oauth2_provider.as_ref() else {
@@ -2821,11 +2832,10 @@ impl UserService {
 
                 let created = self
                     .repository
-                    .create_with_password_credentials(
-                        &user,
-                        PasswordCredentialMaterial::none(),
-                        &mut *tx,
-                    )
+                    .create_with_executor(&user, &mut *tx)
+                    .await?;
+                self.user_email_repository
+                    .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
                     .await?;
 
                 let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
@@ -2873,11 +2883,10 @@ impl UserService {
 
                 let created = self
                     .repository
-                    .create_with_password_credentials(
-                        &user,
-                        PasswordCredentialMaterial::none(),
-                        &mut *tx,
-                    )
+                    .create_with_executor(&user, &mut *tx)
+                    .await?;
+                self.user_email_repository
+                    .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
                     .await?;
                 WebAuthnCredentialRepository::new(self.repository.pool().clone())
                     .create_with_executor(
@@ -2916,15 +2925,21 @@ impl UserService {
                         )
                     })?,
                 };
-                let credential_material = match request.legacy_password_hash.as_deref() {
-                    Some(password_hash) => {
-                        PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
-                    }
-                    None => PasswordCredentialMaterial::opaque_only(&opaque_record),
-                };
-                self.repository
-                    .create_with_password_credentials(&user, credential_material, &mut *tx)
-                    .await?
+                let created = self
+                    .repository
+                    .create_with_executor(&user, &mut *tx)
+                    .await?;
+                self.user_email_repository
+                    .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
+                    .await?;
+                self.user_password_repository
+                    .create_for_user_with_executor(
+                        &created,
+                        PasswordCredentialMaterial::opaque_only(&opaque_record),
+                        &mut *tx,
+                    )
+                    .await?;
+                created
             }
         };
 
@@ -3255,10 +3270,7 @@ impl UserService {
             ));
         }
 
-        let (password_hash, opaque_record) = self
-            .build_password_credentials_for_new_user(&username, &password)
-            .await?;
-        let legacy_password_hash = Some(password_hash);
+        let opaque_record = self.build_password_credentials_for_new_user(&username, &password)?;
 
         // Signup review is an approval workflow. Pending registrations live in
         // `user_registration_requests` and create a `users` row after approval.
@@ -3268,7 +3280,6 @@ impl UserService {
                 .create_registration_request(
                     &username,
                     email.as_deref(),
-                    legacy_password_hash.as_deref(),
                     &opaque_record,
                     SignupMethod::Email,
                 )
@@ -3276,26 +3287,29 @@ impl UserService {
             return Ok((pending_user, None, None));
         }
 
-        // The database UNIQUE constraints reject duplicate usernames and emails
-        // atomically.
-        let user = User::new(
-            username.clone(),
-            email,
-            legacy_password_hash.clone().unwrap_or_default(),
-            SignupMethod::Email,
-        );
-        let credential_material = match legacy_password_hash.as_deref() {
-            Some(password_hash) => {
-                PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
-            }
-            None => PasswordCredentialMaterial::opaque_only(&opaque_record),
-        };
-        let created_user = match self
-            .repository
-            .create_with_password_credentials(&user, credential_material, self.repository.pool())
-            .await
+        let user = User::new(username.clone(), SignupMethod::Email);
+        let created_user = match async {
+            let mut tx = self.repository.pool().begin().await?;
+            let created_user = self
+                .repository
+                .create_with_executor(&user, &mut *tx)
+                .await?;
+            self.user_email_repository
+                .create_for_user_with_executor(&created_user, email.as_deref(), &mut *tx)
+                .await?;
+            self.user_password_repository
+                .create_for_user_with_executor(
+                    &created_user,
+                    PasswordCredentialMaterial::opaque_only(&opaque_record),
+                    &mut *tx,
+                )
+                .await?;
+            tx.commit().await?;
+            Ok::<_, Error>(created_user)
+        }
+        .await
         {
-            Ok(user) => user,
+            Ok(created_user) => created_user,
             Err(Error::AlreadyExists(_)) => {
                 // Don't record failure for AlreadyExists - user just picked a taken username
                 return Err(Error::AlreadyExists(
@@ -3325,17 +3339,22 @@ impl UserService {
 
         // Generate JWT tokens (role will be fetched from DB on each request)
         let session_id = synctv_common::snanoid!(32);
+        let password_version = self
+            .user_password_repository
+            .get_state(&created_user.id)
+            .await?
+            .version;
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Access,
-            created_user.password_version,
+            password_version,
             None,
             Some(&session_id),
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Refresh,
-            created_user.password_version,
+            password_version,
             None,
             Some(&session_id),
         )?;
@@ -3425,7 +3444,6 @@ impl UserService {
                 .create_registration_request(
                     &username,
                     email.as_deref(),
-                    None,
                     &opaque_record,
                     SignupMethod::Email,
                 )
@@ -3433,17 +3451,29 @@ impl UserService {
             return Ok((pending_user, None, None));
         }
 
-        let user = User::new(username.clone(), email, String::new(), SignupMethod::Email);
-        let created_user = match self
-            .repository
-            .create_with_password_credentials(
-                &user,
-                PasswordCredentialMaterial::opaque_only(&opaque_record),
-                self.repository.pool(),
-            )
-            .await
+        let user = User::new(username.clone(), SignupMethod::Email);
+        let created_user = match async {
+            let mut tx = self.repository.pool().begin().await?;
+            let created_user = self
+                .repository
+                .create_with_executor(&user, &mut *tx)
+                .await?;
+            self.user_email_repository
+                .create_for_user_with_executor(&created_user, email.as_deref(), &mut *tx)
+                .await?;
+            self.user_password_repository
+                .create_for_user_with_executor(
+                    &created_user,
+                    PasswordCredentialMaterial::opaque_only(&opaque_record),
+                    &mut *tx,
+                )
+                .await?;
+            tx.commit().await?;
+            Ok::<_, Error>(created_user)
+        }
+        .await
         {
-            Ok(user) => user,
+            Ok(created_user) => created_user,
             Err(Error::AlreadyExists(_)) => {
                 return Err(Error::AlreadyExists(
                     synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
@@ -3460,17 +3490,22 @@ impl UserService {
             .await;
 
         let session_id = synctv_common::snanoid!(32);
+        let password_version = self
+            .user_password_repository
+            .get_state(&created_user.id)
+            .await?
+            .version;
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Access,
-            created_user.password_version,
+            password_version,
             None,
             Some(&session_id),
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Refresh,
-            created_user.password_version,
+            password_version,
             None,
             Some(&session_id),
         )?;
@@ -3478,42 +3513,37 @@ impl UserService {
         Ok((created_user, Some(access_token), Some(refresh_token)))
     }
 
-    /// Register a new user using a provided executor (pool or transaction)
-    pub async fn register_with_executor<'e, E>(
+    /// Register a new user inside a caller-owned transaction.
+    pub async fn register_with_executor(
         &self,
         username: String,
         email: Option<String>,
         password: String,
         signup_method: SignupMethod,
-        executor: E,
-    ) -> Result<User>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
+        executor: &mut PgConnection,
+    ) -> Result<User> {
         let username = Self::normalize_username_for_storage(&username)?;
         if let Some(ref email) = email {
             Self::validate_email(email)?;
         }
         self.validate_password(&password)?;
-        let (password_hash, opaque_record) = self
-            .build_password_credentials_for_new_user(&username, &password)
+        let opaque_record = self.build_password_credentials_for_new_user(&username, &password)?;
+        let user = User::new(username, signup_method);
+        let created_user = self
+            .repository
+            .create_with_executor(&user, &mut *executor)
             .await?;
-        let legacy_password_hash = Some(password_hash);
-        let user = User::new(
-            username,
-            email,
-            legacy_password_hash.clone().unwrap_or_default(),
-            signup_method,
-        );
-        let credential_material = match legacy_password_hash.as_deref() {
-            Some(password_hash) => {
-                PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
-            }
-            None => PasswordCredentialMaterial::opaque_only(&opaque_record),
-        };
-        self.repository
-            .create_with_password_credentials(&user, credential_material, executor)
-            .await
+        self.user_email_repository
+            .create_for_user_with_executor(&created_user, email.as_deref(), &mut *executor)
+            .await?;
+        self.user_password_repository
+            .create_for_user_with_executor(
+                &created_user,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                &mut *executor,
+            )
+            .await?;
+        Ok(created_user)
     }
 
     /// Create a user with a specific role (for admin user creation).
@@ -3550,7 +3580,7 @@ impl UserService {
             &Self::opaque_credential_identifier_for_new_user(&username),
             &password,
         )?;
-        let mut user = User::new(username.clone(), email, String::new(), SignupMethod::Email);
+        let mut user = User::new(username.clone(), SignupMethod::Email);
         if let Some(role) = role {
             user.role = role;
         }
@@ -3560,8 +3590,14 @@ impl UserService {
         let mut tx = self.repository.pool().begin().await?;
         let created_user = self
             .repository
-            .create_with_password_credentials(
-                &user,
+            .create_with_executor(&user, &mut *tx)
+            .await?;
+        self.user_email_repository
+            .create_for_user_with_executor(&created_user, email.as_deref(), &mut *tx)
+            .await?;
+        self.user_password_repository
+            .create_for_user_with_executor(
+                &created_user,
                 PasswordCredentialMaterial::opaque_only(&opaque_record),
                 &mut *tx,
             )
@@ -3601,17 +3637,22 @@ impl UserService {
     /// Generate JWT tokens and populate username cache for a newly created user.
     pub async fn finalize_registration(&self, user: &User) -> Result<(String, String)> {
         let session_id = synctv_common::snanoid!(32);
+        let password_version = self
+            .user_password_repository
+            .get_state(&user.id)
+            .await?
+            .version;
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Access,
-            user.password_version,
+            password_version,
             None,
             Some(&session_id),
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Refresh,
-            user.password_version,
+            password_version,
             None,
             Some(&session_id),
         )?;
@@ -3660,33 +3701,28 @@ impl UserService {
             .check_allowed_with_control(&normalized_identifier, client_ip, control)
             .await?;
 
-        // Get user by username or email.
-        let maybe_user = self.get_by_login_identifier(&normalized_identifier).await?;
+        // Get user and password credential material by username or email in one query.
+        let maybe_user = self
+            .get_by_login_identifier_with_password_credential(&normalized_identifier)
+            .await?;
 
         let user_existed = maybe_user.is_some();
 
-        // Always perform password verification to prevent timing side-channel.
-        // If the user doesn't exist, verify against a dummy hash so the response
-        // time is indistinguishable from a real verification.
-        let (is_valid, user) = if let Some(user) = maybe_user {
-            let hash = if user.password_hash.is_empty() {
-                self.password_hasher.dummy_hash()
+        // Always perform OPAQUE verification to prevent timing side-channels
+        // between accounts with credentials, accounts without credentials, and absent accounts.
+        let (is_valid, user) = if let Some(user_with_credential) = maybe_user {
+            let opaque_valid = if let Some(opaque_credential) = user_with_credential.opaque {
+                self.opaque_password_service
+                    .verify_password(&opaque_credential.record, &password)?
             } else {
-                &user.password_hash
+                self.opaque_password_service
+                    .verify_dummy_password(&password)?
             };
-            let valid = self
-                .password_hasher
-                .verify_password(&password, hash)
-                .await?
-                && !user.password_hash.is_empty();
-            (valid, Some(user))
+            (opaque_valid, Some(user_with_credential.user))
         } else {
-            // Dummy Argon2 verification to match timing of real verification.
-            // This hash is pre-computed and never matches any real password.
             let _ = self
-                .password_hasher
-                .verify_password(&password, self.password_hasher.dummy_hash())
-                .await;
+                .opaque_password_service
+                .verify_dummy_password(&password)?;
             (false, None)
         };
 
@@ -3743,8 +3779,8 @@ impl UserService {
 
         let (user_id, opaque_record) = if let Some(user) = maybe_user {
             let opaque = self
-                .repository
-                .get_opaque_password_credential(&user.id)
+                .user_password_repository
+                .get_opaque_credential(&user.id)
                 .await?
                 .map(|credential| credential.record);
             (Some(user.id), opaque)
@@ -3963,17 +3999,25 @@ impl UserService {
             return Err(error);
         }
 
+        let password_version = self
+            .user_password_repository
+            .get_state(&user.id)
+            .await?
+            .version;
         let (access_token, refresh_token) = self
             .issue_tokens_after_successful_authentication(
                 &user,
+                password_version,
                 provider_user_id,
                 client_ip,
                 Some(TokenAuthContext::OAuth2),
                 control,
             )
             .await?;
+        let email = self.user_email_repository.get_email(&user.id).await?;
         Ok(AuthenticatedLogin::Complete {
             user,
+            email,
             access_token,
             refresh_token,
         })
@@ -4047,8 +4091,13 @@ impl UserService {
             }
         }
 
+        let password_version = self
+            .user_password_repository
+            .get_state(&user.id)
+            .await?
+            .version;
         // Reject refresh tokens issued with an old password version
-        if claims.pv < user.password_version {
+        if claims.pv < password_version {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -4128,14 +4177,14 @@ impl UserService {
         let new_access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Access,
-            user.password_version,
+            password_version,
             token_auth_context,
             session_id,
         )?;
         let new_refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Refresh,
-            user.password_version,
+            password_version,
             token_auth_context,
             session_id,
         )?;
@@ -4151,14 +4200,15 @@ impl UserService {
             .ok_or_else(|| Error::NotFound("User not found".to_string()))
     }
 
-    pub async fn has_usable_password_authentication(&self, user: &User) -> Result<bool> {
-        if user.has_usable_password() {
-            return Ok(true);
-        }
+    pub async fn get_password_credential_state(
+        &self,
+        user_id: &UserId,
+    ) -> Result<crate::repository::PasswordCredentialState> {
+        self.user_password_repository.get_state(user_id).await
+    }
 
-        self.repository
-            .has_opaque_password_credential(&user.id)
-            .await
+    pub async fn has_usable_password_authentication(&self, user: &User) -> Result<bool> {
+        self.user_password_repository.has_credential(&user.id).await
     }
 
     pub async fn get_user_preferences(
@@ -4249,7 +4299,25 @@ impl UserService {
 
     /// Get user by email
     pub async fn get_by_email(&self, email: &str) -> Result<Option<User>> {
-        self.repository.get_by_email(email).await
+        Ok(self
+            .user_email_repository
+            .get_by_email(email)
+            .await?
+            .map(|user_with_email| user_with_email.user))
+    }
+
+    pub async fn get_email(&self, user_id: &UserId) -> Result<Option<String>> {
+        self.user_email_repository.get_email(user_id).await
+    }
+
+    pub async fn get_user_with_email(
+        &self,
+        user_id: &UserId,
+    ) -> Result<crate::repository::UserWithEmail> {
+        self.user_email_repository
+            .get_by_user_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))
     }
 
     /// Update user (entire user object) with optimistic locking.
@@ -4260,25 +4328,12 @@ impl UserService {
     /// Returns `Error::OptimisticLockConflict` if the user was modified since
     /// it was read.
     pub async fn update_user(&self, user: &User, old_version: i32) -> Result<User> {
-        let current = self
-            .repository
+        self.repository
             .get_by_id(&user.id)
             .await?
             .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
         let mut candidate = user.clone();
         candidate.username = Self::normalize_username_for_storage(&candidate.username)?;
-
-        if current.signup_method == SignupMethod::Email && candidate.email.is_none() {
-            return Err(Error::InvalidInput(
-                "Email signup users cannot unbind email".to_string(),
-            ));
-        }
-
-        if current.email != candidate.email {
-            return Err(Error::InvalidInput(
-                "Email changes must be confirmed with an email bind token".to_string(),
-            ));
-        }
 
         let updated = self.repository.update(&candidate, old_version).await?;
         self.invalidate_username_cache_best_effort(&candidate.id, "update_user")
@@ -4319,16 +4374,18 @@ impl UserService {
 
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
 
-        // Store only OPAQUE material. This still bumps password_version, which
-        // invalidates tokens without preserving a server-verifiable password hash.
-        let updated_user = self
-            .repository
-            .update_password_credentials_with_executor(
+        self.user_password_repository
+            .update_with_executor(
                 user_id,
                 PasswordCredentialMaterial::opaque_only(&opaque_record),
                 &mut *tx,
             )
             .await?;
+        let updated_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         tx.commit().await?;
 
@@ -4346,17 +4403,21 @@ impl UserService {
         credential_request: Vec<u8>,
         registration_request: Vec<u8>,
     ) -> Result<OpaqueRegistrationStartChallenge> {
-        let user = self
-            .repository
+        self.repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         let opaque_credential = self
-            .repository
-            .get_opaque_password_credential(user_id)
+            .user_password_repository
+            .get_opaque_credential(user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let password_version = self
+            .user_password_repository
+            .get_state(user_id)
+            .await?
+            .version;
 
         let login_start = self.opaque_password_service.start_login(
             Some(&opaque_credential.record),
@@ -4376,7 +4437,7 @@ impl UserService {
                     credential_identifier,
                     purpose: OpaqueRegistrationPurpose::PasswordUpdate {
                         user_id: *user_id,
-                        expected_password_version: user.password_version,
+                        expected_password_version: password_version,
                         verification: OpaquePasswordUpdateVerification::CurrentOpaquePassword {
                             server_login_state: login_start.server_login_state,
                         },
@@ -4411,11 +4472,15 @@ impl UserService {
         user_id: &UserId,
         registration_request: Vec<u8>,
     ) -> Result<OpaqueRegistrationStartChallenge> {
-        let user = self
-            .repository
+        self.repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+        let password_version = self
+            .user_password_repository
+            .get_state(user_id)
+            .await?
+            .version;
 
         let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
         let registration_start = self
@@ -4429,7 +4494,7 @@ impl UserService {
                     credential_identifier,
                     purpose: OpaqueRegistrationPurpose::PasswordReset {
                         user_id: *user_id,
-                        expected_password_version: user.password_version,
+                        expected_password_version: password_version,
                     },
                 },
                 Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
@@ -4462,11 +4527,15 @@ impl UserService {
         registration_request: Vec<u8>,
         verification: OpaquePasswordUpdateVerification,
     ) -> Result<OpaqueRegistrationStartChallenge> {
-        let user = self
-            .repository
+        self.repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+        let password_version = self
+            .user_password_repository
+            .get_state(user_id)
+            .await?
+            .version;
 
         let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
         let registration_start = self
@@ -4480,7 +4549,7 @@ impl UserService {
                     credential_identifier,
                     purpose: OpaqueRegistrationPurpose::PasswordUpdate {
                         user_id: *user_id,
-                        expected_password_version: user.password_version,
+                        expected_password_version: password_version,
                         verification,
                     },
                 },
@@ -4647,23 +4716,26 @@ impl UserService {
             .finish_registration(credential_identifier, &registration_upload)?;
 
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
-        let current_user = self
-            .repository
-            .get_by_id_for_update_with_executor(user_id, &mut *tx)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
-        if current_user.password_version != expected_password_version {
+        let credential_state = self
+            .user_password_repository
+            .get_state_for_update_with_executor(user_id, &mut *tx)
+            .await?;
+        if credential_state.version != expected_password_version {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        let updated_user = self
-            .repository
-            .update_password_credentials_with_executor(
+        self.user_password_repository
+            .update_with_executor(
                 user_id,
                 PasswordCredentialMaterial::opaque_only(&opaque_record),
                 &mut *tx,
             )
             .await?;
+        let updated_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
         tx.commit().await?;
 
         self.notify_user_invalidation(user_id).await;
@@ -4703,13 +4775,7 @@ impl UserService {
 
         let updated_user = self
             .repository
-            .update_profile_with_executor(
-                user_id,
-                &target_username,
-                None,
-                current_user.version,
-                &mut *tx,
-            )
+            .update_profile_with_executor(user_id, &target_username, current_user.version, &mut *tx)
             .await?;
 
         tx.commit().await?;
@@ -4925,10 +4991,17 @@ impl UserService {
         token: &str,
     ) -> Result<User> {
         let email = self.validate_email_bind_target(user_id, email).await?;
-        let updated_user = self
+        let mut tx = self.repository.pool().begin().await?;
+        let (email, now) = self
             .email_bind_repository
-            .consume_and_bind_email(user_id, &email, token)
+            .consume_with_executor(user_id, &email, token, &mut *tx)
             .await?;
+        let updated_user = self
+            .user_email_repository
+            .upsert_with_executor(user_id, &email, now, &mut *tx)
+            .await?
+            .user;
+        tx.commit().await?;
         self.notify_user_invalidation(user_id).await;
 
         Ok(updated_user)
@@ -5000,7 +5073,12 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
-        if current_user.email.is_none() {
+        if self
+            .user_email_repository
+            .get_email(user_id)
+            .await?
+            .is_none()
+        {
             return Err(Error::InvalidInput("Email is not bound".to_string()));
         }
         if current_user.signup_method == SignupMethod::Email {
@@ -5040,11 +5118,9 @@ impl UserService {
             ));
         }
 
-        let mut candidate = current_user.clone();
-        candidate.email = None;
         let updated_user = self
-            .repository
-            .update_with_executor(&candidate, current_user.version, &mut *tx)
+            .user_email_repository
+            .delete_with_executor(user_id, chrono::Utc::now(), &mut *tx)
             .await?;
 
         tx.commit().await?;
@@ -5069,8 +5145,8 @@ impl UserService {
             }
         }
 
-        if let Some(existing) = self.repository.get_by_email(&email).await? {
-            if existing.id != *user_id {
+        if let Some(existing) = self.user_email_repository.get_by_email(&email).await? {
+            if existing.user.id != *user_id {
                 return Err(Error::AlreadyExists("Email already taken".to_string()));
             }
         }
@@ -5487,9 +5563,13 @@ impl crate::service::ws_ticket::UserValidator for UserService {
             }
         }
 
-        Ok(crate::service::ws_ticket::UserValidationResult {
-            password_version: user.password_version,
-        })
+        let password_version = self
+            .user_password_repository
+            .get_state(user_id)
+            .await?
+            .version;
+
+        Ok(crate::service::ws_ticket::UserValidationResult { password_version })
     }
 }
 
@@ -5518,17 +5598,26 @@ impl UserService {
     ) -> Result<User> {
         let (base_username, candidates) =
             Self::oauth2_username_candidates(provider_user_id, username)?;
-        let user_email = email.map(std::string::ToString::to_string);
-
         for candidate in &candidates {
             let user = User::new_with_status(
                 candidate.clone(),
-                user_email.clone(),
-                String::new(),
                 SignupMethod::OAuth2,
                 crate::models::UserStatus::Active,
             );
-            match self.repository.create(&user).await {
+            let created = async {
+                let mut tx = self.repository.pool().begin().await?;
+                let created_user = self
+                    .repository
+                    .create_with_executor(&user, &mut *tx)
+                    .await?;
+                self.user_email_repository
+                    .create_for_user_with_executor(&created_user, email, &mut *tx)
+                    .await?;
+                tx.commit().await?;
+                Ok::<_, Error>(created_user)
+            }
+            .await;
+            match created {
                 Ok(created_user) => {
                     self.cache_oauth2_username_best_effort(&created_user.id, candidate)
                         .await;

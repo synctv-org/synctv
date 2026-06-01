@@ -19,7 +19,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         member::AdminMemberUpdate,
         room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, RoomService, UserService,
@@ -36,7 +36,8 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    
+    UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -44,16 +45,13 @@ fn make_user_service(pool: &PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    )
 }
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    let mut svc = RoomService::new(pool, user_service);
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    
+    RoomService::new(pool, user_service)
 }
 
 fn make_room_service_with_fence(
@@ -61,16 +59,15 @@ fn make_room_service_with_fence(
     version_fence: Arc<dyn VersionFenceStore>,
 ) -> RoomService {
     let user_service = make_user_service(&pool);
-    let mut svc = RoomService::new_with_options(
+    
+    RoomService::new_with_options(
         pool,
         user_service,
         RoomServiceOptions {
             version_fence: Some(version_fence),
             ..RoomServiceOptions::default()
         },
-    );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    )
 }
 
 fn make_user(username: &str) -> User {
@@ -78,16 +75,12 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,

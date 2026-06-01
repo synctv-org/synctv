@@ -386,20 +386,15 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
 async fn create_test_user(pool: &PgPool) -> User {
     let now = Utc::now();
     let user_id = UserId::new();
-    let email = format!("test_{}@example.com", synctv_common::snanoid!(8));
     let user = User {
         id: user_id,
         username: format!("test_user_{}", synctv_common::snanoid!(8)),
-        email: Some(email),
-        password_hash: "test_hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,

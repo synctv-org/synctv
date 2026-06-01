@@ -111,13 +111,7 @@ fn test_signup_method_from_str_name() {
 // User model logic tests
 
 fn make_user(role: UserRole, status: UserStatus, signup_method: SignupMethod) -> User {
-    let mut user = User::new_with_status(
-        "testuser".to_string(),
-        Some("test@example.com".to_string()),
-        "hash".to_string(),
-        signup_method,
-        status,
-    );
+    let mut user = User::new_with_status("testuser".to_string(), signup_method, status);
     user.role = role;
     user
 }

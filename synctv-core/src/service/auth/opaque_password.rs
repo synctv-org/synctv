@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use opaque_ke::argon2::Argon2;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
-    ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization,
-    CredentialRequest, RegistrationRequest, RegistrationResponse, RegistrationUpload, ServerLogin,
+    ClientLogin, ClientLoginFinishParameters, ClientRegistration,
+    ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest,
+    CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload, ServerLogin,
     ServerLoginParameters, ServerRegistration, ServerSetup,
 };
 use rand_08::SeedableRng;
@@ -38,31 +41,12 @@ pub struct OpaqueLoginStart {
 #[derive(Clone)]
 pub struct OpaquePasswordService {
     server_setup: ServerSetup<SyncTvOpaqueCipherSuite>,
+    dummy_record: Arc<OpaquePasswordRecord>,
 }
 
 impl OpaquePasswordService {
-    #[must_use]
-    pub fn new_ephemeral_for_process() -> Self {
-        let mut rng = OsRng;
-        Self {
-            server_setup: ServerSetup::new(&mut rng),
-        }
-    }
-
-    #[must_use]
-    pub fn derive_from_secret(secret: &[u8]) -> Self {
-        let seed_material =
-            Sha512::digest([b"synctv opaque server setup v1".as_slice(), secret].concat());
-        let mut seed = [0_u8; 32];
-        seed.copy_from_slice(&seed_material[..32]);
-        let mut rng = ChaCha20Rng::from_seed(seed);
-        Self {
-            server_setup: ServerSetup::new(&mut rng),
-        }
-    }
-
-    pub fn register_password(
-        &self,
+    fn register_password_with_setup(
+        server_setup: &ServerSetup<SyncTvOpaqueCipherSuite>,
         credential_identifier: &[u8],
         password: &str,
     ) -> Result<OpaquePasswordRecord> {
@@ -80,7 +64,7 @@ impl OpaquePasswordService {
                 ))
             })?;
         let server_start = ServerRegistration::<SyncTvOpaqueCipherSuite>::start(
-            &self.server_setup,
+            server_setup,
             registration_request,
             credential_identifier,
         )
@@ -119,6 +103,43 @@ impl OpaquePasswordService {
             ciphersuite: OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID.to_string(),
             server_setup_version: OPAQUE_SERVER_SETUP_VERSION,
         })
+    }
+
+    fn new(server_setup: ServerSetup<SyncTvOpaqueCipherSuite>) -> Self {
+        let dummy_record = Self::register_password_with_setup(
+            &server_setup,
+            b"synctv:dummy-opaque-password-record",
+            "synctv-dummy-opaque-password",
+        )
+        .expect("dummy OPAQUE password record must be constructible");
+        Self {
+            server_setup,
+            dummy_record: Arc::new(dummy_record),
+        }
+    }
+
+    #[must_use]
+    pub fn new_ephemeral_for_process() -> Self {
+        let mut rng = OsRng;
+        Self::new(ServerSetup::new(&mut rng))
+    }
+
+    #[must_use]
+    pub fn derive_from_secret(secret: &[u8]) -> Self {
+        let seed_material =
+            Sha512::digest([b"synctv opaque server setup v1".as_slice(), secret].concat());
+        let mut seed = [0_u8; 32];
+        seed.copy_from_slice(&seed_material[..32]);
+        let mut rng = ChaCha20Rng::from_seed(seed);
+        Self::new(ServerSetup::new(&mut rng))
+    }
+
+    pub fn register_password(
+        &self,
+        credential_identifier: &[u8],
+        password: &str,
+    ) -> Result<OpaquePasswordRecord> {
+        Self::register_password_with_setup(&self.server_setup, credential_identifier, password)
     }
 
     pub fn start_registration(
@@ -212,6 +233,67 @@ impl OpaquePasswordService {
             .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
 
         Ok(finish.session_key.to_vec())
+    }
+
+    pub fn verify_password(&self, record: &OpaquePasswordRecord, password: &str) -> Result<bool> {
+        let mut client_rng = OsRng;
+        let client_start =
+            ClientLogin::<SyncTvOpaqueCipherSuite>::start(&mut client_rng, password.as_bytes())
+                .map_err(|e| Error::Internal(format!("Failed to start OPAQUE login: {e}")))?;
+        let credential_request = CredentialRequest::deserialize(&client_start.message.serialize())
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to deserialize OPAQUE credential request: {e}"
+                ))
+            })?;
+        let password_file =
+            ServerRegistration::<SyncTvOpaqueCipherSuite>::deserialize(&record.record)
+                .map_err(|e| Error::Internal(format!("Invalid stored OPAQUE record: {e}")))?;
+
+        let mut server_rng = OsRng;
+        let server_start = ServerLogin::start(
+            &mut server_rng,
+            &self.server_setup,
+            Some(password_file),
+            credential_request,
+            &record.credential_identifier,
+            ServerLoginParameters::default(),
+        )
+        .map_err(|e| Error::Internal(format!("Failed to start OPAQUE verification: {e}")))?;
+        let credential_response = CredentialResponse::<SyncTvOpaqueCipherSuite>::deserialize(
+            &server_start.message.serialize(),
+        )
+        .map_err(|e| {
+            Error::Internal(format!(
+                "Failed to deserialize OPAQUE credential response: {e}"
+            ))
+        })?;
+        let Ok(client_finish) = client_start.state.finish(
+            &mut client_rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        ) else {
+            return Ok(false);
+        };
+        let credential_finalization =
+            CredentialFinalization::<SyncTvOpaqueCipherSuite>::deserialize(
+                &client_finish.message.serialize(),
+            )
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to deserialize OPAQUE credential finalization: {e}"
+                ))
+            })?;
+
+        Ok(server_start
+            .state
+            .finish(credential_finalization, ServerLoginParameters::default())
+            .is_ok())
+    }
+
+    pub fn verify_dummy_password(&self, password: &str) -> Result<bool> {
+        self.verify_password(&self.dummy_record, password)
     }
 }
 

@@ -20,16 +20,12 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -409,7 +405,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
         .create(&make_user("token_send_failure"))
         .await
         .unwrap();
-    let email = user.email.clone().unwrap();
+    let email = "token_send_failure@test.com".to_string();
     let email_service = EmailService::new(Arc::new(StaticEmailConfigProvider(Some(EmailConfig {
         smtp_host: "127.0.0.1".to_string(),
         smtp_port: 9,

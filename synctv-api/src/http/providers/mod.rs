@@ -1202,8 +1202,6 @@ mod tests {
     fn make_proxy_test_user(username: &str) -> synctv_core::models::User {
         synctv_core::models::User::new_with_status(
             username.to_string(),
-            Some(format!("{username}@example.com")),
-            "hashed-password".to_string(),
             SignupMethod::Email,
             UserStatus::Active,
         )

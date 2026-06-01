@@ -249,11 +249,16 @@ pub fn build_signed_proxy_url(
         target_url: None,
     };
     let query = signing_key.build_signed_query(&claims);
+    let encoded_action = action
+        .split('/')
+        .map(url_encode)
+        .collect::<Vec<_>>()
+        .join("/");
     format!(
         "/api/providers/proxy/{}/{}/{}?{}",
         url_encode(provider),
         url_encode(version),
-        url_encode(action),
+        encoded_action,
         query
     )
 }

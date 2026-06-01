@@ -41,8 +41,6 @@ pub struct CachedUser {
     created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp of last update - used to prevent stale data from overwriting fresh data
     updated_at: chrono::DateTime<chrono::Utc>,
-    /// Password version counter for JWT invalidation
-    password_version: i32,
     /// Independent global moderation ban flag.
     is_banned: bool,
     /// Whether the user has been soft-deleted (`deleted_at` IS NOT NULL)
@@ -58,7 +56,6 @@ impl CachedUser {
         role: UserRole,
         status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
-        password_version: i32,
     ) -> Self {
         Self {
             id,
@@ -67,7 +64,6 @@ impl CachedUser {
             status,
             created_at,
             updated_at: chrono::Utc::now(),
-            password_version,
             is_banned: false,
             is_deleted: false,
         }
@@ -83,7 +79,6 @@ impl CachedUser {
         status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
-        password_version: i32,
         is_deleted: bool,
     ) -> Self {
         Self {
@@ -93,7 +88,6 @@ impl CachedUser {
             status,
             created_at,
             updated_at,
-            password_version,
             is_banned: false,
             is_deleted,
         }
@@ -109,7 +103,6 @@ impl CachedUser {
         status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
-        password_version: i32,
         is_banned: bool,
         is_deleted: bool,
     ) -> Self {
@@ -120,7 +113,6 @@ impl CachedUser {
             status,
             created_at,
             updated_at,
-            password_version,
             is_banned,
             is_deleted,
         }
@@ -142,12 +134,6 @@ impl CachedUser {
     #[must_use]
     pub const fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.updated_at
-    }
-
-    /// Get the password version counter
-    #[must_use]
-    pub const fn password_version(&self) -> i32 {
-        self.password_version
     }
 
     /// Check if the user has been soft-deleted
@@ -301,7 +287,6 @@ mod tests {
             status: UserStatus::Active,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
-            password_version: 0,
             is_deleted: false,
             is_banned: false,
         }

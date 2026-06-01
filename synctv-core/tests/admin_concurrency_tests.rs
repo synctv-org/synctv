@@ -23,7 +23,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         member::MemberService,
         permission::PermissionService,
         InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
@@ -39,16 +39,12 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "hash".to_string(),
         role,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -87,7 +83,8 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    
+    UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -95,17 +92,14 @@ fn make_user_service(pool: &PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    )
 }
 
 #[allow(dead_code)]
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    let mut svc = RoomService::new(pool, user_service);
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    
+    RoomService::new(pool, user_service)
 }
 
 async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
@@ -382,7 +376,7 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
                     .expect("Query failed")
                     .expect("User exists");
                 let mut updated = current.clone();
-                updated.email = Some(format!("updated_{i}@test.com"));
+                updated.username = format!("updated_user_{i}");
 
                 match repo_clone.update(&updated, current.version).await {
                     Ok(result) => break Ok(result),
@@ -497,7 +491,7 @@ async fn test_optimistic_lock_retry_succeeds() {
         loop {
             let current = repo2.get_by_id(&uid2).await.unwrap().unwrap();
             let mut updated = current.clone();
-            updated.email = Some("retried@test.com".to_string());
+            updated.username = "retried_user".to_string();
 
             match repo2.update(&updated, current.version).await {
                 Ok(result) => break Ok(result),

@@ -18,11 +18,11 @@ use synctv_core::{
         RoomMember, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::{
-        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
-        WebAuthnCredentialRepository,
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
+        UserEmailRepository, UserRepository, WebAuthnCredentialRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         local_passkey_session_store,
         permission::PermissionServiceRuntime,
         user::UserServiceRuntimeOptions,
@@ -66,10 +66,7 @@ fn create_user_service_with_runtime(
         },
         runtime,
     );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
-    svc.enable_legacy_password_login_for_tests();
-    svc.enable_legacy_password_registration_for_tests();
     svc
 }
 
@@ -93,10 +90,7 @@ fn create_user_service_with_security_pipeline(
         key_builder.clone(),
         brute_force,
     );
-    service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     service.enable_password_registration_for_tests();
-    service.enable_legacy_password_login_for_tests();
-    service.enable_legacy_password_registration_for_tests();
     let service = Arc::new(service);
     let pipeline = SecurityPipeline::new(Arc::clone(&service))
         .with_token_blacklist(token_blacklist, key_builder);
@@ -108,16 +102,12 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@example.com")),
-        password_hash: "hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -125,13 +115,6 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
-}
-
-fn make_user_without_email(username: &str) -> User {
-    let mut user = make_user(username);
-    user.email = None;
-    user.signup_method = SignupMethod::Password;
-    user
 }
 
 async fn insert_trusted_email_identity(pool: &PgPool, user_id: &UserId, email: &str) {
@@ -933,55 +916,48 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
 
 async fn assert_update_user_rejects_direct_email_changes(pool: PgPool) {
     let service = create_user_service(&pool);
-    let user_repo = UserRepository::new(pool);
+    let user_repo = UserRepository::new(pool.clone());
+    let email_repo = UserEmailRepository::new(pool.clone());
 
     let created = user_repo
         .create(&make_user("email_update_guard_user"))
         .await
         .expect("create email signup user");
-
-    let original_email = created.email.clone();
-    let mut unbind_attempt = created.clone();
-    unbind_attempt.email = None;
-    let result = service
-        .update_user(&unbind_attempt, created.version)
+    let original_email = "email_update_guard_user@example.com";
+    email_repo
+        .create_for_user_with_executor(&created, Some(original_email), &pool)
         .await
-        .expect_err("email signup users must not be allowed to unbind email");
+        .expect("create original email identity");
 
-    assert!(
-        matches!(&result, Error::InvalidInput(message) if message.contains("cannot unbind email")),
-        "expected InvalidInput for email unbind, got {result:?}"
-    );
-
-    let unchanged = user_repo
-        .get_by_id(&created.id)
-        .await
-        .expect("fetch unchanged user")
-        .expect("user should still exist");
-    assert_eq!(unchanged.email, original_email);
-
-    let mut email_change_attempt = unchanged.clone();
-    email_change_attempt.email = Some("email_update_guard_new@example.com".to_string());
+    let mut profile_update = created.clone();
+    profile_update.username = "email_update_guard_renamed".to_string();
     let updated = service
-        .update_user(&email_change_attempt, unchanged.version)
+        .update_user(&profile_update, created.version)
         .await
-        .expect_err("direct email changes must use email bind confirmation");
+        .expect("profile update should succeed");
 
-    assert!(
-        matches!(&updated, Error::InvalidInput(message) if message.contains("email bind token")),
-        "expected InvalidInput for direct email change, got {updated:?}"
-    );
+    assert_eq!(updated.username, "email_update_guard_renamed");
+    let unchanged_email = email_repo
+        .get_email(&created.id)
+        .await
+        .expect("fetch unchanged email identity");
+    assert_eq!(unchanged_email.as_deref(), Some(original_email));
 }
 
 async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     let service = create_user_service(&pool);
     let user_repo = UserRepository::new(pool.clone());
+    let email_repo = UserEmailRepository::new(pool.clone());
 
     let created = user_repo
         .create(&make_user("email_bind_flow_user"))
         .await
         .expect("create email bind flow user");
-    let original_email = created.email.clone();
+    let original_email = "email_bind_flow_user@example.com";
+    email_repo
+        .create_for_user_with_executor(&created, Some(original_email), &pool)
+        .await
+        .expect("create original email identity");
     let new_email = "email_bind_flow_new@example.com";
 
     let token = service
@@ -989,12 +965,11 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         .await
         .expect("start email bind");
 
-    let after_start = user_repo
-        .get_by_id(&created.id)
+    let after_start = email_repo
+        .get_email(&created.id)
         .await
-        .expect("fetch user after bind start")
-        .expect("user exists after bind start");
-    assert_eq!(after_start.email, original_email);
+        .expect("fetch email after bind start");
+    assert_eq!(after_start.as_deref(), Some(original_email));
 
     let mismatch_result = service
         .confirm_email_bind(&created.id, "email_bind_flow_other@example.com", &token)
@@ -1005,18 +980,22 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         "expected InvalidInput for email mismatch"
     );
 
-    let after_mismatch = user_repo
-        .get_by_id(&created.id)
+    let after_mismatch = email_repo
+        .get_email(&created.id)
         .await
-        .expect("fetch user after bind mismatch")
-        .expect("user exists after bind mismatch");
-    assert_eq!(after_mismatch.email, original_email);
+        .expect("fetch email after bind mismatch");
+    assert_eq!(after_mismatch.as_deref(), Some(original_email));
 
     let updated = service
         .confirm_email_bind(&created.id, new_email, &token)
         .await
         .expect("confirm email bind");
-    assert_eq!(updated.email.as_deref(), Some(new_email));
+    assert_eq!(updated.id, created.id);
+    let updated_email = email_repo
+        .get_email(&created.id)
+        .await
+        .expect("fetch updated email");
+    assert_eq!(updated_email.as_deref(), Some(new_email));
 
     let consumed_result = service
         .confirm_email_bind(&created.id, new_email, &token)
@@ -1030,19 +1009,25 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
 
 async fn assert_email_bind_rejects_taken_email(pool: PgPool) {
     let service = create_user_service(&pool);
-    let user_repo = UserRepository::new(pool);
+    let user_repo = UserRepository::new(pool.clone());
+    let email_repo = UserEmailRepository::new(pool.clone());
 
     let owner = user_repo
         .create(&make_user("email_bind_taken_owner"))
         .await
         .expect("create owner user");
+    let owner_email = "email_bind_taken_owner@example.com";
+    email_repo
+        .create_for_user_with_executor(&owner, Some(owner_email), &pool)
+        .await
+        .expect("create owner email identity");
     let requester = user_repo
         .create(&make_user("email_bind_taken_requester"))
         .await
         .expect("create requester user");
 
     let result = service
-        .start_email_bind(&requester.id, owner.email.as_deref().expect("owner email"))
+        .start_email_bind(&requester.id, owner_email)
         .await
         .expect_err("taken email must be rejected");
     assert!(
@@ -1053,10 +1038,14 @@ async fn assert_email_bind_rejects_taken_email(pool: PgPool) {
 
 async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
     let service = create_user_service(&pool);
-    let user_repo = UserRepository::new(pool.clone());
 
-    let password_only = user_repo
-        .create(&make_user_without_email("two_factor_password_only"))
+    let (password_only, _, _) = service
+        .register(
+            "two_factor_password_only".to_string(),
+            None,
+            "StrongPass1".to_string(),
+            None,
+        )
         .await
         .expect("create password-only user");
     let result = service
@@ -1068,8 +1057,13 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
         "expected InvalidInput for insufficient auth factors, got {result:?}"
     );
 
-    let email_and_password = user_repo
-        .create(&make_user("two_factor_email_password"))
+    let (email_and_password, _, _) = service
+        .register(
+            "two_factor_email_password".to_string(),
+            Some("two_factor_email_password@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
         .await
         .expect("create email+password user");
     let (preferences, factors) = service
@@ -1084,9 +1078,13 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
 
 async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
     let user_service = Arc::new(create_user_service(&pool));
-    let user_repo = UserRepository::new(pool.clone());
-    let user = user_repo
-        .create(&make_user_without_email("two_factor_passkey_user"))
+    let (user, _, _) = user_service
+        .register(
+            "two_factor_passkey_user".to_string(),
+            None,
+            "StrongPass1".to_string(),
+            None,
+        )
         .await
         .expect("create password+passkey user");
     let credential_id = b"two-factor-required-passkey";

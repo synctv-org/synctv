@@ -29,7 +29,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
-        auth::{jwt::JwtService, BruteForceProtection, TestPasswordHasher},
+        auth::{jwt::JwtService, BruteForceProtection},
         InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
     },
 };
@@ -62,7 +62,8 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    
+    UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -70,16 +71,13 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    )
 }
 
 fn create_room_service(pool: sqlx::PgPool) -> RoomService {
     let user_service = create_user_service(&pool);
-    let mut svc = RoomService::new(pool, user_service);
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    svc
+    
+    RoomService::new(pool, user_service)
 }
 
 fn create_publish_key_service() -> PublishKeyService {
@@ -92,16 +90,12 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
     let user = User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "test_hash".to_string(),
         signup_method: SignupMethod::Email,
         role,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        password_changed_at: chrono::Utc::now(),
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,

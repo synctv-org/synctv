@@ -409,7 +409,7 @@ mod tests {
             .path_segments()
             .unwrap()
             .nth(5)
-            .is_some_and(|action| action == "stream" || action.starts_with("stream%2F")));
+            .is_some_and(|action| action == "stream" || action.starts_with("stream/")));
         assert!(flv_url.query_pairs().any(|(key, _)| key == "sig"));
     }
 

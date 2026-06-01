@@ -8,7 +8,7 @@
 use chrono::Utc;
 use synctv_core::{
     models::{OpaquePasswordRecord, User, UserId, UserRole, UserStatus},
-    repository::{PasswordCredentialMaterial, UserRepository},
+    repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
     Error,
 };
 use synctv_core_testing::create_test_pool;
@@ -17,16 +17,12 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -48,14 +44,12 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     // First update succeeds
     let mut updated_user = user.clone();
     updated_user.username = "user_stale_v1".to_string();
-    updated_user.email = Some("user_stale_v1@test.com".to_string());
     let v1 = repo.update(&updated_user, original_version).await.unwrap();
     assert_eq!(v1.version, original_version + 1);
 
     // Second update with stale version (original_version) -> should get OptimisticLockConflict
     let mut stale_user = user.clone();
     stale_user.username = "user_stale_v2".to_string();
-    stale_user.email = Some("user_stale_v2@test.com".to_string());
     let err = repo
         .update(&stale_user, original_version)
         .await
@@ -82,7 +76,6 @@ async fn test_update_soft_deleted_user_returns_not_found() {
     // Trying to update the deleted user should return NotFound (not OptimisticLockConflict)
     let mut updated = user.clone();
     updated.username = "user_softdel_updated".to_string();
-    updated.email = Some("user_softdel_updated@test.com".to_string());
     let err = repo.update(&updated, version).await.unwrap_err();
     assert!(
         matches!(err, Error::NotFound(_)),
@@ -109,8 +102,9 @@ async fn test_update_password_deleted_user_returns_not_found() {
     };
 
     // Trying to update password credentials on deleted user should return NotFound
-    let err = repo
-        .update_password_credentials_with_executor(
+    let password_repo = UserPasswordRepository::new(pool.clone());
+    let err = password_repo
+        .update_with_executor(
             &user.id,
             PasswordCredentialMaterial::opaque_only(&opaque_record),
             &pool,

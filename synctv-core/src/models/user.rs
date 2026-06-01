@@ -301,9 +301,6 @@ sqlx_i16_enum!(SignupMethod, "Unknown SignupMethod value", {
 pub struct User {
     pub id: UserId,
     pub username: String,
-    pub email: Option<String>, // NULL allowed for OAuth2 users
-    #[serde(skip_serializing)]
-    pub password_hash: String,
 
     /// User RBAC role (global access level) - SEPARATE from status
     pub role: UserRole,
@@ -327,10 +324,6 @@ pub struct User {
     pub signup_method: SignupMethod,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub password_changed_at: DateTime<Utc>, // Timestamp of last password change (for token invalidation)
-    /// Monotonically increasing counter, incremented on each password change.
-    /// Used to invalidate JWTs via the `pv` claim.
-    pub password_version: i32,
     /// Monotonically increasing integer for optimistic locking.
     /// Incremented by `UPDATE … SET version = version + 1 WHERE version = <old>`.
     pub version: i32,
@@ -355,8 +348,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
         Ok(Self {
             id: row.try_get("id")?,
             username: row.try_get("username")?,
-            email: row.try_get("email")?,
-            password_hash: row.try_get("password_hash")?,
             role: row.try_get("role")?,
             avatar_file_reference_id: row.try_get("avatar_file_reference_id")?,
             status: if is_banned {
@@ -371,8 +362,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
             signup_method: row.try_get("signup_method")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
-            password_changed_at: row.try_get("password_changed_at")?,
-            password_version: row.try_get("password_version")?,
             version: row.try_get("version")?,
             deleted_at: row.try_get("deleted_at")?,
         })
@@ -381,18 +370,11 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
 
 impl User {
     #[must_use]
-    pub fn new(
-        username: String,
-        email: Option<String>,
-        password_hash: String,
-        signup_method: SignupMethod,
-    ) -> Self {
+    pub fn new(username: String, signup_method: SignupMethod) -> Self {
         let now = Utc::now();
         Self {
             id: UserId::new(),
             username,
-            email,
-            password_hash,
             role: UserRole::User, // Default role
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -403,8 +385,6 @@ impl User {
             signup_method,
             created_at: now,
             updated_at: now,
-            password_changed_at: now, // Initialize to creation time
-            password_version: 0,
             version: 0,
             deleted_at: None,
         }
@@ -413,12 +393,10 @@ impl User {
     #[must_use]
     pub fn new_with_status(
         username: String,
-        email: Option<String>,
-        password_hash: String,
         signup_method: SignupMethod,
         initial_status: UserStatus,
     ) -> Self {
-        let mut user = Self::new(username, email, password_hash, signup_method);
+        let mut user = Self::new(username, signup_method);
         user.status = initial_status;
         user
     }
@@ -467,38 +445,6 @@ impl User {
     #[must_use]
     pub const fn can_join_room(&self) -> bool {
         self.deleted_at.is_none() && !self.is_banned && self.status.is_active()
-    }
-
-    /// Check if this user has a usable password for authentication.
-    ///
-    /// A user has usable password auth if:
-    /// - They signed up via email or password (explicitly set a password), OR
-    /// - They were created by admin and have a password set, OR
-    /// - They signed up via `OAuth2` but later set a password (`password_version` > 0 indicates
-    ///   password credentials were explicitly added after account creation)
-    ///
-    /// `OAuth2` users initially have no password credential row. If they later
-    /// use "set password", `password_version` increments and the joined password
-    /// hash becomes non-empty.
-    #[must_use]
-    pub const fn has_usable_password(&self) -> bool {
-        // Non-empty password hash is a baseline requirement
-        if self.password_hash.is_empty() {
-            return false;
-        }
-
-        match self.signup_method {
-            SignupMethod::Email
-            | SignupMethod::Password
-            | SignupMethod::AdminCreated
-            | SignupMethod::Unknown => true,
-            SignupMethod::WebAuthn => false,
-            SignupMethod::OAuth2 => {
-                // OAuth2 users start without password credentials.
-                // If pv > 0, the user explicitly changed/set their password.
-                self.password_version > 0
-            }
-        }
     }
 
     /// Check if user can unbind an OAuth2 provider.
@@ -564,83 +510,6 @@ pub struct UserListQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_test_user(
-        signup_method: SignupMethod,
-        password_hash: &str,
-        password_version: i32,
-    ) -> User {
-        let now = Utc::now();
-        User {
-            id: UserId::new(),
-            username: "testuser".to_string(),
-            email: Some("test@example.com".to_string()),
-            password_hash: password_hash.to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            signup_method,
-            created_at: now,
-            updated_at: now,
-            password_changed_at: now,
-            password_version,
-            version: 0,
-            deleted_at: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        }
-    }
-
-    // has_usable_password tests
-
-    #[test]
-    fn test_email_user_has_usable_password() {
-        let user = make_test_user(SignupMethod::Email, "$argon2id$fake_hash", 0);
-        assert!(
-            user.has_usable_password(),
-            "Email signup user with non-empty hash should have usable password"
-        );
-    }
-
-    #[test]
-    fn test_email_user_empty_hash_no_usable_password() {
-        let user = make_test_user(SignupMethod::Email, "", 0);
-        assert!(
-            !user.has_usable_password(),
-            "Email signup user with empty hash should NOT have usable password"
-        );
-    }
-
-    #[test]
-    fn test_oauth2_user_initial_no_usable_password() {
-        // OAuth2 users start with password_version=0 and no password credential.
-        let user = make_test_user(SignupMethod::OAuth2, "", 0);
-        assert!(
-            !user.has_usable_password(),
-            "OAuth2 user with pv=0 should NOT have usable password (random password they don't know)"
-        );
-    }
-
-    #[test]
-    fn test_oauth2_user_after_setting_password_has_usable_password() {
-        // OAuth2 user who later explicitly set a password (pv > 0)
-        let user = make_test_user(SignupMethod::OAuth2, "$argon2id$explicit_hash", 1);
-        assert!(
-            user.has_usable_password(),
-            "OAuth2 user with pv > 0 should have usable password (they explicitly set one)"
-        );
-    }
-
-    #[test]
-    fn test_oauth2_user_empty_hash_no_usable_password() {
-        let user = make_test_user(SignupMethod::OAuth2, "", 1);
-        assert!(
-            !user.has_usable_password(),
-            "OAuth2 user with empty hash should NOT have usable password regardless of pv"
-        );
-    }
 
     #[test]
     fn test_signup_method_display_and_parse_roundtrip() {

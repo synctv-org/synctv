@@ -284,8 +284,6 @@ mod permissions {
             brute_force,
         );
         user_service.enable_password_registration_for_tests();
-        user_service.enable_legacy_password_login_for_tests();
-        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
         let settings_repo = SettingsRepository::new(pool.clone());

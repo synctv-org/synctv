@@ -1924,12 +1924,7 @@ mod tests {
         use crate::test_helpers::{RoomFixture, UserFixture};
 
         fn make_user(username: &str) -> User {
-            User::new(
-                username.to_string(),
-                Some(format!("{username}@test.com")),
-                "hash".to_string(),
-                crate::models::SignupMethod::Email,
-            )
+            User::new(username.to_string(), crate::models::SignupMethod::Email)
         }
 
         let (_postgres, pool) = create_test_pool().await;

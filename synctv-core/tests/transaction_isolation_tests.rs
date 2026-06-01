@@ -28,16 +28,12 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     let user = User {
         id: *user_id,
         username,
-        email: Some(format!("{user_id}@test.com")),
-        password_hash: "test_hash".to_string(),
         signup_method: SignupMethod::Email,
         role: synctv_core::models::UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        password_changed_at: chrono::Utc::now(),
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -73,7 +69,7 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         ",
     )
     .bind(user.id)
-    .bind(user.email.as_ref())
+    .bind(format!("{user_id}@test.com"))
     .bind(user.created_at)
     .bind(user.updated_at)
     .execute(pool)
@@ -83,16 +79,20 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     sqlx::query(
         r"
         INSERT INTO auth_password_credentials (
-            user_id, legacy_password_hash, legacy_password_algorithm,
-            password_changed_at, password_version, created_at, updated_at
+            user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,
+            opaque_server_setup_version,
+            changed_at, version, created_at, updated_at
         )
-        VALUES ($1, $2, 'argon2id', $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
     )
     .bind(user.id)
-    .bind(&user.password_hash)
-    .bind(user.password_changed_at)
-    .bind(user.password_version)
+    .bind(b"test-opaque-record".as_slice())
+    .bind(b"test-opaque-id".as_slice())
+    .bind("opaque-ristretto255-sha512-argon2id")
+    .bind(1_i32)
+    .bind(user.created_at)
+    .bind(0_i32)
     .bind(user.created_at)
     .bind(user.updated_at)
     .execute(pool)

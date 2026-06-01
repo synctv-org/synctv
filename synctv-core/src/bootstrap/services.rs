@@ -705,7 +705,6 @@ pub async fn init_services_with_options(
             cache_invalidation: Some(cache_invalidation.clone()),
             refresh_rate_limiter: Some(refresh_rate_limiter),
             settings_registry: Some(Arc::clone(&settings_registry)),
-            password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
             realtime_outbox: options.realtime_outbox.clone(),
             opaque_password_service: Some(Arc::new(
                 crate::service::auth::OpaquePasswordService::derive_from_secret(

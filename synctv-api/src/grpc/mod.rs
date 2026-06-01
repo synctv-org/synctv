@@ -1377,16 +1377,12 @@ mod tests {
         User {
             id: UserId::new(),
             username: username.to_string(),
-            email: Some(format!("{username}@test.com")),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
             signup_method: SignupMethod::Email,
             created_at: now,
             updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
             deleted_at: None,
             is_banned: false,
@@ -1402,7 +1398,8 @@ mod tests {
         let username_cache =
             UsernameCache::local_only("test:grpc-chat:username:".to_string(), 128, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
-        let mut user_service = UserService::new(
+        
+        UserService::new(
             pool,
             jwt_service,
             username_cache,
@@ -1410,11 +1407,7 @@ mod tests {
             token_blacklist,
             synctv_core::cache::KeyBuilder::new("test:grpc-chat"),
             BruteForceProtection::in_memory("test:grpc-chat:auth".to_string()),
-        );
-        user_service.set_password_hasher(Arc::new(
-            synctv_core::service::auth::TestPasswordHasher::new(),
-        ));
-        user_service
+        )
     }
 
     fn make_chat_watch_chat_service(
@@ -2065,11 +2058,7 @@ mod tests {
             .unwrap();
         let token = client_api
             .jwt_service
-            .sign_token(
-                &owner.id,
-                synctv_core::service::auth::TokenType::Access,
-                owner.password_version,
-            )
+            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
             .expect("access token");
         let (room, _) = room_service
             .create_room(

@@ -50,40 +50,39 @@ fn create_user_service(pool: &PgPool) -> UserService {
 async fn insert_user(pool: &PgPool, user: &User) -> User {
     let repo = UserRepository::new(pool.clone());
     let created = repo.create(user).await.expect("Failed to create user");
-    if user.password_version != 0 {
-        set_password_version(pool, &created.id, user.password_version).await;
-    }
     repo.get_by_id(&created.id)
         .await
         .expect("Failed to reload created user")
         .expect("Created user should exist")
 }
 
-async fn set_password_version(pool: &PgPool, user_id: &UserId, password_version: i32) {
+async fn set_version(pool: &PgPool, user_id: &UserId, version: i32) {
     sqlx::query(
         r"
         INSERT INTO auth_password_credentials (
-            user_id, legacy_password_hash, legacy_password_algorithm,
-            password_changed_at, password_version, created_at, updated_at
+            user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,
+            opaque_server_setup_version,
+            changed_at, version, created_at, updated_at
         )
-        VALUES ($1, 'test-hash', 'argon2id', NOW(), $2, NOW(), NOW())
+        VALUES ($1, 'test-opaque-record'::bytea, 'test-opaque-id'::bytea,
+                'opaque-ristretto255-sha512-argon2id', 1, NOW(), $2, NOW(), NOW())
         ON CONFLICT (user_id) DO UPDATE
-        SET password_changed_at = EXCLUDED.password_changed_at,
-            password_version = EXCLUDED.password_version,
+        SET changed_at = EXCLUDED.changed_at,
+            version = EXCLUDED.version,
             updated_at = EXCLUDED.updated_at
         ",
     )
     .bind(user_id)
-    .bind(password_version)
+    .bind(version)
     .execute(pool)
     .await
     .expect("Failed to set password credential version");
 }
 
-async fn insert_banned_user(pool: &PgPool, password_version: i32) -> User {
+async fn insert_banned_user(pool: &PgPool, version: i32) -> User {
     let repo = UserRepository::new(pool.clone());
     let user = repo
-        .create(&make_user(UserStatus::Active, password_version))
+        .create(&make_user(UserStatus::Active, version))
         .await
         .expect("Failed to create user");
     repo.ban(&user.id, None, Some("security pipeline test".to_string()))
@@ -91,20 +90,16 @@ async fn insert_banned_user(pool: &PgPool, password_version: i32) -> User {
         .expect("Failed to ban user")
 }
 
-fn make_user(status: UserStatus, password_version: i32) -> User {
+fn make_user(status: UserStatus, _version: i32) -> User {
     User {
         id: UserId::new(),
         username: format!("test_user_{}", synctv_common::snanoid!(8)),
-        email: Some(format!("{}@test.com", synctv_common::snanoid!(8))),
-        password_hash: "$argon2id$v=19$m=16384,t=3,p=1$fake$fakehash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        password_changed_at: chrono::Utc::now(),
-        password_version,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -266,7 +261,6 @@ async fn test_cache_hit_active_user_passes() {
         UserStatus::Active,
         user.created_at,
         user.updated_at,
-        0,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
@@ -282,14 +276,14 @@ async fn test_cache_hit_active_user_passes() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_hit_outdated_password_version_rejected() {
+async fn test_cache_hit_outdated_version_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 5)).await;
+    set_version(&pool, &user.id, 5).await;
     let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
-    // Cache with password_version=5
     let cached = CachedUser::with_updated_at(
         user.id,
         user.username.clone(),
@@ -297,7 +291,6 @@ async fn test_cache_hit_outdated_password_version_rejected() {
         UserStatus::Active,
         user.created_at,
         user.updated_at,
-        5,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
@@ -306,7 +299,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
         .with_user_cache(user_cache)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
-    // Token has pv=3 < cached pv=5 -> should be rejected
+    // Token has pv=3 < DB auth pv=5 -> should be rejected
     let claims = make_claims(&user.id, 3);
     let result = pipeline.check(&claims).await;
     assert!(result.is_err());
@@ -333,7 +326,6 @@ async fn test_cache_hit_banned_user_rejected_from_status_cache() {
         UserStatus::Banned,
         user.created_at,
         user.updated_at,
-        0,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
@@ -385,7 +377,6 @@ async fn test_cache_hit_banned_user_rejected() {
         UserStatus::Banned,
         user.created_at,
         user.updated_at,
-        0,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
@@ -419,7 +410,6 @@ async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
         UserStatus::Active,
         user.created_at,
         user.updated_at,
-        0,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
@@ -444,7 +434,7 @@ async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_hit_stale_password_version_does_not_bypass_password_change() {
+async fn test_cache_hit_stale_version_does_not_bypass_password_change() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(&pool));
@@ -458,12 +448,11 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
         UserStatus::Active,
         user.created_at,
         user.updated_at,
-        0,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    set_password_version(&pool, &user.id, 3).await;
+    set_version(&pool, &user.id, 3).await;
 
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache)
@@ -486,12 +475,12 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_populated_with_correct_password_version_after_db_miss() {
+async fn test_cache_populated_with_correct_version_after_db_miss() {
     let (_container, pool) = create_test_pool().await;
-    let password_version = 3;
-    // UserRepository::create doesn't insert password_version (DB defaults to 0),
-    // so we insert the user first and then update password_version via raw SQL.
-    let user = insert_user(&pool, &make_user(UserStatus::Active, password_version)).await;
+    let version = 3;
+    // UserRepository::create doesn't insert version (DB defaults to 0),
+    // so we insert the user first and then update version via raw SQL.
+    let user = insert_user(&pool, &make_user(UserStatus::Active, version)).await;
     let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
@@ -505,7 +494,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache.clone())
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, password_version);
+    let claims = make_claims(&user.id, version);
 
     // This call should fall through to DB and then populate the cache
     let result = pipeline.check(&claims).await;
@@ -521,11 +510,6 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
         .await
         .unwrap()
         .expect("Cache should be populated after DB lookup");
-    assert_eq!(
-        cached.password_version(),
-        password_version,
-        "Cached password_version should match the DB value"
-    );
     assert_eq!(
         cached.status(),
         UserStatus::Active,
@@ -639,7 +623,6 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
         UserStatus::Active,
         user.created_at,
         user.updated_at,
-        0,
         false,
     );
     user_cache.set(&user.id, cached).await.unwrap();

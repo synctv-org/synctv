@@ -17,7 +17,7 @@ use synctv_core::{
         UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         AuditService, EmailConfig, EmailConfigProvider, EmailService, InMemoryTokenBlacklistStore,
         PublishKeyService, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
         UserService,
@@ -49,8 +49,6 @@ fn make_user(username: &str, role: UserRole, status: UserStatus) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "hash".to_string(),
         role,
         avatar_file_reference_id: None,
         status,
@@ -61,8 +59,6 @@ fn make_user(username: &str, role: UserRole, status: UserStatus) -> User {
         signup_method: SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
     }
@@ -72,7 +68,8 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    let mut service = UserService::new(
+    
+    UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -80,9 +77,7 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
         token_blacklist,
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test:user".to_string()),
-    );
-    service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    service
+    )
 }
 
 fn make_client_api(
@@ -1053,17 +1048,16 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     sqlx::query(
         r"
         INSERT INTO user_registration_requests (
-            id, username, email, legacy_password_hash, opaque_record,
+            id, username, email, opaque_record,
             opaque_credential_identifier, opaque_ciphersuite,
             opaque_server_setup_version, signup_method, status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
     )
     .bind(pending_registration_id)
     .bind("user_matrix_pending")
     .bind("user_matrix_pending@test.com")
-    .bind("hash")
     .bind(b"opaque-record".as_slice())
     .bind(b"opaque-id".as_slice())
     .bind("opaque-ristretto255-sha512-argon2id")

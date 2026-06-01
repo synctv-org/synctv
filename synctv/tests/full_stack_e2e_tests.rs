@@ -1949,6 +1949,33 @@ async fn send_client_message(
         .expect("send websocket client message");
 }
 
+fn observe_chat_events_message(observe_id: &str) -> synctv_proto::client::ClientMessage {
+    use synctv_proto::client::{
+        client_message, observe_resource, ObserveChatEvents, ObserveResource, ResourceDeliveryMode,
+    };
+
+    synctv_proto::client::ClientMessage {
+        message: Some(client_message::Message::ObserveResource(ObserveResource {
+            observe_id: observe_id.to_string(),
+            version: String::new(),
+            delivery_mode: ResourceDeliveryMode::NotifyOnly as i32,
+            resource: Some(observe_resource::Resource::ChatEvents(ObserveChatEvents {
+                after_event_id: String::new(),
+            })),
+        })),
+    }
+}
+
+fn resource_chat_event(message: &ServerMessage) -> Option<&synctv_proto::client::ChatMessageEvent> {
+    match &message.message {
+        Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
+            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => Some(event),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 struct RoomRealtimeFixture {
     server: TestServer,
     api_addr: String,
@@ -3754,7 +3781,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "--user-id",
             &joined_subject_user_id,
             "--kick-cooldown-seconds",
-            "1",
+            "3",
         ],
         "kick room member",
     )
@@ -3823,7 +3850,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         false
     );
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
     let rejoined_without_password = join_room_http(&server, &room_id, "", &subject_token).await;
     assert_eq!(
         rejoined_without_password.status(),
@@ -7530,6 +7557,19 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
     let _ = drain_until_quiet(&mut owner_ws, 250).await;
     let _ = drain_until_quiet(&mut member_ws, 250).await;
+    send_client_message(&mut member_ws, observe_chat_events_message("chat-events")).await;
+    recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::ResourceObserved(_))
+            )
+        },
+        "chat_events observation acknowledgement",
+    )
+    .await;
 
     let observer_suffix = unique_test_suffix();
     let observer_username = format!("ws_room_observer_{observer_suffix}");
@@ -7611,17 +7651,15 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| match &message.message {
-            Some(server_message::Message::Chat(chat)) => {
-                chat.content == chat_content && chat.username == owner_username
-            }
-            Some(server_message::Message::ChatEvent(event)) => event
-                .message
-                .as_ref()
-                .is_some_and(|chat| chat.content == chat_content),
-            _ => false,
+        |message| {
+            resource_chat_event(message).is_some_and(|event| {
+                event
+                    .message
+                    .as_ref()
+                    .is_some_and(|chat| chat.content == chat_content)
+            })
         },
-        "chat websocket broadcast",
+        "chat_events websocket resource update",
     )
     .await;
 
@@ -7643,17 +7681,15 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| match &message.message {
-            Some(server_message::Message::Chat(chat)) => {
-                chat.content == second_chat_content && chat.username == owner_username
-            }
-            Some(server_message::Message::ChatEvent(event)) => event
-                .message
-                .as_ref()
-                .is_some_and(|chat| chat.content == second_chat_content),
-            _ => false,
+        |message| {
+            resource_chat_event(message).is_some_and(|event| {
+                event
+                    .message
+                    .as_ref()
+                    .is_some_and(|chat| chat.content == second_chat_content)
+            })
         },
-        "second chat websocket broadcast",
+        "second chat_events websocket resource update",
     )
     .await;
 

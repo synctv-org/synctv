@@ -325,7 +325,7 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
         "default HLS mode should use the default m3u8 proxy action"
     );
     assert!(
-        result.playback_infos["transcoded_SD"].urls[0].contains("m3u8%2Ftranscoded_SD%2F0?"),
+        result.playback_infos["transcoded_SD"].urls[0].contains("/m3u8/transcoded_SD/0?"),
         "non-default HLS modes must keep their own m3u8 proxy action"
     );
 

@@ -6393,6 +6393,7 @@ jwt:
     #[test]
     fn test_validate_allows_empty_root_password_until_bootstrap_creation() {
         let mut config = valid_prod_config();
+        config.bootstrap.create_root_user = false;
         config.bootstrap.root_password.clear();
         config
             .validate()

@@ -274,19 +274,12 @@ async fn create_test_user(pool: &sqlx::PgPool) -> User {
     let user = User {
         id: UserId::new(),
         username: format!("db_maintenance_user_{}", synctv_common::snanoid!(8)),
-        email: Some(format!(
-            "db_maintenance_{}@example.com",
-            synctv_common::snanoid!(8)
-        )),
-        password_hash: "test_hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,

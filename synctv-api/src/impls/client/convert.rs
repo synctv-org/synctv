@@ -292,6 +292,7 @@ pub fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
 
 pub(crate) fn user_to_proto(
     user: &synctv_core::models::User,
+    email: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::User {
     crate::proto::client::User {
@@ -299,7 +300,7 @@ pub(crate) fn user_to_proto(
             .encode_user_id(user.id)
             .expect("positive user ID must encode"),
         username: user.username.clone(),
-        email: user.email.clone().unwrap_or_default(),
+        email: email.unwrap_or_default().to_string(),
         role: user_role_to_proto(user.role),
         status: user_status_to_proto(user.status),
         created_at: user.created_at.timestamp(),

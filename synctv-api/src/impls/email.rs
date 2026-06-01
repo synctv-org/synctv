@@ -583,10 +583,13 @@ impl EmailApiImpl {
             .get_mfa_session_user_for_method(mfa_session_id, AuthFactorMethod::Email)
             .await
             .map_err(ApiError::from)?;
-        let email = user
-            .email
-            .as_deref()
+        let email = self
+            .user_service
+            .get_email(&user.id)
+            .await
+            .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
+        let email = email.as_str();
         self.check_email_rate_limit(email, control).await?;
         let _token = self
             .email_service
@@ -728,8 +731,6 @@ mod tests {
         User {
             id: UserId::new(),
             username: username.to_string(),
-            email: Some(format!("{username}@example.com")),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -740,8 +741,6 @@ mod tests {
             signup_method: SignupMethod::Email,
             created_at: now,
             updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
             deleted_at: None,
         }
@@ -761,8 +760,6 @@ mod tests {
             BruteForceProtection::in_memory("test".to_string()),
         );
         user_service.enable_password_registration_for_tests();
-        user_service.enable_legacy_password_login_for_tests();
-        user_service.enable_legacy_password_registration_for_tests();
         let user_service = Arc::new(user_service);
 
         EmailApiImpl::new(
@@ -779,10 +776,15 @@ mod tests {
     async fn request_password_reset_returns_same_message_for_existing_and_missing_users() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool.clone());
-        let repo = synctv_core::repository::UserRepository::new(pool);
+        let repo = synctv_core::repository::UserRepository::new(pool.clone());
+        let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
         let existing_user = make_user("email_api_existing");
-        let existing_email = existing_user.email.clone().unwrap();
-        repo.create(&existing_user).await.unwrap();
+        let existing_email = "email_api_existing@example.com".to_string();
+        let created = repo.create(&existing_user).await.unwrap();
+        email_repo
+            .create_for_user_with_executor(&created, Some(&existing_email), repo.pool())
+            .await
+            .unwrap();
 
         let existing = api.request_password_reset(&existing_email).await.unwrap();
         let missing = api
@@ -800,10 +802,15 @@ mod tests {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool.clone());
         let repo = synctv_core::repository::UserRepository::new(pool.clone());
+        let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
 
         let user = make_user("email_login_multi");
-        let email = user.email.clone().unwrap();
+        let email = "email_login_multi@example.com".to_string();
         let created = repo.create(&user).await.unwrap();
+        email_repo
+            .create_for_user_with_executor(&created, Some(&email), repo.pool())
+            .await
+            .unwrap();
 
         let first = api
             .email_token_service
@@ -929,10 +936,15 @@ mod tests {
     async fn request_email_login_returns_same_message_for_existing_and_missing_users() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool.clone());
-        let repo = synctv_core::repository::UserRepository::new(pool);
+        let repo = synctv_core::repository::UserRepository::new(pool.clone());
+        let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
         let existing_user = make_user("email_login_existing");
-        let existing_email = existing_user.email.clone().unwrap();
-        repo.create(&existing_user).await.unwrap();
+        let existing_email = "email_login_existing@example.com".to_string();
+        let created = repo.create(&existing_user).await.unwrap();
+        email_repo
+            .create_for_user_with_executor(&created, Some(&existing_email), repo.pool())
+            .await
+            .unwrap();
 
         let existing = api.request_email_login(&existing_email).await.unwrap();
         let missing = api

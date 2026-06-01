@@ -2393,11 +2393,8 @@ impl StreamMessageHandler {
                                 if self.is_own_join_event(&event) {
                                     continue;
                                 }
-                        let send_direct_messages =
-                            !matches!(event, RealtimeEvent::ChatMessageEvent { .. });
-
-                        let mut send_failed = false;
-                        if send_direct_messages {
+                        if !matches!(event, RealtimeEvent::ChatMessageEvent { .. }) {
+                            let mut send_failed = false;
                             for msg in realtime_event_to_server_messages(
                                 &event,
                                 &room_id_str,
@@ -2409,9 +2406,9 @@ impl StreamMessageHandler {
                                     break;
                                 }
                             }
-                        }
-                        if send_failed {
-                            break;
+                            if send_failed {
+                                break;
+                            }
                         }
 
                         if let Err(error) = self
@@ -3444,10 +3441,7 @@ impl StreamMessageHandler {
                                         | RealtimeEvent::RoomOwnerInactive { .. }
                                 );
 
-                                let send_direct_messages =
-                                    !matches!(event, RealtimeEvent::ChatMessageEvent { .. });
-
-                                if send_direct_messages {
+                                if !matches!(event, RealtimeEvent::ChatMessageEvent { .. }) {
                                     for msg in realtime_event_to_server_messages(
                                         &event,
                                         &room_id_str,
@@ -4622,13 +4616,7 @@ fn realtime_event_to_server_messages(
                 playback_position_seconds: None,
             })),
         }],
-        RealtimeEvent::ChatMessageEvent { event, room_id, .. } => vec![ServerMessage {
-            message: Some(Message::ChatEvent(chat_message_event_to_proto(
-                event,
-                public_id_codec,
-                *room_id,
-            ))),
-        }],
+        RealtimeEvent::ChatMessageEvent { .. } => Vec::new(),
         RealtimeEvent::PlaybackStateChanged { state, .. } => vec![ServerMessage {
             message: Some(Message::PlaybackState(PlaybackStateChanged {
                 room_id: room_id.to_string(),

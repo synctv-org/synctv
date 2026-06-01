@@ -142,13 +142,7 @@ mod tests {
     use synctv_core::models::{SignupMethod, User, UserStatus};
 
     fn make_actor_user(username: &str, status: UserStatus) -> User {
-        User::new_with_status(
-            username.to_string(),
-            Some(format!("{username}@example.com")),
-            "hash".to_string(),
-            SignupMethod::Email,
-            status,
-        )
+        User::new_with_status(username.to_string(), SignupMethod::Email, status)
     }
 
     #[test]

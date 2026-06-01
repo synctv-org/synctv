@@ -421,13 +421,18 @@ impl OAuth2ApiImpl {
         match login {
             synctv_core::service::AuthenticatedLogin::Complete {
                 user,
+                email,
                 access_token,
                 refresh_token,
             } => Ok(ExchangeCodeResult {
                 access_token: Some(access_token),
                 refresh_token: Some(refresh_token),
                 expires_in,
-                user_info: Some(user_to_oauth2_user_info(&user, &self.public_id_codec)),
+                user_info: Some(user_to_oauth2_user_info(
+                    &user,
+                    email.as_deref(),
+                    &self.public_id_codec,
+                )),
                 redirect_url: oauth_state.redirect_url,
                 is_bind: false,
                 registration_review_required: false,
@@ -712,7 +717,11 @@ pub struct LinkedProviderInfo {
 }
 
 /// Convert User model to `OAuth2UserInfo` proto
-fn user_to_oauth2_user_info(user: &User, public_id_codec: &crate::PublicIdCodec) -> OAuth2UserInfo {
+fn user_to_oauth2_user_info(
+    user: &User,
+    email: Option<&str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> OAuth2UserInfo {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 
     let proto_role = match user.role {
@@ -731,7 +740,7 @@ fn user_to_oauth2_user_info(user: &User, public_id_codec: &crate::PublicIdCodec)
             .encode_user_id(user.id)
             .expect("positive user ID must encode"),
         username: user.username.clone(),
-        email: user.email.clone().unwrap_or_default(),
+        email: email.unwrap_or_default().to_string(),
         avatar: String::new(), // User model doesn't have avatar field currently
         role: proto_role as i32,
         status: proto_status as i32,
@@ -796,65 +805,6 @@ mod tests {
         assert!(
             matches!(mapped, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
             "missing bind users should still be treated as authentication failure, got: {mapped:?}"
-        );
-    }
-
-    /// Test the model-level legacy password capability semantics.
-    ///
-    /// OAuth2 unlink no longer uses this as its safety check; it protects the
-    /// OAuth2 registration resource directly. This test remains here because
-    /// OAuth2 account binding still depends on correct password capability
-    /// reporting in adjacent auth-method checks.
-    #[test]
-    fn test_oauth2_user_password_capability_tracks_explicit_password_setup() {
-        use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
-
-        let now = chrono::Utc::now();
-
-        // Case 1: OAuth2 user with pv=0 (random password, never set their own)
-        let oauth2_user_no_password = User {
-            id: UserId::new(),
-            username: "oauth2_user".to_string(),
-            email: None,
-            password_hash: "$argon2id$v=19$m=16384,t=3,p=1$random$hash".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: SignupMethod::OAuth2,
-            created_at: now,
-            updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
-            version: 0,
-            deleted_at: None,
-        };
-        assert!(
-            !oauth2_user_no_password.has_usable_password(),
-            "OAuth2 user with pv=0 should NOT have usable password"
-        );
-
-        // Case 2: OAuth2 user who later set a password (pv=1)
-        let oauth2_user_with_password = User {
-            password_version: 1,
-            ..oauth2_user_no_password.clone()
-        };
-        assert!(
-            oauth2_user_with_password.has_usable_password(),
-            "OAuth2 user with pv=1 should have usable password (they explicitly set one)"
-        );
-
-        // Case 3: Email signup user always has usable password
-        let email_user = User {
-            signup_method: SignupMethod::Email,
-            ..oauth2_user_no_password
-        };
-        assert!(
-            email_user.has_usable_password(),
-            "Email signup user should always have usable password"
         );
     }
 

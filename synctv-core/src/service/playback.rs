@@ -2119,7 +2119,7 @@ mod tests {
     };
     use crate::service::permission::PermissionService;
     use crate::service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, MediaService, NotificationService, ProvidersManager,
         RemoteProviderManager, UserService,
     };
@@ -2199,7 +2199,8 @@ mod tests {
         let key_builder = KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-        let mut user_service = UserService::new(
+        
+        UserService::new(
             pool,
             jwt_service,
             username_cache,
@@ -2207,9 +2208,7 @@ mod tests {
             token_blacklist,
             key_builder,
             brute_force,
-        );
-        user_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-        user_service
+        )
     }
 
     fn make_user(username: &str) -> User {
@@ -2217,16 +2216,12 @@ mod tests {
         User {
             id: UserId::new(),
             username: username.to_string(),
-            email: Some(format!("{username}@test.com")),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
             signup_method: SignupMethod::Email,
             created_at: now,
             updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
             deleted_at: None,
             is_banned: false,

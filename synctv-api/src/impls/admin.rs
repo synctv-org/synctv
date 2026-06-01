@@ -273,12 +273,17 @@ pub async fn validate_admin_auth(
         ));
     }
 
-    // Check password version
-    if token_pv < user.password_version {
+    let password_version = user_service
+        .get_password_credential_state(&user_id)
+        .await
+        .map_err(ApiError::from)?
+        .version;
+
+    if token_pv < password_version {
         tracing::debug!(
             user_id = %user_id,
             token_pv = token_pv,
-            current_pv = user.password_version,
+            current_pv = password_version,
             "Admin auth rejected: token password version outdated"
         );
         return Err(ApiError::Authentication(
@@ -564,6 +569,22 @@ fn compare_active_streams(
 }
 
 impl AdminApiImpl {
+    async fn admin_user_to_proto_with_email(
+        &self,
+        user: &synctv_core::models::User,
+    ) -> Result<crate::proto::admin::AdminUser, ApiError> {
+        let email = self
+            .user_service
+            .get_email(&user.id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(admin_user_to_proto(
+            user,
+            email.as_deref(),
+            &self.public_id_codec,
+        ))
+    }
+
     fn publish_room_cache_invalidation(&self, room_id: &RoomId) {
         self.room_cache_fanout.publish_invalidation(room_id);
     }
@@ -2286,10 +2307,10 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let user_list: Vec<_> = users
-            .into_iter()
-            .map(|u| admin_user_to_proto(&u, &self.public_id_codec))
-            .collect();
+        let mut user_list = Vec::with_capacity(users.len());
+        for user in users {
+            user_list.push(self.admin_user_to_proto_with_email(&user).await?);
+        }
 
         Ok(crate::proto::admin::ListUsersResponse {
             users: user_list,
@@ -2310,7 +2331,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetUserResponse {
-            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&user).await?),
         })
     }
 
@@ -2332,7 +2353,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetUserPreferencesResponse {
-            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&user).await?),
             preferences: Some(user_preferences_to_proto(&preferences)?),
             auth_factors: Some(auth_factors_to_proto(&auth_factors)),
         })
@@ -2391,7 +2412,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateUserPreferencesResponse {
-            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&user).await?),
             preferences: Some(user_preferences_to_proto(&preferences)?),
             auth_factors: Some(auth_factors_to_proto(&auth_factors)),
         })
@@ -2476,7 +2497,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateUserRoleResponse {
-            user: Some(admin_user_to_proto(&updated_user, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&updated_user).await?),
         })
     }
 
@@ -2755,7 +2776,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::CreateUserResponse {
-            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&user).await?),
         })
     }
 
@@ -2841,7 +2862,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateUserUsernameResponse {
-            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
         })
     }
 
@@ -2878,7 +2899,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::BanUserResponse {
-            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
         })
     }
 
@@ -2921,7 +2942,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UnbanUserResponse {
-            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
         })
     }
 
@@ -3322,7 +3343,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(admin_user_to_proto(&updated, &self.public_id_codec))
+        self.admin_user_to_proto_with_email(&updated).await
     }
 
     pub async fn get_user_rooms(
@@ -3742,7 +3763,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::AddAdminResponse {
-            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
+            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
         })
     }
 
@@ -3818,10 +3839,10 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let admins: Vec<_> = users
-            .into_iter()
-            .map(|u| admin_user_to_proto(&u, &self.public_id_codec))
-            .collect();
+        let mut admins = Vec::with_capacity(users.len());
+        for user in users {
+            admins.push(self.admin_user_to_proto_with_email(&user).await?);
+        }
 
         Ok(crate::proto::admin::ListAdminsResponse {
             admins,
@@ -5755,6 +5776,7 @@ fn admin_room_member_to_proto_with_permissions(
 
 fn admin_user_to_proto(
     user: &synctv_core::models::User,
+    email: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::admin::AdminUser {
     crate::proto::admin::AdminUser {
@@ -5762,7 +5784,7 @@ fn admin_user_to_proto(
             .encode_user_id(user.id)
             .expect("positive user ID must encode"),
         username: user.username.clone(),
-        email: user.email.clone().unwrap_or_default(),
+        email: email.unwrap_or_default().to_string(),
         role: i32::from(user.role),
         status: i32::from(user.status),
         created_at: user.created_at.timestamp(),
@@ -5828,7 +5850,7 @@ mod tests {
             UserRepository,
         },
         service::{
-            auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+            auth::{BruteForceProtection, JwtService},
             AuditService, EmailService, InMemoryTokenBlacklistStore, PublishKeyService,
             RemoteProviderManager, RuntimeEmailConfigProvider, SettingsRegistry, SettingsService,
             UserService,
@@ -6161,7 +6183,8 @@ mod tests {
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
 
-        let mut user_service = UserService::new(
+        
+        UserService::new(
             pool,
             jwt_service,
             username_cache,
@@ -6169,9 +6192,7 @@ mod tests {
             token_blacklist,
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
-        );
-        user_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-        user_service
+        )
     }
 
     #[tokio::test]
@@ -6184,8 +6205,6 @@ mod tests {
         let banned_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "banned_admin_auth".to_string(),
-            email: Some("banned_admin_auth@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Admin,
             avatar_file_reference_id: None,
             status: UserStatus::Banned,
@@ -6197,8 +6216,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let banned_admin = user_repo
@@ -6437,8 +6454,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_add_membership_outbox".to_string(),
-            email: Some("global_admin_add_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6450,15 +6465,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_add_membership_outbox".to_string(),
-            email: Some("room_owner_add_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6470,15 +6481,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
             username: "target_add_membership_outbox".to_string(),
-            email: Some("target_add_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6490,8 +6497,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -6556,8 +6561,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_update_membership_outbox".to_string(),
-            email: Some("global_admin_update_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6569,15 +6572,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_update_membership_outbox".to_string(),
-            email: Some("room_owner_update_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6589,15 +6588,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
             username: "target_update_membership_outbox".to_string(),
-            email: Some("target_update_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6609,8 +6604,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -6667,8 +6660,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_member_response_permissions".to_string(),
-            email: Some("global_admin_member_response_permissions@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6680,15 +6671,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "owner_member_response_permissions".to_string(),
-            email: Some("owner_member_response_permissions@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6700,15 +6687,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
             username: "target_member_response_permissions".to_string(),
-            email: Some("target_member_response_permissions@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6720,8 +6703,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -6788,8 +6769,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_kick_membership_outbox".to_string(),
-            email: Some("global_admin_kick_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6801,15 +6780,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_kick_membership_outbox".to_string(),
-            email: Some("room_owner_kick_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6821,15 +6796,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
             username: "target_kick_membership_outbox".to_string(),
-            email: Some("target_kick_membership_outbox@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -6841,8 +6812,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -7215,8 +7184,6 @@ mod tests {
         synctv_core::models::User {
             id: UserId::expect_positive(103),
             username: "admin_test".to_string(),
-            email: Some("admin@test.com".to_string()),
-            password_hash: "hash".to_string(),
             role,
             avatar_file_reference_id: None,
             status,
@@ -7228,8 +7195,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         }
     }
@@ -7246,7 +7211,7 @@ mod tests {
             (UserRole::User, synctv_proto::common::UserRole::User as i32),
         ] {
             let user = make_test_user(role, UserStatus::Active);
-            let proto = admin_user_to_proto(&user, &public_id_codec);
+            let proto = admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec);
             assert_eq!(proto.role, expected);
         }
     }
@@ -7265,7 +7230,7 @@ mod tests {
             ),
         ] {
             let user = make_test_user(UserRole::User, status);
-            let proto = admin_user_to_proto(&user, &public_id_codec);
+            let proto = admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec);
             assert_eq!(proto.status, expected);
         }
     }
@@ -7274,7 +7239,7 @@ mod tests {
     fn test_admin_user_to_proto_fields() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let user = make_test_user(UserRole::Admin, UserStatus::Active);
-        let proto = admin_user_to_proto(&user, &public_id_codec);
+        let proto = admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec);
 
         assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
         assert_eq!(proto.username, "admin_test");
@@ -7284,9 +7249,8 @@ mod tests {
     #[test]
     fn test_admin_user_to_proto_no_email() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
-        let mut user = make_test_user(UserRole::User, UserStatus::Active);
-        user.email = None;
-        let proto = admin_user_to_proto(&user, &public_id_codec);
+        let user = make_test_user(UserRole::User, UserStatus::Active);
+        let proto = admin_user_to_proto(&user, None, &public_id_codec);
         assert_eq!(proto.email, "");
     }
 
@@ -7406,8 +7370,6 @@ mod tests {
             synctv_core::models::User {
                 id: UserId::new(),
                 username: "root-zeta".to_string(),
-                email: Some("root-zeta@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::Root,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -7419,15 +7381,11 @@ mod tests {
                 created_at: now,
                 updated_at: now,
                 deleted_at: None,
-                password_changed_at: now,
-                password_version: 0,
                 version: 0,
             },
             synctv_core::models::User {
                 id: UserId::new(),
                 username: "admin-alpha".to_string(),
-                email: Some("admin-alpha@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::Admin,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -7439,15 +7397,11 @@ mod tests {
                 created_at: now,
                 updated_at: now,
                 deleted_at: None,
-                password_changed_at: now,
-                password_version: 0,
                 version: 0,
             },
             synctv_core::models::User {
                 id: UserId::new(),
                 username: "user-ignored".to_string(),
-                email: Some("user-ignored@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::User,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -7459,8 +7413,6 @@ mod tests {
                 created_at: now,
                 updated_at: now,
                 deleted_at: None,
-                password_changed_at: now,
-                password_version: 0,
                 version: 0,
             },
         ] {
@@ -7601,8 +7553,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "proto_list_admin".to_string(),
-            email: Some("proto_list_admin@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -7614,8 +7564,6 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
         };
         let admin_user = user_repo
@@ -7685,8 +7633,6 @@ mod tests {
                 .create(&synctv_core::models::User {
                     id: UserId::new(),
                     username: username.to_string(),
-                    email: Some(format!("{username}@example.com")),
-                    password_hash: "hash".to_string(),
                     role,
                     avatar_file_reference_id: None,
                     status: UserStatus::Active,
@@ -7698,8 +7644,6 @@ mod tests {
                     created_at: now,
                     updated_at: now,
                     deleted_at: None,
-                    password_changed_at: now,
-                    password_version: 0,
                     version: 0,
                 })
                 .await
@@ -7734,8 +7678,6 @@ mod tests {
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "target-user-rooms".to_string(),
-            email: Some("target-user-rooms@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -7747,15 +7689,11 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
         };
         let other_owner = synctv_core::models::User {
             id: UserId::new(),
             username: "other-owner-rooms".to_string(),
-            email: Some("other-owner-rooms@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -7767,8 +7705,6 @@ mod tests {
             created_at: now,
             updated_at: now,
             deleted_at: None,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
         };
         let target_user = user_repo
@@ -8181,8 +8117,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_admin".to_string(),
-            email: Some("root_admin@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8194,15 +8128,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "victim_user".to_string(),
-            email: Some("victim_user@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8214,8 +8144,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");
@@ -8258,8 +8186,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_create_user_attrs".to_string(),
-            email: Some("root_create_user_attrs@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8271,8 +8197,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         UserRepository::new(pool.clone())
@@ -8318,8 +8242,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "root_update_username".to_string(),
-                email: Some("root_update_username@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::Root,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -8331,8 +8253,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -8341,8 +8261,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "target_update_username".to_string(),
-                email: None,
-                password_hash: "hash".to_string(),
                 role: UserRole::User,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -8354,8 +8272,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -8389,8 +8305,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_delete_membership".to_string(),
-            email: Some("root_delete_membership@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8402,15 +8316,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "victim_membership".to_string(),
-            email: Some("victim_membership@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8422,8 +8332,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");
@@ -8436,8 +8344,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "room_owner_one".to_string(),
-                email: Some("room_owner_one@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::User,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -8449,8 +8355,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -8459,8 +8363,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "room_owner_two".to_string(),
-                email: Some("room_owner_two@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::User,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -8472,8 +8374,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -8545,8 +8445,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_delete_owned_room".to_string(),
-            email: Some("root_delete_owned_room@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8558,15 +8456,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "owned_room_victim".to_string(),
-            email: Some("owned_room_victim@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8578,8 +8472,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");
@@ -8668,8 +8560,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_user_ban_cleanup".to_string(),
-            email: Some("root_user_ban_cleanup@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8681,15 +8571,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "banned_membership".to_string(),
-            email: Some("banned_membership@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8701,8 +8587,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");
@@ -8715,8 +8599,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "room_owner_ban".to_string(),
-                email: Some("room_owner_ban@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::User,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -8728,8 +8610,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -8804,8 +8684,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_ban_playback".to_string(),
-            email: Some("root_ban_playback@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8817,15 +8695,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "banned_playback_creator".to_string(),
-            email: Some("banned_playback_creator@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8837,15 +8711,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let room_owner = synctv_core::models::User {
             id: UserId::new(),
             username: "playback_room_owner".to_string(),
-            email: Some("playback_room_owner@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8857,8 +8727,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
 
@@ -8939,8 +8807,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_ban_owned_room".to_string(),
-            email: Some("root_ban_owned_room@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8952,15 +8818,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "banned_owned_room_creator".to_string(),
-            email: Some("banned_owned_room_creator@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8972,15 +8834,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let member_user = synctv_core::models::User {
             id: UserId::new(),
             username: "owned_room_member".to_string(),
-            email: Some("owned_room_member@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -8992,8 +8850,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
 
@@ -9067,8 +8923,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_ban_owned_room_event".to_string(),
-            email: Some("root_ban_owned_room_event@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9080,15 +8934,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "owned_room_event_creator".to_string(),
-            email: Some("owned_room_event_creator@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9100,8 +8950,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
 
@@ -9175,8 +9023,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_batch_ban_playback".to_string(),
-            email: Some("root_batch_ban_playback@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9188,15 +9034,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "batch_banned_media_creator".to_string(),
-            email: Some("batch_banned_media_creator@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9208,15 +9050,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let room_owner = synctv_core::models::User {
             id: UserId::new(),
             username: "batch_ban_playback_owner".to_string(),
-            email: Some("batch_ban_playback_owner@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9228,8 +9066,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
 
@@ -9313,8 +9149,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "root_batch_ban_owned_room_event".to_string(),
-            email: Some("root_batch_ban_owned_room_event@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9326,15 +9160,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target_user = synctv_core::models::User {
             id: UserId::new(),
             username: "batch_owned_room_creator".to_string(),
-            email: Some("batch_owned_room_creator@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9346,8 +9176,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
 
@@ -9441,8 +9269,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_member_update".to_string(),
-            email: Some("global_admin_member_update@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9454,15 +9280,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_member_update".to_string(),
-            email: Some("room_owner_member_update@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9474,15 +9296,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
             username: "target_member_update".to_string(),
-            email: Some("target_member_update@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9494,8 +9312,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -9555,8 +9371,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_member_kick".to_string(),
-            email: Some("global_admin_member_kick@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9568,15 +9382,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_member_kick".to_string(),
-            email: Some("room_owner_member_kick@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9588,15 +9398,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
             username: "target_member_kick".to_string(),
-            email: Some("target_member_kick@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9608,8 +9414,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -9657,8 +9461,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_stream_info".to_string(),
-            email: Some("global_admin_stream_info@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9670,15 +9472,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_stream_info".to_string(),
-            email: Some("room_owner_stream_info@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9690,8 +9488,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         user_repo
@@ -9752,8 +9548,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_stream_kick_failure".to_string(),
-            email: Some("global_admin_stream_kick_failure@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9765,15 +9559,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_stream_kick_failure".to_string(),
-            email: Some("room_owner_stream_kick_failure@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9785,8 +9575,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -9872,8 +9660,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_remote_stream_kick".to_string(),
-            email: Some("global_admin_remote_stream_kick@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9885,15 +9671,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_remote_stream_kick".to_string(),
-            email: Some("room_owner_remote_stream_kick@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -9905,8 +9687,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -9989,8 +9769,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_remote_stream_fanout_failure".to_string(),
-            email: Some("global_admin_remote_stream_fanout_failure@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10002,15 +9780,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_remote_stream_fanout_failure".to_string(),
-            email: Some("room_owner_remote_stream_fanout_failure@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10022,8 +9796,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -10100,8 +9872,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_stream_list".to_string(),
-            email: Some("global_admin_stream_list@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10113,15 +9883,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_stream_list".to_string(),
-            email: Some("room_owner_stream_list@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10133,8 +9899,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         user_repo
@@ -10242,8 +10006,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_publish_key".to_string(),
-            email: Some("global_admin_publish_key@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10255,15 +10017,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_publish_key".to_string(),
-            email: Some("room_owner_publish_key@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10275,8 +10033,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -10343,8 +10099,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_playback_start".to_string(),
-            email: Some("global_admin_playback_start@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10356,15 +10110,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_playback_start".to_string(),
-            email: Some("room_owner_playback_start@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10376,8 +10126,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -10434,8 +10182,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_playback_stop".to_string(),
-            email: Some("global_admin_playback_stop@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10447,15 +10193,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_playback_stop".to_string(),
-            email: Some("room_owner_playback_stop@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10467,8 +10209,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -10589,8 +10329,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "global_admin_playback_lifecycle".to_string(),
-                email: Some("global_admin_playback_lifecycle@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::Root,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -10602,8 +10340,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -10612,8 +10348,6 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: UserId::new(),
                 username: "room_owner_playback_lifecycle".to_string(),
-                email: Some("room_owner_playback_lifecycle@example.com".to_string()),
-                password_hash: "hash".to_string(),
                 role: UserRole::User,
                 avatar_file_reference_id: None,
                 status: UserStatus::Active,
@@ -10625,8 +10359,6 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-                password_changed_at: chrono::Utc::now(),
-                password_version: 0,
                 version: 0,
             })
             .await
@@ -10724,8 +10456,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_playback_get".to_string(),
-            email: Some("global_admin_playback_get@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10737,15 +10467,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_playback_get".to_string(),
-            email: Some("room_owner_playback_get@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10757,8 +10483,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -10822,8 +10546,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_playback_state_only".to_string(),
-            email: Some("global_admin_playback_state_only@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10835,15 +10557,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_playback_state_only".to_string(),
-            email: Some("room_owner_playback_state_only@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10855,8 +10573,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -10928,8 +10644,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_playback_get_signed".to_string(),
-            email: Some("global_admin_playback_get_signed@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10941,15 +10655,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_playback_get_signed".to_string(),
-            email: Some("room_owner_playback_get_signed@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -10961,8 +10671,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11054,8 +10762,6 @@ mod tests {
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_local_mgmt_playback_get_signed".to_string(),
-            email: Some("room_owner_local_mgmt_playback_get_signed@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11067,8 +10773,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = user_repo.create(&owner).await.expect("create owner");
@@ -11164,8 +10868,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_list_playlists".to_string(),
-            email: Some("global_admin_list_playlists@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11177,15 +10879,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_list_playlists".to_string(),
-            email: Some("room_owner_list_playlists@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11197,8 +10895,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11279,8 +10975,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_get_playlist".to_string(),
-            email: Some("global_admin_get_playlist@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11292,15 +10986,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_get_playlist".to_string(),
-            email: Some("room_owner_get_playlist@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11312,8 +11002,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11383,8 +11071,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_update_playlist".to_string(),
-            email: Some("global_admin_update_playlist@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11396,15 +11082,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_update_playlist".to_string(),
-            email: Some("room_owner_update_playlist@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11416,8 +11098,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11487,8 +11167,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_delete_playlist".to_string(),
-            email: Some("global_admin_delete_playlist@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11500,15 +11178,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_delete_playlist".to_string(),
-            email: Some("room_owner_delete_playlist@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11520,8 +11194,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11595,8 +11267,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_delete_playlist_cascade".to_string(),
-            email: Some("global_admin_delete_playlist_cascade@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11608,15 +11278,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_delete_playlist_cascade".to_string(),
-            email: Some("room_owner_delete_playlist_cascade@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11628,8 +11294,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11778,8 +11442,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_list_media".to_string(),
-            email: Some("global_admin_list_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11791,15 +11453,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_list_media".to_string(),
-            email: Some("room_owner_list_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11811,8 +11469,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -11872,8 +11528,6 @@ mod tests {
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_reset_room_settings".to_string(),
-            email: Some("room_owner_reset_room_settings@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11885,8 +11539,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = user_repo.create(&owner).await.expect("create owner");
@@ -11952,8 +11604,6 @@ mod tests {
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_delete_room".to_string(),
-            email: Some("room_owner_delete_room@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -11965,8 +11615,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = user_repo.create(&owner).await.expect("create owner");
@@ -12018,8 +11666,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_list_media_filters".to_string(),
-            email: Some("global_admin_list_media_filters@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12031,15 +11677,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_list_media_filters".to_string(),
-            email: Some("room_owner_list_media_filters@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12051,8 +11693,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -12136,8 +11776,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_edit_media".to_string(),
-            email: Some("global_admin_edit_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12149,15 +11787,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_edit_media".to_string(),
-            email: Some("room_owner_edit_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12169,8 +11803,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -12241,8 +11873,6 @@ mod tests {
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_management_media_notifications".to_string(),
-            email: Some("room_owner_management_media_notifications@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12254,8 +11884,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = user_repo.create(&owner).await.expect("create owner");
@@ -12355,8 +11983,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_delete_media".to_string(),
-            email: Some("global_admin_delete_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12368,15 +11994,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_delete_media".to_string(),
-            email: Some("room_owner_delete_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12388,8 +12010,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -12446,8 +12066,6 @@ mod tests {
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
             username: "global_admin_move_media".to_string(),
-            email: Some("global_admin_move_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12459,15 +12077,11 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
             username: "room_owner_move_media".to_string(),
-            email: Some("room_owner_move_media@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12479,8 +12093,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let global_admin = user_repo
@@ -12550,8 +12162,6 @@ mod tests {
         let admin_user = synctv_core::models::User {
             id: UserId::new(),
             username: "room_admin".to_string(),
-            email: Some("room_admin@example.com".to_string()),
-            password_hash: "hash".to_string(),
             role: UserRole::Root,
             avatar_file_reference_id: None,
             status: UserStatus::Active,
@@ -12563,8 +12173,6 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
-            password_changed_at: chrono::Utc::now(),
-            password_version: 0,
             version: 0,
         };
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");

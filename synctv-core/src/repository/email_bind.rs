@@ -1,13 +1,11 @@
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Postgres};
+use sqlx::PgPool;
 
 use crate::{
-    models::{EmailTokenType, User, UserId},
+    models::{EmailTokenType, UserId},
     Error, Result,
 };
-
-use super::user::{USER_ROW_RETURNING_COLUMNS, USER_SELECT_COLUMNS};
 
 #[derive(Clone)]
 pub struct EmailBindRepository {
@@ -92,13 +90,31 @@ impl EmailBindRepository {
         Ok(result.rows_affected())
     }
 
-    pub async fn consume_and_bind_email(
+    pub async fn consume(
         &self,
         user_id: &UserId,
         email: &str,
         token: &str,
-    ) -> Result<User> {
+    ) -> Result<(String, chrono::DateTime<Utc>)> {
         let mut tx = self.pool.begin().await?;
+        let (email, now) = self
+            .consume_with_executor(user_id, email, token, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        Ok((email, now))
+    }
+
+    pub async fn consume_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        email: &str,
+        token: &str,
+        executor: E,
+    ) -> Result<(String, chrono::DateTime<Utc>)>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let now = Utc::now();
         let token_hash = Self::hash_token(token);
 
@@ -118,61 +134,12 @@ impl EmailBindRepository {
             email,
             now,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(executor)
         .await?
         .ok_or_else(|| {
             Error::InvalidInput(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
         })?;
 
-        let user = upsert_verified_email_with_executor(user_id, &email, now, &mut *tx).await?;
-        tx.commit().await?;
-
-        Ok(user)
+        Ok((email, now))
     }
-}
-
-async fn upsert_verified_email_with_executor<'e, E>(
-    user_id: &UserId,
-    email: &str,
-    now: chrono::DateTime<Utc>,
-    executor: E,
-) -> Result<User>
-where
-    E: sqlx::Executor<'e, Database = Postgres>,
-{
-    let sql = format!(
-        r"
-        WITH updated_user AS (
-            UPDATE users
-            SET updated_at = $3, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL
-            RETURNING {USER_ROW_RETURNING_COLUMNS}
-        ),
-        aei AS (
-            INSERT INTO auth_email_identities (
-                user_id, email, created_at, updated_at
-            )
-            SELECT id, $2, $3, $3
-            FROM updated_user
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                email = EXCLUDED.email,
-                updated_at = EXCLUDED.updated_at
-            RETURNING user_id, email
-        )
-        SELECT {USER_SELECT_COLUMNS}
-        FROM updated_user u
-        LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
-        LEFT JOIN aei ON aei.user_id = u.id
-        "
-    );
-
-    sqlx::query_as::<_, User>(&sql)
-        .bind(user_id)
-        .bind(email)
-        .bind(now)
-        .fetch_optional(executor)
-        .await
-        .map_err(Error::from)?
-        .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))
 }

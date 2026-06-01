@@ -897,7 +897,6 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::PlaylistItems(_)
                 | Message::PlaybackSnapshot(_)
                 | Message::RoomMembers(_)
-                | Message::ChatEvent(_)
                 | Message::Notification(_)
         )
     )
@@ -928,7 +927,6 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::ResourceObserved(_)) => "ResourceObserved",
         Some(Message::ResourceChanged(_)) => "ResourceChanged",
         Some(Message::ResourceObserveError(_)) => "ResourceObserveError",
-        Some(Message::ChatEvent(_)) => "ChatEvent",
         Some(Message::PlayingChanged(_)) => "PlayingChanged",
         Some(Message::WebrtcOffer(_)) => "WebrtcOffer",
         Some(Message::WebrtcAnswer(_)) => "WebrtcAnswer",
@@ -1537,8 +1535,6 @@ mod tests {
             BruteForceProtection::in_memory("test".to_string()),
         );
         service.enable_password_registration_for_tests();
-        service.enable_legacy_password_login_for_tests();
-        service.enable_legacy_password_registration_for_tests();
         service
     }
 

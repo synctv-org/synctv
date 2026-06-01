@@ -923,12 +923,7 @@ mod tests {
     }
 
     fn test_user(username: &str) -> User {
-        User::new(
-            username.to_string(),
-            Some(format!("{username}@example.test")),
-            "hash".to_string(),
-            SignupMethod::Email,
-        )
+        User::new(username.to_string(), SignupMethod::Email)
     }
 
     async fn create_bilibili_provider_instance(pool: &sqlx::PgPool, name: &str) {

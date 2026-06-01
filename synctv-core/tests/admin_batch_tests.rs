@@ -13,7 +13,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::UserId,
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, UserService,
     },
 };
@@ -47,10 +47,7 @@ fn create_user_service(pool: &PgPool) -> UserService {
         key_builder,
         brute_force,
     );
-    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc.enable_password_registration_for_tests();
-    svc.enable_legacy_password_login_for_tests();
-    svc.enable_legacy_password_registration_for_tests();
     svc
 }
 

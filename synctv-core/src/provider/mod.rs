@@ -314,16 +314,17 @@ pub fn sign_playback_urls(
     }
 
     let default_mode = result.default_mode.clone();
+    let provider_requires_proxy = provider_name != DirectUrlProvider::NAME;
     for (mode_name, info) in &mut result.playback_infos {
         if info.urls.is_empty() {
             continue;
         }
 
-        let needs_proxy = playback_info_needs_proxy(info);
+        let needs_proxy = provider_requires_proxy || playback_info_needs_proxy(info);
         let is_hls = playback_info_is_hls(mode_name, info);
         let is_mpd = info.format == "mpd";
 
-        if is_mpd {
+        if is_mpd && needs_proxy {
             info.urls = info
                 .urls
                 .iter()
@@ -407,7 +408,7 @@ pub fn sign_playback_urls(
         }
 
         for (idx, subtitle) in info.subtitles.iter_mut().enumerate() {
-            if subtitle.headers.is_empty() {
+            if !provider_requires_proxy && subtitle.headers.is_empty() {
                 continue;
             }
             subtitle.url = build_signed_proxy_url(
@@ -674,11 +675,11 @@ mod tests {
         let dash = &result.playback_infos["dash"];
         assert_eq!(dash.urls.len(), 2);
         assert!(
-            dash.urls[0].starts_with("/api/providers/proxy/bilibili/ver-1/stream%2Fdash%2F0?"),
+            dash.urls[0].starts_with("/api/providers/proxy/bilibili/ver-1/stream/dash/0?"),
             "first DASH stream should use an indexed signed proxy URL"
         );
         assert!(
-            dash.urls[1].starts_with("/api/providers/proxy/bilibili/ver-1/stream%2Fdash%2F1?"),
+            dash.urls[1].starts_with("/api/providers/proxy/bilibili/ver-1/stream/dash/1?"),
             "second DASH stream should use an indexed signed proxy URL"
         );
         assert!(dash.headers.is_empty(), "proxy should own DASH headers");
@@ -689,7 +690,7 @@ mod tests {
         assert!(
             dash.subtitles[0]
                 .url
-                .starts_with("/api/providers/proxy/bilibili/ver-1/subtitle%2Fdash%2F0?"),
+                .starts_with("/api/providers/proxy/bilibili/ver-1/subtitle/dash/0?"),
             "subtitle URLs may still use the signed proxy contract"
         );
         assert!(
@@ -736,11 +737,11 @@ mod tests {
         let direct = &result.playback_infos["direct"];
         assert_eq!(direct.urls.len(), 2);
         assert!(
-            direct.urls[0].starts_with("/api/providers/proxy/alist/ver-1/stream%2Fdirect%2F0?"),
+            direct.urls[0].starts_with("/api/providers/proxy/alist/ver-1/stream/direct/0?"),
             "first direct stream should use an indexed signed proxy URL"
         );
         assert!(
-            direct.urls[1].starts_with("/api/providers/proxy/alist/ver-1/stream%2Fdirect%2F1?"),
+            direct.urls[1].starts_with("/api/providers/proxy/alist/ver-1/stream/direct/1?"),
             "second direct stream should use an indexed signed proxy URL"
         );
         assert!(direct.headers.is_empty(), "proxy should own stream headers");
@@ -890,7 +891,15 @@ mod tests {
             .with_store(store.clone());
         let versioned = VersionedPlayback {
             version: "cached-version".to_string(),
-            result: playback_result(),
+            result: {
+                let mut result = playback_result();
+                result
+                    .playback_infos
+                    .get_mut("direct")
+                    .expect("direct playback info")
+                    .cors_proxy_required = true;
+                result
+            },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 

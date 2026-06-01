@@ -2114,7 +2114,6 @@ message ServerMessage {
         ResourceObserved resource_observed = 29;
         ResourceChanged resource_changed = 30;
         ResourceObserveError resource_observe_error = 31;
-        ChatMessageEvent chat_event = 32;
     }
 }
 

@@ -177,17 +177,10 @@ fn test_config_debug_redacts_secrets() {
 
 #[test]
 fn test_config_validate_rejects_empty_root_password_when_creating_root() {
-    // When create_root_user is true, empty password should be rejected
     let mut config = Config::default();
-    config.bootstrap.create_root_user = true;
     config.bootstrap.root_password = String::new();
 
-    let result = config.validate();
-    assert!(
-        result.is_err(),
-        "Validation should fail with empty root password"
-    );
-    let errors = result.unwrap_err();
+    let errors = config.bootstrap.validate_root_password_for_creation();
     assert!(
         errors
             .iter()

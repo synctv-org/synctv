@@ -1490,7 +1490,7 @@ mod tests {
 
         let username_cache =
             UsernameCache::local_only("test:http-chat:username:".to_string(), 128, 60);
-        let mut user_service = UserService::new(
+        let user_service = UserService::new(
             &pool,
             router_config.jwt_service.clone(),
             username_cache,
@@ -1501,9 +1501,6 @@ mod tests {
                 "test:http-chat:auth".to_string(),
             ),
         );
-        user_service.set_password_hasher(Arc::new(
-            synctv_core::service::auth::TestPasswordHasher::new(),
-        ));
         let user_service = Arc::new(user_service);
 
         let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
@@ -1902,16 +1899,12 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: synctv_core::models::UserId::new(),
                 username: "http_sse_chat_live_owner".to_string(),
-                email: Some("http-sse-chat-live-owner@test.invalid".to_string()),
-                password_hash: "hash".to_string(),
                 role: synctv_core::models::UserRole::User,
                 avatar_file_reference_id: None,
                 status: synctv_core::models::UserStatus::Active,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 created_at: now,
                 updated_at: now,
-                password_changed_at: now,
-                password_version: 0,
                 version: 0,
                 deleted_at: None,
                 is_banned: false,
@@ -1923,11 +1916,7 @@ mod tests {
             .expect("owner should be created");
         let access_token = state
             .jwt_service
-            .sign_token(
-                &owner.id,
-                synctv_core::service::auth::TokenType::Access,
-                owner.password_version,
-            )
+            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
             .expect("access token should sign");
         let (room, _) = state
             .room_service
@@ -2025,16 +2014,12 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: synctv_core::models::UserId::new(),
                 username: "http_sse_chat_owner".to_string(),
-                email: Some("http-sse-chat-owner@test.invalid".to_string()),
-                password_hash: "hash".to_string(),
                 role: synctv_core::models::UserRole::User,
                 avatar_file_reference_id: None,
                 status: synctv_core::models::UserStatus::Active,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 created_at: now,
                 updated_at: now,
-                password_changed_at: now,
-                password_version: 0,
                 version: 0,
                 deleted_at: None,
                 is_banned: false,
@@ -2046,11 +2031,7 @@ mod tests {
             .expect("owner should be created");
         let access_token = state
             .jwt_service
-            .sign_token(
-                &owner.id,
-                synctv_core::service::auth::TokenType::Access,
-                owner.password_version,
-            )
+            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
             .expect("access token should sign");
         let (room, _) = state
             .room_service
@@ -2167,16 +2148,12 @@ mod tests {
             .create(&synctv_core::models::User {
                 id: synctv_core::models::UserId::new(),
                 username: "http_sse_chat_bad_cursor_owner".to_string(),
-                email: Some("http-sse-chat-bad-cursor-owner@test.invalid".to_string()),
-                password_hash: "hash".to_string(),
                 role: synctv_core::models::UserRole::User,
                 avatar_file_reference_id: None,
                 status: synctv_core::models::UserStatus::Active,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 created_at: now,
                 updated_at: now,
-                password_changed_at: now,
-                password_version: 0,
                 version: 0,
                 deleted_at: None,
                 is_banned: false,
@@ -2188,11 +2165,7 @@ mod tests {
             .expect("owner should be created");
         let access_token = state
             .jwt_service
-            .sign_token(
-                &owner.id,
-                synctv_core::service::auth::TokenType::Access,
-                owner.password_version,
-            )
+            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
             .expect("access token should sign");
         let (room, _) = state
             .room_service

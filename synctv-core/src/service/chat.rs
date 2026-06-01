@@ -1787,8 +1787,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_cache_miss_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -1958,8 +1956,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_database_image_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -2113,8 +2109,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_database_image_checksum_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -2518,8 +2512,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_image_token_strip_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -2621,8 +2613,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_file_storage_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -2708,8 +2698,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_delete_image_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -2801,8 +2789,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_idempotent_send_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -2915,8 +2901,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_concurrent_edit_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -3028,8 +3012,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_concurrent_delete_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -3140,8 +3122,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_read_state_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -3150,8 +3130,6 @@ mod tests {
         let reader = user_repository
             .create(&User::new(
                 "chat_read_state_reader".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -3316,8 +3294,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_context_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await
@@ -3395,8 +3371,6 @@ mod tests {
         let user = user_repository
             .create(&User::new(
                 "chat_text_validation_user".to_string(),
-                None,
-                "hash".to_string(),
                 SignupMethod::Password,
             ))
             .await

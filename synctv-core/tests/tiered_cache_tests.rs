@@ -19,7 +19,6 @@ fn make_cached_user(id: UserId, username: &str) -> CachedUser {
         UserStatus::Active,
         chrono::Utc::now(),
         chrono::Utc::now(),
-        0,
         false,
     )
 }
@@ -51,7 +50,7 @@ async fn test_tiered_cache_l2_set_and_get() {
         "Should retrieve from L2 after L1 clear"
     );
     let retrieved = retrieved.unwrap();
-    assert_eq!(retrieved.password_version(), 0);
+    assert_eq!(retrieved.status(), UserStatus::Active);
 }
 
 #[tokio::test]

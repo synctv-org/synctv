@@ -1497,9 +1497,10 @@ mod tests {
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
-        repository::UserRepository,
+        repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
         service::{
-            auth::hash_password, BruteForceProtection, InMemoryTokenBlacklistStore, UserService,
+            auth::OpaquePasswordService, BruteForceProtection, InMemoryTokenBlacklistStore,
+            UserService,
         },
         RedisConnectionRuntime, SharedRedisConnectionRuntime,
     };
@@ -1887,21 +1888,29 @@ mod tests {
         )
         .await;
 
-        let password_hash = hash_password("StrongPwd12345!")
-            .await
-            .expect("password hashing should succeed");
-        let mut admin = User::new(
-            "existing-admin".to_string(),
-            Some("existing-admin@example.com".to_string()),
-            password_hash,
-            SignupMethod::AdminCreated,
-        );
+        let opaque_record =
+            OpaquePasswordService::derive_from_secret(b"startup-admin-precondition-existing")
+                .register_password(b"synctv:test:existing-admin", "StrongPwd12345!")
+                .expect("password credential should be generated");
+        let mut admin = User::new("existing-admin".to_string(), SignupMethod::AdminCreated);
         admin.role = UserRole::Admin;
         admin.status = UserStatus::Active;
-        UserRepository::new(pool.clone())
-            .create(&admin)
+        let user_repo = UserRepository::new(pool.clone());
+        let user_password_repo = UserPasswordRepository::new(pool.clone());
+        let mut tx = pool.begin().await.expect("test tx should start");
+        let admin = user_repo
+            .create_with_executor(&admin, &mut *tx)
             .await
             .expect("existing admin should be inserted");
+        user_password_repo
+            .create_for_user_with_executor(
+                &admin,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                &mut *tx,
+            )
+            .await
+            .expect("existing admin password should be inserted");
+        tx.commit().await.expect("test tx should commit");
 
         ensure_administrator_bootstrap_precondition(
             &pool,

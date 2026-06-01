@@ -45,7 +45,6 @@ pub struct UserFixture {
     id: UserId,
     username: String,
     email: Option<String>,
-    password_hash: String,
     role: UserRole,
     status: UserStatus,
 }
@@ -57,7 +56,6 @@ impl UserFixture {
             id: random_user_id(),
             username: "test_user".to_string(),
             email: None, // Will be auto-generated in build()
-            password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
         }
@@ -96,23 +94,15 @@ impl UserFixture {
     #[must_use]
     pub fn build(self) -> crate::models::User {
         let now = Utc::now();
-        // Generate unique email if not provided to avoid unique constraint violations in parallel tests
-        let email = self
-            .email
-            .unwrap_or_else(|| format!("test_{}@example.com", synctv_common::snanoid!(8)));
         crate::models::User {
             id: self.id,
             username: self.username,
-            email: Some(email),
-            password_hash: self.password_hash,
             role: self.role,
             avatar_file_reference_id: None,
             status: self.status,
             signup_method: crate::models::SignupMethod::Email,
             created_at: now,
             updated_at: now,
-            password_changed_at: now,
-            password_version: 0,
             version: 0,
             deleted_at: None,
             is_banned: false,

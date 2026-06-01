@@ -200,16 +200,8 @@ impl SecurityPipeline {
                 if cached.is_banned()
                     || cached.status() == UserStatus::Banned
                     || cached.is_deleted()
-                    || claims.pv < cached.password_version()
                 {
-                    return Err(if claims.pv < cached.password_version() {
-                        Error::Authentication(
-                            "Token invalidated due to password change. Please log in again."
-                                .to_string(),
-                        )
-                    } else {
-                        Error::Authentication("Authentication failed".to_string())
-                    });
+                    return Err(Error::Authentication("Authentication failed".to_string()));
                 }
             }
         }
@@ -229,8 +221,13 @@ impl SecurityPipeline {
                 _ => e,
             })?;
 
-        // Step 2: Password version check
-        if claims.pv < user.password_version {
+        let password_version = self
+            .user_service
+            .get_password_credential_state(&user_id)
+            .await?
+            .version;
+
+        if claims.pv < password_version {
             return Err(Error::Authentication(
                 "Token invalidated due to password change. Please log in again.".to_string(),
             ));
@@ -262,7 +259,6 @@ impl SecurityPipeline {
                 UserStatus::Active,
                 user.created_at,
                 user.updated_at,
-                user.password_version,
                 is_banned,
                 user.is_deleted(),
             );

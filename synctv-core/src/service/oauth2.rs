@@ -1165,7 +1165,12 @@ impl OAuth2Service {
 
         if signup_policy.signup_need_review {
             if let Some(email) = user_email.as_deref() {
-                if user_service.get_by_email(email).await?.is_some() {
+                if user_service.get_by_email(email).await?.is_some()
+                    && user_service
+                        .user_email_repository
+                        .email_exists(email)
+                        .await?
+                {
                     tx.rollback().await?;
                     return Err(Error::AlreadyExists(
                         synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
@@ -1283,8 +1288,6 @@ impl OAuth2Service {
 
             let user = User::new_with_status(
                 candidate.clone(),
-                user_email.clone(),
-                String::new(),
                 SignupMethod::OAuth2,
                 crate::models::UserStatus::Active,
             );
@@ -1294,6 +1297,31 @@ impl OAuth2Service {
                 .await
             {
                 Ok(created_user) => {
+                    if let Err(error) = user_service
+                        .user_email_repository
+                        .create_for_user_with_executor(
+                            &created_user,
+                            user_email.as_deref(),
+                            &mut *tx,
+                        )
+                        .await
+                    {
+                        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
+                            .execute(&mut *tx)
+                            .await
+                            .internal_with_err(
+                                "Failed to roll back OAuth2 user savepoint after email create error",
+                            )?;
+                        match error {
+                            Error::AlreadyExists(_) => {
+                                return Err(Error::AlreadyExists(
+                                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
+                                        .to_string(),
+                                ))
+                            }
+                            err => return Err(err),
+                        }
+                    }
                     sqlx::query(&format!("RELEASE SAVEPOINT {savepoint}"))
                         .execute(&mut *tx)
                         .await

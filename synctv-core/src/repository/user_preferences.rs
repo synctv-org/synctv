@@ -219,10 +219,10 @@ impl UserPreferencesRepository {
                     SELECT 1
                     FROM auth_password_credentials
                     WHERE user_id = $1
-                      AND (
-                          legacy_password_hash IS NOT NULL
-                          OR opaque_record IS NOT NULL
-                      )
+                      AND opaque_record IS NOT NULL
+                      AND opaque_credential_identifier IS NOT NULL
+                      AND opaque_ciphersuite IS NOT NULL
+                      AND opaque_server_setup_version IS NOT NULL
                 ) AS password,
                 EXISTS (
                     SELECT 1

@@ -19,12 +19,7 @@ fn test_encryption() -> CredentialEncryption {
     CredentialEncryption::new(&[0x42; 32]).unwrap()
 }
 fn make_user(username: &str) -> User {
-    User::new(
-        username.to_string(),
-        Some(format!("{username}@test.com")),
-        "hash".to_string(),
-        SignupMethod::Email,
-    )
+    User::new(username.to_string(), SignupMethod::Email)
 }
 
 fn bilibili_server_id() -> String {

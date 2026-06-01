@@ -12,8 +12,7 @@ use synctv_core::config::{
     ConnectionLimitsConfig, DatabaseConfig, FileStorageConfig, HlsStorageBackend, JwtConfig,
     LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
     PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig, RedisConfig,
-    RequestRateLimitConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig,
-    WebRTCConfig,
+    RequestRateLimitConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
 fn relaxed_request_rate_limits() -> RequestRateLimitConfig {

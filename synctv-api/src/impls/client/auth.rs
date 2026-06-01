@@ -28,32 +28,35 @@ pub(crate) fn login_outcome_to_proto(
     match outcome {
         AuthenticatedLogin::Complete {
             user,
+            email,
             access_token,
             refresh_token,
         } => crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user, public_id_codec)),
+            user: Some(user_to_proto(&user, email.as_deref(), public_id_codec)),
             access_token,
             refresh_token,
             mfa: None,
         },
-        AuthenticatedLogin::MfaRequired { user, challenge } => {
-            crate::proto::client::LoginResponse {
-                user: Some(user_to_proto(&user, public_id_codec)),
-                access_token: String::new(),
-                refresh_token: String::new(),
-                mfa: Some(crate::proto::client::MfaChallenge {
-                    required: true,
-                    session_id: challenge.session_id,
-                    available_methods: challenge
-                        .available_methods
-                        .into_iter()
-                        .map(|method| mfa_method_to_proto(method) as i32)
-                        .collect(),
-                    masked_email: challenge.masked_email.unwrap_or_default(),
-                    expires_at: challenge.expires_at,
-                }),
-            }
-        }
+        AuthenticatedLogin::MfaRequired {
+            user,
+            email,
+            challenge,
+        } => crate::proto::client::LoginResponse {
+            user: Some(user_to_proto(&user, email.as_deref(), public_id_codec)),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            mfa: Some(crate::proto::client::MfaChallenge {
+                required: true,
+                session_id: challenge.session_id,
+                available_methods: challenge
+                    .available_methods
+                    .into_iter()
+                    .map(|method| mfa_method_to_proto(method) as i32)
+                    .collect(),
+                masked_email: challenge.masked_email.unwrap_or_default(),
+                expires_at: challenge.expires_at,
+            }),
+        },
     }
 }
 
@@ -308,9 +311,18 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        let email = self
+            .user_service
+            .get_email(&user.id)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            user: Some(user_to_proto(
+                &user,
+                email.as_deref(),
+                &self.public_id_codec,
+            )),
             access_token: access_token.unwrap_or_default(),
             refresh_token: refresh_token.unwrap_or_default(),
         })
@@ -378,8 +390,17 @@ impl ClientApiImpl {
             .finish_account_registration(session_id, credential_json, client_ip, control)
             .await
             .map_err(ApiError::from)?;
+        let email = self
+            .user_service
+            .get_email(&user.id)
+            .await
+            .map_err(ApiError::from)?;
         Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            user: Some(user_to_proto(
+                &user,
+                email.as_deref(),
+                &self.public_id_codec,
+            )),
             access_token: access_token.unwrap_or_default(),
             refresh_token: refresh_token.unwrap_or_default(),
         })

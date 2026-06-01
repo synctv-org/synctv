@@ -96,10 +96,6 @@ fn server_message_contains_chat_event_content(
     content: &str,
 ) -> bool {
     match &message.message {
-        Some(Message::ChatEvent(event)) => event
-            .message
-            .as_ref()
-            .is_some_and(|message| message.content == content),
         Some(Message::ResourceChanged(changed)) => matches!(
             changed.payload.as_ref(),
             Some(crate::proto::client::resource_changed::Payload::ChatEvent(event))
@@ -1959,25 +1955,27 @@ async fn test_run_after_join_records_heartbeat_activity() {
             crate::proto::client::HeartbeatMessage { timestamp: 42 },
         )),
     };
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![heartbeat]);
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![heartbeat]);
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 1).await;
-    let connection = connection_service
-        .get_connection(&handler.connection_id)
-        .expect("heartbeat should keep connection registered");
-    assert_eq!(
-        connection.message_count, 1,
-        "heartbeat must refresh connection activity"
-    );
-    assert!(
-        message_sender
-            .sent_messages()
-            .iter()
-            .any(|msg| matches!(msg.message, Some(Message::HeartbeatAck(_)))),
-        "heartbeat should receive an ack"
-    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let heartbeat_ack_sent = message_sender
+                .sent_messages()
+                .iter()
+                .any(|msg| matches!(msg.message, Some(Message::HeartbeatAck(_))));
+            let message_count = connection_service
+                .get_connection(&handler.connection_id)
+                .map_or(0, |connection| connection.message_count);
+            if heartbeat_ack_sent && message_count == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("heartbeat should refresh activity and receive an ack");
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
@@ -5744,25 +5742,10 @@ fn test_durable_chat_message_event_conversion() {
     };
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::ChatEvent(event)) => {
-            assert_eq!(event.event_id, "chat-event-1");
-            assert_eq!(
-                event.kind,
-                crate::proto::client::ChatMessageEventKind::Deleted as i32
-            );
-            let message = event.message.as_ref().expect("chat message should exist");
-            assert_eq!(message.id, "42");
-            assert_eq!(
-                message.status,
-                crate::proto::client::ChatMessageStatus::Deleted as i32
-            );
-            assert_eq!(message.client_message_id, "client-42");
-            assert_eq!(message.delete_reason, "policy");
-        }
-        other => panic!("Expected ChatEvent message, got: {other:?}"),
-    }
+    assert!(
+        msgs.is_empty(),
+        "durable chat events must be delivered through ResourceChanged(ChatEvent)"
+    );
 }
 
 #[test]

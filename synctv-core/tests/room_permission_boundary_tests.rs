@@ -27,7 +27,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         member::MemberService,
         permission::PermissionService,
         InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
@@ -53,16 +53,12 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{username}@test.com")),
-        password_hash: "test_hash".to_string(),
         role: UserRole::User,
         avatar_file_reference_id: None,
         status: UserStatus::Active,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
-        password_changed_at: now,
-        password_version: 0,
         version: 0,
         deleted_at: None,
         is_banned: false,
@@ -139,7 +135,8 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let username_cache =
         synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    let mut service = UserService::new(
+    
+    UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -147,16 +144,13 @@ fn make_user_service(pool: &PgPool) -> UserService {
         token_blacklist,
         synctv_core::cache::KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test".to_string()),
-    );
-    service.set_password_hasher(std::sync::Arc::new(TestPasswordHasher::new()));
-    service
+    )
 }
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    let mut service = RoomService::new(pool, user_service);
-    service.set_password_hasher(std::sync::Arc::new(TestPasswordHasher::new()));
-    service
+    
+    RoomService::new(pool, user_service)
 }
 
 /// Test that Admin cannot delete room (Creator-only operation).

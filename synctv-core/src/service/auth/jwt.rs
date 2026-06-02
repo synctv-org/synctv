@@ -58,6 +58,18 @@ impl TokenAuthContext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCredentialBinding {
+    Password { version: i32 },
+    OAuth2 {
+        provider_instance_name: String,
+        provider_user_id: String,
+    },
+    WebAuthn { credential_id: Vec<u8> },
+    Email { email: String },
+}
+
 /// JWT claims structure
 ///
 /// Note: Does NOT contain role/permissions - these must be fetched from database in real-time
@@ -75,7 +87,7 @@ pub struct Claims {
     /// Expiration time (Unix timestamp)
     pub exp: i64,
     /// Password version at time of token issuance.
-    /// Tokens with a `pv` lower than the user's current `password_version` are rejected.
+    /// Password-bound refresh tokens must match the user's current password version.
     pub pv: i32,
     /// Session identifier shared by the access/refresh token pair.
     ///
@@ -89,6 +101,21 @@ pub struct Claims {
     /// token rotation only accepts `local_2fa` or `oauth2`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amr: Option<String>,
+    /// Credential family used for refresh-token revalidation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cbm: Option<String>,
+    /// OAuth2 provider instance name for OAuth2-bound refresh tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opi: Option<String>,
+    /// OAuth2 provider subject for OAuth2-bound refresh tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ops: Option<String>,
+    /// Email address for verified-email-bound refresh tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eml: Option<String>,
+    /// Base64url WebAuthn credential id for passkey-bound refresh tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wcid: Option<String>,
     /// Issuer - identifies the service that issued the token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
@@ -122,6 +149,27 @@ impl Claims {
     #[must_use]
     pub fn satisfies_two_factor_requirement(&self) -> bool {
         matches!(self.amr.as_deref(), Some("local_2fa" | "oauth2"))
+    }
+
+    #[must_use]
+    pub fn credential_binding(&self) -> Option<TokenCredentialBinding> {
+        match self.cbm.as_deref() {
+            Some("password") => Some(TokenCredentialBinding::Password { version: self.pv }),
+            Some("oauth2") => Some(TokenCredentialBinding::OAuth2 {
+                provider_instance_name: self.opi.clone()?,
+                provider_user_id: self.ops.clone()?,
+            }),
+            Some("webauthn") => {
+                let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(self.wcid.as_deref()?)
+                    .ok()?;
+                Some(TokenCredentialBinding::WebAuthn { credential_id })
+            }
+            Some("email") => Some(TokenCredentialBinding::Email {
+                email: self.eml.clone()?,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -565,12 +613,16 @@ impl JwtService {
         password_version: i32,
         auth_context: Option<TokenAuthContext>,
     ) -> Result<String> {
+        let credential_binding = TokenCredentialBinding::Password {
+            version: password_version,
+        };
         self.sign_token_with_auth_context_and_session(
             user_id,
             token_type,
             password_version,
             auth_context,
             None,
+            &credential_binding,
         )
     }
 
@@ -581,12 +633,38 @@ impl JwtService {
         password_version: i32,
         auth_context: Option<TokenAuthContext>,
         session_id: Option<&str>,
+        credential_binding: &TokenCredentialBinding,
     ) -> Result<String> {
         let now = Utc::now();
         let duration = match token_type {
             TokenType::Access => Duration::hours(u64_to_i64(self.access_token_duration_hours)),
             TokenType::Refresh => Duration::days(u64_to_i64(self.refresh_token_duration_days)),
             TokenType::Guest => Duration::hours(u64_to_i64(self.guest_token_duration_hours)),
+        };
+        let (cbm, opi, ops, eml, wcid) = match credential_binding {
+            TokenCredentialBinding::Password { .. } => {
+                (Some("password".to_string()), None, None, None, None)
+            }
+            TokenCredentialBinding::OAuth2 {
+                provider_instance_name,
+                provider_user_id,
+            } => (
+                Some("oauth2".to_string()),
+                Some(provider_instance_name.clone()),
+                Some(provider_user_id.clone()),
+                None,
+                None,
+            ),
+            TokenCredentialBinding::WebAuthn { credential_id } => (
+                Some("webauthn".to_string()),
+                None,
+                None,
+                None,
+                Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id)),
+            ),
+            TokenCredentialBinding::Email { email } => {
+                (Some("email".to_string()), None, None, Some(email.clone()), None)
+            }
         };
 
         let claims = Claims {
@@ -602,6 +680,11 @@ impl JwtService {
             pv: password_version,
             sid: session_id.map(ToString::to_string),
             amr: auth_context.map(|value| value.as_str().to_string()),
+            cbm,
+            opi,
+            ops,
+            eml,
+            wcid,
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
         };
@@ -903,6 +986,7 @@ mod tests {
                 0,
                 None,
                 Some(&session_id),
+                &TokenCredentialBinding::Password { version: 0 },
             )
             .unwrap();
         let refresh_token = jwt
@@ -912,6 +996,7 @@ mod tests {
                 0,
                 None,
                 Some(&session_id),
+                &TokenCredentialBinding::Password { version: 0 },
             )
             .unwrap();
 
@@ -949,6 +1034,11 @@ mod tests {
             pv: 0,
             sid: None,
             amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
             iss: None,
             aud: None,
         };
@@ -1129,6 +1219,11 @@ mod tests {
             pv: 0,
             sid: None,
             amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
             iss: None,
             aud: None,
         };
@@ -1145,6 +1240,11 @@ mod tests {
             pv: 0,
             sid: None,
             amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
             iss: None,
             aud: None,
         };
@@ -1161,6 +1261,11 @@ mod tests {
             pv: 0,
             sid: None,
             amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
             iss: None,
             aud: None,
         };
@@ -1262,6 +1367,11 @@ mod tests {
             pv: 0,
             sid: None,
             amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
             iss: None,
             aud: None,
         };

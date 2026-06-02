@@ -598,6 +598,11 @@ mod tests {
             pv,
             sid: None,
             amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
             iss: None,
             aud: None,
         }

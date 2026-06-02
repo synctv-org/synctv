@@ -922,6 +922,7 @@ mod tests {
                 0,
                 None,
                 Some(session_id),
+                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
             )
             .unwrap();
 

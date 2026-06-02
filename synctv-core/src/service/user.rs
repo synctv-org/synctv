@@ -28,7 +28,7 @@ use crate::{
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenAuthContext,
-        TokenBlacklistStore, TokenType,
+        TokenBlacklistStore, TokenCredentialBinding, TokenType,
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     service::session_store::RedisJsonSessionStore,
@@ -101,6 +101,10 @@ fn user_avatar_storage_scope(user_id: UserId) -> String {
     format!("users/{}/avatars", user_id.as_i64())
 }
 
+const fn password_binding(version: i32) -> TokenCredentialBinding {
+    TokenCredentialBinding::Password { version }
+}
+
 #[derive(Debug)]
 struct PendingRegistrationRequest {
     username: String,
@@ -169,6 +173,7 @@ pub enum AuthFactorMethod {
 pub struct MfaSession {
     user_id: UserId,
     first_factor: AuthFactorMethod,
+    credential_binding: TokenCredentialBinding,
     brute_force_key: String,
     expires_at: i64,
 }
@@ -179,6 +184,11 @@ pub struct MfaChallenge {
     pub available_methods: Vec<AuthFactorMethod>,
     pub masked_email: Option<String>,
     pub expires_at: i64,
+}
+
+struct TokenIssueContext<'a> {
+    auth_context: Option<TokenAuthContext>,
+    credential_binding: &'a TokenCredentialBinding,
 }
 
 #[derive(Debug, Clone)]
@@ -1026,6 +1036,7 @@ impl UserService {
         &self,
         user: User,
         first_factor: AuthFactorMethod,
+        credential_binding: TokenCredentialBinding,
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
@@ -1062,6 +1073,7 @@ impl UserService {
             let session = MfaSession {
                 user_id: user.id,
                 first_factor,
+                credential_binding,
                 brute_force_key: brute_force_key.to_string(),
                 expires_at,
             };
@@ -1097,7 +1109,10 @@ impl UserService {
                 password_version,
                 brute_force_key,
                 client_ip,
-                None,
+                TokenIssueContext {
+                    auth_context: None,
+                    credential_binding: &credential_binding,
+                },
                 control,
             )
             .await?;
@@ -1149,7 +1164,7 @@ impl UserService {
         password_version: i32,
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
-        token_auth_context: Option<TokenAuthContext>,
+        issue_context: TokenIssueContext<'_>,
         control: Option<&ExecutionControl>,
     ) -> Result<(String, String)> {
         if let Err(error) = self
@@ -1170,15 +1185,17 @@ impl UserService {
             &user.id,
             TokenType::Access,
             password_version,
-            token_auth_context,
+            issue_context.auth_context,
             Some(&session_id),
+            issue_context.credential_binding,
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Refresh,
             password_version,
-            token_auth_context,
+            issue_context.auth_context,
             Some(&session_id),
+            issue_context.credential_binding,
         )?;
 
         Ok((access_token, refresh_token))
@@ -1206,10 +1223,16 @@ impl UserService {
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let email = self
+            .user_email_repository
+            .get_email(&user.id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
         self.complete_authenticated_login_with_control(
             user,
             AuthFactorMethod::Email,
+            TokenCredentialBinding::Email { email },
             brute_force_key,
             client_ip,
             control,
@@ -1328,7 +1351,10 @@ impl UserService {
                 password_version,
                 &session.brute_force_key,
                 client_ip,
-                Some(TokenAuthContext::LocalTwoFactor),
+                TokenIssueContext {
+                    auth_context: Some(TokenAuthContext::LocalTwoFactor),
+                    credential_binding: &session.credential_binding,
+                },
                 control,
             )
             .await?;
@@ -3344,12 +3370,14 @@ impl UserService {
             .get_state(&created_user.id)
             .await?
             .version;
+        let credential_binding = password_binding(password_version);
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Access,
             password_version,
             None,
             Some(&session_id),
+            &credential_binding,
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
@@ -3357,6 +3385,7 @@ impl UserService {
             password_version,
             None,
             Some(&session_id),
+            &credential_binding,
         )?;
 
         Ok((created_user, Some(access_token), Some(refresh_token)))
@@ -3495,12 +3524,14 @@ impl UserService {
             .get_state(&created_user.id)
             .await?
             .version;
+        let credential_binding = password_binding(password_version);
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
             TokenType::Access,
             password_version,
             None,
             Some(&session_id),
+            &credential_binding,
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &created_user.id,
@@ -3508,6 +3539,7 @@ impl UserService {
             password_version,
             None,
             Some(&session_id),
+            &credential_binding,
         )?;
 
         Ok((created_user, Some(access_token), Some(refresh_token)))
@@ -3642,12 +3674,14 @@ impl UserService {
             .get_state(&user.id)
             .await?
             .version;
+        let credential_binding = password_binding(password_version);
         let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
             TokenType::Access,
             password_version,
             None,
             Some(&session_id),
+            &credential_binding,
         )?;
         let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
@@ -3655,6 +3689,7 @@ impl UserService {
             password_version,
             None,
             Some(&session_id),
+            &credential_binding,
         )?;
         self.cache_username_best_effort(&user.id, &user.username, "finalize_registration")
             .await;
@@ -3710,7 +3745,8 @@ impl UserService {
 
         // Always perform OPAQUE verification to prevent timing side-channels
         // between accounts with credentials, accounts without credentials, and absent accounts.
-        let (is_valid, user) = if let Some(user_with_credential) = maybe_user {
+        let (is_valid, user, password_version) = if let Some(user_with_credential) = maybe_user {
+            let password_version = user_with_credential.credential_state.version;
             let opaque_valid = if let Some(opaque_credential) = user_with_credential.opaque {
                 self.opaque_password_service
                     .verify_password(&opaque_credential.record, &password)?
@@ -3718,12 +3754,12 @@ impl UserService {
                 self.opaque_password_service
                     .verify_dummy_password(&password)?
             };
-            (opaque_valid, Some(user_with_credential.user))
+            (opaque_valid, Some(user_with_credential.user), password_version)
         } else {
             let _ = self
                 .opaque_password_service
                 .verify_dummy_password(&password)?;
-            (false, None)
+            (false, None, 0)
         };
 
         // After constant-time verification, check all failure conditions
@@ -3755,6 +3791,7 @@ impl UserService {
         self.complete_authenticated_login_with_control(
             user,
             AuthFactorMethod::Password,
+            password_binding(password_version),
             &normalized_identifier,
             client_ip,
             control,
@@ -3881,6 +3918,7 @@ impl UserService {
     pub async fn login_with_verified_external_credential_with_control(
         &self,
         user_id: &UserId,
+        credential_id: &[u8],
         brute_force_key: &str,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
@@ -3894,6 +3932,9 @@ impl UserService {
         self.complete_authenticated_login_with_control(
             user,
             AuthFactorMethod::WebAuthn,
+            TokenCredentialBinding::WebAuthn {
+                credential_id: credential_id.to_vec(),
+            },
             brute_force_key,
             client_ip,
             control,
@@ -3938,9 +3979,16 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
+        let credential_binding = password_binding(
+            self.user_password_repository
+                .get_state(&user.id)
+                .await?
+                .version,
+        );
         self.complete_authenticated_login_with_control(
             user,
             AuthFactorMethod::Password,
+            credential_binding,
             &session.brute_force_key,
             client_ip,
             control,
@@ -3962,16 +4010,24 @@ impl UserService {
     pub async fn login_oauth2(
         &self,
         user_id: &UserId,
+        provider_instance_name: &str,
         provider_user_id: &str,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<AuthenticatedLogin> {
-        self.login_oauth2_with_control(user_id, provider_user_id, client_ip, None)
+        self.login_oauth2_with_control(
+            user_id,
+            provider_instance_name,
+            provider_user_id,
+            client_ip,
+            None,
+        )
             .await
     }
 
     pub async fn login_oauth2_with_control(
         &self,
         user_id: &UserId,
+        provider_instance_name: &str,
         provider_user_id: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
@@ -4004,13 +4060,20 @@ impl UserService {
             .get_state(&user.id)
             .await?
             .version;
+        let credential_binding = TokenCredentialBinding::OAuth2 {
+            provider_instance_name: provider_instance_name.to_string(),
+            provider_user_id: provider_user_id.to_string(),
+        };
         let (access_token, refresh_token) = self
             .issue_tokens_after_successful_authentication(
                 &user,
                 password_version,
                 provider_user_id,
                 client_ip,
-                Some(TokenAuthContext::OAuth2),
+                TokenIssueContext {
+                    auth_context: Some(TokenAuthContext::OAuth2),
+                    credential_binding: &credential_binding,
+                },
                 control,
             )
             .await?;
@@ -4096,10 +4159,9 @@ impl UserService {
             .get_state(&user.id)
             .await?
             .version;
-        // Reject refresh tokens issued with an old password version
-        if claims.pv < password_version {
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
+        let credential_binding = self
+            .validate_refresh_credential_binding(&claims, &user.id, password_version)
+            .await?;
 
         // Refresh Token Rotation: check blacklist and family revocation
         {
@@ -4180,6 +4242,7 @@ impl UserService {
             password_version,
             token_auth_context,
             session_id,
+            &credential_binding,
         )?;
         let new_refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
             &user.id,
@@ -4187,9 +4250,63 @@ impl UserService {
             password_version,
             token_auth_context,
             session_id,
+            &credential_binding,
         )?;
 
         Ok((new_access_token, new_refresh_token))
+    }
+
+    async fn validate_refresh_credential_binding(
+        &self,
+        claims: &crate::service::auth::Claims,
+        user_id: &UserId,
+        current_password_version: i32,
+    ) -> Result<TokenCredentialBinding> {
+        let credential_binding = claims
+            .credential_binding()
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        match credential_binding {
+            TokenCredentialBinding::Password { version } => {
+                if version != current_password_version {
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+                Ok(password_binding(current_password_version))
+            }
+            TokenCredentialBinding::OAuth2 {
+                provider_instance_name,
+                provider_user_id,
+            } => {
+                let mapping = UserOAuthProviderRepository::new(self.repository.pool().clone())
+                    .find_by_provider_instance(&provider_instance_name, &provider_user_id)
+                    .await?;
+                if mapping.as_ref().is_none_or(|mapping| mapping.user_id != *user_id) {
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+                Ok(TokenCredentialBinding::OAuth2 {
+                    provider_instance_name,
+                    provider_user_id,
+                })
+            }
+            TokenCredentialBinding::WebAuthn { credential_id } => {
+                let credential = WebAuthnCredentialRepository::new(self.repository.pool().clone())
+                    .get_by_credential_id(&credential_id)
+                    .await?;
+                if credential
+                    .as_ref()
+                    .is_none_or(|credential| credential.user_id != *user_id)
+                {
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+                Ok(TokenCredentialBinding::WebAuthn { credential_id })
+            }
+            TokenCredentialBinding::Email { email } => {
+                let current_email = self.user_email_repository.get_email(user_id).await?;
+                if current_email.as_deref() != Some(email.as_str()) {
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+                Ok(TokenCredentialBinding::Email { email })
+            }
+        }
     }
 
     /// Get user by ID

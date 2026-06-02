@@ -149,6 +149,29 @@ async fn insert_dummy_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[
     .expect("insert dummy passkey");
 }
 
+async fn insert_oauth2_identity(
+    pool: &PgPool,
+    user_id: &UserId,
+    provider_instance_name: &str,
+    provider_user_id: &str,
+) {
+    sqlx::query(
+        "INSERT INTO auth_oauth2_identities (
+             provider_type, provider_instance_name, provider_user_id, user_id, username, email
+         )
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(2_i16)
+    .bind(provider_instance_name)
+    .bind(provider_user_id)
+    .bind(user_id)
+    .bind(provider_user_id)
+    .bind(format!("{provider_user_id}@example.com"))
+    .execute(pool)
+    .await
+    .expect("oauth2 identity should be inserted");
+}
+
 fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> PasskeyService {
     let mut config = Config::default().webauthn;
     config.enabled = true;
@@ -1277,8 +1300,9 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
         .await
         .expect("MFA access token should work while 2FA is enabled");
 
+    insert_oauth2_identity(&pool, &user.id, "github", "oauth2-provider-user-id").await;
     let oauth_access_token = match service
-        .login_oauth2(&user.id, "oauth2-provider-user-id", None)
+        .login_oauth2(&user.id, "github", "oauth2-provider-user-id", None)
         .await
         .expect("OAuth2 login should stay independent from local 2FA")
     {
@@ -1331,8 +1355,9 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
         .await
         .expect("password+verified email user can enable two-factor authentication");
 
+    insert_oauth2_identity(&pool, &user.id, "github", "oauth2-provider-user-id-mfa").await;
     let (access_token, refresh_token) = match service
-        .login_oauth2(&user.id, "oauth2-provider-user-id", None)
+        .login_oauth2(&user.id, "github", "oauth2-provider-user-id-mfa", None)
         .await
         .expect("OAuth2 login should stay independent from local 2FA")
     {
@@ -1352,6 +1377,122 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
         .expect("OAuth2 refresh token should rotate for 2FA-enabled users");
     assert!(!rotated_access.is_empty());
     assert!(!rotated_refresh.is_empty());
+}
+
+async fn assert_refresh_token_rejects_unbound_oauth2_identity(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = service
+        .register(
+            "oauth_refresh_binding".to_string(),
+            Some("oauth_refresh_binding@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+
+    insert_oauth2_identity(&pool, &user.id, "github", "oauth-refresh-provider-user").await;
+    let refresh_token = match service
+        .login_oauth2(&user.id, "github", "oauth-refresh-provider-user", None)
+        .await
+        .expect("OAuth2 login should issue tokens")
+    {
+        AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
+        AuthenticatedLogin::MfaRequired { .. } => panic!("OAuth2 login should complete"),
+    };
+
+    sqlx::query(
+        "DELETE FROM auth_oauth2_identities
+         WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3",
+    )
+    .bind(user.id)
+    .bind("github")
+    .bind("oauth-refresh-provider-user")
+    .execute(&pool)
+    .await
+    .expect("delete oauth2 identity");
+
+    let result = service.refresh_token(refresh_token).await;
+    assert!(
+        matches!(result, Err(Error::Authentication(_))),
+        "OAuth2-bound refresh token should be rejected after unlink"
+    );
+}
+
+async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = service
+        .register(
+            "email_refresh_binding".to_string(),
+            Some("email_refresh_binding@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+    let refresh_token = match service
+        .login_with_verified_email(&user.id, "email-refresh-binding", None)
+        .await
+        .expect("verified email login should issue tokens")
+    {
+        AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
+        AuthenticatedLogin::MfaRequired { .. } => panic!("email login should complete"),
+    };
+
+    sqlx::query("DELETE FROM auth_email_identities WHERE user_id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("delete email identity");
+
+    let result = service.refresh_token(refresh_token).await;
+    assert!(
+        matches!(result, Err(Error::Authentication(_))),
+        "Email-bound refresh token should be rejected after unlink"
+    );
+}
+
+async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = service
+        .register(
+            "passkey_refresh_binding".to_string(),
+            Some("passkey_refresh_binding@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+    let credential_id = b"passkey-refresh-binding";
+    insert_dummy_passkey(&pool, &user.id, credential_id).await;
+
+    let refresh_token = match service
+        .login_with_verified_external_credential_with_control(
+            &user.id,
+            credential_id,
+            "passkey-refresh-binding",
+            None,
+            None,
+        )
+        .await
+        .expect("passkey login should issue tokens")
+    {
+        AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
+        AuthenticatedLogin::MfaRequired { .. } => panic!("passkey login should complete"),
+    };
+
+    sqlx::query("DELETE FROM auth_webauthn_credentials WHERE user_id = $1 AND credential_id = $2")
+        .bind(user.id)
+        .bind(credential_id.as_slice())
+        .execute(&pool)
+        .await
+        .expect("delete passkey credential");
+
+    let result = service.refresh_token(refresh_token).await;
+    assert!(
+        matches!(result, Err(Error::Authentication(_))),
+        "Passkey-bound refresh token should be rejected after credential deletion"
+    );
 }
 
 #[tokio::test]
@@ -1382,6 +1523,9 @@ async fn test_user_service_registration_login_and_delete_flows() {
     assert_two_factor_blocks_single_factor_token_issuance(pool.clone()).await;
     assert_two_factor_access_token_context_is_enforced(pool.clone()).await;
     assert_two_factor_allows_oauth2_without_local_mfa(pool.clone()).await;
+    assert_refresh_token_rejects_unbound_oauth2_identity(pool.clone()).await;
+    assert_refresh_token_rejects_unbound_email_identity(pool.clone()).await;
+    assert_refresh_token_rejects_deleted_passkey_binding(pool.clone()).await;
 
     assert_delete_user_concurrent_deletion_atomicity(pool).await;
 }

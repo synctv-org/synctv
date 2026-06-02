@@ -12,7 +12,9 @@ pub use brute_force::{
     BruteForceProtectionService,
 };
 pub use guest_validator::GuestTokenValidator;
-pub use jwt::{Claims, GuestClaims, JwtService, TokenAuthContext, TokenType};
+pub use jwt::{
+    Claims, GuestClaims, JwtService, TokenAuthContext, TokenCredentialBinding, TokenType,
+};
 pub use opaque_password::OpaquePasswordService;
 pub use password::{
     dummy_password_hash, hash_password, verify_password, PasswordHasherService, ProdPasswordHasher,

@@ -373,6 +373,7 @@ impl OAuth2ApiImpl {
             self.user_service
                 .login_oauth2_with_control(
                     &user_id,
+                    provider,
                     &user_info.provider_user_id,
                     client_ip,
                     control,
@@ -390,6 +391,7 @@ impl OAuth2ApiImpl {
                     .user_service
                     .login_oauth2_with_control(
                         &user_id,
+                        provider,
                         &user_info.provider_user_id,
                         client_ip,
                         control,

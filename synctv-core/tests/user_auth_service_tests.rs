@@ -26,10 +26,10 @@ use synctv_core::{
     models::{OAuth2Provider, UserId},
     repository::{SettingsRepository, UserOAuthProviderRepository, UserRepository},
     service::{
-        auth::jwt::JwtService, local_oauth_state_store, AuthFactorMethod, AuthenticatedLogin,
-        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs,
-        OAuth2Service, RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore,
-        UserService,
+        auth::{jwt::JwtService, TokenCredentialBinding, TokenType},
+        local_oauth_state_store, AuthFactorMethod, AuthenticatedLogin, BruteForceProtection,
+        InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs, OAuth2Service,
+        RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore, UserService,
     },
     Error,
 };
@@ -727,7 +727,14 @@ async fn test_legacy_refresh_token_replay_revokes_legacy_descendants() {
 
     let jwt = create_jwt_service();
     let legacy_refresh = jwt
-        .sign_token(&user.id, synctv_core::service::auth::TokenType::Refresh, 0)
+        .sign_token_with_auth_context_and_session(
+            &user.id,
+            TokenType::Refresh,
+            0,
+            None,
+            None,
+            &TokenCredentialBinding::Password { version: 0 },
+        )
         .expect("legacy refresh token should be signed");
     let legacy_claims = jwt
         .verify_refresh_token(&legacy_refresh)
@@ -858,6 +865,44 @@ async fn test_refresh_token_version_mismatch_rejected() {
         "Refresh with old password version should be rejected"
     );
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_rejects_any_password_version_mismatch() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(&pool);
+
+    let (user, _access, Some(_refresh_token)) = service
+        .register(
+            format!("pv_strict_{}", synctv_common::snanoid!(6)),
+            Some(format!("pv_strict_{}@test.com", synctv_common::snanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens");
+    };
+
+    let jwt = create_jwt_service();
+    let mismatched_refresh = jwt
+        .sign_token_with_auth_context_and_session(
+            &user.id,
+            TokenType::Refresh,
+            99,
+            None,
+            Some("strict-password-version-session"),
+            &TokenCredentialBinding::Password { version: 99 },
+        )
+        .expect("mismatched refresh token should be signed");
+
+    let result = service.refresh_token(mismatched_refresh).await;
+    assert!(
+        matches!(result, Err(Error::Authentication(_))),
+        "Refresh token with any mismatched password version should be rejected"
+    );
 }
 
 #[tokio::test]

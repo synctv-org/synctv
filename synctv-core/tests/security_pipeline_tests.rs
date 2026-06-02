@@ -120,6 +120,11 @@ fn make_claims(user_id: &UserId, pv: i32) -> Claims {
         pv,
         sid: None,
         amr: None,
+        cbm: None,
+        opi: None,
+        ops: None,
+        eml: None,
+        wcid: None,
         iss: None,
         aud: None,
     }

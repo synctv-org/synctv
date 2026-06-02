@@ -544,6 +544,7 @@ impl PasskeyService {
             .user_service
             .login_with_verified_external_credential_with_control(
                 &created_user.id,
+                passkey.cred_id().as_ref(),
                 &format!("passkey:{}", created_user.username),
                 client_ip,
                 control,
@@ -792,6 +793,7 @@ impl PasskeyService {
         self.user_service
             .login_with_verified_external_credential_with_control(
                 &user_id,
+                &stored.credential_id,
                 &brute_force_key,
                 client_ip,
                 control,
@@ -859,6 +861,7 @@ impl PasskeyService {
         self.user_service
             .login_with_verified_external_credential_with_control(
                 &stored.user_id,
+                &stored.credential_id,
                 &brute_force_key,
                 client_ip,
                 control,

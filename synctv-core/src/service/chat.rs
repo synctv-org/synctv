@@ -1466,8 +1466,8 @@ mod tests {
             UserRepository,
         },
         service::{
-            auth::{JwtService, TestPasswordHasher},
-            BruteForceProtection, InMemoryTokenBlacklistStore, RateLimiter, RoomService,
+            auth::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore, RateLimiter,
+            RoomService,
         },
     };
     use tokio::sync::Barrier;
@@ -1960,7 +1960,7 @@ mod tests {
             ))
             .await
             .expect("user should be created");
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -1968,7 +1968,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (_room, _) = room_service
             .create_room(
                 "Database Image Room".to_string(),
@@ -2113,7 +2112,7 @@ mod tests {
             ))
             .await
             .expect("user should be created");
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2125,7 +2124,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (_room, _) = room_service
             .create_room(
                 "Database Image Checksum Room".to_string(),
@@ -2517,7 +2515,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2525,7 +2523,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Image Token Strip Room".to_string(),
@@ -2618,7 +2615,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2626,7 +2623,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Image Storage Room".to_string(),
@@ -2703,7 +2699,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2711,7 +2707,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Delete Image Room".to_string(),
@@ -2794,7 +2789,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2802,7 +2797,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Idempotent Send Room".to_string(),
@@ -2906,7 +2900,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2914,7 +2908,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Concurrent Edit Room".to_string(),
@@ -3017,7 +3010,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -3025,7 +3018,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Concurrent Delete Room".to_string(),
@@ -3138,7 +3130,7 @@ mod tests {
             .set(&reader.id, &reader.username)
             .await
             .unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -3146,7 +3138,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Read State Room".to_string(),
@@ -3299,7 +3290,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -3307,7 +3298,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Context Room".to_string(),
@@ -3376,7 +3366,7 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let mut room_service = RoomService::new(
+        let room_service = RoomService::new(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -3384,7 +3374,6 @@ mod tests {
             ))
             .clone(),
         );
-        room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         let (room, _) = room_service
             .create_room(
                 "Text Validation Room".to_string(),

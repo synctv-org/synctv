@@ -261,11 +261,6 @@ impl RoomSettingsRepository {
         Ok(result)
     }
 
-    /// Get password hash for a room
-    pub async fn get_password_hash(&self, room_id: &RoomId) -> Result<Option<String>> {
-        self.get_value(room_id, "password").await
-    }
-
     /// Set multiple settings at once
     ///
     /// This uses **automatic serde serialization** - the entire struct becomes JSON!

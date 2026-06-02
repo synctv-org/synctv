@@ -31,7 +31,7 @@ message LoginResponse {
 
 // List directory request
 message ListRequest {
-  string server_id = 1;    // Stored credential identifier
+  string server_id = 1; // Stored credential identifier
   string path = 2;
   string password = 3; // Directory password (optional)
   uint64 page = 4;
@@ -84,7 +84,7 @@ message FileItem {
 
 // Get user info request
 message GetMeRequest {
-  string server_id = 1;    // Stored credential identifier
+  string server_id = 1; // Stored credential identifier
   string instance_name = 2; // Optional provider instance name
 }
 
@@ -96,7 +96,7 @@ message GetMeResponse {
 
 // Logout request
 message LogoutRequest {
-  string server_id = 1;     // Which credential to unbind
+  string server_id = 1; // Which credential to unbind
   string instance_name = 2; // Optional provider instance name
 }
 

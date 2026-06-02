@@ -3,13 +3,32 @@ CREATE TABLE IF NOT EXISTS room_creation_requests (
     requested_by BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    password_hash TEXT,
     settings_payload JSONB,
+    opaque_password_record BYTEA,
+    opaque_password_credential_identifier BYTEA,
+    opaque_password_ciphersuite VARCHAR(64),
+    opaque_password_server_setup_version INTEGER,
     status SMALLINT NOT NULL,
     requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     reviewed_at TIMESTAMPTZ,
     reviewed_by BIGINT REFERENCES users(id) ON DELETE RESTRICT,
-    rejection_reason TEXT
+    rejection_reason TEXT,
+
+    CONSTRAINT room_creation_requests_opaque_password_metadata_required
+        CHECK (
+            (
+                opaque_password_record IS NULL
+                AND opaque_password_credential_identifier IS NULL
+                AND opaque_password_ciphersuite IS NULL
+                AND opaque_password_server_setup_version IS NULL
+            )
+            OR (
+                opaque_password_record IS NOT NULL
+                AND opaque_password_credential_identifier IS NOT NULL
+                AND opaque_password_ciphersuite IS NOT NULL
+                AND opaque_password_server_setup_version IS NOT NULL
+            )
+        )
 );
 
 CREATE INDEX IF NOT EXISTS idx_room_creation_requests_requested_by

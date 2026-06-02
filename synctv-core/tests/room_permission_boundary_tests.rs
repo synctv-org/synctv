@@ -135,7 +135,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let username_cache =
         synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    
+
     UserService::new(
         pool,
         jwt_service,
@@ -149,7 +149,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    
+
     RoomService::new(pool, user_service)
 }
 

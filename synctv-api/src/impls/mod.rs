@@ -766,7 +766,7 @@ mod tests {
     fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() {
         let request = crate::proto::client::StartOpaqueRegistrationRequest {
             username: "ab".to_string(),
-            email: "not-an-email".to_string(),
+            email: Some("not-an-email".to_string()),
             registration_request: Vec::new(),
         };
 

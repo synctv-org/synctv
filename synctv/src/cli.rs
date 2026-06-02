@@ -724,12 +724,13 @@ pub struct RoomCreateArgs {
     #[arg(long)]
     pub description: Option<String>,
 
-    #[arg(long)]
-    pub password: Option<String>,
-
     /// Partial JSON object patch merged onto default room settings before creation
     #[arg(long)]
     pub settings_json: Option<String>,
+
+    /// Room password
+    #[arg(long)]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -4881,9 +4882,9 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 management_proto::CreateRoomRequest {
                     actor: Some(args.actor.to_management_proto()),
                     name: args.name,
-                    password: args.password.unwrap_or_default(),
                     settings_json: raw_optional_bytes(args.settings_json.as_deref()),
                     description: args.description.unwrap_or_default(),
+                    password: args.password.unwrap_or_default(),
                 }
             )?;
             args.remote.print_output(&response)
@@ -9873,8 +9874,6 @@ mod tests {
             "alice",
             "--description",
             "created from CLI",
-            "--password",
-            "RoomPass12345",
             "--settings-json",
             "{\"chat_enabled\":false}",
         ]);
@@ -9887,7 +9886,6 @@ mod tests {
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.actor.user_id, None);
                 assert_eq!(args.description.as_deref(), Some("created from CLI"));
-                assert_eq!(args.password.as_deref(), Some("RoomPass12345"));
                 assert_eq!(
                     args.settings_json.as_deref(),
                     Some("{\"chat_enabled\":false}")

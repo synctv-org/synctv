@@ -50,9 +50,6 @@ pub use convert::{
     proto_role_to_room_role, proto_role_to_user_role, room_role_to_proto,
 };
 
-// Room password limits imported from the single source of truth in synctv-core
-use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
-
 use crate::chat_event_dispatcher::{
     default_chat_event_dispatcher, noop_chat_event_dispatcher, ChatEventDispatcher,
 };
@@ -74,39 +71,6 @@ use crate::room_lifecycle_fanout::{
     RoomLifecycleFanoutService,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
-
-/// Validate a password that is being **set** (create room, set password, update settings).
-pub(crate) fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
-    // Reject passwords that are purely whitespace. A password of e.g. " "
-    // looks non-empty to a length check but provides no protection and confuses users.
-    let trimmed = password.trim();
-    if trimmed.is_empty() {
-        return Err(ApiError::InvalidInput(
-            "Room password cannot be empty or whitespace only".to_string(),
-        ));
-    }
-    if trimmed.chars().count() < ROOM_PASSWORD_MIN {
-        return Err(ApiError::InvalidInput(format!(
-            "Password too short (minimum {ROOM_PASSWORD_MIN} characters)"
-        )));
-    }
-    if password.chars().count() > ROOM_PASSWORD_MAX {
-        return Err(ApiError::InvalidInput(format!(
-            "Password too long (maximum {ROOM_PASSWORD_MAX} characters)"
-        )));
-    }
-    Ok(())
-}
-
-/// Validate a password that is being **verified** during room join.
-fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
-    if password.chars().count() > ROOM_PASSWORD_MAX {
-        return Err(ApiError::InvalidInput(format!(
-            "Password too long (maximum {ROOM_PASSWORD_MAX} characters)"
-        )));
-    }
-    Ok(())
-}
 
 /// Configuration for constructing a [`ClientApiImpl`].
 ///

@@ -1010,21 +1010,12 @@ mod tests {
     }
 
     #[test]
-    fn http_json_set_room_password_request_requires_password_field() {
-        let err = serde_json::from_str::<crate::client::SetRoomPasswordRequest>("{}")
-            .expect_err("missing password should be rejected");
-
-        assert!(err.is_data());
-    }
-
-    #[test]
     fn http_json_create_room_request_defaults_optional_fields() {
         let decoded: crate::client::CreateRoomRequest =
             serde_json::from_str(r#"{"name":"Movie Night"}"#)
                 .expect("missing create-room optional fields should default");
 
         assert_eq!(decoded.name, "Movie Night");
-        assert_eq!(decoded.password, "");
         assert!(decoded.settings.is_empty());
         assert_eq!(decoded.description, "");
     }
@@ -1032,7 +1023,7 @@ mod tests {
     #[test]
     fn http_json_create_room_request_preserves_json_settings_body() {
         let decoded: crate::client::CreateRoomRequest = serde_json::from_str(
-            r#"{"name":"Movie Night","password":"","description":"","settings":{"allowGuests":true,"maxUsers":8}}"#,
+            r#"{"name":"Movie Night","description":"","settings":{"allowGuests":true,"maxUsers":8}}"#,
         )
         .expect("room settings JSON should serialize into proto bytes");
 
@@ -1194,7 +1185,7 @@ mod tests {
     fn validate_opaque_registration_request_rejects_invalid_username_email_and_payload() {
         let request = crate::client::StartOpaqueRegistrationRequest {
             username: "ab".into(),
-            email: "not-an-email".into(),
+            email: Some("not-an-email".into()),
             registration_request: Vec::new(),
         };
 
@@ -1209,7 +1200,7 @@ mod tests {
     fn validate_opaque_registration_request_accepts_valid_payload() {
         let request = crate::client::StartOpaqueRegistrationRequest {
             username: "valid_user".into(),
-            email: "valid@example.com".into(),
+            email: Some("valid@example.com".into()),
             registration_request: vec![1],
         };
 
@@ -1221,9 +1212,51 @@ mod tests {
         let request =
             serde_json::from_str::<crate::client::StartPasskeyLoginRequest>("{}").unwrap();
 
-        assert!(request.username.is_empty());
-        assert!(request.email.is_empty());
+        assert!(request.identifier.is_none());
         crate::validate(&request).unwrap();
+    }
+
+    #[test]
+    fn http_json_login_identifier_transports_accept_flat_fields() {
+        let login = crate::client::LoginRequest::try_from(
+            serde_json::from_str::<crate::http_serde::LoginRequestDef>(
+                r#"{"username":"alice","password":"password"}"#,
+            )
+            .expect("login transport should deserialize flat username"),
+        )
+        .expect("login transport should convert to proto request");
+        assert!(matches!(
+            login.identifier,
+            Some(crate::client::login_request::Identifier::Username(ref username))
+                if username == "alice"
+        ));
+
+        let opaque = crate::client::StartOpaqueLoginRequest::try_from(
+            serde_json::from_str::<crate::http_serde::StartOpaqueLoginRequestDef>(
+                r#"{"email":"alice@example.com","credential_request":"AQID"}"#,
+            )
+            .expect("OPAQUE login transport should deserialize flat email"),
+        )
+        .expect("OPAQUE login transport should convert to proto request");
+        assert!(matches!(
+            opaque.identifier,
+            Some(crate::client::start_opaque_login_request::Identifier::Email(ref email))
+                if email == "alice@example.com"
+        ));
+        assert_eq!(opaque.credential_request, vec![1, 2, 3]);
+
+        let passkey = crate::client::StartPasskeyLoginRequest::try_from(
+            serde_json::from_str::<crate::http_serde::StartPasskeyLoginRequestDef>(
+                r#"{"username":"alice"}"#,
+            )
+            .expect("passkey login transport should deserialize flat username"),
+        )
+        .expect("passkey login transport should convert to proto request");
+        assert!(matches!(
+            passkey.identifier,
+            Some(crate::client::start_passkey_login_request::Identifier::Username(ref username))
+                if username == "alice"
+        ));
     }
 
     #[test]
@@ -1252,9 +1285,9 @@ mod tests {
     fn validate_create_room_request_rejects_html_name_and_long_description() {
         let request = crate::client::CreateRoomRequest {
             name: "<script>alert(1)</script>".into(),
-            password: String::new(),
             settings: Vec::new(),
             description: "x".repeat(501),
+            password: String::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());
@@ -1266,8 +1299,8 @@ mod tests {
     #[test]
     fn validate_join_room_request_requires_room_id_length() {
         let request = crate::client::JoinRoomRequest {
-            password: String::new(),
             room_id: String::new(),
+            password: String::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());

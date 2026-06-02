@@ -411,14 +411,8 @@ pub(super) fn hot_room_to_proto(
 #[must_use]
 pub(crate) fn normalize_created_room_settings(
     settings: Option<&synctv_core::models::RoomSettings>,
-    has_password: bool,
 ) -> synctv_core::models::RoomSettings {
-    settings
-        .cloned()
-        .unwrap_or_else(|| synctv_core::models::RoomSettings {
-            require_password: synctv_core::models::room_settings::RequirePassword(has_password),
-            ..synctv_core::models::RoomSettings::default()
-        })
+    settings.cloned().unwrap_or_default()
 }
 
 #[must_use]
@@ -1232,23 +1226,21 @@ mod tests {
     }
 
     #[test]
-    fn normalize_created_room_settings_sets_require_password_when_password_present() {
-        let settings = normalize_created_room_settings(None, true);
-        assert!(settings.require_password.0);
+    fn normalize_created_room_settings_defaults_when_missing() {
+        let settings = normalize_created_room_settings(None);
+        assert!(!settings.allow_guest_join.0);
     }
 
     #[test]
     fn normalize_created_room_settings_preserves_other_fields() {
         let source = synctv_core::models::RoomSettings {
             allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
-            require_password: synctv_core::models::room_settings::RequirePassword(true),
             ..synctv_core::models::RoomSettings::default()
         };
 
-        let settings = normalize_created_room_settings(Some(&source), false);
+        let settings = normalize_created_room_settings(Some(&source));
 
         assert!(settings.allow_guest_join.0);
-        assert!(settings.require_password.0);
     }
 
     #[test]

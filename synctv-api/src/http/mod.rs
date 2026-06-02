@@ -525,6 +525,8 @@ fn register_auth_routes(_state: &AppState) -> Router<AppState> {
 
 fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
+        .route("/api/auth/register", post(auth::register))
+        .route("/api/auth/login", post(auth::login))
         .route("/api/auth/email/confirm", post(auth::confirm_email_login))
         .route("/api/auth/guest-token", post(auth::create_guest_token))
         .route(
@@ -645,6 +647,14 @@ fn register_write_routes(_state: &AppState) -> Router<AppState> {
             axum::routing::put(room::join_room),
         )
         .route(
+            "/api/rooms/{room_id}/password/opaque/login/start",
+            post(room::start_room_password_login),
+        )
+        .route(
+            "/api/rooms/{room_id}/password/opaque/login/finish",
+            post(room::finish_room_password_login),
+        )
+        .route(
             "/api/rooms/{room_id}/members/@me",
             axum::routing::delete(room::leave_room),
         )
@@ -657,8 +667,16 @@ fn register_write_routes(_state: &AppState) -> Router<AppState> {
             post(room::transfer_room_ownership),
         )
         .route(
+            "/api/rooms/{room_id}/password/opaque/registration/start",
+            axum::routing::patch(room::start_room_password_registration),
+        )
+        .route(
+            "/api/rooms/{room_id}/password/opaque/registration/finish",
+            axum::routing::patch(room::finish_room_password_registration),
+        )
+        .route(
             "/api/rooms/{room_id}/password",
-            axum::routing::patch(room::set_room_password),
+            axum::routing::delete(room::clear_room_password),
         )
         .route(
             "/api/rooms/{room_id}/playback/start",
@@ -1232,8 +1250,7 @@ mod tests {
     #[test]
     fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() {
         let join_room: crate::proto::client::JoinRoomRequest =
-            serde_json::from_str(r#"{"password":"secret"}"#).expect("join room body");
-        assert_eq!(join_room.password, "secret");
+            serde_json::from_str(r"{}").expect("join room body");
         assert!(join_room.room_id.is_empty());
 
         let edit_media: crate::proto::client::EditMediaRequest =
@@ -1503,10 +1520,7 @@ mod tests {
         );
         let user_service = Arc::new(user_service);
 
-        let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
-        room_service.set_password_hasher(Arc::new(
-            synctv_core::service::auth::TestPasswordHasher::new(),
-        ));
+        let room_service = RoomService::new(pool.clone(), (*user_service).clone());
         let room_service = Arc::new(room_service);
 
         let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());

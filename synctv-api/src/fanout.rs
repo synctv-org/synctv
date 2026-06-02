@@ -282,7 +282,7 @@ mod tests {
             &room_id(),
             &user_id(),
             "tester",
-            br#"{"require_password":true}"#.to_vec(),
+            br#"{"chat_enabled":false}"#.to_vec(),
             11,
         );
         service.publish_prepared_after_outbox_commit(prepared);

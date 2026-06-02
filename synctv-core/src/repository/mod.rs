@@ -15,6 +15,7 @@ pub mod review;
 pub mod room;
 pub(crate) mod room_cleanup;
 pub mod room_member;
+pub mod room_password;
 pub mod room_settings;
 pub mod settings;
 pub mod user;
@@ -50,6 +51,9 @@ pub use review::{
 };
 pub use room::{JoinRoomContext, RoomRepository};
 pub use room_member::RoomMemberRepository;
+pub use room_password::{
+    RoomPasswordCredentialState, RoomPasswordRepository, StoredRoomPasswordCredential,
+};
 pub use room_settings::RoomSettingsRepository;
 pub use settings::SettingsRepository;
 pub use user::UserRepository;

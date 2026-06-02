@@ -136,7 +136,6 @@ pub struct InitServicesOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub credential_encryption_key_override: Option<String>,
-    pub password_hasher_override: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
 }
 
@@ -146,7 +145,6 @@ impl Default for InitServicesOptions {
             provider_address_overrides: HashMap::new(),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             credential_encryption_key_override: None,
-            password_hasher_override: None,
             realtime_outbox: None,
         }
     }
@@ -166,10 +164,6 @@ impl std::fmt::Debug for InitServicesOptions {
                     .credential_encryption_key_override
                     .as_ref()
                     .map(|_| "<redacted>"),
-            )
-            .field(
-                "password_hasher_override",
-                &self.password_hasher_override.as_ref().map(|_| "<injected>"),
             )
             .field(
                 "realtime_outbox",
@@ -691,6 +685,12 @@ pub async fn init_services_with_options(
             .map_err(|error| anyhow::anyhow!("failed to route playlist cover storage: {error}"))?,
     );
 
+    let opaque_password_service = Arc::new(
+        crate::service::auth::OpaquePasswordService::derive_from_secret(
+            config.security.opaque_server_setup_secret.as_bytes(),
+        ),
+    );
+
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
         &pool,
         crate::service::user::UserServiceDependencies {
@@ -706,11 +706,7 @@ pub async fn init_services_with_options(
             refresh_rate_limiter: Some(refresh_rate_limiter),
             settings_registry: Some(Arc::clone(&settings_registry)),
             realtime_outbox: options.realtime_outbox.clone(),
-            opaque_password_service: Some(Arc::new(
-                crate::service::auth::OpaquePasswordService::derive_from_secret(
-                    config.security.opaque_server_setup_secret.as_bytes(),
-                ),
-            )),
+            opaque_password_service: Some(opaque_password_service.clone()),
             opaque_login_session_store: Some(
                 crate::service::user::opaque_login_session_store_from_shared_state_profile(
                     &shared_state_profile,
@@ -782,7 +778,17 @@ pub async fn init_services_with_options(
         audit_service: Some(Arc::clone(&audit_service)),
         settings_registry: Some(Arc::clone(&settings_registry)),
         user_notification_service: Some(Arc::clone(&notification_service)),
-        password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
+        opaque_password_service,
+        room_opaque_password_registration_session_store: Some(
+            crate::service::room_opaque_password_registration_session_store_from_shared_state_profile(
+                &shared_state_profile,
+            )?,
+        ),
+        room_opaque_password_login_session_store: Some(
+            crate::service::room_opaque_password_login_session_store_from_shared_state_profile(
+                &shared_state_profile,
+            )?,
+        ),
         realtime_outbox: options.realtime_outbox.clone(),
         media_file_storage_service: Some(video_cover_file_storage),
         room_file_storage_service: Some(room_cover_file_storage),
@@ -948,7 +954,11 @@ struct RoomServiceBuildArgs {
     audit_service: Option<Arc<AuditService>>,
     settings_registry: Option<Arc<SettingsRegistry>>,
     user_notification_service: Option<Arc<UserNotificationService>>,
-    password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+    opaque_password_service: Arc<crate::service::auth::OpaquePasswordService>,
+    room_opaque_password_registration_session_store:
+        Option<Arc<dyn crate::service::room::RoomOpaquePasswordRegistrationSessionStore>>,
+    room_opaque_password_login_session_store:
+        Option<Arc<dyn crate::service::room::RoomOpaquePasswordLoginSessionStore>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     media_file_storage_service: Option<Arc<dyn FileStorageService>>,
     room_file_storage_service: Option<Arc<dyn FileStorageService>>,
@@ -1033,7 +1043,9 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         audit_service,
         settings_registry,
         user_notification_service,
-        password_hasher,
+        opaque_password_service,
+        room_opaque_password_registration_session_store,
+        room_opaque_password_login_session_store,
         realtime_outbox,
         media_file_storage_service,
         room_file_storage_service,
@@ -1074,7 +1086,10 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
             brute_force_service: Some(brute_force),
             settings_registry,
             user_notification_service,
-            password_hasher,
+            opaque_password_service: Some(opaque_password_service),
+            opaque_password_registration_session_store:
+                room_opaque_password_registration_session_store,
+            opaque_password_login_session_store: room_opaque_password_login_session_store,
             realtime_outbox,
             media_file_storage_service,
             room_file_storage_service,
@@ -1411,7 +1426,11 @@ mod tests {
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
-            password_hasher: None,
+            opaque_password_service: Arc::new(
+                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+            ),
+            room_opaque_password_registration_session_store: None,
+            room_opaque_password_login_session_store: None,
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
@@ -1494,7 +1513,11 @@ mod tests {
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
-            password_hasher: None,
+            opaque_password_service: Arc::new(
+                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+            ),
+            room_opaque_password_registration_session_store: None,
+            room_opaque_password_login_session_store: None,
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
@@ -1529,7 +1552,11 @@ mod tests {
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
-            password_hasher: None,
+            opaque_password_service: Arc::new(
+                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+            ),
+            room_opaque_password_registration_session_store: None,
+            room_opaque_password_login_session_store: None,
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
@@ -1605,7 +1632,11 @@ mod tests {
             audit_service: None,
             settings_registry: Some(Arc::clone(&settings_registry)),
             user_notification_service: None,
-            password_hasher: None,
+            opaque_password_service: Arc::new(
+                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+            ),
+            room_opaque_password_registration_session_store: None,
+            room_opaque_password_login_session_store: None,
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
@@ -1669,7 +1700,11 @@ mod tests {
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
-            password_hasher: None,
+            opaque_password_service: Arc::new(
+                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+            ),
+            room_opaque_password_registration_session_store: None,
+            room_opaque_password_login_session_store: None,
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
@@ -1733,7 +1768,11 @@ mod tests {
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
-            password_hasher: None,
+            opaque_password_service: Arc::new(
+                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+            ),
+            room_opaque_password_registration_session_store: None,
+            room_opaque_password_login_session_store: None,
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,

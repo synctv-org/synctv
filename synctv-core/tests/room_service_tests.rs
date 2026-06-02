@@ -21,7 +21,8 @@ use synctv_core::{
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
-        RoomRepository, RoomSettingsRepository, SettingsRepository, UserRepository,
+        RoomPasswordRepository, RoomRepository, RoomSettingsRepository, SettingsRepository,
+        UserRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -105,7 +106,6 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    
     UserService::new(
         pool,
         jwt_service,
@@ -119,7 +119,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    
+
     RoomService::new(pool, user_service)
 }
 
@@ -158,7 +158,7 @@ async fn test_create_room_with_password_stores_hash() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let password_repo = RoomPasswordRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pwd_owner")).await.unwrap();
 
@@ -176,20 +176,21 @@ async fn test_create_room_with_password_stores_hash() {
     assert_eq!(room.name, "Password Room");
     assert_eq!(member.role, RoomRole::Creator);
 
-    // Verify password hash was stored
-    let pwd_hash = settings_repo.get_password_hash(&room.id).await.unwrap();
-    assert!(pwd_hash.is_some(), "Password hash should be stored");
-    let hash = pwd_hash.unwrap();
-    assert!(!hash.is_empty(), "Password hash should not be empty");
-    // Hash should not be the plaintext password
-    assert_ne!(hash, "MySecretPassword123");
-
-    // Verify room settings have require_password = true
-    let settings = settings_repo.get(&room.id).await.unwrap();
+    let credential = password_repo
+        .get_opaque_credential(&room.id)
+        .await
+        .unwrap()
+        .expect("OPAQUE room password credential should be stored");
     assert!(
-        settings.require_password.0,
-        "require_password should be true"
+        !credential.record.record.is_empty(),
+        "OPAQUE room password credential should contain a record"
     );
+    assert!(
+        !credential.record.credential_identifier.is_empty(),
+        "OPAQUE room password credential should contain an identifier"
+    );
+    assert_eq!(credential.state.version, 1);
+    assert!(credential.state.enabled);
 }
 
 #[tokio::test]
@@ -198,7 +199,7 @@ async fn test_create_room_without_password() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let password_repo = RoomPasswordRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("nopwd_owner")).await.unwrap();
 
@@ -216,15 +217,17 @@ async fn test_create_room_without_password() {
     assert_eq!(room.name, "No Password Room");
     assert_eq!(member.role, RoomRole::Creator);
 
-    // Verify no password hash was stored
-    let pwd_hash = settings_repo.get_password_hash(&room.id).await.unwrap();
-    assert!(pwd_hash.is_none(), "Password hash should not be stored");
-
-    // Verify room settings have require_password = false
-    let settings = settings_repo.get(&room.id).await.unwrap();
     assert!(
-        !settings.require_password.0,
-        "require_password should be false"
+        password_repo
+            .get_opaque_credential(&room.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "OPAQUE room password credential should not be stored"
+    );
+    assert!(
+        password_repo.get_state(&room.id).await.unwrap().is_none(),
+        "room password state row should not be stored until the feature is configured"
     );
 }
 
@@ -386,7 +389,7 @@ async fn test_join_room_wrong_password_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_join_room_ignores_stale_password_when_require_password_false() {
+async fn test_join_room_ignores_stale_password_when_room_password_disabled() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -411,10 +414,8 @@ async fn test_join_room_ignores_stale_password_when_require_password_false() {
         .await
         .unwrap();
 
-    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
-    settings.require_password = synctv_core::models::room_settings::RequirePassword(false);
     room_service
-        .set_room_settings(&room.id, &settings)
+        .update_room_password(&room.id, None)
         .await
         .unwrap();
 
@@ -424,7 +425,7 @@ async fn test_join_room_ignores_stale_password_when_require_password_false() {
 
     assert!(
         result.is_ok(),
-        "require_password=false is authoritative, so stale client passwords must not block join: {result:?}"
+        "disabled room password state should allow joining even when stale credentials remain: {result:?}"
     );
 }
 
@@ -1554,21 +1555,6 @@ async fn test_room_description_over_500_rejected() {
 // Password is re-verified inside the lock with fresh data to prevent a race
 // between the first password check and the locked room update.
 
-/// Helper to directly update room password in database, simulating an admin change
-async fn direct_update_room_password(
-    pool: &PgPool,
-    room_id: &synctv_core::models::RoomId,
-    new_password_hash: &str,
-) {
-    // Update the password hash directly
-    sqlx::query("UPDATE room_settings SET value = $1 WHERE room_id = $2 AND key = 'password'")
-        .bind(new_password_hash)
-        .bind(room_id)
-        .execute(pool)
-        .await
-        .expect("Failed to update password hash");
-}
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_join_room_password_changed_during_join_with_correct_old_password_fails() {
@@ -1592,13 +1578,10 @@ async fn test_join_room_password_changed_during_join_with_correct_old_password_f
         .await
         .unwrap();
 
-    // Hash a new password to simulate the password being changed
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+    room_service
+        .update_room_password(&room.id, Some("NewPassword456".to_string()))
         .await
-        .expect("Failed to hash new password");
-
-    // Directly change the password in the database (simulating admin change)
-    direct_update_room_password(&pool, &room.id, &new_hash).await;
+        .expect("password update should succeed");
 
     // Now try to join with the OLD password
     // This should fail because the password hash in DB has changed
@@ -1651,13 +1634,10 @@ async fn test_join_room_password_changed_during_join_with_correct_new_password_s
         .await
         .unwrap();
 
-    // Hash a new password
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+    room_service
+        .update_room_password(&room.id, Some("NewPassword456".to_string()))
         .await
-        .expect("Failed to hash new password");
-
-    // Directly change the password in the database
-    direct_update_room_password(&pool, &room.id, &new_hash).await;
+        .expect("password update should succeed");
 
     // Join with the NEW password - should succeed
     let result = room_service
@@ -1677,8 +1657,6 @@ async fn test_join_room_password_changed_during_join_with_correct_new_password_s
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_join_room_password_not_required_password_cleared_during_join() {
-    // This test verifies that if require_password is set to false during join
-    // (password removed from room), the join should succeed without password check
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1703,18 +1681,11 @@ async fn test_join_room_password_not_required_password_cleared_during_join() {
         .await
         .unwrap();
 
-    // Directly remove password requirement from room settings
-    // The value column is TEXT, so we need to update with properly serialized JSON
-    sqlx::query(
-        r#"UPDATE room_settings SET value = '{"require_password":false,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
-    )
-    .bind(room.id)
-    .execute(&pool)
-    .await
-    .expect("Failed to update require_password");
+    room_service
+        .update_room_password(&room.id, None)
+        .await
+        .expect("room password should be disabled");
 
-    // Join should now succeed even with wrong password (password no longer required)
-    // Actually, since password is no longer required, we can join without password
     let result = room_service.join_room(room.id, joiner.id, None).await;
 
     assert!(
@@ -1756,29 +1727,10 @@ async fn test_join_room_password_added_during_join_requires_password() {
         .await
         .unwrap();
 
-    // Add password requirement to room
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
+    room_service
+        .update_room_password(&room.id, Some("NewPassword123".to_string()))
         .await
-        .expect("Failed to hash password");
-
-    // Insert password hash
-    sqlx::query(
-        "INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, 'password', $2, 1)",
-    )
-    .bind(room.id)
-    .bind(&new_hash)
-    .execute(&pool)
-    .await
-    .expect("Failed to insert password");
-
-    // Update require_password setting - value column is TEXT with serialized JSON
-    sqlx::query(
-        r#"UPDATE room_settings SET value = '{"require_password":true,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
-    )
-    .bind(room.id)
-    .execute(&pool)
-    .await
-    .expect("Failed to update require_password");
+        .expect("password update should succeed");
 
     // Join without password should fail
     let result = room_service.join_room(room.id, joiner.id, None).await;
@@ -1997,6 +1949,7 @@ async fn test_password_update_invalidates_room_cache() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let password_repo = RoomPasswordRepository::new(pool.clone());
 
     let owner = user_repo
         .create(&make_user("pwd_cache_owner"))
@@ -2014,40 +1967,46 @@ async fn test_password_update_invalidates_room_cache() {
         .await
         .unwrap();
 
-    // Verify initial password
-    let initial_hash = settings_repo.get_password_hash(&room.id).await.unwrap();
-    assert!(initial_hash.is_some());
-
-    // Update password
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+    let initial_state = password_repo
+        .get_state(&room.id)
         .await
-        .expect("Failed to hash new password");
+        .unwrap()
+        .expect("initial OPAQUE credential should exist");
 
     room_service
-        .update_room_password(&room.id, Some(new_hash.clone()))
+        .update_room_password(&room.id, Some("NewPassword456".to_string()))
         .await
         .unwrap();
 
-    // Verify password was updated
-    let updated_hash = settings_repo.get_password_hash(&room.id).await.unwrap();
-    assert!(updated_hash.is_some());
-    assert_ne!(initial_hash, updated_hash);
-
-    // Verify settings reflect password requirement
-    let settings = settings_repo.get(&room.id).await.unwrap();
+    let updated_state = password_repo
+        .get_state(&room.id)
+        .await
+        .unwrap()
+        .expect("updated OPAQUE credential should exist");
     assert!(
-        settings.require_password.0,
+        updated_state.version > initial_state.version,
+        "password update should bump room password version"
+    );
+
+    let settings = settings_repo.get(&room.id).await.unwrap();
+    assert!(settings.chat_enabled.0);
+    assert!(
+        password_repo
+            .get_state(&room.id)
+            .await
+            .unwrap()
+            .is_some_and(|state| state.enabled),
         "Room should still require password after update"
     );
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_password_removal_clears_require_password_flag() {
+async fn test_password_removal_disables_room_password_and_preserves_credential() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let password_repo = RoomPasswordRepository::new(pool.clone());
 
     let owner = user_repo
         .create(&make_user("pwd_remove_owner"))
@@ -2065,14 +2024,12 @@ async fn test_password_removal_clears_require_password_flag() {
         .await
         .unwrap();
 
-    // Verify password is set
-    let settings = settings_repo.get(&room.id).await.unwrap();
-    assert!(settings.require_password.0);
-    assert!(settings_repo
-        .get_password_hash(&room.id)
+    let initial_credential = password_repo
+        .get_opaque_credential(&room.id)
         .await
         .unwrap()
-        .is_some());
+        .expect("password credential should be stored");
+    assert!(initial_credential.state.enabled);
 
     // Remove password
     room_service
@@ -2080,22 +2037,18 @@ async fn test_password_removal_clears_require_password_flag() {
         .await
         .unwrap();
 
-    // Verify password is removed and flag is cleared
-    let settings = settings_repo.get(&room.id).await.unwrap();
-    assert!(
-        !settings.require_password.0,
-        "require_password should be false after password removal"
-    );
-    assert!(settings_repo
-        .get_password_hash(&room.id)
+    let disabled_credential = password_repo
+        .get_opaque_credential(&room.id)
         .await
         .unwrap()
-        .is_none());
+        .expect("disabling room password should keep OPAQUE credential material");
+    assert!(!disabled_credential.state.enabled);
+    assert!(disabled_credential.state.version > initial_credential.state.version);
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_room_password_emits_settings_updated_notification() {
+async fn test_update_room_password_updates_password_state_without_settings_notification() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2122,7 +2075,13 @@ async fn test_update_room_password_emits_settings_updated_notification() {
         .await
         .unwrap();
 
-    let (event_room_id, event) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+    let password_state = RoomPasswordRepository::new(pool.clone())
+        .get_state(&room.id)
+        .await
+        .unwrap()
+        .expect("password state should exist");
+    assert!(password_state.enabled);
+    let settings_event = tokio::time::timeout(std::time::Duration::from_millis(100), async {
         loop {
             let received = event_rx.recv().await.unwrap();
             if matches!(received.1, RoomEvent::SettingsUpdated { .. }) {
@@ -2130,18 +2089,11 @@ async fn test_update_room_password_emits_settings_updated_notification() {
             }
         }
     })
-    .await
-    .expect("expected room settings notification");
-    assert_eq!(event_room_id, room.id);
-    match event {
-        RoomEvent::SettingsUpdated {
-            settings, version, ..
-        } => {
-            assert_eq!(settings["require_password"], true);
-            assert_eq!(version, 2);
-        }
-        other => panic!("expected SettingsUpdated event, got: {other:?}"),
-    }
+    .await;
+    assert!(
+        settings_event.is_err(),
+        "password update should not emit settings events"
+    );
 }
 
 #[tokio::test]
@@ -2171,12 +2123,8 @@ async fn test_password_update_allows_join_with_new_password() {
         .await
         .unwrap();
 
-    // Update password
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
-        .await
-        .expect("Failed to hash new password");
     room_service
-        .update_room_password(&room.id, Some(new_hash))
+        .update_room_password(&room.id, Some("NewPassword456".to_string()))
         .await
         .unwrap();
 
@@ -2523,13 +2471,8 @@ async fn test_password_update_with_cas_retry() {
         .await
         .unwrap();
 
-    // Update password (internally uses CAS retry)
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
-        .await
-        .expect("Failed to hash password");
-
     let result = room_service
-        .update_room_password(&room.id, Some(new_hash))
+        .update_room_password(&room.id, Some("NewPassword123".to_string()))
         .await;
 
     assert!(
@@ -2674,7 +2617,7 @@ async fn test_room_password_uses_unique_salt_per_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let password_repo = RoomPasswordRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("salt_owner")).await.unwrap();
 
@@ -2700,25 +2643,22 @@ async fn test_room_password_uses_unique_salt_per_room() {
         .await
         .unwrap();
 
-    // Get password hashes for both rooms
-    let hash1 = settings_repo
-        .get_password_hash(&room1.id)
+    let credential1 = password_repo
+        .get_opaque_credential(&room1.id)
         .await
         .unwrap()
-        .unwrap();
-    let hash2 = settings_repo
-        .get_password_hash(&room2.id)
+        .expect("first room credential should exist");
+    let credential2 = password_repo
+        .get_opaque_credential(&room2.id)
         .await
         .unwrap()
-        .unwrap();
+        .expect("second room credential should exist");
 
-    // Hashes should be different due to unique salts
     assert_ne!(
-        hash1, hash2,
-        "Password hashes should differ due to unique salts"
+        credential1.record.record, credential2.record.record,
+        "OPAQUE credential records should differ per room"
     );
 
-    // But both hashes should verify the same password
     assert!(room_service
         .check_room_password(&room1.id, "SamePassword123")
         .await
@@ -3220,7 +3160,7 @@ async fn test_reset_room_settings_returns_committed_room_settings_snapshot() {
         .unwrap();
 
     let updated_settings = RoomSettings {
-        require_password: synctv_core::models::room_settings::RequirePassword(true),
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
         ..RoomSettings::default()
     };
     room_service
@@ -3234,7 +3174,6 @@ async fn test_reset_room_settings_returns_committed_room_settings_snapshot() {
         .expect("reset should return committed snapshot");
 
     assert_eq!(snapshot.version, 3);
-    assert!(!snapshot.settings.require_password.0);
     assert!(snapshot.settings.chat_enabled.0);
     assert_eq!(
         snapshot.settings.max_members.0,
@@ -3262,7 +3201,6 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
 
     let initial_settings = RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
-        require_password: synctv_core::models::room_settings::RequirePassword(false),
         ..RoomSettings::default()
     };
 
@@ -3286,7 +3224,6 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
 
     let updated_settings = RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(false),
-        require_password: synctv_core::models::room_settings::RequirePassword(false),
         ..RoomSettings::default()
     };
 
@@ -3341,7 +3278,6 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
 
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
-        require_password: synctv_core::models::room_settings::RequirePassword(false),
         ..Default::default()
     };
 
@@ -3364,21 +3300,18 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
     assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
     let guest_version_before = room_service.get_room_guest_version(&room.id).await.unwrap();
 
-    // Set a password - this should trigger guest kick
-    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
-        .await
-        .expect("Failed to hash password");
-
     room_service
-        .update_room_password(&room.id, Some(new_hash))
+        .update_room_password(&room.id, Some("NewPassword123".to_string()))
         .await
         .unwrap();
 
-    // Verify settings reflect password requirement
-    let settings = room_service.get_room_settings(&room.id).await.unwrap();
     assert!(
-        settings.require_password.0,
-        "require_password should be true"
+        RoomPasswordRepository::new(pool.clone())
+            .get_state(&room.id)
+            .await
+            .unwrap()
+            .is_some_and(|state| state.enabled),
+        "room password state should be enabled"
     );
 
     assert!(
@@ -7718,6 +7651,76 @@ async fn test_approve_pending_room_allows_the_request_itself_while_checking_name
 
     assert_eq!(approved.name, "Self Exclusion Pending Name");
     assert_eq!(approved.created_by, owner.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_approve_pending_room_preserves_password_when_policy_required() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.create_room_need_review.set(true).await.unwrap();
+    registry
+        .set_room_password_policy(RoomPasswordPolicy::Required)
+        .await
+        .unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pending_room_password_required_owner"))
+        .await
+        .unwrap();
+    let visitor = user_repo
+        .create(&make_user("pending_room_password_required_visitor"))
+        .await
+        .unwrap();
+
+    let (pending_room, _) = room_service
+        .create_room(
+            "Pending Password Required Room".to_string(),
+            String::new(),
+            owner.id,
+            Some("StrongPassword123".to_string()),
+            None,
+        )
+        .await
+        .expect("password should satisfy required policy while room awaits review");
+
+    let approved = room_service
+        .approve_pending_room(pending_room.id, None)
+        .await
+        .expect("approval should create the password-protected room");
+    assert_eq!(approved.name, "Pending Password Required Room");
+    assert!(
+        room_service
+            .is_room_password_enabled(&approved.id)
+            .await
+            .unwrap(),
+        "approved room should keep the pending password enabled"
+    );
+
+    let wrong_password = room_service
+        .join_room(
+            approved.id,
+            visitor.id,
+            Some("WrongPassword123".to_string()),
+        )
+        .await
+        .expect_err("wrong password should not join the approved room");
+    assert!(matches!(
+        wrong_password,
+        Error::Authorization(ref message) if message.contains("Invalid password")
+    ));
+
+    room_service
+        .join_room(
+            approved.id,
+            visitor.id,
+            Some("StrongPassword123".to_string()),
+        )
+        .await
+        .expect("correct password should join the approved room");
 }
 
 #[tokio::test]

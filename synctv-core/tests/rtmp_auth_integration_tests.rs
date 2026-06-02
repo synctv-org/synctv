@@ -62,7 +62,6 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    
     UserService::new(
         pool,
         jwt_service,
@@ -76,7 +75,7 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
 
 fn create_room_service(pool: sqlx::PgPool) -> RoomService {
     let user_service = create_user_service(&pool);
-    
+
     RoomService::new(pool, user_service)
 }
 

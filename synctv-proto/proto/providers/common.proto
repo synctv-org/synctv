@@ -41,11 +41,11 @@ message ProviderInstance {
   bool tls = 5;
   bool insecure_tls = 6;
   repeated string providers = 7 [(buf.validate.field).repeated = {
-    min_items: 1,
-    unique: true,
+    min_items: 1
+    unique: true
     items: {
       string: {
-        pattern: "^[a-z][a-z0-9_]*$",
+        pattern: "^[a-z][a-z0-9_]*$"
         max_len: 64
       }
     }
@@ -60,7 +60,7 @@ message ListAvailableProviderInstancesRequest {
   string provider_type = 1 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$",
+      pattern: "^[a-z][a-z0-9_]*$"
       max_len: 64
     }
   ];
@@ -82,7 +82,7 @@ message ListProviderInstancesRequest {
   string provider_type = 3 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$",
+      pattern: "^[a-z][a-z0-9_]*$"
       max_len: 64
     }
   ];
@@ -100,8 +100,8 @@ message ListProviderInstancesResponse {
 
 message AddProviderInstanceRequest {
   string name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
   string endpoint = 2;
@@ -110,11 +110,11 @@ message AddProviderInstanceRequest {
   bool tls = 5;
   bool insecure_tls = 6;
   repeated string providers = 7 [(buf.validate.field).repeated = {
-    min_items: 1,
-    unique: true,
+    min_items: 1
+    unique: true
     items: {
       string: {
-        pattern: "^[a-z][a-z0-9_]*$",
+        pattern: "^[a-z][a-z0-9_]*$"
         max_len: 64
       }
     }
@@ -129,8 +129,8 @@ message AddProviderInstanceResponse {
 
 message UpdateProviderInstanceRequest {
   string name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
   optional string endpoint = 2;
@@ -139,10 +139,10 @@ message UpdateProviderInstanceRequest {
   optional bool tls = 5;
   optional bool insecure_tls = 6;
   repeated string providers = 7 [(buf.validate.field).repeated = {
-    unique: true,
+    unique: true
     items: {
       string: {
-        pattern: "^[a-z][a-z0-9_]*$",
+        pattern: "^[a-z][a-z0-9_]*$"
         max_len: 64
       }
     }
@@ -160,8 +160,8 @@ message UpdateProviderInstanceResponse {
 
 message DeleteProviderInstanceRequest {
   string name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
 }
@@ -172,8 +172,8 @@ message DeleteProviderInstanceResponse {
 
 message ReconnectProviderInstanceRequest {
   string name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
 }
@@ -184,8 +184,8 @@ message ReconnectProviderInstanceResponse {
 
 message EnableProviderInstanceRequest {
   string name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
 }
@@ -196,8 +196,8 @@ message EnableProviderInstanceResponse {
 
 message DisableProviderInstanceRequest {
   string name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
 }
@@ -207,18 +207,16 @@ message DisableProviderInstanceResponse {
 }
 
 message ListProviderBackendsRequest {
-  string provider_type = 1 [
-    (buf.validate.field).string = {
-      max_len: 64,
-      pattern: "^[a-z][a-z0-9_]*$"
-    }
-  ];
+  string provider_type = 1 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[a-z][a-z0-9_]*$"
+  }];
 }
 
 message ProviderProxyPathRequest {
   string provider_name = 1 [(buf.validate.field).string = {
-    min_len: 1,
-    max_len: 64,
+    min_len: 1
+    max_len: 64
     pattern: "^[a-z][a-z0-9_]*$"
   }];
   string sub_path = 2 [(buf.validate.field).cel = {

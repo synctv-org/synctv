@@ -60,14 +60,14 @@ pub(crate) fn login_outcome_to_proto(
     }
 }
 
-fn normalize_optional_email(email: &str) -> Result<Option<String>, ApiError> {
-    if email.trim().is_empty() {
-        Ok(None)
-    } else {
-        crate::impls::validation::validate_email(email)
-            .map(Some)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))
-    }
+fn normalize_optional_email(email: Option<String>) -> Result<Option<String>, ApiError> {
+    email
+        .filter(|email| !email.trim().is_empty())
+        .map(|email| {
+            crate::impls::validation::validate_email(&email)
+                .map_err(|error| ApiError::InvalidInput(error.to_string()))
+        })
+        .transpose()
 }
 
 fn normalize_optional_identifier(username: &str, email: &str) -> Result<Option<String>, ApiError> {
@@ -117,6 +117,68 @@ impl LogoutOutcome {
 }
 
 impl ClientApiImpl {
+    pub async fn register_with_control(
+        &self,
+        mut req: crate::proto::client::RegisterRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        req.username = crate::impls::validation::validate_username(&req.username)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let email = normalize_optional_email(req.email.clone())?;
+        crate::impls::validate_proto_request(&req)?;
+        let (user, access_token, refresh_token) = self
+            .user_service
+            .register_with_control(
+                req.username,
+                email.clone(),
+                req.password,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::RegisterResponse {
+            user: Some(user_to_proto(
+                &user,
+                email.as_deref(),
+                &self.public_id_codec,
+            )),
+            access_token: access_token.unwrap_or_default(),
+            refresh_token: refresh_token.unwrap_or_default(),
+        })
+    }
+
+    pub async fn login_with_control(
+        &self,
+        req: crate::proto::client::LoginRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let identifier = match req.identifier {
+            Some(crate::proto::client::login_request::Identifier::Email(email)) => {
+                crate::impls::validation::validate_email(&email)
+                    .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+            }
+            Some(crate::proto::client::login_request::Identifier::Username(username)) => {
+                crate::impls::validation::validate_login_username(&username)
+                    .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+            }
+            None => {
+                return Err(ApiError::InvalidInput(
+                    "Login identifier is required".to_string(),
+                ));
+            }
+        };
+        let outcome = self
+            .user_service
+            .login_with_control(identifier, req.password, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
+    }
+
     pub async fn confirm_email_login_with_control(
         &self,
         email_api: Option<&crate::impls::EmailApiImpl>,
@@ -206,20 +268,20 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::StartOpaqueLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let has_username = !req.username.trim().is_empty();
-        let has_email = !req.email.trim().is_empty();
-        if has_username == has_email {
-            return Err(ApiError::InvalidInput(
-                "Provide exactly one of username or email".to_string(),
-            ));
-        }
-
-        let identifier = if has_email {
-            crate::impls::validation::validate_email(&req.email)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-        } else {
-            crate::impls::validation::validate_login_username(&req.username)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+        let identifier = match req.identifier {
+            Some(crate::proto::client::start_opaque_login_request::Identifier::Email(email)) => {
+                crate::impls::validation::validate_email(&email)
+                    .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+            }
+            Some(crate::proto::client::start_opaque_login_request::Identifier::Username(
+                username,
+            )) => crate::impls::validation::validate_login_username(&username)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
+            None => {
+                return Err(ApiError::InvalidInput(
+                    "Login identifier is required".to_string(),
+                ));
+            }
         };
 
         let challenge = self
@@ -264,15 +326,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::StartOpaqueRegistrationResponse, ApiError> {
         req.username = crate::impls::validation::validate_username(&req.username)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-        let email = if req.email.trim().is_empty() {
-            None
-        } else {
-            Some(
-                crate::impls::validation::validate_email(&req.email)
-                    .map_err(|error| ApiError::InvalidInput(error.to_string()))?,
-            )
-        };
-        req.email = email.clone().unwrap_or_default();
+        let email = normalize_optional_email(req.email.clone())?;
         crate::impls::validate_proto_request(&req)?;
 
         let challenge = self
@@ -338,7 +392,7 @@ impl ClientApiImpl {
     ) -> Result<PasskeyAuthChallenge, ApiError> {
         let username = crate::impls::validation::validate_username(&username)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-        let email = normalize_optional_email(&email)?;
+        let email = normalize_optional_email(Some(email))?;
         let credential_name = if name.trim().is_empty() {
             None
         } else {
@@ -448,8 +502,17 @@ impl ClientApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::StartPasskeyLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let (username, email) = match req.identifier {
+            Some(crate::proto::client::start_passkey_login_request::Identifier::Username(
+                username,
+            )) => (username, String::new()),
+            Some(crate::proto::client::start_passkey_login_request::Identifier::Email(email)) => {
+                (String::new(), email)
+            }
+            None => (String::new(), String::new()),
+        };
         let challenge = self
-            .start_passkey_login_challenge_with_control(req.username, req.email, client_ip, control)
+            .start_passkey_login_challenge_with_control(username, email, client_ip, control)
             .await?;
         let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(crate::proto::client::StartPasskeyLoginResponse {

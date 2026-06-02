@@ -12,14 +12,66 @@ use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
     ConfirmEmailLoginRequest, CreateGuestTokenRequest, CreateGuestTokenResponse,
     FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest,
-    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, LoginResponse, LogoutResponse,
-    RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RequestEmailLoginRequest,
-    RequestEmailLoginResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
-    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
-    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
-    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
-    StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse,
+    LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
+    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
+    RequestMfaEmailCodeResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
 };
+
+pub async fn register(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RegisterResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RegisterRequest>(request).await?;
+                client_api
+                    .register_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+pub async fn login(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req =
+                    parse_auth_json_into::<LoginRequest, synctv_proto::http_serde::LoginRequestDef>(
+                        request,
+                    )
+                    .await?;
+                client_api
+                    .login_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
 
 /// Extract the real client IP from a request.
 ///
@@ -60,6 +112,16 @@ where
         .await
         .map_err(|err| map_json_rejection(&err))?;
     Ok(request)
+}
+
+async fn parse_auth_json_into<T, U>(request: Request) -> Result<T, ApiError>
+where
+    U: DeserializeOwned,
+    T: TryFrom<U>,
+    T::Error: std::fmt::Display,
+{
+    let transport = parse_auth_json::<U>(request).await?;
+    T::try_from(transport).map_err(|err| ApiError::InvalidInput(err.to_string()))
 }
 
 #[cfg_attr(
@@ -257,7 +319,11 @@ pub async fn start_opaque_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<StartOpaqueLoginRequest>(request).await?;
+                let req = parse_auth_json_into::<
+                    StartOpaqueLoginRequest,
+                    synctv_proto::http_serde::StartOpaqueLoginRequestDef,
+                >(request)
+                .await?;
                 client_api
                     .start_opaque_login_with_control(req, client_ip, Some(&request_control))
                     .await
@@ -424,7 +490,11 @@ pub async fn start_passkey_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<StartPasskeyLoginRequest>(request).await?;
+                let req = parse_auth_json_into::<
+                    StartPasskeyLoginRequest,
+                    synctv_proto::http_serde::StartPasskeyLoginRequestDef,
+                >(request)
+                .await?;
                 client_api
                     .start_passkey_login_with_control(req, client_ip, Some(&request_control))
                     .await

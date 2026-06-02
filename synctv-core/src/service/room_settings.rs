@@ -1451,7 +1451,7 @@ mod tests {
         );
 
         let changed = RoomSettings {
-            require_password: crate::models::room_settings::RequirePassword(true),
+            allow_guest_join: crate::models::room_settings::AllowGuestJoin(true),
             ..RoomSettings::default()
         };
         service
@@ -1475,19 +1475,11 @@ mod tests {
             .get_with_version(&room.id)
             .await
             .expect("default settings row should remain readable");
-        assert!(!after_delete.0.require_password.0);
+        assert!(!after_delete.0.allow_guest_join.0);
         assert!(
             after_delete.1 > before_delete.version,
             "delete must keep a monotonic DB version"
         );
-        assert_eq!(
-            repo.get_password_hash(&room.id)
-                .await
-                .expect("password hash lookup should succeed"),
-            None,
-            "delete must remove auxiliary password settings rows"
-        );
-
         let domain = CacheDomain::RoomSettings { room_id: room.id };
         assert_eq!(
             fence

@@ -68,6 +68,7 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
+use std::time::Duration as StdDuration;
 
 use crate::{
     cache::{
@@ -75,11 +76,11 @@ use crate::{
     },
     models::{
         AddMemberOptions, AuditAction, AuditTargetType, ChatMessage, ChatMessageType, FileBlob,
-        FileUploadSession, Media, MediaId, MemberStatus, NewStoredFile, PageParams, Playlist,
-        PlaylistId, ReviewRequestId, ReviewStatus, Room, RoomAdminPermissionBits,
-        RoomGuestPermissionBits, RoomId, RoomListQuery, RoomMember, RoomMemberPermissionBits,
-        RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole, RoomSettings, RoomStatus,
-        RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
+        FileUploadSession, Media, MediaId, MemberStatus, NewStoredFile, OpaquePasswordRecord,
+        PageParams, Playlist, PlaylistId, ReviewRequestId, ReviewStatus, Room,
+        RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId, RoomListQuery, RoomMember,
+        RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole,
+        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
         media::MediaListItem,
@@ -90,11 +91,13 @@ use crate::{
             MemberRolePermissionExactVersionUpdate, RemovedRoomMember,
         },
         ChatRepository, MediaRepository, PlaylistRepository, ReviewRepository,
-        RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
+        RoomMemberRepository, RoomPasswordCredentialState, RoomPasswordRepository,
+        RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
         UserProviderCredentialRepository,
     },
     service::{
         audit::AuditService,
+        auth::OpaquePasswordService,
         file_storage::FileStorageContext,
         media::MediaService,
         member::{AdminMemberUpdate, MemberService},
@@ -104,14 +107,403 @@ use crate::{
         playlist::PlaylistService,
         room_cover_upload_policy,
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
+        session_store::RedisJsonSessionStore,
         user::UserService,
         FileStorageCleanupOrigin, ProvidersManager, RoomPasswordPolicy,
     },
-    Error, InternalExt, Result,
+    Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
+
+use serde::{Deserialize, Serialize};
 
 pub const MAX_KICK_COOLDOWN_SECONDS: i64 = 30 * 24 * 60 * 60;
 const ROOM_COVER_REFERENCE_KIND: &str = "room_cover";
+const ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS: u64 = 300;
+const ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS: u64 = 300;
+const ROOM_OPAQUE_SESSION_CAPACITY: u64 = 10_000;
+const ROOM_OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE: &str = "room:opaque:password_registration";
+const ROOM_OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE: &str = "room:opaque:password_login";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomOpaquePasswordRegistrationSession {
+    room_id: RoomId,
+    user_id: UserId,
+    credential_identifier: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomOpaquePasswordLoginSession {
+    room_id: RoomId,
+    user_id: UserId,
+    expected_password_version: i32,
+    server_login_state: Vec<u8>,
+    brute_force_subject_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoomOpaqueRegistrationStartChallenge {
+    pub session_id: String,
+    pub registration_response: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoomOpaqueLoginStartChallenge {
+    pub session_id: String,
+    pub credential_response: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+enum RoomPasswordJoinProof {
+    None,
+    Plaintext(String),
+    OpaqueVerified { expected_version: i32 },
+}
+
+#[async_trait::async_trait]
+pub trait RoomOpaquePasswordRegistrationSessionStore: Send + Sync {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &RoomOpaquePasswordRegistrationSession,
+        ttl: StdDuration,
+    ) -> Result<()>;
+
+    async fn consume(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RoomOpaquePasswordRegistrationSession>>;
+}
+
+#[async_trait::async_trait]
+pub trait RoomOpaquePasswordLoginSessionStore: Send + Sync {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &RoomOpaquePasswordLoginSession,
+        ttl: StdDuration,
+    ) -> Result<()>;
+
+    async fn consume(&self, session_id: &str) -> Result<Option<RoomOpaquePasswordLoginSession>>;
+}
+
+#[derive(Clone)]
+struct RoomOpaqueRegistrationSessionEntry {
+    session: RoomOpaquePasswordRegistrationSession,
+    ttl: StdDuration,
+}
+
+#[derive(Clone)]
+struct RoomOpaqueLoginSessionEntry {
+    session: RoomOpaquePasswordLoginSession,
+    ttl: StdDuration,
+}
+
+struct RoomOpaqueRegistrationSessionExpiry;
+
+impl moka::Expiry<String, RoomOpaqueRegistrationSessionEntry>
+    for RoomOpaqueRegistrationSessionExpiry
+{
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &RoomOpaqueRegistrationSessionEntry,
+        _now: std::time::Instant,
+    ) -> Option<StdDuration> {
+        Some(value.ttl)
+    }
+}
+
+struct RoomOpaqueLoginSessionExpiry;
+
+impl moka::Expiry<String, RoomOpaqueLoginSessionEntry> for RoomOpaqueLoginSessionExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &RoomOpaqueLoginSessionEntry,
+        _now: std::time::Instant,
+    ) -> Option<StdDuration> {
+        Some(value.ttl)
+    }
+}
+
+pub struct InMemoryRoomOpaquePasswordRegistrationSessionStore {
+    entries: moka::sync::Cache<String, RoomOpaqueRegistrationSessionEntry>,
+}
+
+pub struct InMemoryRoomOpaquePasswordLoginSessionStore {
+    entries: moka::sync::Cache<String, RoomOpaqueLoginSessionEntry>,
+}
+
+impl InMemoryRoomOpaquePasswordRegistrationSessionStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: moka::sync::Cache::builder()
+                .max_capacity(ROOM_OPAQUE_SESSION_CAPACITY)
+                .expire_after(RoomOpaqueRegistrationSessionExpiry)
+                .build(),
+        }
+    }
+}
+
+impl Default for InMemoryRoomOpaquePasswordRegistrationSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InMemoryRoomOpaquePasswordLoginSessionStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: moka::sync::Cache::builder()
+                .max_capacity(ROOM_OPAQUE_SESSION_CAPACITY)
+                .expire_after(RoomOpaqueLoginSessionExpiry)
+                .build(),
+        }
+    }
+}
+
+impl Default for InMemoryRoomOpaquePasswordLoginSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl RoomOpaquePasswordRegistrationSessionStore
+    for InMemoryRoomOpaquePasswordRegistrationSessionStore
+{
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &RoomOpaquePasswordRegistrationSession,
+        ttl: StdDuration,
+    ) -> Result<()> {
+        self.entries.insert(
+            session_id.to_string(),
+            RoomOpaqueRegistrationSessionEntry {
+                session: session.clone(),
+                ttl,
+            },
+        );
+        Ok(())
+    }
+
+    async fn consume(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RoomOpaquePasswordRegistrationSession>> {
+        if self.entries.get(session_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(session_id).map(|entry| entry.session))
+    }
+}
+
+#[async_trait::async_trait]
+impl RoomOpaquePasswordLoginSessionStore for InMemoryRoomOpaquePasswordLoginSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &RoomOpaquePasswordLoginSession,
+        ttl: StdDuration,
+    ) -> Result<()> {
+        self.entries.insert(
+            session_id.to_string(),
+            RoomOpaqueLoginSessionEntry {
+                session: session.clone(),
+                ttl,
+            },
+        );
+        Ok(())
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<RoomOpaquePasswordLoginSession>> {
+        if self.entries.get(session_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(session_id).map(|entry| entry.session))
+    }
+}
+
+pub struct RedisRoomOpaquePasswordRegistrationSessionStore {
+    store: RedisJsonSessionStore,
+}
+
+pub struct RedisRoomOpaquePasswordLoginSessionStore {
+    store: RedisJsonSessionStore,
+}
+
+impl RedisRoomOpaquePasswordRegistrationSessionStore {
+    #[must_use]
+    pub fn from_runtime(
+        runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        Self {
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
+        }
+    }
+}
+
+impl RedisRoomOpaquePasswordLoginSessionStore {
+    #[must_use]
+    pub fn from_runtime(
+        runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        Self {
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RoomOpaquePasswordRegistrationSessionStore
+    for RedisRoomOpaquePasswordRegistrationSessionStore
+{
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &RoomOpaquePasswordRegistrationSession,
+        ttl: StdDuration,
+    ) -> Result<()> {
+        self.store
+            .store(
+                ROOM_OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize room OPAQUE registration session",
+                "store room OPAQUE registration session in Redis",
+            )
+            .await
+    }
+
+    async fn consume(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RoomOpaquePasswordRegistrationSession>> {
+        self.store
+            .consume(
+                ROOM_OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize room OPAQUE registration session",
+                "consume room OPAQUE registration session from Redis",
+            )
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl RoomOpaquePasswordLoginSessionStore for RedisRoomOpaquePasswordLoginSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &RoomOpaquePasswordLoginSession,
+        ttl: StdDuration,
+    ) -> Result<()> {
+        self.store
+            .store(
+                ROOM_OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize room OPAQUE login session",
+                "store room OPAQUE login session in Redis",
+            )
+            .await
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<RoomOpaquePasswordLoginSession>> {
+        self.store
+            .consume(
+                ROOM_OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize room OPAQUE login session",
+                "consume room OPAQUE login session from Redis",
+            )
+            .await
+    }
+}
+
+#[must_use]
+pub fn local_room_opaque_password_registration_session_store(
+) -> Arc<dyn RoomOpaquePasswordRegistrationSessionStore> {
+    Arc::new(InMemoryRoomOpaquePasswordRegistrationSessionStore::new())
+}
+
+#[must_use]
+pub fn local_room_opaque_password_login_session_store(
+) -> Arc<dyn RoomOpaquePasswordLoginSessionStore> {
+    Arc::new(InMemoryRoomOpaquePasswordLoginSessionStore::new())
+}
+
+#[must_use]
+pub fn shared_room_opaque_password_registration_session_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn RoomOpaquePasswordRegistrationSessionStore> {
+    Arc::new(RedisRoomOpaquePasswordRegistrationSessionStore::from_runtime(runtime, key_prefix))
+}
+
+#[must_use]
+pub fn shared_room_opaque_password_login_session_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn RoomOpaquePasswordLoginSessionStore> {
+    Arc::new(RedisRoomOpaquePasswordLoginSessionStore::from_runtime(
+        runtime, key_prefix,
+    ))
+}
+
+pub fn room_opaque_password_registration_session_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn RoomOpaquePasswordRegistrationSessionStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let runtime = profile.require_shared_runtime(
+                "single-use room OPAQUE password registration session storage",
+            )?;
+            Ok(shared_room_opaque_password_registration_session_store(
+                runtime,
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::SharedBestEffort => {
+            Ok(shared_room_opaque_password_registration_session_store(
+                profile
+                    .shared_runtime()
+                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::LocalOnly => Ok(local_room_opaque_password_registration_session_store()),
+    }
+}
+
+pub fn room_opaque_password_login_session_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn RoomOpaquePasswordLoginSessionStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let runtime = profile
+                .require_shared_runtime("single-use room OPAQUE password login session storage")?;
+            Ok(shared_room_opaque_password_login_session_store(
+                runtime,
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::SharedBestEffort => Ok(shared_room_opaque_password_login_session_store(
+            profile
+                .shared_runtime()
+                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.key_prefix().to_string(),
+        )),
+        SharedStateMode::LocalOnly => Ok(local_room_opaque_password_login_session_store()),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateRoomCoverUploadSession {
@@ -134,8 +526,8 @@ struct PendingRoomCreationRequest {
     requested_by: UserId,
     name: String,
     description: String,
-    password_hash: Option<String>,
     settings: RoomSettings,
+    opaque_password_record: Option<OpaquePasswordRecord>,
 }
 
 struct CreateRoomCommand {
@@ -216,14 +608,8 @@ pub struct AdminRejectJoinRequestWithOutbox<'a> {
     pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
 }
 
-fn initial_room_settings(settings: Option<RoomSettings>, password_provided: bool) -> RoomSettings {
-    match settings {
-        Some(settings) => settings,
-        None => RoomSettings {
-            require_password: crate::models::room_settings::RequirePassword(password_provided),
-            ..RoomSettings::default()
-        },
-    }
+fn initial_room_settings(settings: Option<RoomSettings>) -> RoomSettings {
+    settings.unwrap_or_default()
 }
 
 fn merge_json_object_patch(target: &mut serde_json::Value, patch: serde_json::Value) -> Result<()> {
@@ -304,7 +690,10 @@ pub struct RoomServiceOptions {
     pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
-    pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+    pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
+    pub opaque_password_registration_session_store:
+        Option<Arc<dyn RoomOpaquePasswordRegistrationSessionStore>>,
+    pub opaque_password_login_session_store: Option<Arc<dyn RoomOpaquePasswordLoginSessionStore>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
     pub room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
@@ -331,6 +720,7 @@ pub struct RoomService {
     playlist_repo: PlaylistRepository,
     playback_repo: RoomPlaybackStateRepository,
     chat_repo: ChatRepository,
+    room_password_repo: RoomPasswordRepository,
 
     // Domain services
     member_service: MemberService,
@@ -360,9 +750,9 @@ pub struct RoomService {
     /// (e.g., pending room review alerts)
     user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
 
-    /// Password hasher (Argon2id). Defaults to production params;
-    /// inject `TestPasswordHasher` in integration tests for speed.
-    password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+    opaque_password_service: Arc<OpaquePasswordService>,
+    opaque_password_registration_session_store: Arc<dyn RoomOpaquePasswordRegistrationSessionStore>,
+    opaque_password_login_session_store: Arc<dyn RoomOpaquePasswordLoginSessionStore>,
 
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
@@ -463,6 +853,10 @@ impl std::fmt::Debug for RoomService {
 }
 
 impl RoomService {
+    fn room_opaque_credential_identifier(room_id: &RoomId) -> Vec<u8> {
+        format!("synctv:room-password:{}", room_id.as_i64()).into_bytes()
+    }
+
     fn validate_override_bits_for_role(
         role: RoomRole,
         added_permissions: u64,
@@ -501,42 +895,60 @@ impl RoomService {
         AuthorizedAdminActor::new(*admin_user_id, admin_user.username, admin_user.role)
     }
 
-    async fn create_room_creation_request_with_executor<'e, E>(
+    async fn create_room_creation_request_tx(
         &self,
+        tx: &mut Transaction<'_, Postgres>,
         requested_by: &UserId,
         name: &str,
         description: &str,
-        password_hash: Option<&str>,
         settings: &RoomSettings,
-        executor: E,
-    ) -> Result<Room>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
+        password: Option<&str>,
+    ) -> Result<Room> {
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
-        let request_id = sqlx::query_scalar!(
-            r#"
+        let request_id = sqlx::query_scalar::<_, i64>(
+            r"
             INSERT INTO room_creation_requests (
-                requested_by, name, description, password_hash, settings_payload, status, requested_at
+                requested_by, name, description, settings_payload, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-            RETURNING id AS "id: RoomId"
-            "#,
-            requested_by.as_i64(),
-            name,
-            description,
-            password_hash,
-            settings_payload,
-            i16::from(ReviewStatus::Pending)
+            VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+            RETURNING id
+            ",
         )
-        .fetch_one(executor)
+        .bind(requested_by)
+        .bind(name)
+        .bind(description)
+        .bind(settings_payload)
+        .bind(i16::from(ReviewStatus::Pending))
+        .fetch_one(&mut **tx)
         .await?;
 
         let mut room =
             Room::new_with_description(name.to_string(), description.to_string(), *requested_by);
-        room.id = request_id;
+        room.id = RoomId::try_from(request_id).map_err(Error::Internal)?;
+        if let Some(password) = password {
+            let opaque_record = self
+                .opaque_password_service
+                .register_password(&Self::room_opaque_credential_identifier(&room.id), password)?;
+            sqlx::query(
+                r"
+                UPDATE room_creation_requests
+                SET opaque_password_record = $2,
+                    opaque_password_credential_identifier = $3,
+                    opaque_password_ciphersuite = $4,
+                    opaque_password_server_setup_version = $5
+                WHERE id = $1
+                ",
+            )
+            .bind(room.id)
+            .bind(opaque_record.record.as_slice())
+            .bind(opaque_record.credential_identifier.as_slice())
+            .bind(opaque_record.ciphersuite.as_str())
+            .bind(opaque_record.server_setup_version)
+            .execute(&mut **tx)
+            .await?;
+        }
         Ok(room)
     }
 
@@ -544,37 +956,65 @@ impl RoomService {
         request_id: &RoomId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRoomCreationRequest>> {
-        let row = sqlx::query!(
-            r#"
-            SELECT id AS "id: RoomId",
-                   requested_by AS "requested_by: UserId",
+        let row = sqlx::query(
+            r"
+            SELECT id,
+                   requested_by,
                    name,
                    description,
-                   password_hash,
-                   settings_payload AS "settings_payload?: serde_json::Value"
+                   settings_payload,
+                   opaque_password_record,
+                   opaque_password_credential_identifier,
+                   opaque_password_ciphersuite,
+                   opaque_password_server_setup_version
             FROM room_creation_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            "#,
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Pending),
+            ",
         )
+        .bind(request_id)
+        .bind(i16::from(ReviewStatus::Pending))
         .fetch_optional(&mut **tx)
         .await?;
 
         row.map(|row| {
+            use sqlx::Row;
+            let id: i64 = row.try_get("id")?;
+            let requested_by: i64 = row.try_get("requested_by")?;
             let settings_payload = row
-                .settings_payload
+                .try_get::<Option<serde_json::Value>, _>("settings_payload")?
                 .unwrap_or_else(|| serde_json::json!({}));
             let settings = serde_json::from_value::<RoomSettings>(settings_payload)
                 .map_err(|e| sqlx::Error::Decode(e.into()))?;
+            let opaque_password_record = match (
+                row.try_get::<Option<Vec<u8>>, _>("opaque_password_record")?,
+                row.try_get::<Option<Vec<u8>>, _>("opaque_password_credential_identifier")?,
+                row.try_get::<Option<String>, _>("opaque_password_ciphersuite")?,
+                row.try_get::<Option<i32>, _>("opaque_password_server_setup_version")?,
+            ) {
+                (Some(record), Some(credential_identifier), Some(ciphersuite), Some(version)) => {
+                    Some(OpaquePasswordRecord {
+                        record,
+                        credential_identifier,
+                        ciphersuite,
+                        server_setup_version: version,
+                    })
+                }
+                (None, None, None, None) => None,
+                _ => {
+                    return Err(sqlx::Error::Decode(
+                        "Incomplete pending room OPAQUE password material".into(),
+                    ));
+                }
+            };
             Ok(PendingRoomCreationRequest {
-                id: row.id,
-                requested_by: row.requested_by,
-                name: row.name,
-                description: row.description,
-                password_hash: row.password_hash,
+                id: RoomId::try_from(id).map_err(|e| sqlx::Error::Decode(e.into()))?,
+                requested_by: UserId::try_from(requested_by)
+                    .map_err(|e| sqlx::Error::Decode(e.into()))?,
+                name: row.try_get("name")?,
+                description: row.try_get("description")?,
                 settings,
+                opaque_password_record,
             })
         })
         .transpose()
@@ -682,7 +1122,7 @@ impl RoomService {
     fn enforce_current_room_creation_policy(
         &self,
         user_id: &UserId,
-        settings: &RoomSettings,
+        password_enabled: bool,
         policy: RoomCreationPolicy,
     ) -> Result<()> {
         if let Some(ref registry) = self.settings_registry {
@@ -705,13 +1145,13 @@ impl RoomService {
                 .get()
                 .unwrap_or(RoomPasswordPolicy::Optional)
             {
-                RoomPasswordPolicy::Required if !settings.require_password.0 => {
+                RoomPasswordPolicy::Required if !password_enabled => {
                     tracing::warn!(user_id = %user_id, "Room creation rejected: password required by server policy");
                     return Err(Error::InvalidInput(
                         "Room password is required by server policy".to_string(),
                     ));
                 }
-                RoomPasswordPolicy::Forbidden if settings.require_password.0 => {
+                RoomPasswordPolicy::Forbidden if password_enabled => {
                     tracing::warn!(user_id = %user_id, "Room creation rejected: passwords not allowed by server policy");
                     return Err(Error::InvalidInput(
                         "Room passwords are not allowed by server policy".to_string(),
@@ -1283,6 +1723,7 @@ impl RoomService {
         let playlist_repo = PlaylistRepository::new(pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
         let chat_repo = ChatRepository::new(pool.clone());
+        let room_password_repo = RoomPasswordRepository::new(pool.clone());
 
         let notification_service = NotificationService::default();
 
@@ -1366,14 +1807,21 @@ impl RoomService {
             room_settings_service,
             notification_service,
             user_service,
+            room_password_repo,
             cache_invalidation: options.cache_invalidation,
             audit_service: options.audit_service,
             brute_force_service: options.brute_force_service,
             settings_registry: options.settings_registry,
             user_notification_service: options.user_notification_service,
-            password_hasher: options
-                .password_hasher
-                .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
+            opaque_password_service: options
+                .opaque_password_service
+                .unwrap_or_else(|| Arc::new(OpaquePasswordService::new_ephemeral_for_process())),
+            opaque_password_registration_session_store: options
+                .opaque_password_registration_session_store
+                .unwrap_or_else(local_room_opaque_password_registration_session_store),
+            opaque_password_login_session_store: options
+                .opaque_password_login_session_store
+                .unwrap_or_else(local_room_opaque_password_login_session_store),
             realtime_outbox: options.realtime_outbox,
             media_file_storage_service: options.media_file_storage_service,
             room_file_storage_service: options.room_file_storage_service,
@@ -1434,12 +1882,22 @@ impl RoomService {
         self.settings_registry = Some(registry);
     }
 
-    /// Override the password hasher (e.g. inject `TestPasswordHasher` in tests).
-    pub fn set_password_hasher(
+    pub fn set_opaque_password_service(&mut self, service: Arc<OpaquePasswordService>) {
+        self.opaque_password_service = service;
+    }
+
+    pub fn set_room_opaque_password_registration_session_store(
         &mut self,
-        hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+        store: Arc<dyn RoomOpaquePasswordRegistrationSessionStore>,
     ) {
-        self.password_hasher = hasher;
+        self.opaque_password_registration_session_store = store;
+    }
+
+    pub fn set_room_opaque_password_login_session_store(
+        &mut self,
+        store: Arc<dyn RoomOpaquePasswordLoginSessionStore>,
+    ) {
+        self.opaque_password_login_session_store = store;
     }
 
     /// Log an audit event if the audit service is configured.
@@ -1735,20 +2193,21 @@ impl RoomService {
             password,
             settings,
         } = command;
-        let room_settings = initial_room_settings(settings, password.is_some());
+        let password_enabled = password.is_some();
+        let room_settings = initial_room_settings(settings);
         room_settings.validate()?;
 
         tracing::info!(
             user_id = %created_by,
             room_name = %name,
-            password_provided = password.is_some(),
-            requires_password = room_settings.require_password.0,
+            password_provided = password_enabled,
+            password_enabled,
             "Creating new room"
         );
 
         self.enforce_current_room_creation_policy(
             &created_by,
-            &room_settings,
+            password_enabled,
             RoomCreationPolicy {
                 enforce_creation_toggle: enforce_creation_policy,
             },
@@ -1766,13 +2225,6 @@ impl RoomService {
                 "Room description too long (max 500 characters)".to_string(),
             ));
         }
-
-        // Hash password outside the transaction (CPU-intensive bcrypt work)
-        let pwd_hash = if let Some(ref pwd) = password {
-            Some(self.password_hasher.hash_password(pwd).await?)
-        } else {
-            None
-        };
 
         let need_review = self
             .settings_registry
@@ -1794,13 +2246,13 @@ impl RoomService {
             self.ensure_room_name_available_for_creator_tx(&mut tx, &created_by, &name)
                 .await?;
             let pending_room = self
-                .create_room_creation_request_with_executor(
+                .create_room_creation_request_tx(
+                    &mut tx,
                     &created_by,
                     &name,
                     &description,
-                    pwd_hash.as_deref(),
                     &room_settings,
-                    &mut *tx,
+                    password.as_deref(),
                 )
                 .await?;
             tx.commit().await?;
@@ -1865,25 +2317,26 @@ impl RoomService {
         // 1. Create room
         let room = Room::new_with_description(name, description, created_by);
         let created_room = self.room_repo.create_with_executor(&room, &mut *tx).await?;
-
-        // 2. Set password if provided
-        if let Some(ref hash) = pwd_hash {
-            self.room_settings_repo
-                .set_with_executor(&created_room.id, "password", hash, &mut *tx)
+        if let Some(password) = password.as_deref() {
+            let opaque_record = self.opaque_password_service.register_password(
+                &Self::room_opaque_credential_identifier(&created_room.id),
+                password,
+            )?;
+            self.room_password_repo
+                .set_opaque_credential_with_executor(&created_room.id, &opaque_record, &mut *tx)
                 .await?;
-            tracing::debug!(room_id = %created_room.id, "Room password set");
         }
 
-        // 3. Set room settings
+        // 2. Set room settings
         self.room_settings_repo
             .set_settings_with_executor(&created_room.id, &room_settings, &mut *tx)
             .await?;
 
-        // 4. Add creator as member with full permissions
+        // 3. Add creator as member with full permissions
         let member = RoomMember::new(created_room.id, created_by, RoomRole::Creator);
         let created_member = self.member_repo.add_with_executor(&member, &mut tx).await?;
 
-        // 5. Initialize playback state
+        // 4. Initialize playback state
         self.playback_repo
             .create_or_get_with_executor(&created_room.id, &mut tx)
             .await?;
@@ -2214,7 +2667,7 @@ impl RoomService {
 
     /// Join a room
     ///
-    /// Optimized: fetches room, ban-status, settings, and password hash in a
+    /// Optimized: fetches room, ban-status, settings, and password credential in a
     /// single JOIN query via `RoomRepository::get_join_context`, reducing the
     /// number of sequential DB round-trips from 4+ to 1.
     ///
@@ -2238,14 +2691,27 @@ impl RoomService {
         password: Option<String>,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
+        let proof = password
+            .map_or(RoomPasswordJoinProof::None, RoomPasswordJoinProof::Plaintext);
+        self.join_room_with_password_proof(room_id, user_id, proof, outbox_event_factory)
+            .await
+    }
+
+    async fn join_room_with_password_proof(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        password_proof: RoomPasswordJoinProof,
+        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+    ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
         tracing::info!(
             room_id = %room_id,
             user_id = %user_id,
-            has_password = password.is_some(),
+            has_password = matches!(password_proof, RoomPasswordJoinProof::Plaintext(_) | RoomPasswordJoinProof::OpaqueVerified { .. }),
             "User attempting to join room"
         );
 
-        // Verify password before acquiring the lock (CPU-intensive bcrypt work).
+        // Verify password before acquiring the lock.
         // This reduces lock hold time and avoids blocking concurrent joins.
         // We fetch the join context for validation first.
         let ctx = self
@@ -2288,31 +2754,7 @@ impl RoomService {
             ));
         }
 
-        // Check password if required (CPU-intensive bcrypt, done before lock).
-        // This is a pre-check to avoid acquiring the lock if the password is invalid.
-        // We'll re-verify under the lock to catch race conditions.
-        if ctx.settings.require_password.0 {
-            if let Some(ref hash) = ctx.password_hash {
-                let provided_password = password.as_ref().ok_or_else(|| {
-                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
-                    Error::Authorization("Password required".to_string())
-                })?;
-
-                if !self
-                    .password_hasher
-                    .verify_password(provided_password, hash)
-                    .await?
-                {
-                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
-                    return Err(Error::Authorization("Invalid password".to_string()));
-                }
-                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully (pre-check)");
-            } else {
-                // Room requires password but none is configured -- reject join
-                tracing::warn!(room_id = %room_id, "Room requires password but none is set");
-                return Err(Error::Authorization("Invalid password".to_string()));
-            }
-        }
+        self.verify_room_password_join_proof(&ctx, &room_id, &user_id, &password_proof)?;
 
         // Use distributed lock to make the check-then-add-member atomic.
         // This prevents the TOCTOU race where two concurrent join requests
@@ -2326,7 +2768,7 @@ impl RoomService {
                 &lock_key,
                 10,
                 || {
-                    let password = password.clone();
+                    let password_proof = password_proof.clone();
                     let outbox_event_factory = outbox_event_factory.clone();
                     async move {
                         // Re-validate state under lock to catch changes that occurred
@@ -2364,40 +2806,20 @@ impl RoomService {
                             ));
                         }
 
-                        // Re-verify password under lock to prevent race condition where
-                        // the password was changed between the initial verification and
-                        // lock acquisition. This ensures the provided password is still
-                        // valid against the current password hash.
-                        // Always re-verify under lock, even if the hash appears unchanged.
-                        // This prevents the A->B->A race condition where the password changes
-                        // and then changes back to the same hash between the initial check
-                        // and lock acquisition.
-                    if fresh_ctx.settings.require_password.0 {
-                        if let Some(ref hash) = fresh_ctx.password_hash {
-                            let provided_password = password.ok_or_else(|| {
-                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided under lock");
-                                Error::Authorization("Password required".to_string())
-                            })?;
+                        self.verify_room_password_join_proof(
+                            &fresh_ctx,
+                            &room_id,
+                            &user_id,
+                            &password_proof,
+                        )?;
 
-                            if !self.password_hasher.verify_password(&provided_password, hash).await? {
-                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
-                                return Err(Error::Authorization("Invalid password".to_string()));
-                            }
-                            tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
-                        } else {
-                            // Room requires password but none is configured -- reject join.
-                            tracing::warn!(room_id = %room_id, "Room requires password but none is set under lock");
-                            return Err(Error::Authorization("Invalid password".to_string()));
-                        }
-                    }
-
-                    self.do_join_room(
-                        fresh_ctx.room,
-                        fresh_ctx.settings,
-                        room_id,
-                        user_id,
-                        outbox_event_factory,
-                    )
+                        self.do_join_room(
+                            fresh_ctx.room,
+                            fresh_ctx.settings,
+                            room_id,
+                            user_id,
+                            outbox_event_factory,
+                        )
                         .await
                     }
                 },
@@ -2409,6 +2831,48 @@ impl RoomService {
         let room = ctx.room;
         self.do_join_room(room, ctx.settings, room_id, user_id, outbox_event_factory)
             .await
+    }
+
+    fn verify_room_password_join_proof(
+        &self,
+        ctx: &crate::repository::room::JoinRoomContext,
+        room_id: &RoomId,
+        user_id: &UserId,
+        proof: &RoomPasswordJoinProof,
+    ) -> Result<()> {
+        if !ctx.password_enabled {
+            return Ok(());
+        }
+        match proof {
+            RoomPasswordJoinProof::Plaintext(password) => {
+                let credential = ctx.password_credential.as_ref().ok_or_else(|| {
+                    tracing::warn!(room_id = %room_id, "Room requires password but none is set");
+                    Error::Authorization("Invalid password".to_string())
+                })?;
+                if !self
+                    .opaque_password_service
+                    .verify_password(credential, password)?
+                {
+                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
+                    return Err(Error::Authorization("Invalid password".to_string()));
+                }
+                Ok(())
+            }
+            RoomPasswordJoinProof::OpaqueVerified { expected_version } => {
+                let current_version = ctx.password_version.ok_or_else(|| {
+                    tracing::warn!(room_id = %room_id, "Room requires password but credential version is missing");
+                    Error::Authorization("Invalid password".to_string())
+                })?;
+                if current_version != *expected_version {
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+                Ok(())
+            }
+            RoomPasswordJoinProof::None => {
+                tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
+                Err(Error::Authorization("Password required".to_string()))
+            }
+        }
     }
 
     /// Internal join implementation: adds member, lists members, notifies.
@@ -3561,7 +4025,12 @@ impl RoomService {
         }
 
         // Check if room has password (guests cannot join password-protected rooms)
-        if room_settings.require_password.0 {
+        let password_enabled = self
+            .room_password_repo
+            .get_state(room_id)
+            .await?
+            .is_some_and(|state| state.enabled);
+        if password_enabled {
             tracing::debug!(room_id = %room_id, "Guest access denied: room has password");
             return Err(Error::Authorization(
                 "Guests cannot join password-protected rooms. Please create an account and join as a member.".to_string(),
@@ -3773,7 +4242,7 @@ impl RoomService {
             .await?;
         self.enforce_current_room_creation_policy(
             &request.requested_by,
-            &request.settings,
+            request.opaque_password_record.is_some(),
             RoomCreationPolicy {
                 enforce_creation_toggle: true,
             },
@@ -3795,14 +4264,14 @@ impl RoomService {
         );
         let updated = self.room_repo.create_with_executor(&room, &mut *tx).await?;
 
-        if let Some(password_hash) = request.password_hash.as_deref() {
-            self.room_settings_repo
-                .set_with_executor(&updated.id, "password", password_hash, &mut *tx)
-                .await?;
-        }
         self.room_settings_repo
             .set_settings_with_executor(&updated.id, &request.settings, &mut *tx)
             .await?;
+        if let Some(ref opaque_password_record) = request.opaque_password_record {
+            self.room_password_repo
+                .set_opaque_credential_with_executor(&updated.id, opaque_password_record, &mut *tx)
+                .await?;
+        }
 
         let member = RoomMember::new(updated.id, request.requested_by, RoomRole::Creator);
         self.member_repo.add_with_executor(&member, &mut tx).await?;
@@ -4553,7 +5022,6 @@ impl RoomService {
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-
         let patch = std::sync::Arc::new(patch);
 
         let (previous_settings, updated_settings, updated_version) =
@@ -4813,8 +5281,6 @@ impl RoomService {
         let guest_kick_reason =
             if previous_settings.allow_guest_join.0 && !updated_settings.allow_guest_join.0 {
                 Some(GuestKickReason::RoomGuestModeDisabled)
-            } else if !previous_settings.require_password.0 && updated_settings.require_password.0 {
-                Some(GuestKickReason::RoomPasswordAdded)
             } else {
                 None
             };
@@ -4942,48 +5408,250 @@ impl RoomService {
         .await
     }
 
-    /// Check room password
-    ///
-    /// Returns:
-    /// - `Ok(true)` if the password matches the stored hash
-    /// - `Ok(false)` if the password does not match
-    /// - `Err(InvalidInput("Room has no password set"))` if the room has no password
     pub async fn check_room_password(&self, room_id: &RoomId, password: &str) -> Result<bool> {
-        let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
-
-        match password_hash {
-            Some(stored) => self
-                .password_hasher
-                .verify_password(password, &stored)
-                .await
-                .internal_with_err("Password verification failed"),
+        let credential = self
+            .room_password_repo
+            .get_opaque_credential(room_id)
+            .await?;
+        match credential {
+            Some(stored) if stored.state.enabled => self
+                .opaque_password_service
+                .verify_password(&stored.record, password),
+            Some(_) => Err(Error::InvalidInput("Room password is disabled".to_string())),
             None => Err(Error::InvalidInput("Room has no password set".to_string())),
         }
     }
 
-    /// Check room password with brute-force rate limiting.
-    ///
-    /// Uses the `BruteForceProtection` service to prevent password guessing attacks.
-    /// Rate limiting is based on `room_id + client_ip` combination.
-    ///
-    /// # Rate Limit Thresholds
-    ///
-    /// - 5 failures: 1 minute lockout
-    /// - 10 failures: 5 minute lockout
-    /// - 15+ failures: 15 minute lockout
-    ///
-    /// # Arguments
-    ///
-    /// * `room_id` - The room to check password for
-    /// * `password` - The password to verify
-    /// * `client_ip` - Optional client IP for per-IP rate limiting
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(true)` - Password is correct
-    /// * `Ok(false)` - Password is incorrect (but not rate limited)
-    /// * `Err(Error::Authentication)` - Rate limited (too many failed attempts)
-    /// * `Err(Error::Internal)` - Brute-force service unavailable (fail-closed)
+    pub async fn is_room_password_enabled(&self, room_id: &RoomId) -> Result<bool> {
+        Ok(self
+            .room_password_repo
+            .get_state(room_id)
+            .await?
+            .is_some_and(|state| state.enabled))
+    }
+
+    pub async fn start_room_opaque_password_login_with_control(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        credential_request: Vec<u8>,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RoomOpaqueLoginStartChallenge> {
+        let subject_key = self.room_password_attempts_key(room_id, client_ip);
+        if let Some(ref brute_force) = self.brute_force_service {
+            brute_force
+                .check_subject_key_allowed_with_control(&subject_key, client_ip, control)
+                .await?;
+        }
+        let ctx = self
+            .room_repo
+            .get_join_context(room_id, user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        if !ctx.password_enabled {
+            return Err(Error::InvalidInput(
+                "Room does not require a password".to_string(),
+            ));
+        }
+        let credential = ctx
+            .password_credential
+            .ok_or_else(|| Error::Authorization("Invalid password".to_string()))?;
+        let password_version = ctx.password_version.unwrap_or(0);
+        let login_start = self.opaque_password_service.start_login(
+            Some(&credential),
+            &credential.credential_identifier,
+            &credential_request,
+        )?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_password_login_session_store
+            .store(
+                &session_id,
+                &RoomOpaquePasswordLoginSession {
+                    room_id: *room_id,
+                    user_id: *user_id,
+                    expected_password_version: password_version,
+                    server_login_state: login_start.server_login_state,
+                    brute_force_subject_key: subject_key,
+                },
+                StdDuration::from_secs(ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS),
+            )
+            .await?;
+        Ok(RoomOpaqueLoginStartChallenge {
+            session_id,
+            credential_response: login_start.credential_response,
+        })
+    }
+
+    pub async fn finish_room_opaque_password_login_with_outbox(
+        &self,
+        expected_room_id: Option<&RoomId>,
+        session_id: &str,
+        user_id: &UserId,
+        credential_finalization: Vec<u8>,
+        client_ip: Option<IpAddr>,
+        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+    ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
+        let Some(session) = self
+            .opaque_password_login_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+        if session.user_id != *user_id {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        if expected_room_id.is_some_and(|room_id| session.room_id != *room_id) {
+            return Err(Error::InvalidInput(
+                "Room password login session does not match room".to_string(),
+            ));
+        }
+        if let Some(ref brute_force) = self.brute_force_service {
+            brute_force
+                .check_subject_key_allowed_with_control(
+                    &session.brute_force_subject_key,
+                    client_ip,
+                    None,
+                )
+                .await?;
+        }
+        let finish_result = self
+            .opaque_password_service
+            .finish_login(&session.server_login_state, &credential_finalization);
+        if finish_result.is_err() {
+            if let Some(ref brute_force) = self.brute_force_service {
+                brute_force
+                    .record_subject_key_failure_with_control(
+                        &session.brute_force_subject_key,
+                        client_ip,
+                        None,
+                    )
+                    .await?;
+            }
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        let current_state = self
+            .room_password_repo
+            .get_state(&session.room_id)
+            .await?
+            .ok_or_else(|| Error::Authorization("Invalid password".to_string()))?;
+        if !current_state.enabled {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        if current_state.version != session.expected_password_version {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        if let Some(ref brute_force) = self.brute_force_service {
+            if let Err(error) = brute_force
+                .reset_subject_key_with_control(&session.brute_force_subject_key, None)
+                .await
+            {
+                tracing::warn!(
+                    room_id = %session.room_id,
+                    error = %error,
+                    "Failed to reset room password rate limit counter after successful OPAQUE login"
+                );
+            }
+        }
+        self.join_room_with_password_proof(
+            session.room_id,
+            session.user_id,
+            RoomPasswordJoinProof::OpaqueVerified {
+                expected_version: session.expected_password_version,
+            },
+            outbox_event_factory,
+        )
+        .await
+    }
+
+    pub async fn start_room_opaque_password_registration(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        registration_request: Vec<u8>,
+    ) -> Result<RoomOpaqueRegistrationStartChallenge> {
+        self.permission_service
+            .check_permission_no_cache(
+                room_id,
+                user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+        let credential_identifier = Self::room_opaque_credential_identifier(room_id);
+        let registration_start = self
+            .opaque_password_service
+            .start_registration(&credential_identifier, &registration_request)?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_password_registration_session_store
+            .store(
+                &session_id,
+                &RoomOpaquePasswordRegistrationSession {
+                    room_id: *room_id,
+                    user_id: *user_id,
+                    credential_identifier,
+                },
+                StdDuration::from_secs(ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS),
+            )
+            .await?;
+        Ok(RoomOpaqueRegistrationStartChallenge {
+            session_id,
+            registration_response: registration_start.registration_response,
+        })
+    }
+
+    pub async fn finish_room_opaque_password_registration(
+        &self,
+        room_id: &RoomId,
+        session_id: &str,
+        user_id: &UserId,
+        registration_upload: Vec<u8>,
+    ) -> Result<RoomPasswordCredentialState> {
+        let Some(session) = self
+            .opaque_password_registration_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+        if session.user_id != *user_id {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        if session.room_id != *room_id {
+            return Err(Error::InvalidInput(
+                "Room password registration session does not match room".to_string(),
+            ));
+        }
+        self.permission_service
+            .check_permission_no_cache(
+                &session.room_id,
+                user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+        let opaque_record = self
+            .opaque_password_service
+            .finish_registration(session.credential_identifier, &registration_upload)?;
+        self.update_room_password_as(&session.room_id, Some(user_id), Some(opaque_record))
+            .await
+    }
+
+    pub async fn set_room_password_from_plaintext(
+        &self,
+        room_id: &RoomId,
+        actor_user_id: Option<&UserId>,
+        new_password: Option<&str>,
+    ) -> Result<RoomPasswordCredentialState> {
+        let opaque_record = new_password
+            .map(|password| {
+                self.opaque_password_service
+                    .register_password(&Self::room_opaque_credential_identifier(room_id), password)
+            })
+            .transpose()?;
+        self.update_room_password_as(room_id, actor_user_id, opaque_record)
+            .await
+    }
+
     pub async fn check_room_password_with_rate_limit(
         &self,
         room_id: &RoomId,
@@ -5003,22 +5671,21 @@ impl RoomService {
     ) -> Result<bool> {
         let subject_key = self.room_password_attempts_key(room_id, client_ip);
 
-        // Check rate limit if brute-force service is configured
         if let Some(ref brute_force) = self.brute_force_service {
             brute_force
                 .check_subject_key_allowed_with_control(&subject_key, client_ip, control)
                 .await?;
         }
 
-        // Verify the password
-        let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
-        let is_valid = match password_hash {
-            Some(stored) => self
-                .password_hasher
-                .verify_password(password, &stored)
-                .await
-                .internal_with_err("Password verification failed"),
-            None => Ok(false),
+        let is_valid = match self
+            .room_password_repo
+            .get_opaque_credential(room_id)
+            .await?
+        {
+            Some(stored) if stored.state.enabled => self
+                .opaque_password_service
+                .verify_password(&stored.record, password),
+            Some(_) | None => Ok(false),
         }?;
 
         // Handle success/failure tracking
@@ -5099,9 +5766,16 @@ impl RoomService {
     pub async fn update_room_password(
         &self,
         room_id: &RoomId,
-        password_hash: Option<String>,
+        password: Option<String>,
     ) -> Result<()> {
-        self.update_room_password_as(room_id, None, "", password_hash)
+        let opaque_record = password
+            .as_deref()
+            .map(|password| {
+                self.opaque_password_service
+                    .register_password(&Self::room_opaque_credential_identifier(room_id), password)
+            })
+            .transpose()?;
+        self.update_room_password_as(room_id, None, opaque_record)
             .await
             .map(|_| ())
     }
@@ -5110,167 +5784,55 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         actor_user_id: Option<&UserId>,
-        actor_username: &str,
-        password_hash: Option<String>,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        self.update_room_password_as_with_outbox(
-            room_id,
-            actor_user_id,
-            actor_username,
-            password_hash,
-            None,
-        )
-        .await
-    }
-
-    pub async fn update_room_password_as_with_outbox(
-        &self,
-        room_id: &RoomId,
-        actor_user_id: Option<&UserId>,
-        actor_username: &str,
-        password_hash: Option<String>,
-        outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        let password_was_set = password_hash.is_some();
-        self.do_set_password_hash(room_id, password_hash, outbox_event_factory)
+        opaque_record: Option<OpaquePasswordRecord>,
+    ) -> Result<RoomPasswordCredentialState> {
+        let password_was_set = opaque_record.is_some();
+        let state = self
+            .do_set_room_password_credential(room_id, opaque_record)
             .await?;
-        self.room_settings_service.invalidate_local(room_id).await;
 
         if password_was_set {
-            if let Err(e) = self
-                .revoke_all_guest_access(
-                    room_id,
-                    crate::service::notification::GuestKickReason::RoomPasswordAdded,
-                )
-                .await
-            {
-                tracing::warn!(
-                    room_id = %room_id,
-                    error = %e,
-                    "Failed to revoke guest access after password was added"
-                );
-            }
+            self.revoke_all_guest_access(
+                room_id,
+                crate::service::notification::GuestKickReason::RoomPasswordAdded,
+            )
+            .await?;
         }
 
-        // Invalidate room cache across all replicas after membership side effects complete
         self.notify_room_invalidation(room_id).await;
-        self.notify_room_settings_invalidation(room_id).await;
-        self.emit_room_settings_snapshot_after_password_update(
-            room_id,
-            actor_user_id,
-            actor_username,
-        )
-        .await
+        tracing::debug!(
+            room_id = %room_id,
+            actor_user_id = ?actor_user_id,
+            password_enabled = state.enabled,
+            password_version = state.version,
+            "Room password state updated"
+        );
+        Ok(state)
     }
 
-    /// Core password update logic: atomically set/remove password hash and sync `require_password`.
-    ///
-    /// Uses a transaction for the password hash row (separate key) plus CAS for the
-    /// settings row. Does NOT trigger side effects (guest kicking, notifications) --
-    /// callers handle that.
-    async fn do_set_password_hash(
+    async fn do_set_room_password_credential(
         &self,
         room_id: &RoomId,
-        password_hash: Option<String>,
-        outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<()> {
+        opaque_record: Option<OpaquePasswordRecord>,
+    ) -> Result<RoomPasswordCredentialState> {
         super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Password update failed after maximum retry attempts",
             || async {
-                // Read current settings and version
-                let (mut settings, version) =
-                    self.room_settings_repo.get_with_version(room_id).await?;
-                let domain = CacheDomain::RoomSettings { room_id: *room_id };
-                let reservation = self.begin_room_settings_write(room_id, version).await?;
-
-                // Update password hash in a transaction (separate key row, not version-checked)
-                let mut tx = match self.pool.begin().await {
-                    Ok(tx) => tx,
-                    Err(error) => {
-                        self.abort_room_settings_write(&domain, reservation.as_ref())
-                            .await;
-                        return Err(error.into());
-                    }
-                };
-                if let Some(ref pwd_hash) = password_hash {
-                    if let Err(error) = self
-                        .room_settings_repo
-                        .set_with_executor(room_id, "password", pwd_hash, &mut *tx)
-                        .await
-                    {
-                        self.abort_room_settings_write(&domain, reservation.as_ref())
-                            .await;
-                        return Err(error);
-                    }
-                    settings.require_password = crate::models::room_settings::RequirePassword(true);
+                let mut tx = self.pool.begin().await?;
+                let state = if let Some(ref opaque_record) = opaque_record {
+                    self.room_password_repo
+                        .set_opaque_credential_with_executor(room_id, opaque_record, &mut *tx)
+                        .await?
                 } else {
-                    if let Err(error) = self
-                        .room_settings_repo
-                        .delete_with_executor(room_id, "password", &mut *tx)
-                        .await
-                    {
-                        self.abort_room_settings_write(&domain, reservation.as_ref())
-                            .await;
-                        return Err(error);
-                    }
-                    settings.require_password =
-                        crate::models::room_settings::RequirePassword(false);
-                }
-
-                let new_version = if let Some(reservation) = &reservation {
-                    match self
-                        .room_settings_repo
-                        .set_settings_with_exact_version_with_executor(
-                            room_id,
-                            &settings,
-                            version,
-                            reservation.version,
-                            &mut *tx,
-                        )
-                        .await
-                    {
-                        Ok(new_version) => new_version,
-                        Err(error) => {
-                            self.abort_room_settings_write(&domain, Some(reservation))
-                                .await;
-                            return Err(error);
-                        }
-                    }
-                } else {
-                    self.room_settings_repo
-                        .set_settings_with_version_with_executor(
-                            room_id, &settings, version, &mut *tx,
-                        )
+                    self.room_password_repo
+                        .disable_with_executor(room_id, &mut *tx)
                         .await?
                 };
 
-                {
-                    let outbox_event = outbox_event_factory
-                        .as_ref()
-                        .and_then(|factory| factory(&settings, new_version));
-                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
-                            self.abort_room_settings_write(&domain, reservation.as_ref())
-                                .await;
-                            return Err(error);
-                        }
-                    }
-                    if let Err(error) = tx.commit().await {
-                        self.abort_room_settings_write(&domain, reservation.as_ref())
-                            .await;
-                        return Err(error.into());
-                    }
-                    self.finalize_committed_room_settings_write_best_effort(
-                        &domain,
-                        reservation.as_ref(),
-                        new_version,
-                        "update_room_setting_with_outbox",
-                    )
-                    .await;
-                    Ok(())
-                }
+                tx.commit().await?;
+                Ok(state)
             },
         )
         .await
@@ -8151,7 +8713,7 @@ impl RoomService {
         room_id: &RoomId,
         new_password: Option<&str>,
     ) -> Result<()> {
-        self.admin_set_room_password_as(room_id, new_password, None, "")
+        self.admin_set_room_password_as(room_id, new_password, None)
             .await
             .map(|_| ())
     }
@@ -8161,91 +8723,25 @@ impl RoomService {
         room_id: &RoomId,
         new_password: Option<&str>,
         actor_user_id: Option<&UserId>,
-        actor_username: &str,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        self.admin_set_room_password_as_with_outbox(
-            room_id,
-            new_password,
-            actor_user_id,
-            actor_username,
-            None,
-        )
-        .await
+    ) -> Result<RoomPasswordCredentialState> {
+        self.admin_set_room_password_as_internal(room_id, new_password, actor_user_id)
+            .await
     }
 
-    pub async fn admin_set_room_password_as_with_outbox(
+    pub async fn admin_set_room_password_as_internal(
         &self,
         room_id: &RoomId,
         new_password: Option<&str>,
         actor_user_id: Option<&UserId>,
-        actor_username: &str,
-        outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        // Verify room exists
+    ) -> Result<RoomPasswordCredentialState> {
         let _room = self
             .room_repo
             .get_by_id(room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        // Hash new password outside transaction (CPU-intensive)
-        let password_is_being_set = new_password.is_some();
-        let hashed_password = match new_password {
-            Some(pwd) => Some(self.password_hasher.hash_password(pwd).await?),
-            None => None,
-        };
-
-        self.do_set_password_hash(room_id, hashed_password, outbox_event_factory)
-            .await?;
-        self.room_settings_service.invalidate_local(room_id).await;
-
-        if password_is_being_set {
-            if let Err(e) = self.remove_guest_role_members(room_id).await {
-                tracing::warn!(
-                    "Failed to remove guest-role members after admin password set: {}",
-                    e
-                );
-            }
-        }
-
-        self.notify_room_invalidation(room_id).await;
-        self.notify_room_settings_invalidation(room_id).await;
-
-        self.emit_room_settings_snapshot_after_password_update(
-            room_id,
-            actor_user_id,
-            actor_username,
-        )
-        .await
-    }
-
-    async fn emit_room_settings_snapshot_after_password_update(
-        &self,
-        room_id: &RoomId,
-        actor_user_id: Option<&UserId>,
-        actor_username: &str,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        let snapshot = self
-            .room_settings_service
-            .get_refresh_with_version(room_id)
-            .await?;
-        let resolved_actor_username = match actor_user_id {
-            Some(user_id) if actor_username.is_empty() => {
-                self.resolve_actor_username(user_id).await
-            }
-            Some(_) => actor_username.to_string(),
-            None => String::new(),
-        };
-        let settings_json = serde_json::to_value(&snapshot.settings)
-            .internal_with_err("Failed to serialize settings")?;
-        let _ = self.notification_service.notify_settings_updated(
-            room_id,
-            actor_user_id,
-            &resolved_actor_username,
-            settings_json,
-            snapshot.version,
-        );
-        Ok(snapshot)
+        self.set_room_password_from_plaintext(room_id, actor_user_id, new_password)
+            .await
     }
 
     /// Remove all active `RoomRole::Guest` members from a room.
@@ -9533,7 +10029,6 @@ mod tests {
     use crate::models::{
         room_settings::{
             AllowGuestJoin, ChatEnabled, GuestAddedPermissions, MaxMembers, MemberAddedPermissions,
-            RequirePassword,
         },
         RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
         RoomRole, RoomSettings, RoomStatus, UserId,
@@ -9602,28 +10097,10 @@ mod tests {
     }
 
     #[test]
-    fn test_initial_room_settings_preserves_explicit_require_password() {
-        let settings = RoomSettings {
-            require_password: RequirePassword(false),
-            ..RoomSettings::default()
-        };
+    fn test_initial_room_settings_defaults_when_missing() {
+        let initialized = super::initial_room_settings(None);
 
-        let initialized = super::initial_room_settings(Some(settings), true);
-
-        assert!(
-            !initialized.require_password.0,
-            "explicit settings must remain the source of password-required state"
-        );
-    }
-
-    #[test]
-    fn test_initial_room_settings_uses_password_only_for_default_settings() {
-        let initialized = super::initial_room_settings(None, true);
-
-        assert!(
-            initialized.require_password.0,
-            "without explicit settings, a password in the create request should keep the old default behavior"
-        );
+        assert!(initialized.chat_enabled.0);
     }
 
     #[test]
@@ -9776,7 +10253,6 @@ mod tests {
                 r#"{"enabled":true,"mode":"sequential","delay":3}"#,
             ),
             ("allow_guest_join", "true"),
-            ("require_password", "false"),
             ("max_members", "100"),
         ];
         for (key, val) in &known_keys {
@@ -9938,7 +10414,6 @@ mod tests {
         let settings = RoomSettings {
             chat_enabled: ChatEnabled(false),
             allow_guest_join: AllowGuestJoin(false),
-            require_password: RequirePassword(true),
             max_members: MaxMembers(42),
             ..Default::default()
         };
@@ -9946,7 +10421,6 @@ mod tests {
         let deserialized: RoomSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(!deserialized.chat_enabled.0);
         assert!(!deserialized.allow_guest_join.0);
-        assert!(deserialized.require_password.0);
         assert_eq!(deserialized.max_members.0, 42);
     }
 

@@ -389,7 +389,6 @@ impl Default for RoomListQuery {
 /// Note: For typed, registry-backed room settings, use `room_settings::RoomSettings` instead.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RoomSettingsJson {
-    pub require_password: bool,
     /// Auto-play settings
     #[serde(default)]
     pub auto_play: AutoPlaySettings,

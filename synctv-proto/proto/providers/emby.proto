@@ -16,7 +16,7 @@ message LoginRequest {
   string username = 2; // Target Emby/Jellyfin username to bind and validate
   oneof credential {
     string password = 3; // SECURITY: Plaintext password - requires TLS in transit.
-    string api_key = 4;  // SECURITY: Plaintext credential - requires TLS in transit.
+    string api_key = 4; // SECURITY: Plaintext credential - requires TLS in transit.
   }
   string instance_name = 5; // Optional provider instance name
 }
@@ -31,7 +31,7 @@ message LoginResponse {
 
 // List items request
 message ListRequest {
-  string server_id = 1;    // Stored credential identifier
+  string server_id = 1; // Stored credential identifier
   string path = 2;
   uint64 start_index = 3;
   uint64 limit = 4;
@@ -60,7 +60,7 @@ message MediaItem {
 
 // Get user info request
 message GetMeRequest {
-  string server_id = 1;    // Stored credential identifier
+  string server_id = 1; // Stored credential identifier
   string instance_name = 2; // Optional provider instance name
 }
 
@@ -72,7 +72,7 @@ message GetMeResponse {
 
 // Logout request
 message LogoutRequest {
-  string server_id = 1;     // Which credential to unbind
+  string server_id = 1; // Which credential to unbind
   string instance_name = 2; // Optional provider instance name
 }
 

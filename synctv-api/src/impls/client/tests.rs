@@ -2,8 +2,6 @@
 #![allow(clippy::unwrap_used)]
 
 use super::convert::*;
-use super::{validate_password_for_set, validate_password_for_verify};
-use super::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 use crate::impls::ApiError;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -419,52 +417,6 @@ fn test_timing_protection_simulation() {
         diff < Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS),
         "Timing difference between fast and slow operations should be bounded: {diff:?}"
     );
-}
-
-#[test]
-fn test_validate_password_for_set_valid() {
-    assert!(validate_password_for_set("abcd").is_ok());
-    assert!(validate_password_for_set("a".repeat(128).as_str()).is_ok());
-    assert!(validate_password_for_set("secure_password_123").is_ok());
-}
-
-#[test]
-fn test_validate_password_for_set_too_short() {
-    let err = validate_password_for_set("abc").unwrap_err();
-    assert!(err.to_string().contains("too short"));
-}
-
-#[test]
-fn test_validate_password_for_set_too_long() {
-    let long = "a".repeat(129);
-    let err = validate_password_for_set(&long).unwrap_err();
-    assert!(err.to_string().contains("too long"));
-}
-
-#[test]
-fn test_validate_password_for_set_boundary() {
-    // Exactly minimum length
-    assert!(validate_password_for_set(&"a".repeat(ROOM_PASSWORD_MIN)).is_ok());
-    // One below minimum
-    assert!(validate_password_for_set(&"a".repeat(ROOM_PASSWORD_MIN - 1)).is_err());
-    // Exactly maximum length
-    assert!(validate_password_for_set(&"a".repeat(ROOM_PASSWORD_MAX)).is_ok());
-    // One above maximum
-    assert!(validate_password_for_set(&"a".repeat(ROOM_PASSWORD_MAX + 1)).is_err());
-}
-
-#[test]
-fn test_validate_password_for_verify_accepts_short() {
-    // Verify allows short passwords (just checking user input against stored hash)
-    assert!(validate_password_for_verify("a").is_ok());
-    assert!(validate_password_for_verify("").is_ok());
-}
-
-#[test]
-fn test_validate_password_for_verify_rejects_too_long() {
-    let long = "a".repeat(129);
-    let err = validate_password_for_verify(&long).unwrap_err();
-    assert!(err.to_string().contains("too long"));
 }
 
 #[test]

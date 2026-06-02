@@ -27,281 +27,281 @@ import "proto/common.proto";
 //
 // Routes: /api/oauth2/*
 service OAuth2Service {
-    // Get authorization URL for OAuth2 login flow
-    // Returns the URL to redirect the user to for authorization
-    rpc GetAuthorizationUrl(GetAuthorizationUrlRequest) returns (GetAuthorizationUrlResponse);
+  // Get authorization URL for OAuth2 login flow
+  // Returns the URL to redirect the user to for authorization
+  rpc GetAuthorizationUrl(GetAuthorizationUrlRequest) returns (GetAuthorizationUrlResponse);
 
-    // Get authorization URL for binding OAuth2 provider to existing user account
-    // Requires authentication
-    rpc GetAuthorizationUrlForBind(GetAuthorizationUrlForBindRequest) returns (GetAuthorizationUrlForBindResponse);
+  // Get authorization URL for binding OAuth2 provider to existing user account
+  // Requires authentication
+  rpc GetAuthorizationUrlForBind(GetAuthorizationUrlForBindRequest) returns (GetAuthorizationUrlForBindResponse);
 
-    // Exchange authorization code for JWT token or complete a bind flow.
-    // Public for login flow. Bind flow requires authentication and the token's
-    // user ID must match the user stored in the OAuth2 state.
-    rpc ExchangeAuthorizationCode(ExchangeAuthorizationCodeRequest) returns (ExchangeAuthorizationCodeResponse);
+  // Exchange authorization code for JWT token or complete a bind flow.
+  // Public for login flow. Bind flow requires authentication and the token's
+  // user ID must match the user stored in the OAuth2 state.
+  rpc ExchangeAuthorizationCode(ExchangeAuthorizationCodeRequest) returns (ExchangeAuthorizationCodeResponse);
 
-    // List all available OAuth2 provider instances
-    rpc ListAvailableProviders(ListAvailableProvidersRequest) returns (ListAvailableProvidersResponse);
+  // List all available OAuth2 provider instances
+  rpc ListAvailableProviders(ListAvailableProvidersRequest) returns (ListAvailableProvidersResponse);
 
-    // Unlink OAuth2 provider from user account (requires authentication)
-    rpc UnlinkProvider(UnlinkProviderRequest) returns (UnlinkProviderResponse);
+  // Unlink OAuth2 provider from user account (requires authentication)
+  rpc UnlinkProvider(UnlinkProviderRequest) returns (UnlinkProviderResponse);
 
-    // Get linked OAuth2 providers for authenticated user
-    rpc GetLinkedProviders(GetLinkedProvidersRequest) returns (GetLinkedProvidersResponse);
+  // Get linked OAuth2 providers for authenticated user
+  rpc GetLinkedProviders(GetLinkedProvidersRequest) returns (GetLinkedProvidersResponse);
 }
 
 // ==================== Get Authorization URL ====================
 
 message OAuth2ProviderInstancePathRequest {
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
 }
 
 message OAuth2ProviderTypePathRequest {
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 32,
-        pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
-    }];
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 32
+    pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
+  }];
 }
 
 message GetAuthorizationUrlRequest {
-    // OAuth2 provider instance name (e.g., "github", "google", "logto1")
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
+  // OAuth2 provider instance name (e.g., "github", "google", "logto1")
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
 
-    // Optional OAuth2 callback URL for this authorization flow.
-    // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
-    // URLs on desktop. Custom URL schemes are not supported.
-    string redirect_url = 2 [(buf.validate.field).cel = {
-        id: "oauth2.get_authorization_url.redirect_url"
-        message: "redirect_url must be empty, an https URL, or a loopback http URL"
-        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
-    }];
+  // Optional OAuth2 callback URL for this authorization flow.
+  // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
+  // URLs on desktop. Custom URL schemes are not supported.
+  string redirect_url = 2 [(buf.validate.field).cel = {
+    id: "oauth2.get_authorization_url.redirect_url"
+    message: "redirect_url must be empty, an https URL, or a loopback http URL"
+    expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
+  }];
 }
 
 message GetAuthorizationUrlResponse {
-    // Authorization URL to redirect user to
-    // Frontend should redirect the browser to this URL
-    string authorization_url = 1;
+  // Authorization URL to redirect user to
+  // Frontend should redirect the browser to this URL
+  string authorization_url = 1;
 
-    // State token for CSRF protection
-    // Frontend should store this temporarily and validate it matches the state
-    // received in the callback URL parameters
-    string state = 2;
+  // State token for CSRF protection
+  // Frontend should store this temporarily and validate it matches the state
+  // received in the callback URL parameters
+  string state = 2;
 }
 
 // ==================== Get Authorization URL for Bind ====================
 
 message GetAuthorizationUrlForBindRequest {
-    // OAuth2 provider instance name (e.g., "github", "google", "logto1")
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
+  // OAuth2 provider instance name (e.g., "github", "google", "logto1")
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
 
-    // Optional OAuth2 callback URL for this bind flow.
-    // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
-    // URLs on desktop. Custom URL schemes are not supported.
-    string redirect_url = 2 [(buf.validate.field).cel = {
-        id: "oauth2.get_authorization_url_for_bind.redirect_url"
-        message: "redirect_url must be empty, an https URL, or a loopback http URL"
-        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
-    }];
+  // Optional OAuth2 callback URL for this bind flow.
+  // Clients use HTTPS App Links/Universal Links on mobile and loopback HTTP
+  // URLs on desktop. Custom URL schemes are not supported.
+  string redirect_url = 2 [(buf.validate.field).cel = {
+    id: "oauth2.get_authorization_url_for_bind.redirect_url"
+    message: "redirect_url must be empty, an https URL, or a loopback http URL"
+    expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
+  }];
 }
 
 message GetAuthorizationUrlForBindResponse {
-    // Authorization URL to redirect user to
-    string authorization_url = 1;
+  // Authorization URL to redirect user to
+  string authorization_url = 1;
 
-    // State token for CSRF protection
-    string state = 2;
+  // State token for CSRF protection
+  string state = 2;
 }
 
 // ==================== Exchange Authorization Code ====================
 
 message ExchangeAuthorizationCodeRequest {
-    // OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
+  // OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
 
-    // Authorization code received from OAuth2 provider redirect
-    // Frontend extracts this from the callback URL query parameter
-    string code = 2 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 256,
-        pattern: "^[A-Za-z0-9._+-]+$"
-    }];
+  // Authorization code received from OAuth2 provider redirect
+  // Frontend extracts this from the callback URL query parameter
+  string code = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+    pattern: "^[A-Za-z0-9._+-]+$"
+  }];
 
-    // State token received from OAuth2 provider redirect
-    // Must match the state returned by GetAuthorizationUrl
-    string state = 3 [(buf.validate.field).string = {
-        len: 32,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
+  // State token received from OAuth2 provider redirect
+  // Must match the state returned by GetAuthorizationUrl
+  string state = 3 [(buf.validate.field).string = {
+    len: 32
+    pattern: "^[A-Za-z0-9]+$"
+  }];
 }
 
 message ExchangeAuthorizationCodeResponse {
-    // JWT access token (if login flow)
-    // Empty if this is a bind flow
-    string access_token = 1;
+  // JWT access token (if login flow)
+  // Empty if this is a bind flow
+  string access_token = 1;
 
-    // JWT refresh token (if login flow and refresh tokens are enabled)
-    string refresh_token = 2;
+  // JWT refresh token (if login flow and refresh tokens are enabled)
+  string refresh_token = 2;
 
-    // Token expiration time in seconds
-    int64 expires_in = 3;
+  // Token expiration time in seconds
+  int64 expires_in = 3;
 
-    // User information (login flow only)
-    OAuth2UserInfo user_info = 4;
+  // User information (login flow only)
+  OAuth2UserInfo user_info = 4;
 
-    // Redirect URL from the original request (if provided)
-    // Frontend can use this to redirect user after successful authentication
-    string redirect_url = 5;
+  // Redirect URL from the original request (if provided)
+  // Frontend can use this to redirect user after successful authentication
+  string redirect_url = 5;
 
-    // Whether this was a bind operation (true) or login operation (false)
-    bool is_bind = 6;
+  // Whether this was a bind operation (true) or login operation (false)
+  bool is_bind = 6;
 
-    // True when a first-time OAuth2 signup was accepted but requires admin review.
-    bool registration_review_required = 7;
+  // True when a first-time OAuth2 signup was accepted but requires admin review.
+  bool registration_review_required = 7;
 
-    // Public review request ID when registration_review_required is true.
-    string registration_review_id = 8;
+  // Public review request ID when registration_review_required is true.
+  string registration_review_id = 8;
 }
 
 // ==================== List Available Providers ====================
 
 message ListAvailableProvidersRequest {
-    // Empty request
+  // Empty request
 }
 
 message ListAvailableProvidersResponse {
-    // List of available OAuth2 provider instances
-    repeated OAuth2ProviderInstance providers = 1;
+  // List of available OAuth2 provider instances
+  repeated OAuth2ProviderInstance providers = 1;
 }
 
 message OAuth2ProviderInstance {
-    // Instance name (e.g., "github", "google", "logto1")
-    string name = 1;
+  // Instance name (e.g., "github", "google", "logto1")
+  string name = 1;
 
-    // Provider type (e.g., "github", "google", "oidc", "logto")
-    string type = 2;
+  // Provider type (e.g., "github", "google", "oidc", "logto")
+  string type = 2;
 
-    // Whether this provider instance allows new local account creation.
-    bool signup_enabled = 3;
+  // Whether this provider instance allows new local account creation.
+  bool signup_enabled = 3;
 
-    // Whether new account creation through this provider instance requires review.
-    bool signup_need_review = 4;
+  // Whether new account creation through this provider instance requires review.
+  bool signup_need_review = 4;
 }
 
 // ==================== Unlink Provider ====================
 
 message UnlinkProviderRequest {
-    // Provider type to unlink (e.g., "github", "google")
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 32,
-        pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
-    }];
+  // Provider type to unlink (e.g., "github", "google")
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 32
+    pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
+  }];
 
-    // Optional: specific provider user ID to unlink
-    // If not provided, unlinks all bindings for this provider type
-    string provider_user_id = 2 [(buf.validate.field).cel = {
-        id: "oauth2.unlink_provider.provider_user_id"
-        message: "provider_user_id must be empty or at most 256 visible characters"
-        expression: "this == '' || (size(this) <= 256 && !this.matches('.*[\\\\x00-\\\\x1F\\\\x7F].*'))"
-    }];
+  // Optional: specific provider user ID to unlink
+  // If not provided, unlinks all bindings for this provider type
+  string provider_user_id = 2 [(buf.validate.field).cel = {
+    id: "oauth2.unlink_provider.provider_user_id"
+    message: "provider_user_id must be empty or at most 256 visible characters"
+    expression: "this == '' || (size(this) <= 256 && !this.matches('.*[\\\\x00-\\\\x1F\\\\x7F].*'))"
+  }];
 
-    // Required when provider_user_id is set: the configured provider instance namespace.
-    // Empty with empty provider_user_id unlinks every binding for provider type.
-    string provider_instance_name = 3 [
-        (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-        (buf.validate.field).string = {
-            pattern: "^[A-Za-z0-9_-]+$",
-            max_len: 64
-        }
-    ];
+  // Required when provider_user_id is set: the configured provider instance namespace.
+  // Empty with empty provider_user_id unlinks every binding for provider type.
+  string provider_instance_name = 3 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      pattern: "^[A-Za-z0-9_-]+$"
+      max_len: 64
+    }
+  ];
 
-    option (buf.validate.message).cel = {
-        id: "oauth2.unlink_provider.instance_for_specific_identity"
-        message: "provider_instance_name is required when provider_user_id is set"
-        expression: "this.provider_user_id == '' || this.provider_instance_name != ''"
-    };
+  option (buf.validate.message).cel = {
+    id: "oauth2.unlink_provider.instance_for_specific_identity"
+    message: "provider_instance_name is required when provider_user_id is set"
+    expression: "this.provider_user_id == '' || this.provider_instance_name != ''"
+  };
 }
 
 message UnlinkProviderResponse {
-    // Whether any provider was unlinked
-    bool success = 1;
+  // Whether any provider was unlinked
+  bool success = 1;
 
-    // Number of provider bindings removed
-    int32 removed_count = 2;
+  // Number of provider bindings removed
+  int32 removed_count = 2;
 }
 
 // ==================== Get Linked Providers ====================
 
 message GetLinkedProvidersRequest {
-    // Empty request (user_id comes from JWT)
+  // Empty request (user_id comes from JWT)
 }
 
 message GetLinkedProvidersResponse {
-    // List of linked OAuth2 providers
-    repeated LinkedProvider providers = 1;
+  // List of linked OAuth2 providers
+  repeated LinkedProvider providers = 1;
 }
 
 message LinkedProvider {
-    // Provider type (e.g., "github", "google", "oidc")
-    string provider_type = 1;
+  // Provider type (e.g., "github", "google", "oidc")
+  string provider_type = 1;
 
-    // Username from the OAuth2 provider
-    string provider_username = 2;
+  // Username from the OAuth2 provider
+  string provider_username = 2;
 
-    // When the provider was linked (Unix timestamp, seconds)
-    // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
-    int64 linked_at = 3;
+  // When the provider was linked (Unix timestamp, seconds)
+  // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
+  int64 linked_at = 3;
 
-    // Provider instance name that owns this external identity namespace.
-    string provider_instance_name = 4;
+  // Provider instance name that owns this external identity namespace.
+  string provider_instance_name = 4;
 
-    // Optional issuer metadata when known for OIDC-like providers.
-    string provider_issuer = 5;
+  // Optional issuer metadata when known for OIDC-like providers.
+  string provider_issuer = 5;
 
-    // External user ID in the provider instance namespace. Clients must pass
-    // this with provider_instance_name to unlink one specific OAuth2 identity.
-    string provider_user_id = 6;
+  // External user ID in the provider instance namespace. Clients must pass
+  // this with provider_instance_name to unlink one specific OAuth2 identity.
+  string provider_user_id = 6;
 }
 
 // ==================== User Info ====================
 
 message OAuth2UserInfo {
-    // User ID
-    string user_id = 1;
+  // User ID
+  string user_id = 1;
 
-    // Username
-    string username = 2;
+  // Username
+  string username = 2;
 
-    // Email (optional)
-    string email = 3;
+  // Email (optional)
+  string email = 3;
 
-    // Avatar URL (optional)
-    string avatar = 4;
+  // Avatar URL (optional)
+  string avatar = 4;
 
-    // User role
-    synctv.common.UserRole role = 5;
+  // User role
+  synctv.common.UserRole role = 5;
 
-    // Account status
-    synctv.common.UserStatus status = 6;
+  // Account status
+  synctv.common.UserStatus status = 6;
 
-    // When the account was created (Unix timestamp, seconds)
-    // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
-    int64 created_at = 7;
+  // When the account was created (Unix timestamp, seconds)
+  // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
+  int64 created_at = 7;
 }

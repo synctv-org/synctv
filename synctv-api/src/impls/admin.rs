@@ -1771,33 +1771,20 @@ impl AdminApiImpl {
             .load_admin_actor(admin_user_id)
             .await
             .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
-        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
-            &room_id,
-            admin_user_id,
-            &admin_username,
-            Vec::new(),
-            0,
-        );
-        let snapshot = self
+        let state = self
             .room_service
-            .admin_set_room_password_as_with_outbox(
-                &room_id,
-                new_password,
-                Some(admin_user_id),
-                &admin_username,
-                prepared_settings_fanout.settings_outbox_factory(),
-            )
+            .admin_set_room_password_as_internal(&room_id, new_password, Some(admin_user_id))
             .await
             .map_err(ApiError::from)?;
-        self.room_settings_fanout
-            .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout
-                    .with_settings_and_version(&snapshot.settings, snapshot.version)
-                    .ok_or_else(|| {
-                        ApiError::Internal("Failed to serialize room settings".to_string())
-                    })?,
-            );
         self.publish_room_cache_invalidation(&room_id);
+        tracing::debug!(
+            room_id = %room_id,
+            admin_user_id = %admin_user_id,
+            admin_username = %admin_username,
+            password_enabled = state.enabled,
+            password_version = state.version,
+            "Admin updated room password"
+        );
 
         // Audit log: room password change is a security-relevant operation (best-effort)
         self.log_admin_action(
@@ -6183,7 +6170,6 @@ mod tests {
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
 
-        
         UserService::new(
             pool,
             jwt_service,

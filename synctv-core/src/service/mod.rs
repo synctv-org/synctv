@@ -126,6 +126,8 @@ pub use review::{
     UserRegistrationReviewRecord,
 };
 pub use room::{
+    room_opaque_password_login_session_store_from_shared_state_profile,
+    room_opaque_password_registration_session_store_from_shared_state_profile,
     AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
     PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
     RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,

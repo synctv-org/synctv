@@ -320,9 +320,8 @@ impl UserRepository {
 
     /// Update the user profile atomically with optimistic locking.
     ///
-    /// Supports updating username alone, password alone, or both in one write.
-    /// When `password_hash` is `Some`, the password metadata is updated and
-    /// `password_version` is incremented exactly once in the same statement.
+    /// Supports updating user profile fields with optimistic locking. Password
+    /// credentials and password metadata are managed by `UserPasswordRepository`.
     pub async fn update_profile_with_executor<'e, E>(
         &self,
         user_id: &UserId,

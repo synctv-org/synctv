@@ -26,10 +26,10 @@ use synctv_core::{
     models::{OAuth2Provider, UserId},
     repository::{SettingsRepository, UserOAuthProviderRepository, UserRepository},
     service::{
-        auth::jwt::JwtService,
-        local_oauth_state_store, AuthFactorMethod, AuthenticatedLogin, BruteForceProtection,
-        InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs, OAuth2Service,
-        RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore, UserService,
+        auth::jwt::JwtService, local_oauth_state_store, AuthFactorMethod, AuthenticatedLogin,
+        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs,
+        OAuth2Service, RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore,
+        UserService,
     },
     Error,
 };

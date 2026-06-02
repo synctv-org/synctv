@@ -23,7 +23,6 @@ pub mod server {
     pub const MAX_MEMBERS_PER_ROOM: &str = "max_members_per_room";
 
     pub const DEFAULT_ROOM_SETTINGS: &str = "default_room_settings";
-    pub const DEFAULT_ROOM_REQUIRE_PASSWORD: &str = "require_password";
     pub const DEFAULT_ROOM_ALLOW_GUEST: &str = "allow_guest";
 }
 
@@ -134,7 +133,6 @@ pub fn default_server_settings() -> JsonValue {
         "max_rooms_per_user": 10,
         "max_members_per_room": 100,
         "default_room_settings": {
-            "require_password": false,
             "allow_guest": true
         }
     })

@@ -395,8 +395,8 @@ message CreateRoomRequest {
     UserRef actor = 1;
     string name = 2;
     string password = 3;
-    bytes settings_json = 4;
-    string description = 5;
+    string description = 4;
+    bytes settings_json = 5;
 }
 
 message ListRoomsRequest {

@@ -1398,7 +1398,7 @@ mod tests {
         let username_cache =
             UsernameCache::local_only("test:grpc-chat:username:".to_string(), 128, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
-        
+
         UserService::new(
             pool,
             jwt_service,

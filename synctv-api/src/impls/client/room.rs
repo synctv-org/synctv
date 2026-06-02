@@ -18,7 +18,6 @@ use super::media::{
     file_cover_proto_to_stored_file, file_upload_session_to_room_cover_proto,
     prepare_delete_entries_outbox_fanout, room_cover_object_to_proto,
 };
-use super::{validate_password_for_set, validate_password_for_verify};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 fn settings_registry_unavailable_error() -> ApiError {
@@ -34,7 +33,31 @@ const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
 const MAX_ROOM_PAGE_SIZE: u32 = 100;
 const DEFAULT_HOT_ROOM_LIMIT: i64 = 10;
 const DEFAULT_HOT_ROOM_LIMIT_USIZE: usize = 10;
-const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
+
+fn validate_room_password_for_set(password: &str) -> Result<(), ApiError> {
+    let char_count = password.trim().chars().count();
+    if char_count < synctv_core::validation::ROOM_PASSWORD_MIN {
+        return Err(ApiError::InvalidInput(format!(
+            "Room password must be at least {} characters",
+            synctv_core::validation::ROOM_PASSWORD_MIN
+        )));
+    }
+    if char_count > synctv_core::validation::ROOM_PASSWORD_MAX {
+        return Err(ApiError::InvalidInput(format!(
+            "Room password must not exceed {} characters",
+            synctv_core::validation::ROOM_PASSWORD_MAX
+        )));
+    }
+    Ok(())
+}
+
+fn validate_room_password_for_verify(password: &str) -> Result<(), ApiError> {
+    let char_count = password.chars().count();
+    if char_count == 0 || char_count > synctv_core::validation::ROOM_PASSWORD_MAX {
+        return Err(ApiError::InvalidInput("Invalid room password".to_string()));
+    }
+    Ok(())
+}
 
 fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
     if value > 0 {
@@ -639,17 +662,15 @@ impl ClientApiImpl {
         } else {
             Some(serde_json::from_slice(&req.settings)?)
         };
-
         let password = if req.password.is_empty() {
             None
         } else {
-            validate_password_for_set(&req.password)?;
+            validate_room_password_for_set(&req.password)?;
             Some(req.password)
         };
-        let response_settings = crate::impls::client::convert::normalize_created_room_settings(
-            settings.as_ref(),
-            password.is_some(),
-        );
+
+        let response_settings =
+            crate::impls::client::convert::normalize_created_room_settings(settings.as_ref());
         let prepared_outbox_fanout = self
             .room_lifecycle_fanout
             .prepare_room_created_outbox_fanout(uid);
@@ -882,28 +903,25 @@ impl ClientApiImpl {
 
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-
         let password = if req.password.is_empty() {
             None
         } else {
-            validate_password_for_verify(&req.password)?;
+            validate_room_password_for_verify(&req.password)?;
             Some(req.password)
         };
 
-        let room_settings = self
+        let password_enabled = self
             .room_service
-            .get_room_settings(&rid)
+            .is_room_password_enabled(&rid)
             .await
             .map_err(ApiError::from)?;
 
-        if room_settings.require_password.0 {
+        if password_enabled {
             let password = password.as_ref().ok_or_else(|| {
                 ApiError::Authorization("Forbidden: Password required".to_string())
             })?;
-            let start = std::time::Instant::now();
             let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
-
-            let valid = self
+            if !self
                 .room_service
                 .check_room_password_with_rate_limit_with_control(
                     &rid,
@@ -912,30 +930,19 @@ impl ClientApiImpl {
                     request_control,
                 )
                 .await
-                .map_err(ApiError::from)?;
-
-            let elapsed = start.elapsed();
-            let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
-            if elapsed < min_delay {
-                let delay = min_delay
-                    .checked_sub(elapsed)
-                    .expect("elapsed < min_delay guaranteed by if-check above");
-                if let Some(request_control) = request_control {
-                    request_control
-                        .run(tokio::time::sleep(delay))
-                        .await
-                        .map_err(|error| ApiError::from(synctv_core::Error::from(error)))?;
-                } else {
-                    tokio::time::sleep(delay).await;
-                }
-            }
-
-            if !valid {
+                .map_err(ApiError::from)?
+            {
                 return Err(ApiError::Authorization(
                     "Forbidden: Invalid password".to_string(),
                 ));
             }
         }
+
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
 
         let prepared_membership_fanout = self
             .membership_event_fanout
@@ -972,6 +979,99 @@ impl ClientApiImpl {
             &self.public_id_codec,
         );
 
+        let requires_approval = proto_members.is_empty();
+        Ok(crate::proto::client::JoinRoomResponse {
+            room: Some(
+                self.room_to_proto_basic_with_loaded_cover(
+                    &room,
+                    Some(&room_settings),
+                    self.load_room_member_count(&rid).await?,
+                )
+                .await?,
+            ),
+            members: proto_members,
+            playback_state,
+            membership_status: member_status_to_proto(member.status),
+            requires_approval,
+        })
+    }
+
+    pub async fn start_room_password_login_with_control(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::StartRoomPasswordLoginRequest,
+        client_ip: Option<&str>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::StartRoomPasswordLoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(&req.room_id)?;
+        let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
+        let challenge = self
+            .room_service
+            .start_room_opaque_password_login_with_control(
+                &rid,
+                &uid,
+                req.credential_request,
+                parsed_client_ip,
+                request_control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::StartRoomPasswordLoginResponse {
+            session_id: challenge.session_id,
+            credential_response: challenge.credential_response,
+        })
+    }
+
+    pub async fn finish_room_password_login_with_control(
+        &self,
+        user_id: &UserId,
+        expected_room_id: Option<&str>,
+        req: crate::proto::client::FinishRoomPasswordLoginRequest,
+        client_ip: Option<&str>,
+    ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let expected_room_id = expected_room_id
+            .map(|room_id| self.parse_room_id(room_id))
+            .transpose()?;
+        let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(uid, uid);
+        let (room, member, members) = self
+            .room_service
+            .finish_room_opaque_password_login_with_outbox(
+                expected_room_id.as_ref(),
+                &req.session_id,
+                &uid,
+                req.credential_finalization,
+                parsed_client_ip,
+                Some(prepared_membership_fanout.outbox_factory()),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
+
+        let rid = room.id;
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let playback_state = self
+            .room_service
+            .get_playback_state(&rid)
+            .await
+            .ok()
+            .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
+        let proto_members = members_to_proto(
+            &members,
+            &room_settings,
+            self.room_service.permission_service(),
+            &self.public_id_codec,
+        );
         let requires_approval = proto_members.is_empty();
         Ok(crate::proto::client::JoinRoomResponse {
             room: Some(
@@ -1275,22 +1375,76 @@ impl ClientApiImpl {
         })
     }
 
-    /// Set or remove room password
-    pub async fn set_room_password(
+    pub async fn start_room_password_registration(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::SetRoomPasswordRequest,
-    ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
+        req: crate::proto::client::StartRoomPasswordRegistrationRequest,
+    ) -> Result<crate::proto::client::StartRoomPasswordRegistrationResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
+        let challenge = self
+            .room_service
+            .start_room_opaque_password_registration(&rid, &uid, req.registration_request)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(
+            crate::proto::client::StartRoomPasswordRegistrationResponse {
+                session_id: challenge.session_id,
+                registration_response: challenge.registration_response,
+            },
+        )
+    }
 
-        // Validate password length
-        if !req.password.is_empty() {
-            validate_password_for_set(&req.password)?;
-        }
+    pub async fn finish_room_password_registration(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::FinishRoomPasswordRegistrationRequest,
+    ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+        let state = self
+            .room_service
+            .finish_room_opaque_password_registration(
+                &rid,
+                &req.session_id,
+                &uid,
+                req.registration_upload,
+            )
+            .await
+            .map_err(ApiError::from)?;
 
-        // Check permission
+        self.room_cache_fanout.publish_invalidation(&state.room_id);
+        tracing::debug!(
+            room_id = %state.room_id,
+            user_id = %uid,
+            username = %username,
+            password_enabled = state.enabled,
+            password_version = state.version,
+            "Room password updated"
+        );
+
+        Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
+    }
+
+    pub async fn clear_room_password(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: crate::proto::client::ClearRoomPasswordRequest,
+    ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         self.room_service
             .check_permission(
                 &rid,
@@ -1299,53 +1453,19 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-
-        // Hash password if provided, or None to remove
-        let password_hash = if req.password.is_empty() {
-            None
-        } else {
-            let hash = synctv_core::service::auth::password::hash_password(&req.password)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to hash password: {e}")))?;
-            Some(hash)
-        };
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
-        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
-            &rid,
-            &uid,
-            &username,
-            Vec::new(),
-            0,
-        );
-
-        let snapshot = self
+        let state = self
             .room_service
-            .update_room_password_as_with_outbox(
-                &rid,
-                Some(&uid),
-                &username,
-                password_hash,
-                prepared_settings_fanout.settings_outbox_factory(),
-            )
+            .update_room_password_as(&rid, Some(&uid), None)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
-
-        // Invalidate room cache on other replicas so password check uses fresh data
+            .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);
-        self.room_settings_fanout
-            .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout
-                    .with_settings_and_version(&snapshot.settings, snapshot.version)
-                    .ok_or_else(|| {
-                        ApiError::Internal("Failed to serialize room settings".to_string())
-                    })?,
-            );
-
+        tracing::debug!(
+            room_id = %rid,
+            user_id = %uid,
+            password_enabled = state.enabled,
+            password_version = state.version,
+            "Room password cleared"
+        );
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
 
@@ -1546,9 +1666,9 @@ impl ClientApiImpl {
 
         match self.room_service.get_room(&rid).await {
             Ok(room) => {
-                let settings = self
+                let password_enabled = self
                     .room_service
-                    .get_room_settings(&rid)
+                    .is_room_password_enabled(&rid)
                     .await
                     .map_err(ApiError::from)?;
                 let availability = self
@@ -1558,7 +1678,7 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)?;
                 Ok(crate::proto::client::CheckRoomResponse {
                     exists: true,
-                    requires_password: settings.require_password.0,
+                    requires_password: password_enabled,
                     name: String::new(),
                     availability: resource_availability_enum_to_proto(availability),
                 })
@@ -2549,5 +2669,21 @@ mod tests {
             err.message(),
             "Public settings are not available on this server."
         );
+    }
+
+    #[test]
+    fn room_password_set_validation_rejects_whitespace_only_password() {
+        let err =
+            super::validate_room_password_for_set("    ").expect_err("blank password should fail");
+        assert!(matches!(err, crate::impls::ApiError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn room_password_set_validation_counts_trimmed_password_length() {
+        let err = super::validate_room_password_for_set(" abc ")
+            .expect_err("trimmed password is too short");
+        assert!(matches!(err, crate::impls::ApiError::InvalidInput(_)));
+        super::validate_room_password_for_set(" abcd ")
+            .expect("trimmed password meets room minimum");
     }
 }

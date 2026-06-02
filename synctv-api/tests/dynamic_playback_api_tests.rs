@@ -20,7 +20,7 @@ use synctv_core::{
     proxy_signature::ProxySigningKey,
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        auth::{BruteForceProtection, JwtService},
         room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
         UserService,
@@ -74,7 +74,7 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    
+
     UserService::new(
         pool,
         jwt_service,
@@ -115,7 +115,7 @@ fn make_room_service_with_provider_credentials(
             credential_encryption.clone(),
         ),
     );
-    let mut room_service = RoomService::new_with_providers_and_options(
+    RoomService::new_with_providers_and_options(
         pool.clone(),
         user_service.clone(),
         providers_manager,
@@ -124,9 +124,7 @@ fn make_room_service_with_provider_credentials(
             credential_repo: Some(credential_repo),
             ..RoomServiceOptions::default()
         },
-    );
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
-    room_service
+    )
 }
 
 #[derive(Debug)]
@@ -754,12 +752,11 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .await
         .unwrap();
 
-    let mut room_service = RoomService::new_with_providers(
+    let room_service = RoomService::new_with_providers(
         pool.clone(),
         (*user_service).clone(),
         providers_manager.clone(),
     );
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
@@ -874,8 +871,7 @@ async fn test_get_playback_without_active_media_returns_stable_non_empty_snapsho
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    let room_service = RoomService::new(pool.clone(), (*user_service).clone());
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
@@ -944,8 +940,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
     let media_repo = MediaRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    let room_service = RoomService::new(pool.clone(), (*user_service).clone());
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
@@ -1126,9 +1121,8 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
     )));
     let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
 
-    let mut room_service =
+    let room_service =
         RoomService::new_with_providers(pool.clone(), (*user_service).clone(), providers_manager);
-    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
     let owner = user_repo

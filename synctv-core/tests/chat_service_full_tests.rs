@@ -57,7 +57,6 @@ fn make_user_service_with_username_cache(
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    
     UserService::new(
         pool,
         jwt_service,
@@ -71,7 +70,7 @@ fn make_user_service_with_username_cache(
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    
+
     RoomService::new(pool, user_service)
 }
 

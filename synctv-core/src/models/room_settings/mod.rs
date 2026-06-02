@@ -64,7 +64,6 @@ static REGISTRY: std::sync::LazyLock<HashMap<&'static str, Arc<dyn RoomSettingPr
         [
             provider_entry(ChatEnabled::default()),
             provider_entry(AllowGuestJoin::default()),
-            provider_entry(RequirePassword::default()),
             provider_entry(RequireApproval::default()),
             provider_entry(AllowAutoJoin::default()),
             provider_entry(MaxMembers::default()),
@@ -285,7 +284,6 @@ macro_rules! room_setting {
 
 room_setting!(ChatEnabled, bool, "chat_enabled", true);
 room_setting!(AllowGuestJoin, bool, "allow_guest_join", false);
-room_setting!(RequirePassword, bool, "require_password", false);
 room_setting!(RequireApproval, bool, "require_approval", false);
 room_setting!(AllowAutoJoin, bool, "allow_auto_join", true);
 
@@ -402,7 +400,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RoomSettings {
-    pub require_password: RequirePassword,
     pub allow_guest_join: AllowGuestJoin,
     pub max_members: MaxMembers,
     #[serde(default)]
@@ -429,7 +426,6 @@ pub struct RoomSettings {
 impl RoomSettings {
     /// Validate all room setting fields and cross-field permission ceilings.
     pub fn validate(&self) -> Result<()> {
-        self.require_password.validate()?;
         self.allow_guest_join.validate()?;
         self.max_members.validate()?;
         self.require_approval.validate()?;
@@ -477,7 +473,7 @@ impl RoomSettings {
     /// Set a field by key from a string value via the registry (fully generic).
     ///
     /// Dispatches through `dyn RoomSettingProvider::apply_to` — no match block needed.
-    /// Business-rule validations (e.g., `max_members` ceiling, `require_password` preconditions)
+    /// Business-rule validations (e.g., `max_members` ceiling)
     /// are the caller's responsibility.
     pub fn set_by_key(&mut self, key: &str, value: &str) -> Result<()> {
         RoomSettingsRegistry::apply_setting(self, key, value)

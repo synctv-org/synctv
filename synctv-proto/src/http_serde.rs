@@ -217,6 +217,102 @@ pub mod uint64_string_vec {
     }
 }
 
+fn login_identifier<E, T>(
+    username: Option<String>,
+    email: Option<String>,
+    username_variant: impl FnOnce(String) -> T,
+    email_variant: impl FnOnce(String) -> T,
+) -> Result<Option<T>, E>
+where
+    E: serde::de::Error,
+{
+    match (username, email) {
+        (Some(username), None) => Ok(Some(username_variant(username))),
+        (None, Some(email)) => Ok(Some(email_variant(email))),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err(E::custom("username and email are mutually exclusive")),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct LoginRequestDef {
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    password: String,
+}
+
+impl TryFrom<LoginRequestDef> for crate::client::LoginRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(value: LoginRequestDef) -> Result<Self, Self::Error> {
+        let identifier = login_identifier::<serde_json::Error, _>(
+            value.username,
+            value.email,
+            crate::client::login_request::Identifier::Username,
+            crate::client::login_request::Identifier::Email,
+        )?;
+
+        Ok(Self {
+            password: value.password,
+            identifier,
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct StartOpaqueLoginRequestDef {
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(with = "base64_bytes")]
+    credential_request: Vec<u8>,
+}
+
+impl TryFrom<StartOpaqueLoginRequestDef> for crate::client::StartOpaqueLoginRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(value: StartOpaqueLoginRequestDef) -> Result<Self, Self::Error> {
+        let identifier = login_identifier::<serde_json::Error, _>(
+            value.username,
+            value.email,
+            crate::client::start_opaque_login_request::Identifier::Username,
+            crate::client::start_opaque_login_request::Identifier::Email,
+        )?;
+
+        Ok(Self {
+            credential_request: value.credential_request,
+            identifier,
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct StartPasskeyLoginRequestDef {
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+impl TryFrom<StartPasskeyLoginRequestDef> for crate::client::StartPasskeyLoginRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(value: StartPasskeyLoginRequestDef) -> Result<Self, Self::Error> {
+        let identifier = login_identifier::<serde_json::Error, _>(
+            value.username,
+            value.email,
+            crate::client::start_passkey_login_request::Identifier::Username,
+            crate::client::start_passkey_login_request::Identifier::Email,
+        )?;
+
+        Ok(Self { identifier })
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 pub enum ClientUpdateRoomSettingsRequestDef {

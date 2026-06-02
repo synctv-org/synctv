@@ -3,9 +3,10 @@ use sqlx::{FromRow, PgConnection, PgPool, Row};
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
     models::{
-        PageParams, Room, RoomId, RoomListQuery, RoomListSortBy, RoomSettings, RoomStatus, UserId,
+        OpaquePasswordRecord, PageParams, Room, RoomId, RoomListQuery, RoomListSortBy,
+        RoomSettings, RoomStatus, UserId,
     },
-    Result,
+    Error, Result,
 };
 
 #[derive(Debug, sqlx::FromRow)]
@@ -77,7 +78,9 @@ pub struct JoinRoomContext {
     pub room: Room,
     pub is_in_kick_cooldown: bool,
     pub settings: RoomSettings,
-    pub password_hash: Option<String>,
+    pub password_enabled: bool,
+    pub password_credential: Option<OpaquePasswordRecord>,
+    pub password_version: Option<i32>,
 }
 
 /// Room repository for database operations
@@ -1116,7 +1119,7 @@ room.last_activity_at
     /// Combines three lookups that were previously sequential:
     ///   1. `rooms` row (by id, not soft-deleted)
     ///   2. Active kick cooldown check
-    ///   3. Room settings + password hash (`room_settings`)
+    ///   3. Room settings + OPAQUE password credential
     ///
     /// Returns `None` if the room does not exist or is soft-deleted.
     pub async fn get_join_context(
@@ -1134,13 +1137,18 @@ room.last_activity_at
                       AND rmkc.user_id = $2
                       AND rmkc.ends_at > CURRENT_TIMESTAMP
                 ) AS is_in_kick_cooldown,
-                rs_settings.value  AS settings_json,
-                rs_password.value  AS password_hash
+                rs_settings.value AS settings_json,
+                rpc.opaque_record,
+                rpc.opaque_credential_identifier,
+                rpc.opaque_ciphersuite,
+                rpc.opaque_server_setup_version,
+                COALESCE(rpc.enabled, false) AS password_enabled,
+                rpc.version AS password_version
             FROM rooms r
             LEFT JOIN room_settings rs_settings
                 ON rs_settings.room_id = r.id AND rs_settings.key = '_settings'
-            LEFT JOIN room_settings rs_password
-                ON rs_password.room_id = r.id AND rs_password.key = 'password'
+            LEFT JOIN room_password_credentials rpc
+                ON rpc.room_id = r.id
             WHERE r.id = $1 AND r.deleted_at IS NULL
             "
         );
@@ -1163,13 +1171,37 @@ room.last_activity_at
             None => RoomSettings::default(),
         };
 
-        let password_hash: Option<String> = row.try_get("password_hash")?;
+        let password_credential = match (
+            row.try_get::<Option<Vec<u8>>, _>("opaque_record")?,
+            row.try_get::<Option<Vec<u8>>, _>("opaque_credential_identifier")?,
+            row.try_get::<Option<String>, _>("opaque_ciphersuite")?,
+            row.try_get::<Option<i32>, _>("opaque_server_setup_version")?,
+        ) {
+            (Some(record), Some(credential_identifier), Some(ciphersuite), Some(version)) => {
+                Some(OpaquePasswordRecord {
+                    record,
+                    credential_identifier,
+                    ciphersuite,
+                    server_setup_version: version,
+                })
+            }
+            (None, None, None, None) => None,
+            _ => {
+                return Err(Error::Internal(
+                    "Incomplete OPAQUE room password credential material".to_string(),
+                ));
+            }
+        };
+        let password_version: Option<i32> = row.try_get("password_version")?;
+        let password_enabled: bool = row.try_get("password_enabled")?;
 
         Ok(Some(JoinRoomContext {
             room,
             is_in_kick_cooldown,
             settings,
-            password_hash,
+            password_enabled,
+            password_credential,
+            password_version,
         }))
     }
 }

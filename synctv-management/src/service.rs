@@ -1701,9 +1701,9 @@ impl ManagementService for ManagementServiceImpl {
                 &actor_user_id,
                 client_proto::CreateRoomRequest {
                     name: req.name,
-                    password: req.password,
                     settings,
                     description: req.description,
+                    password: req.password,
                 },
             )
             .await

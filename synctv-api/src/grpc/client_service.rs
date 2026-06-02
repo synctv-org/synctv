@@ -22,9 +22,9 @@ use crate::proto::client::{
     AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
     ApproveRoomJoinReviewResponse, ChatImageObjectResponse, ChatMessageEventResponse,
     ChatReadStateResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
-    ClearPlaylistResponse, ClientMessage, CloseAccountRequest, CloseAccountResponse,
-    ConfirmEmailBindRequest, ConfirmEmailBindResponse, ConfirmEmailLoginRequest,
-    ConfirmPasswordResetResponse, CreateChatImageUploadSessionRequest,
+    ClearPlaylistResponse, ClearRoomPasswordRequest, ClientMessage, CloseAccountRequest,
+    CloseAccountResponse, ConfirmEmailBindRequest, ConfirmEmailBindResponse,
+    ConfirmEmailLoginRequest, ConfirmPasswordResetResponse, CreateChatImageUploadSessionRequest,
     CreateChatImageUploadSessionResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
     CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
     CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
@@ -36,15 +36,16 @@ use crate::proto::client::{
     EditMediaResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
     FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
-    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetChatImageObjectRequest, GetChatMessageContextRequest,
-    GetChatMessageContextResponse, GetChatMessageRequest, GetChatMessageResponse,
-    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
-    GetMediaRequest, GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest,
-    GetPlaylistResponse, GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest,
-    GetPublicSettingsResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
-    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetRoomStreamInfoRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, FinishRoomPasswordLoginRequest,
+    FinishRoomPasswordRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
+    GetChatImageObjectRequest, GetChatMessageContextRequest, GetChatMessageContextResponse,
+    GetChatMessageRequest, GetChatMessageResponse, GetChatPlaybackMessagesRequest,
+    GetChatPlaybackMessagesResponse, GetChatReadStateRequest, GetHotRoomsRequest,
+    GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse, GetMediaRequest,
+    GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse,
+    GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse,
+    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
+    GetRoomSettingsRequest, GetRoomSettingsResponse, GetRoomStreamInfoRequest,
     GetRoomStreamInfoResponse, GetServerInfoRequest, GetServerInfoResponse,
     GetUserAvatarObjectRequest, GetUserPreferencesRequest, GetUserPreferencesResponse,
     GetVideoCoverObjectRequest, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
@@ -53,13 +54,13 @@ use crate::proto::client::{
     ListPasskeysResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
     ListPlaylistsRequest, ListPlaylistsResponse, ListRoomJoinReviewsRequest,
     ListRoomJoinReviewsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
-    ListRoomsResponse, LoginResponse, LogoutRequest, LogoutResponse, MarkChatReadRequest, Media,
-    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
-    PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterResponse,
-    RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RequestEmailLoginRequest,
-    RequestEmailLoginResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
-    RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
-    ResetRoomSettingsResponse, SendChatMessageRequest, ServerMessage, SetRoomPasswordRequest,
+    ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    MarkChatReadRequest, Media, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
+    MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
+    RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
+    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
+    RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendChatMessageRequest, ServerMessage,
     SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest,
     StartEmailBindResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
     StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
@@ -68,6 +69,8 @@ use crate::proto::client::{
     StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
     StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
     StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
+    StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
+    StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UnbindEmailRequest, UnbindEmailResponse,
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaybackRequest,
@@ -546,6 +549,54 @@ impl ClientServiceImpl {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl AuthService for ClientServiceImpl {
+    async fn register(
+        &self,
+        request: Request<RegisterRequest>,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .register_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn login(
+        &self,
+        request: Request<LoginRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .login_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn start_opaque_registration(
         &self,
         request: Request<StartOpaqueRegistrationRequest>,
@@ -1481,6 +1532,64 @@ impl UserService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn start_room_password_login(
+        &self,
+        request: Request<StartRoomPasswordLoginRequest>,
+    ) -> Result<Response<StartRoomPasswordLoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip.map(|ip| ip.to_string());
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |request_control, authenticated| async move {
+                    client_api
+                        .start_room_password_login_with_control(
+                            &authenticated.user_id,
+                            req,
+                            client_ip.as_deref(),
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_room_password_login(
+        &self,
+        request: Request<FinishRoomPasswordLoginRequest>,
+    ) -> Result<Response<JoinRoomResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip.map(|ip| ip.to_string());
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |_request_control, authenticated| async move {
+                    client_api
+                        .finish_room_password_login_with_control(
+                            &authenticated.user_id,
+                            None,
+                            req,
+                            client_ip.as_deref(),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn list_my_rooms(
         &self,
         request: Request<ListMyRoomsRequest>,
@@ -1819,9 +1928,36 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn set_room_password(
+    async fn start_room_password_registration(
         &self,
-        request: Request<SetRoomPasswordRequest>,
+        request: Request<StartRoomPasswordRegistrationRequest>,
+    ) -> Result<Response<StartRoomPasswordRegistrationResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .start_room_password_registration(
+                            &authenticated.user_id,
+                            room_id.as_str(),
+                            req,
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_room_password_registration(
+        &self,
+        request: Request<FinishRoomPasswordRegistrationRequest>,
     ) -> Result<Response<SetRoomPasswordResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
@@ -1833,7 +1969,34 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .set_room_password(&authenticated.user_id, room_id.as_str(), req)
+                        .finish_room_password_registration(
+                            &authenticated.user_id,
+                            room_id.as_str(),
+                            req,
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn clear_room_password(
+        &self,
+        request: Request<ClearRoomPasswordRequest>,
+    ) -> Result<Response<SetRoomPasswordResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .clear_room_password(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )

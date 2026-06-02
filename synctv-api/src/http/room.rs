@@ -34,34 +34,40 @@ use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, ChatMessageEventResponse,
     ChatReadStateResponse, CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse,
-    CreateChatImageUploadSessionRequest, CreateChatImageUploadSessionResponse,
-    CreatePlaylistCoverUploadSessionRequest, CreatePlaylistCoverUploadSessionResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomCoverUploadSessionRequest,
-    CreateRoomCoverUploadSessionResponse, CreateRoomRequest, CreateRoomResponse,
-    CreateVideoCoverUploadSessionRequest, CreateVideoCoverUploadSessionResponse,
-    DeleteChatMessageRequest, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
-    DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery, DeletePlaylistRequest,
-    DeletePlaylistResponse, DeleteRoomResponse, EditChatMessageRequest, EditMediaResponse,
-    GetChatHistoryRequest, GetChatHistoryResponse, GetChatMessageContextRequest,
-    GetChatMessageContextResponse, GetChatMessageRequest, GetChatMessageResponse,
-    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
-    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse, GetRoomStreamInfoRequest,
-    GetRoomStreamInfoResponse, JoinRoomResponse, KickRoomStreamRequest, KickRoomStreamResponse,
-    LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest, ListPlaylistsResponse,
-    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
-    MarkChatReadRequest, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
-    ResetRoomSettingsResponse, SendChatMessageRequest, SetRoomPasswordRequest,
-    SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, TransferRoomOwnershipRequest, TransferRoomOwnershipResponse,
-    UpdatePlaybackRequest, UpdatePlaylistCoverRequest, UpdatePlaylistResponse,
-    UpdateRoomCoverRequest, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
-    UpdateVideoCoverRequest, WatchChatEventsRequest, WatchOptions, WatchPlaybackSnapshotRequest,
-    WatchPlaybackStateRequest, WatchPlaylistItemsRequest, WatchRoomMembersRequest,
-    WatchRoomSettingsRequest,
+    ClearRoomPasswordRequest, CreateChatImageUploadSessionRequest,
+    CreateChatImageUploadSessionResponse, CreatePlaylistCoverUploadSessionRequest,
+    CreatePlaylistCoverUploadSessionResponse, CreatePlaylistRequest, CreatePlaylistResponse,
+    CreateRoomCoverUploadSessionRequest, CreateRoomCoverUploadSessionResponse, CreateRoomRequest,
+    CreateRoomResponse, CreateVideoCoverUploadSessionRequest,
+    CreateVideoCoverUploadSessionResponse, DeleteChatMessageRequest, DeleteEntriesRequest,
+    DeleteEntriesResponse, DeleteMediaQuery, DeleteMediaRequest, DeleteMediaResponse,
+    DeletePlaylistQuery, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomResponse,
+    EditChatMessageRequest, EditMediaResponse, FinishRoomPasswordLoginRequest,
+    FinishRoomPasswordRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
+    GetChatMessageContextRequest, GetChatMessageContextResponse, GetChatMessageRequest,
+    GetChatMessageResponse, GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse,
+    GetChatReadStateRequest, GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse,
+    GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, JoinRoomResponse, KickRoomStreamRequest,
+    KickRoomStreamResponse, LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
+    ListRoomsResponse, MarkChatReadRequest, MoveMediaRequest, MoveMediaResponse,
+    MovePlaylistResponse, ResetRoomSettingsResponse, SendChatMessageRequest,
+    SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
+    StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
+    StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
+    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    TransferRoomOwnershipResponse, UpdatePlaybackRequest, UpdatePlaylistCoverRequest,
+    UpdatePlaylistResponse, UpdateRoomCoverRequest, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse, UpdateVideoCoverRequest, WatchChatEventsRequest, WatchOptions,
+    WatchPlaybackSnapshotRequest, WatchPlaybackStateRequest, WatchPlaylistItemsRequest,
+    WatchRoomMembersRequest, WatchRoomSettingsRequest,
 };
 
-pub type SetRoomPasswordBody = SetRoomPasswordRequest;
+pub type StartRoomPasswordRegistrationBody = StartRoomPasswordRegistrationRequest;
+pub type FinishRoomPasswordRegistrationBody = FinishRoomPasswordRegistrationRequest;
+pub type StartRoomPasswordLoginBody = StartRoomPasswordLoginRequest;
+pub type FinishRoomPasswordLoginBody = FinishRoomPasswordLoginRequest;
 pub type UpdateRoomSettingsBody = UpdateRoomSettingsRequest;
 pub type TransferRoomOwnershipBody = TransferRoomOwnershipRequest;
 pub type StartPlaybackBody = StartPlaybackRequest;
@@ -873,6 +879,115 @@ pub async fn join_room(
                         req,
                         client_ip.as_deref(),
                         Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await?;
+
+    Ok(Json(response))
+}
+
+/// Start room password OPAQUE login
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/password/opaque/login/start",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = StartRoomPasswordLoginRequest,
+        responses(
+            (status = 200, description = "Room password login challenge created", body = StartRoomPasswordLoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn start_room_password_login(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Json(mut req): Json<StartRoomPasswordLoginBody>,
+) -> AppResult<Json<StartRoomPasswordLoginResponse>> {
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let room_id = extract_room_id(path);
+    req.room_id = room_id;
+    let client_ip = request_meta.client_ip.map(|ip| ip.to_string());
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_scoped_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::RoomJoin,
+            move |request_control, authenticated| async move {
+                client_api
+                    .start_room_password_login_with_control(
+                        &authenticated.user_id,
+                        req,
+                        client_ip.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await?;
+
+    Ok(Json(response))
+}
+
+/// Finish room password OPAQUE login and join the room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/password/opaque/login/finish",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = FinishRoomPasswordLoginRequest,
+        responses(
+            (status = 200, description = "Joined room", body = JoinRoomResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn finish_room_password_login(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Json(req): Json<FinishRoomPasswordLoginBody>,
+) -> AppResult<Json<JoinRoomResponse>> {
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let room_id = extract_room_id(path);
+    let client_ip = request_meta.client_ip.map(|ip| ip.to_string());
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_scoped_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::RoomJoin,
+            move |_request_control, authenticated| async move {
+                client_api
+                    .finish_room_password_login_with_control(
+                        &authenticated.user_id,
+                        Some(&room_id),
+                        req,
+                        client_ip.as_deref(),
                     )
                     .await
             },
@@ -1696,17 +1811,61 @@ pub async fn check_room(
     Ok(Json(response))
 }
 
-/// Set room password
+/// Start room password registration
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/password",
+        path = "/api/rooms/{room_id}/password/opaque/registration/start",
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = SetRoomPasswordRequest,
+        request_body = StartRoomPasswordRegistrationRequest,
+        responses(
+            (status = 200, description = "Room password registration challenge created", body = StartRoomPasswordRegistrationResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn start_room_password_registration(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Json(req): Json<StartRoomPasswordRegistrationBody>,
+) -> AppResult<Json<StartRoomPasswordRegistrationResponse>> {
+    let room_id = extract_room_id(path);
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomPassword,
+        move |client_api, authenticated| async move {
+            client_api
+                .start_room_password_registration(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+/// Finish room password OPAQUE registration
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/password/opaque/registration/finish",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = FinishRoomPasswordRegistrationRequest,
         responses(
             (status = 200, description = "Room password updated", body = SetRoomPasswordResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1717,21 +1876,67 @@ pub async fn check_room(
         )
     )
 )]
-pub async fn set_room_password(
+pub async fn finish_room_password_registration(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<SetRoomPasswordBody>,
+    Json(req): Json<FinishRoomPasswordRegistrationBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
     let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
-        EndpointRateLimitScope::RoomSettings,
+        EndpointRateLimitScope::RoomPassword,
         move |client_api, authenticated| async move {
             client_api
-                .set_room_password(&authenticated.user_id, &room_id, req)
+                .finish_room_password_registration(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+/// Clear room password
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/password",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room password cleared", body = SetRoomPasswordResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn clear_room_password(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+) -> AppResult<Json<SetRoomPasswordResponse>> {
+    let room_id = extract_room_id(path);
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomPassword,
+        move |client_api, authenticated| async move {
+            client_api
+                .clear_room_password(
+                    &authenticated.user_id,
+                    &room_id,
+                    ClearRoomPasswordRequest {},
+                )
                 .await
         },
     )

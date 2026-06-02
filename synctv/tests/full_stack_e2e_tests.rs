@@ -21,7 +21,6 @@ use serde_json::{json, Value};
 use sha2_010::Sha512;
 use synctv::app::{Application, ApplicationBuildOptions};
 use synctv_core::config::Config;
-use synctv_core::service::auth::TestPasswordHasher;
 use synctv_core_testing::{
     connect_test_pool_url, create_test_database_url_with_label,
     postgres_connection_url_with_credentials, start_redis_url_with_label, test_redis_key_prefix,
@@ -466,7 +465,6 @@ async fn start_test_server() -> TestServer {
                 credential_encryption_key_override: Some(
                     TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
                 ),
-                password_hasher_override: Some(Arc::new(TestPasswordHasher::new())),
                 allow_password_registration: true,
             },
         ))
@@ -1192,7 +1190,7 @@ async fn opaque_grpc_register(
     let challenge = auth_client
         .start_opaque_registration(StartOpaqueRegistrationRequest {
             username: username.to_string(),
-            email: email.to_string(),
+            email: Some(email.to_string()),
             registration_request: client_start.message.serialize().to_vec(),
         })
         .await
@@ -1236,8 +1234,11 @@ async fn opaque_grpc_login(
         .expect("client OPAQUE login start should succeed");
     let challenge = auth_client
         .start_opaque_login(StartOpaqueLoginRequest {
-            username: username.to_string(),
-            email: String::new(),
+            identifier: Some(
+                synctv_proto::client::start_opaque_login_request::Identifier::Username(
+                    username.to_string(),
+                ),
+            ),
             credential_request: client_start.message.serialize().to_vec(),
         })
         .await
@@ -1263,6 +1264,119 @@ async fn opaque_grpc_login(
         })
         .await
         .expect("grpc OPAQUE login finish should succeed")
+        .into_inner()
+}
+
+async fn opaque_grpc_set_room_password(
+    room_client: &mut synctv_proto::client::room_service_client::RoomServiceClient<
+        tonic::transport::Channel,
+    >,
+    room_id: &str,
+    bearer: &str,
+    password: &str,
+) -> synctv_proto::client::SetRoomPasswordResponse {
+    use synctv_proto::client::{
+        FinishRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationRequest,
+    };
+
+    let mut rng = OsRng;
+    let client_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+            .expect("client room OPAQUE registration start should succeed");
+    let mut start_request = tonic::Request::new(StartRoomPasswordRegistrationRequest {
+        registration_request: client_start.message.serialize().to_vec(),
+    });
+    start_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(bearer));
+    start_request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(room_id));
+    let challenge = room_client
+        .start_room_password_registration(start_request)
+        .await
+        .expect("room OPAQUE registration start should succeed")
+        .into_inner();
+    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+        &challenge.registration_response,
+    )
+    .expect("room registration response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .expect("client room OPAQUE registration finish should succeed");
+    let mut finish_request = tonic::Request::new(FinishRoomPasswordRegistrationRequest {
+        session_id: challenge.session_id,
+        registration_upload: client_finish.message.serialize().to_vec(),
+    });
+    finish_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(bearer));
+    finish_request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(room_id));
+
+    room_client
+        .finish_room_password_registration(finish_request)
+        .await
+        .expect("room OPAQUE registration finish should succeed")
+        .into_inner()
+}
+
+async fn opaque_grpc_join_room(
+    user_client: &mut synctv_proto::client::user_service_client::UserServiceClient<
+        tonic::transport::Channel,
+    >,
+    room_id: &str,
+    bearer: &str,
+    password: &str,
+) -> synctv_proto::client::JoinRoomResponse {
+    use synctv_proto::client::{FinishRoomPasswordLoginRequest, StartRoomPasswordLoginRequest};
+
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+        .expect("client room OPAQUE login start should succeed");
+    let mut start_request = tonic::Request::new(StartRoomPasswordLoginRequest {
+        room_id: room_id.to_string(),
+        credential_request: client_start.message.serialize().to_vec(),
+    });
+    start_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(bearer));
+    let challenge = user_client
+        .start_room_password_login(start_request)
+        .await
+        .expect("room OPAQUE login start should succeed")
+        .into_inner();
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("room credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .expect("client room OPAQUE login finish should succeed");
+    let mut finish_request = tonic::Request::new(FinishRoomPasswordLoginRequest {
+        session_id: challenge.session_id,
+        credential_finalization: client_finish.message.serialize().to_vec(),
+    });
+    finish_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(bearer));
+
+    user_client
+        .finish_room_password_login(finish_request)
+        .await
+        .expect("room OPAQUE login finish should succeed")
         .into_inner()
 }
 
@@ -1383,7 +1497,6 @@ async fn opaque_http_login_token(
         &format!("{}/api/auth/opaque/login/start", server.api_base_url),
         json!({
             "username": username,
-            "email": "",
             "credential_request": BASE64_STANDARD.encode(client_start.message.serialize())
         }),
         None,
@@ -2527,9 +2640,9 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .expect("connect public user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: room_name.clone(),
-        password: String::new(),
         settings: Vec::new(),
         description: "cli room get e2e".to_string(),
+        password: String::new(),
     });
     create_room
         .metadata_mut()
@@ -2579,9 +2692,9 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         .expect("connect public user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: room_name,
-        password: String::new(),
         settings: Vec::new(),
         description: "cli room ban lifecycle e2e".to_string(),
+        password: String::new(),
     });
     create_room
         .metadata_mut()
@@ -2671,9 +2784,9 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("connect public user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: format!("CLI Settings Room {suffix}"),
-        password: String::new(),
         settings: Vec::new(),
         description: "cli room settings lifecycle e2e".to_string(),
+        password: String::new(),
     });
     create_room
         .metadata_mut()
@@ -3676,17 +3789,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     )
     .await;
     assert_eq!(room_password_set["success"], true);
-    let room_after_password_set = run_synctv_remote_cli_json(
-        &server,
-        &["room", "get", &room_id],
-        "get room after set-password",
-    )
-    .await;
-    assert_eq!(
-        room_after_password_set["room"]["settings"]["require_password"],
-        true
-    );
-
     let member_join = join_room_http(&server, &room_id, room_password, &member_token).await;
     assert_eq!(
         member_join.status(),
@@ -3839,17 +3941,6 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     )
     .await;
     assert_eq!(room_password_cleared["success"], true);
-    let room_after_password_clear = run_synctv_remote_cli_json(
-        &server,
-        &["room", "get", &room_id],
-        "get room after clear password",
-    )
-    .await;
-    assert_eq!(
-        room_after_password_clear["room"]["settings"]["require_password"],
-        false
-    );
-
     tokio::time::sleep(Duration::from_secs(4)).await;
     let rejoined_without_password = join_room_http(&server, &room_id, "", &subject_token).await;
     assert_eq!(
@@ -6656,9 +6747,9 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     let unauthenticated = user_client
         .create_room(CreateRoomRequest {
             name: "gRPC room".to_string(),
-            password: String::new(),
             settings: Vec::new(),
             description: "created through full-stack gRPC e2e".to_string(),
+            password: String::new(),
         })
         .await
         .expect_err("missing auth should be rejected");
@@ -6666,9 +6757,9 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
 
     let mut request = tonic::Request::new(CreateRoomRequest {
         name: "gRPC room".to_string(),
-        password: "RoomPass12345!".to_string(),
         settings: Vec::new(),
         description: "created through full-stack gRPC e2e".to_string(),
+        password: String::new(),
     });
     request
         .metadata_mut()
@@ -6697,9 +6788,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{
-        CreateRoomRequest, GetRoomRequest, GetRoomSettingsRequest, JoinRoomRequest,
-    };
+    use synctv_proto::client::{CreateRoomRequest, GetRoomRequest, GetRoomSettingsRequest};
 
     let server = start_test_server().await;
 
@@ -6732,9 +6821,9 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: "gRPC metadata room".to_string(),
-        password: "GrpcRoomSecret123!".to_string(),
         settings: Vec::new(),
         description: "room-scoped grpc e2e".to_string(),
+        password: String::new(),
     });
     create_room
         .metadata_mut()
@@ -6750,6 +6839,16 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect member room gRPC client");
+    let mut owner_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect owner room gRPC client");
+    opaque_grpc_set_room_password(
+        &mut owner_room_client,
+        &room_id,
+        &owner_login.access_token,
+        "GrpcRoomSecret123!",
+    )
+    .await;
 
     let mut non_member_get_room = tonic::Request::new(GetRoomSettingsRequest {});
     non_member_get_room
@@ -6781,18 +6880,13 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         "unexpected membership denial: {forbidden}"
     );
 
-    let mut join_room = tonic::Request::new(JoinRoomRequest {
-        room_id: room_id.clone(),
-        password: "GrpcRoomSecret123!".to_string(),
-    });
-    join_room
-        .metadata_mut()
-        .insert("authorization", bearer_metadata(&member_login.access_token));
-    let joined = owner_user_client
-        .join_room(join_room)
-        .await
-        .expect("member should join room")
-        .into_inner();
+    let joined = opaque_grpc_join_room(
+        &mut owner_user_client,
+        &room_id,
+        &member_login.access_token,
+        "GrpcRoomSecret123!",
+    )
+    .await;
     assert_eq!(
         joined.room.expect("joined room").id,
         room_id,
@@ -6827,9 +6921,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::server_message;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::{
-        ClientMessage, CreateRoomRequest, HeartbeatMessage, JoinRoomRequest,
-    };
+    use synctv_proto::client::{ClientMessage, CreateRoomRequest, HeartbeatMessage};
 
     let server = start_test_server().await;
 
@@ -6869,9 +6961,9 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: "gRPC stream room".to_string(),
-        password: "GrpcStreamRoomSecret123!".to_string(),
         settings: Vec::new(),
         description: "grpc stream e2e".to_string(),
+        password: String::new(),
     });
     create_room
         .metadata_mut()
@@ -6888,20 +6980,26 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect member room gRPC client");
-    let mut join_room = tonic::Request::new(JoinRoomRequest {
-        room_id: room_id.clone(),
-        password: "GrpcStreamRoomSecret123!".to_string(),
-    });
-    join_room
-        .metadata_mut()
-        .insert("authorization", bearer_metadata(&member_login.access_token));
+    let mut owner_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect owner room gRPC client");
+    opaque_grpc_set_room_password(
+        &mut owner_room_client,
+        &room_id,
+        &owner_login.access_token,
+        "GrpcStreamRoomSecret123!",
+    )
+    .await;
     let mut member_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect member user gRPC client");
-    member_user_client
-        .join_room(join_room)
-        .await
-        .expect("member join_room should succeed");
+    opaque_grpc_join_room(
+        &mut member_user_client,
+        &room_id,
+        &member_login.access_token,
+        "GrpcStreamRoomSecret123!",
+    )
+    .await;
 
     let heartbeat_timestamp = chrono::Utc::now().timestamp_millis();
     let outbound = stream::iter(vec![ClientMessage {
@@ -8799,9 +8897,9 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: "gRPC outsider stream room".to_string(),
-        password: String::new(),
         settings: Vec::new(),
         description: "membership denial for grpc stream".to_string(),
+        password: String::new(),
     });
     create_room
         .metadata_mut()

@@ -24,7 +24,6 @@ use synctv_core::{
     },
     cache::{CacheInvalidationRuntime, InvalidationMessage, KeyBuilder},
     repository::realtime_outbox::RealtimeOutboxRepository,
-    service::auth::PasswordHasherService,
     Config, RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
@@ -279,7 +278,6 @@ pub struct Application {
 pub struct ApplicationBuildOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_key_override: Option<String>,
-    pub password_hasher_override: Option<Arc<dyn PasswordHasherService>>,
     pub allow_password_registration: bool,
 }
 
@@ -296,10 +294,6 @@ impl std::fmt::Debug for ApplicationBuildOptions {
                     .credential_encryption_key_override
                     .as_ref()
                     .map(|_| "<redacted>"),
-            )
-            .field(
-                "password_hasher_override",
-                &self.password_hasher_override.as_ref().map(|_| "<injected>"),
             )
             .field(
                 "allow_password_registration",
@@ -860,7 +854,6 @@ impl Application {
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key_override,
-                password_hasher_override: options.password_hasher_override.clone(),
                 realtime_outbox: runtime_plan.realtime_outbox(),
             },
         )

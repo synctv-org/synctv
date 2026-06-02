@@ -83,7 +83,6 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    
     UserService::new(
         pool,
         jwt_service,
@@ -98,7 +97,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 #[allow(dead_code)]
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    
+
     RoomService::new(pool, user_service)
 }
 

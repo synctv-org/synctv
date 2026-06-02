@@ -36,7 +36,6 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    
     UserService::new(
         pool,
         jwt_service,
@@ -50,7 +49,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    
+
     RoomService::new(pool, user_service)
 }
 
@@ -59,7 +58,7 @@ fn make_room_service_with_fence(
     version_fence: Arc<dyn VersionFenceStore>,
 ) -> RoomService {
     let user_service = make_user_service(&pool);
-    
+
     RoomService::new_with_options(
         pool,
         user_service,

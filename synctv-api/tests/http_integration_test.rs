@@ -976,7 +976,7 @@ mod routing_structure {
 mod request_format {
     use synctv_proto::client::{
         ConfirmEmailLoginRequest, CreateRoomRequest, JoinRoomRequest, RefreshTokenRequest,
-        SetRoomPasswordRequest,
+        StartRoomPasswordRegistrationRequest,
     };
 
     #[test]
@@ -989,40 +989,32 @@ mod request_format {
 
     #[test]
     fn test_create_room_request_deserializes() {
-        let json = r#"{"name":"Movie Night","password":"","settings":[],"description":""}"#;
+        let json = r#"{"name":"Movie Night","settings":[],"description":""}"#;
         let req: CreateRoomRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "Movie Night");
     }
 
     #[test]
-    fn test_join_room_request_with_password() {
-        let json = r#"{"password":"room_pass"}"#;
-        let req: JoinRoomRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.password, "room_pass");
-        assert!(req.room_id.is_empty());
-    }
-
-    #[test]
-    fn test_join_room_request_without_password() {
-        let json = r#"{"password":""}"#;
-        let req: JoinRoomRequest = serde_json::from_str(json).unwrap();
-        assert!(req.password.is_empty());
-        assert!(req.room_id.is_empty());
-    }
-
-    #[test]
-    fn test_set_room_password_request_deserializes_without_room_id() {
-        let json = r#"{"password":"new-secret"}"#;
-        let req: SetRoomPasswordRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.password, "new-secret");
-    }
-
-    #[test]
-    fn test_set_room_password_body_requires_password_field() {
+    fn test_join_room_request_deserializes_without_password() {
         let json = r"{}";
-        let Err(err) = serde_json::from_str::<synctv_api::http::room::SetRoomPasswordBody>(json)
+        let req: JoinRoomRequest = serde_json::from_str(json).unwrap();
+        assert!(req.room_id.is_empty());
+    }
+
+    #[test]
+    fn test_start_room_password_registration_deserializes() {
+        let json = r#"{"registration_request":"AQID"}"#;
+        let req: StartRoomPasswordRegistrationRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.registration_request, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_start_room_password_registration_requires_payload() {
+        let json = r"{}";
+        let Err(err) =
+            serde_json::from_str::<synctv_api::http::room::StartRoomPasswordRegistrationBody>(json)
         else {
-            panic!("missing password must be rejected");
+            panic!("missing registration request must be rejected");
         };
         assert!(
             err.to_string().contains("missing field"),

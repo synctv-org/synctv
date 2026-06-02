@@ -2199,7 +2199,6 @@ mod tests {
         let key_builder = KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-        
         UserService::new(
             pool,
             jwt_service,

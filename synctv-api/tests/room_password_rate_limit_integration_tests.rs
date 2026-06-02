@@ -1,6 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
+use opaque_ke::argon2::Argon2;
+use opaque_ke::ciphersuite::CipherSuite;
+use opaque_ke::rand::rngs::OsRng;
+use opaque_ke::{
+    ClientLogin, ClientLoginFinishParameters, ClientRegistration,
+    ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
+};
 use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
@@ -14,6 +21,19 @@ use synctv_core::{
     Config,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
+
+struct PendingOpaqueRoomLogin {
+    session_id: String,
+    credential_finalization: Vec<u8>,
+}
+
+struct TestOpaqueCipherSuite;
+
+impl CipherSuite for TestOpaqueCipherSuite {
+    type OprfCs = opaque_ke::Ristretto255;
+    type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, sha2_010::Sha512>;
+    type Ksf = Argon2<'static>;
+}
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -50,6 +70,372 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     )
 }
 
+async fn opaque_room_login(
+    client_api: &synctv_api::impls::ClientApiImpl,
+    user_id: &UserId,
+    room_id: &str,
+    password: &str,
+    client_ip: &str,
+) -> Result<synctv_api::proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+        .expect("client OPAQUE login start should succeed");
+    let challenge = client_api
+        .start_room_password_login_with_control(
+            user_id,
+            synctv_api::proto::client::StartRoomPasswordLoginRequest {
+                room_id: room_id.to_string(),
+                credential_request: client_start.message.serialize().to_vec(),
+            },
+            Some(client_ip),
+            None,
+        )
+        .await?;
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("server credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .map_err(|_| synctv_api::impls::ApiError::Authentication("Authentication failed".into()))?;
+
+    client_api
+        .finish_room_password_login_with_control(
+            user_id,
+            None,
+            synctv_api::proto::client::FinishRoomPasswordLoginRequest {
+                session_id: challenge.session_id,
+                credential_finalization: client_finish.message.serialize().to_vec(),
+            },
+            Some(client_ip),
+        )
+        .await
+}
+
+async fn start_opaque_room_login(
+    client_api: &synctv_api::impls::ClientApiImpl,
+    user_id: &UserId,
+    room_id: &str,
+    password: &str,
+    client_ip: &str,
+) -> Result<PendingOpaqueRoomLogin, synctv_api::impls::ApiError> {
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+        .expect("client OPAQUE login start should succeed");
+    let challenge = client_api
+        .start_room_password_login_with_control(
+            user_id,
+            synctv_api::proto::client::StartRoomPasswordLoginRequest {
+                room_id: room_id.to_string(),
+                credential_request: client_start.message.serialize().to_vec(),
+            },
+            Some(client_ip),
+            None,
+        )
+        .await?;
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("server credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .map_err(|_| synctv_api::impls::ApiError::Authentication("Authentication failed".into()))?;
+
+    Ok(PendingOpaqueRoomLogin {
+        session_id: challenge.session_id,
+        credential_finalization: client_finish.message.serialize().to_vec(),
+    })
+}
+
+async fn start_tampered_opaque_room_login(
+    client_api: &synctv_api::impls::ClientApiImpl,
+    user_id: &UserId,
+    room_id: &str,
+    password: &str,
+    client_ip: &str,
+) -> Result<PendingOpaqueRoomLogin, synctv_api::impls::ApiError> {
+    let mut login = start_opaque_room_login(client_api, user_id, room_id, password, client_ip)
+        .await?;
+    if let Some(first) = login.credential_finalization.first_mut() {
+        *first ^= 0x01;
+    } else {
+        login.credential_finalization = vec![1];
+    }
+    Ok(login)
+}
+
+async fn finish_opaque_room_login(
+    client_api: &synctv_api::impls::ClientApiImpl,
+    user_id: &UserId,
+    login: PendingOpaqueRoomLogin,
+    client_ip: &str,
+) -> Result<synctv_api::proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
+    client_api
+        .finish_room_password_login_with_control(
+            user_id,
+            None,
+            synctv_api::proto::client::FinishRoomPasswordLoginRequest {
+                session_id: login.session_id,
+                credential_finalization: login.credential_finalization,
+            },
+            Some(client_ip),
+        )
+        .await
+}
+
+fn make_client_api(
+    user_service: Arc<UserService>,
+    room_service: Arc<RoomService>,
+) -> synctv_api::impls::ClientApiImpl {
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    synctv_api::impls::ClientApiImpl::new(
+        user_service,
+        room_service,
+        connection_manager,
+        Arc::new(Config::default()),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    )
+}
+
+async fn opaque_room_password_registration_upload(
+    client_api: &synctv_api::impls::ClientApiImpl,
+    user_id: &UserId,
+    room_id: &str,
+    password: &str,
+) -> (
+    String,
+    synctv_api::proto::client::FinishRoomPasswordRegistrationRequest,
+) {
+    let mut rng = OsRng;
+    let client_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
+            .expect("client OPAQUE registration start should succeed");
+    let challenge = client_api
+        .start_room_password_registration(
+            user_id,
+            room_id,
+            synctv_api::proto::client::StartRoomPasswordRegistrationRequest {
+                registration_request: client_start.message.serialize().to_vec(),
+            },
+        )
+        .await
+        .expect("room password registration start should succeed");
+    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+        &challenge.registration_response,
+    )
+    .expect("server registration response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .expect("client OPAQUE registration finish should succeed");
+
+    (
+        challenge.session_id.clone(),
+        synctv_api::proto::client::FinishRoomPasswordRegistrationRequest {
+            session_id: challenge.session_id,
+            registration_upload: client_finish.message.serialize().to_vec(),
+        },
+    )
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_finish_room_password_registration_rejects_session_for_different_room() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(&pool));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let owner = user_repo
+        .create(&make_user("password_registration_owner"))
+        .await
+        .unwrap();
+    let (room_a, _) = room_service
+        .create_room(
+            "Password Registration A".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let (room_b, _) = room_service
+        .create_room(
+            "Password Registration B".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let client_api = make_client_api(user_service, room_service.clone());
+    let codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
+    let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
+    let (_session_id, finish_req) = opaque_room_password_registration_upload(
+        &client_api,
+        &owner.id,
+        &room_a_public_id,
+        "RoomPassword123",
+    )
+    .await;
+
+    let error = client_api
+        .finish_room_password_registration(&owner.id, &room_b_public_id, finish_req)
+        .await
+        .expect_err("room password registration session must be bound to one room");
+    assert!(
+        matches!(error, synctv_api::impls::ApiError::InvalidInput(ref message)
+            if message.contains("does not match room")),
+        "unexpected error: {error}"
+    );
+
+    assert!(
+        !room_service
+            .is_room_password_enabled(&room_b.id)
+            .await
+            .unwrap(),
+        "wrong-room finish must leave target room password disabled"
+    );
+    assert!(
+        !room_service
+            .is_room_password_enabled(&room_a.id)
+            .await
+            .unwrap(),
+        "wrong-room finish must leave source room password disabled"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_finish_room_password_login_rejects_session_for_different_room_before_join() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(&pool));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let owner = user_repo
+        .create(&make_user("password_login_owner"))
+        .await
+        .unwrap();
+    let joining_user = user_repo
+        .create(&make_user("password_login_member"))
+        .await
+        .unwrap();
+    let (room_a, _) = room_service
+        .create_room(
+            "Password Login A".to_string(),
+            String::new(),
+            owner.id,
+            Some("RoomPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+    let (room_b, _) = room_service
+        .create_room(
+            "Password Login B".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let client_api = make_client_api(user_service, room_service.clone());
+    let codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
+    let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
+
+    let mut rng = OsRng;
+    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, b"RoomPassword123")
+        .expect("client OPAQUE login start should succeed");
+    let challenge = client_api
+        .start_room_password_login_with_control(
+            &joining_user.id,
+            synctv_api::proto::client::StartRoomPasswordLoginRequest {
+                room_id: room_a_public_id,
+                credential_request: client_start.message.serialize().to_vec(),
+            },
+            Some("192.168.1.101"),
+            None,
+        )
+        .await
+        .expect("room password login start should succeed");
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
+            .expect("server credential response should deserialize");
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            b"RoomPassword123",
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .expect("client OPAQUE login finish should succeed");
+
+    let error = client_api
+        .finish_room_password_login_with_control(
+            &joining_user.id,
+            Some(&room_b_public_id),
+            synctv_api::proto::client::FinishRoomPasswordLoginRequest {
+                session_id: challenge.session_id,
+                credential_finalization: client_finish.message.serialize().to_vec(),
+            },
+            Some("192.168.1.101"),
+        )
+        .await
+        .expect_err("room password login session must be bound to one room");
+    assert!(
+        matches!(error, synctv_api::impls::ApiError::InvalidInput(ref message)
+            if message.contains("does not match room")),
+        "unexpected error: {error}"
+    );
+    assert!(
+        room_service
+            .get_member(&room_a.id, &joining_user.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "wrong-room finish must not join the session room"
+    );
+    assert!(
+        room_service
+            .get_member(&room_b.id, &joining_user.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "wrong-room finish must not join the path room"
+    );
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_client_api_room_password_success_resets_bruteforce_counter() {
@@ -76,80 +462,141 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .await
         .unwrap();
 
-    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
-
-    let client_api = synctv_api::impls::ClientApiImpl::new(
-        user_service,
-        room_service.clone(),
-        connection_manager,
-        Arc::new(Config::default()),
-        None,
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
-    )
-    .with_rate_limiter(synctv_core::service::rate_limit::RateLimiter::local_only(
-        "api:room-password:".to_string(),
-    ));
+    let client_api = make_client_api(user_service, room_service.clone()).with_rate_limiter(
+        synctv_core::service::rate_limit::RateLimiter::local_only("api:room-password:".to_string()),
+    );
 
     let room_public_id = synctv_api::PublicIdCodec::default_for_tests()
         .encode_room_id(room.id)
         .unwrap();
 
     for _attempt in 0..4 {
-        let err = client_api
-            .join_room(
-                &member.id,
-                &room_public_id,
-                synctv_api::proto::client::JoinRoomRequest {
-                    password: "WrongPassword".to_string(),
-                    room_id: room_public_id.clone(),
-                },
-                Some("192.168.1.100"),
-            )
-            .await
-            .unwrap_err();
+        let err = opaque_room_login(
+            &client_api,
+            &member.id,
+            &room_public_id,
+            "WrongPassword",
+            "192.168.1.100",
+        )
+        .await
+        .unwrap_err();
         assert!(
-            err.to_string().contains("Invalid password"),
+            err.to_string().contains("Authentication failed"),
             "wrong password should stay user-readable: {err}"
         );
     }
 
-    client_api
-        .join_room(
-            &member.id,
-            &room_public_id,
-            synctv_api::proto::client::JoinRoomRequest {
-                password: "CorrectPassword123".to_string(),
-                room_id: room_public_id.clone(),
-            },
-            Some("192.168.1.100"),
-        )
-        .await
-        .expect("successful password check should pass");
+    opaque_room_login(
+        &client_api,
+        &member.id,
+        &room_public_id,
+        "CorrectPassword123",
+        "192.168.1.100",
+    )
+    .await
+    .expect("successful password check should pass");
 
     room_service
         .leave_room(room.id, member.id)
         .await
         .expect("member should be able to leave after successful join");
 
-    let err = client_api
-        .join_room(
-            &member.id,
-            &room_public_id,
-            synctv_api::proto::client::JoinRoomRequest {
-                password: "WrongPassword".to_string(),
-                room_id: room_public_id.clone(),
-            },
-            Some("192.168.1.100"),
+    let err = opaque_room_login(
+        &client_api,
+        &member.id,
+        &room_public_id,
+        "WrongPassword",
+        "192.168.1.100",
+    )
+    .await
+    .expect_err("successful join must reset room password brute-force counter");
+    assert!(
+        err.to_string().contains("Authentication failed"),
+        "counter should be reset so next wrong password attempt is checked normally: {err}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_lockout() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(&pool));
+    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
+    room_service.set_brute_force_service(BruteForceProtection::in_memory(
+        "test:room-password-preissued".to_string(),
+    ));
+    let room_service = Arc::new(room_service);
+
+    let owner = user_repo
+        .create(&make_user("preissued_room_owner"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("preissued_room_member"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Preissued Protected Room".to_string(),
+            "Room with password".to_string(),
+            owner.id,
+            Some("CorrectPassword123".to_string()),
+            None,
         )
         .await
-        .expect_err("successful join must reset room password brute-force counter");
+        .unwrap();
+
+    let client_api = make_client_api(user_service, room_service.clone()).with_rate_limiter(
+        synctv_core::service::rate_limit::RateLimiter::local_only(
+            "api:room-password-preissued:".to_string(),
+        ),
+    );
+    let room_public_id = synctv_api::PublicIdCodec::default_for_tests()
+        .encode_room_id(room.id)
+        .unwrap();
+    let client_ip = "192.168.1.102";
+
+    let mut logins = Vec::new();
+    for _attempt in 0..6 {
+        logins.push(
+            start_tampered_opaque_room_login(
+                &client_api,
+                &member.id,
+                &room_public_id,
+                "CorrectPassword123",
+                client_ip,
+            )
+            .await
+            .expect("preissued OPAQUE login start should pass before failures are recorded"),
+        );
+    }
+
+    for attempt in 0..5 {
+        let err = finish_opaque_room_login(&client_api, &member.id, logins.remove(0), client_ip)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Authentication failed"),
+            "wrong password finish {attempt} should count as an authentication failure: {err}"
+        );
+    }
+
+    let err = finish_opaque_room_login(&client_api, &member.id, logins.remove(0), client_ip)
+        .await
+        .expect_err("preissued session must be blocked after room password lockout");
+    let msg = err.to_string();
     assert!(
-        err.to_string().contains("Invalid password"),
-        "counter should be reset so next wrong password attempt is checked normally: {err}"
+        msg.contains("Too many failed") || msg.contains("locked") || msg.contains("try again"),
+        "6th preissued finish should be blocked by room password brute-force protection: {msg}"
+    );
+    assert!(
+        room_service
+            .get_member(&room.id, &member.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "locked out preissued finish must not join the room"
     );
 }

@@ -226,6 +226,7 @@ pub struct ChatImageUploadSession {
 pub struct ChatMessageWithImages {
     pub message: ChatMessage,
     pub images: Vec<ChatImage>,
+    pub reactions: Vec<ChatReactionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,18 +269,67 @@ pub struct DeleteChatMessage {
     pub expected_version: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChatReaction {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub message_created_at: DateTime<Utc>,
+    pub user_id: UserId,
+    pub reaction_key: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChatReactionSummary {
+    pub key: String,
+    pub count: i64,
+    pub reacted_by_me: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChatReactionUser {
+    pub user_id: UserId,
+    pub reaction_key: String,
+    pub reacted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ChatReactionUsersCursor {
+    pub reacted_at: DateTime<Utc>,
+    pub user_id: UserId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatReactionUsersPage {
+    pub users: Vec<ChatReactionUser>,
+    pub next_cursor: Option<ChatReactionUsersCursor>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetChatReaction {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub user_id: UserId,
+    pub reaction_key: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i16)]
 pub enum ChatEventKind {
     Created = 1,
     Edited = 2,
     Deleted = 3,
+    ReactionsChanged = 4,
 }
 
 sqlx_i16_enum!(ChatEventKind, "Invalid chat event kind", {
     Created = 1,
     Edited = 2,
     Deleted = 3,
+    ReactionsChanged = 4,
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

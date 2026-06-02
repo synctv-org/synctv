@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{Executor, PgPool, Postgres, Row, Transaction};
 
 use crate::{
     models::{
         ChatEventKind, ChatHistoryCursor, ChatImage, ChatMessage, ChatMessageContext,
         ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus, ChatMessageWithImages,
-        ChatPlaybackMessagesQuery, ChatReadState, NewChatImage, RoomId, UserId,
+        ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor,
+        ChatReactionUsersPage, ChatReadState, NewChatImage, RoomId, SetChatReaction, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -136,6 +137,7 @@ impl ChatRepository {
             message: ChatMessageWithImages {
                 message: inserted,
                 images: inserted_images,
+                reactions: Vec::new(),
             },
             occurred_at,
         };
@@ -171,6 +173,190 @@ impl ChatRepository {
         let logged = self.insert_event_in_tx(&mut tx, event).await?;
         tx.commit().await?;
         Ok(logged)
+    }
+
+    pub async fn set_reaction_with_event(
+        &self,
+        request: &SetChatReaction,
+        event_id: &str,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<ChatMessageEventLog> {
+        let mut tx = self.pool.begin().await?;
+        let message = sqlx::query_as::<_, ChatMessage>(
+            r"
+            SELECT id, room_id, user_id, client_message_id, content, message_type,
+                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
+                   deleted_at, deleted_by, delete_reason, created_at
+            FROM chat_messages
+            WHERE room_id = $1 AND id = $2
+            FOR UPDATE
+            ",
+        )
+        .bind(request.room_id.as_i64())
+        .bind(request.message_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+
+        if message.status == ChatMessageStatus::Deleted {
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+
+        if request.enabled {
+            sqlx::query(
+                r"
+                INSERT INTO chat_message_reactions (
+                    room_id, message_id, message_created_at, user_id, reaction_key
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (room_id, message_id, message_created_at, user_id, reaction_key)
+                DO UPDATE SET updated_at = NOW()
+                ",
+            )
+            .bind(request.room_id.as_i64())
+            .bind(message.id)
+            .bind(message.created_at)
+            .bind(request.user_id.as_i64())
+            .bind(&request.reaction_key)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                r"
+                DELETE FROM chat_message_reactions
+                WHERE room_id = $1
+                  AND message_id = $2
+                  AND message_created_at = $3
+                  AND user_id = $4
+                  AND reaction_key = $5
+                ",
+            )
+            .bind(request.room_id.as_i64())
+            .bind(message.id)
+            .bind(message.created_at)
+            .bind(request.user_id.as_i64())
+            .bind(&request.reaction_key)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let images = self
+            .images_for_message_in_tx(&mut tx, message.id, message.created_at)
+            .await?;
+        let mut reactions = self
+            .reaction_summaries_for_messages_with_executor(
+                &mut *tx,
+                std::slice::from_ref(&message),
+                Some(&request.user_id),
+            )
+            .await?
+            .remove(&(message.id, message.created_at))
+            .unwrap_or_default();
+        reactions.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        let event = ChatMessageEvent {
+            event_id: event_id.to_string(),
+            room_id: request.room_id,
+            actor_user_id: request.user_id,
+            kind: ChatEventKind::ReactionsChanged,
+            message: ChatMessageWithImages {
+                message,
+                images,
+                reactions,
+            },
+            occurred_at,
+        };
+        let logged = self.insert_event_in_tx(&mut tx, &event).await?;
+        tx.commit().await?;
+        Ok(logged)
+    }
+
+    pub async fn list_reaction_users(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        reaction_key: &str,
+        cursor: Option<ChatReactionUsersCursor>,
+        limit: i32,
+    ) -> Result<ChatReactionUsersPage> {
+        let limit = limit.clamp(1, 100);
+        let message = self
+            .get_by_room_and_id(room_id, message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if message.status == ChatMessageStatus::Deleted {
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)::bigint
+            FROM chat_message_reactions
+            WHERE room_id = $1
+              AND message_id = $2
+              AND message_created_at = $3
+              AND reaction_key = $4
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(message.id)
+        .bind(message.created_at)
+        .bind(reaction_key)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let fetch_limit = limit.saturating_add(1);
+        let cursor_reacted_at = cursor.map(|cursor| cursor.reacted_at);
+        let cursor_user_id = cursor.map(|cursor| cursor.user_id.as_i64());
+        let rows = sqlx::query_as::<_, ChatReactionUser>(
+            r"
+            SELECT
+                user_id,
+                reaction_key,
+                updated_at AS reacted_at
+            FROM chat_message_reactions
+            WHERE room_id = $1
+              AND message_id = $2
+              AND message_created_at = $3
+              AND reaction_key = $4
+              AND (
+                  $5::timestamptz IS NULL
+                  OR (updated_at, user_id) < ($5::timestamptz, $6::bigint)
+              )
+            ORDER BY updated_at DESC, user_id DESC
+            LIMIT $7
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(message.id)
+        .bind(message.created_at)
+        .bind(reaction_key)
+        .bind(cursor_reacted_at)
+        .bind(cursor_user_id)
+        .bind(i64::from(fetch_limit))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut users = rows;
+        let next_cursor = if users.len() > usize::try_from(limit).unwrap_or(usize::MAX) {
+            users.pop();
+            users.last().map(|last| ChatReactionUsersCursor {
+                reacted_at: last.reacted_at,
+                user_id: last.user_id,
+            })
+        } else {
+            None
+        };
+
+        Ok(ChatReactionUsersPage {
+            users,
+            next_cursor,
+            total,
+        })
     }
 
     pub async fn get_event_by_id(
@@ -595,6 +781,18 @@ event_sequence
         limit: i32,
         include_deleted: bool,
     ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
+        self.list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, None)
+            .await
+    }
+
+    pub async fn list_by_room_cursor_for_viewer(
+        &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
         let limit = limit.clamp(1, 100);
         let messages = if let Some(cursor) = cursor {
             sqlx::query_as_unchecked!(
@@ -651,7 +849,9 @@ limit
             None
         };
 
-        let messages = self.attach_images_to_messages(messages).await?;
+        let messages = self
+            .attach_images_and_reactions_to_messages(messages, viewer_user_id)
+            .await?;
 
         Ok((messages, next_cursor))
     }
@@ -659,6 +859,14 @@ limit
     pub async fn list_playback_messages(
         &self,
         query: &ChatPlaybackMessagesQuery,
+    ) -> Result<Vec<ChatMessageWithImages>> {
+        self.list_playback_messages_for_viewer(query, None).await
+    }
+
+    pub async fn list_playback_messages_for_viewer(
+        &self,
+        query: &ChatPlaybackMessagesQuery,
+        viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatMessageWithImages>> {
         let limit = query.limit.clamp(1, 500);
         let start_seconds = (query.position_seconds - query.before_seconds).max(0.0);
@@ -701,7 +909,8 @@ limit
             .fetch_all(&self.pool)
             .await?;
 
-        self.attach_images_to_messages(messages).await
+        self.attach_images_and_reactions_to_messages(messages, viewer_user_id)
+            .await
     }
 
     pub async fn list_context_around_message(
@@ -711,6 +920,26 @@ limit
         before_limit: i32,
         after_limit: i32,
         include_deleted: bool,
+    ) -> Result<Option<ChatMessageContext>> {
+        self.list_context_around_message_for_viewer(
+            room_id,
+            message_id,
+            before_limit,
+            after_limit,
+            include_deleted,
+            None,
+        )
+        .await
+    }
+
+    pub async fn list_context_around_message_for_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        before_limit: i32,
+        after_limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
     ) -> Result<Option<ChatMessageContext>> {
         let Some(anchor) = self.get_by_room_and_id(room_id, message_id).await? else {
             return Ok(None);
@@ -769,15 +998,19 @@ after_limit
         .await?;
 
         let anchor = self
-            .attach_images_to_messages(vec![anchor])
+            .attach_images_and_reactions_to_messages(vec![anchor], viewer_user_id)
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| Error::Internal("Chat context anchor disappeared".to_string()))?;
         Ok(Some(ChatMessageContext {
-            before: self.attach_images_to_messages(before).await?,
+            before: self
+                .attach_images_and_reactions_to_messages(before, viewer_user_id)
+                .await?,
             anchor,
-            after: self.attach_images_to_messages(after).await?,
+            after: self
+                .attach_images_and_reactions_to_messages(after, viewer_user_id)
+                .await?,
         }))
     }
 
@@ -827,6 +1060,16 @@ message_id
         room_id: &RoomId,
         message_id: i64,
     ) -> Result<Option<ChatMessageWithImages>> {
+        self.get_with_images_by_room_and_id_for_viewer(room_id, message_id, None)
+            .await
+    }
+
+    pub async fn get_with_images_by_room_and_id_for_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<Option<ChatMessageWithImages>> {
         let Some(message) = self.get_by_room_and_id(room_id, message_id).await? else {
             return Ok(None);
         };
@@ -836,7 +1079,16 @@ message_id
             self.images_for_message(message.id, message.created_at)
                 .await?
         };
-        Ok(Some(ChatMessageWithImages { message, images }))
+        let reactions = self
+            .reaction_summaries_for_messages(std::slice::from_ref(&message), viewer_user_id)
+            .await?
+            .remove(&(message.id, message.created_at))
+            .unwrap_or_default();
+        Ok(Some(ChatMessageWithImages {
+            message,
+            images,
+            reactions,
+        }))
     }
 
     pub async fn edit(
@@ -888,7 +1140,11 @@ message_id
         let images = self
             .images_for_message(message.id, message.created_at)
             .await?;
-        Ok(Some(ChatMessageWithImages { message, images }))
+        Ok(Some(ChatMessageWithImages {
+            message,
+            images,
+            reactions: Vec::new(),
+        }))
     }
 
     pub async fn edit_with_event(
@@ -971,7 +1227,11 @@ message_id
             room_id: *request.room_id,
             actor_user_id: *request.actor_user_id,
             kind: ChatEventKind::Edited,
-            message: ChatMessageWithImages { message, images },
+            message: ChatMessageWithImages {
+                message,
+                images,
+                reactions: Vec::new(),
+            },
             occurred_at: request.occurred_at,
         };
         let logged = self.insert_event_in_tx(&mut tx, &event).await?;
@@ -1038,6 +1298,7 @@ message_id
         Ok(Some(ChatMessageWithImages {
             message,
             images: Vec::new(),
+            reactions: Vec::new(),
         }))
     }
 
@@ -1118,6 +1379,7 @@ message_id
             message: ChatMessageWithImages {
                 message,
                 images: Vec::new(),
+                reactions: Vec::new(),
             },
             occurred_at: request.occurred_at,
         };
@@ -1611,7 +1873,11 @@ created_at
             .images_for_message_in_tx(tx, message.id, message.created_at)
             .await?;
 
-        Ok(Some(ChatMessageWithImages { message, images }))
+        Ok(Some(ChatMessageWithImages {
+            message,
+            images,
+            reactions: Vec::new(),
+        }))
     }
 
     async fn images_for_message_in_tx(
@@ -1741,9 +2007,10 @@ r"
         Ok(images)
     }
 
-    async fn attach_images_to_messages(
+    async fn attach_images_and_reactions_to_messages(
         &self,
         mut messages: Vec<ChatMessage>,
+        viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatMessageWithImages>> {
         let visible_image_messages = messages
             .iter()
@@ -1758,16 +2025,89 @@ r"
                 .or_default()
                 .push(image);
         }
+        let mut reaction_grouped = self
+            .reaction_summaries_for_messages(&messages, viewer_user_id)
+            .await?;
 
         Ok(messages
             .drain(..)
             .map(|message| {
-                let images = grouped
-                    .remove(&(message.id, message.created_at))
-                    .unwrap_or_default();
-                ChatMessageWithImages { message, images }
+                let key = (message.id, message.created_at);
+                let images = grouped.remove(&key).unwrap_or_default();
+                let reactions = reaction_grouped.remove(&key).unwrap_or_default();
+                ChatMessageWithImages {
+                    message,
+                    images,
+                    reactions,
+                }
             })
             .collect())
+    }
+
+    async fn reaction_summaries_for_messages(
+        &self,
+        messages: &[ChatMessage],
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<std::collections::HashMap<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>> {
+        self.reaction_summaries_for_messages_with_executor(&self.pool, messages, viewer_user_id)
+            .await
+    }
+
+    async fn reaction_summaries_for_messages_with_executor<'e, E>(
+        &self,
+        executor: E,
+        messages: &[ChatMessage],
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<std::collections::HashMap<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>>
+    where
+        E: Executor<'e, Database = Postgres>,
+    {
+        if messages.is_empty() {
+            return Ok(Default::default());
+        }
+        let ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+        let created_ats: Vec<DateTime<Utc>> =
+            messages.iter().map(|message| message.created_at).collect();
+        let viewer_id = viewer_user_id.map(UserId::as_i64);
+        let rows = sqlx::query(
+            r"
+            SELECT
+                r.message_id,
+                r.message_created_at,
+                r.reaction_key AS key,
+                COUNT(*)::bigint AS count,
+                COALESCE(BOOL_OR($3::bigint IS NOT NULL AND r.user_id = $3), FALSE) AS reacted_by_me
+            FROM chat_message_reactions r
+            JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)
+              ON r.message_id = m.id AND r.message_created_at = m.created_at
+            GROUP BY r.message_id, r.message_created_at, r.reaction_key
+            ORDER BY count DESC, r.reaction_key ASC
+            ",
+        )
+        .bind(&ids)
+        .bind(&created_ats)
+        .bind(viewer_id)
+        .fetch_all(executor)
+        .await?;
+
+        let mut grouped =
+            std::collections::HashMap::<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>::new();
+        for row in rows {
+            let message_id: i64 = row.try_get("message_id")?;
+            let message_created_at: DateTime<Utc> = row.try_get("message_created_at")?;
+            let key: String = row.try_get("key")?;
+            let count: i64 = row.try_get("count")?;
+            let reacted_by_me: bool = row.try_get("reacted_by_me")?;
+            grouped
+                .entry((message_id, message_created_at))
+                .or_default()
+                .push(ChatReactionSummary {
+                    key,
+                    count,
+                    reacted_by_me,
+                });
+        }
+        Ok(grouped)
     }
 }
 

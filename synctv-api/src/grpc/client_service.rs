@@ -51,27 +51,28 @@ use crate::proto::client::{
     GetUserAvatarObjectRequest, GetUserPreferencesRequest, GetUserPreferencesResponse,
     GetVideoCoverObjectRequest, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
     KickMemberResponse, KickRoomStreamRequest, KickRoomStreamResponse, LeaveRoomRequest,
-    LeaveRoomResponse, ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest,
-    ListPasskeysResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
-    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomJoinReviewsRequest,
-    ListRoomJoinReviewsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
-    ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
-    MarkChatReadRequest, Media, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
-    MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
+    LeaveRoomResponse, ListChatReactionUsersRequest, ListChatReactionUsersResponse,
+    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
+    ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
+    ListPlaylistsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
+    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MarkChatReadRequest, Media,
+    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
+    PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
+    RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
     RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendChatMessageRequest, ServerMessage,
-    SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest,
-    StartEmailBindResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
-    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaquePasswordResetRequest,
-    StartOpaquePasswordResetResponse, StartOpaquePasswordUpdateRequest,
-    StartOpaquePasswordUpdateResponse, StartOpaqueRegistrationRequest,
-    StartOpaqueRegistrationResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
-    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
-    StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
+    SetChatReactionRequest, SetChatReactionResponse, SetRoomPasswordResponse, SetUsernameRequest,
+    SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse, StartMfaPasskeyRequest,
+    StartMfaPasskeyResponse, StartOpaqueLoginRequest, StartOpaqueLoginResponse,
+    StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse,
+    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
+    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
     StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
     StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
@@ -2716,6 +2717,46 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |client_api, actor| async move {
                     client_api.delete_chat_message_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn set_chat_reaction(
+        &self,
+        request: Request<SetChatReactionRequest>,
+    ) -> Result<Response<SetChatReactionResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Write,
+                move |client_api, actor| async move {
+                    client_api.set_chat_reaction_for_actor(&actor, req).await
+                },
+            )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_chat_reaction_users(
+        &self,
+        request: Request<ListChatReactionUsersRequest>,
+    ) -> Result<Response<ListChatReactionUsersResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
+                EndpointRateLimitCategory::Read,
+                move |client_api, actor| async move {
+                    client_api
+                        .list_chat_reaction_users_for_actor(&actor, req)
+                        .await
                 },
             )
             .await?;

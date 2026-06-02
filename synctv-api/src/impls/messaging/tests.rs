@@ -86,6 +86,7 @@ fn chat_event_with_content(
                 created_at: now,
             },
             images: Vec::new(),
+            reactions: Vec::new(),
         },
         occurred_at: now,
     }
@@ -5735,6 +5736,7 @@ fn test_durable_chat_message_event_conversion() {
                     created_at,
                 },
                 images: Vec::new(),
+                reactions: Vec::new(),
             },
             occurred_at: created_at,
         },

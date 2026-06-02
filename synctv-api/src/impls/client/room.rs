@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use synctv_core::models::{
     ChatImageBlob, ChatMessageEvent, ChatMessageType, ChatMessageWithImages,
     ChatPlaybackMessagesQuery, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
-    FileUploadSession, MarkChatRead, NewChatImage, SendChatMessage, UserId,
+    FileUploadSession, MarkChatRead, NewChatImage, SendChatMessage, SetChatReaction, UserId,
 };
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
@@ -150,6 +150,21 @@ fn chat_message_to_proto(
         .deleted_by
         .and_then(|id| api.public_id_codec.encode_user_id(id).ok())
         .unwrap_or_default();
+    let reactions = message
+        .reactions
+        .iter()
+        .map(|reaction| crate::proto::client::ChatReactionSummary {
+            key: reaction.key.clone(),
+            count: reaction.count,
+            reacted_by_me: reaction.reacted_by_me,
+        })
+        .collect::<Vec<_>>();
+    let reaction_count = reactions
+        .iter()
+        .map(|reaction| reaction.count)
+        .sum::<i64>()
+        .try_into()
+        .unwrap_or(i32::MAX);
     crate::proto::client::ChatMessageReceive {
         id: msg.id.to_string(),
         room_id,
@@ -187,6 +202,8 @@ fn chat_message_to_proto(
         ),
         playback_position_seconds:
             crate::impls::messaging::chat_playback_position_seconds_from_metadata(&msg.metadata),
+        reactions,
+        reaction_count,
     }
 }
 
@@ -459,6 +476,7 @@ fn websocket_ticket_service_unavailable_error() -> ApiError {
 }
 
 type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
+type ChatReactionUsersCursor = (chrono::DateTime<chrono::Utc>, UserId);
 
 fn build_get_chat_history_request(
     req: &crate::proto::client::GetChatHistoryRequest,
@@ -475,6 +493,29 @@ fn build_get_chat_history_request(
             .parse::<i64>()
             .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
         Some((ts, id))
+    } else {
+        return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
+    };
+
+    Ok((limit, cursor))
+}
+
+fn build_list_chat_reaction_users_request(
+    req: &crate::proto::client::ListChatReactionUsersRequest,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<(i32, Option<ChatReactionUsersCursor>), ApiError> {
+    crate::impls::validate_proto_request(req)?;
+
+    let limit = if req.limit > 0 { req.limit } else { 50 };
+    let cursor = if req.cursor.is_empty() {
+        None
+    } else if let Some((ts_str, user_id)) = req.cursor.split_once('|') {
+        let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
+            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+        let user_id = public_id_codec
+            .decode_user_id(user_id)
+            .map_err(ApiError::InvalidInput)?;
+        Some((ts, user_id))
     } else {
         return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
     };
@@ -1825,6 +1866,7 @@ impl ClientApiImpl {
     async fn get_chat_history_for_room_id(
         &self,
         rid: &synctv_core::models::RoomId,
+        viewer_user_id: Option<UserId>,
         req: crate::proto::client::GetChatHistoryRequest,
     ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
         let (limit, cursor) = build_get_chat_history_request(&req)?;
@@ -1835,7 +1877,7 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let (messages, next) = chat_service
-            .get_history_with_images(rid, cursor, limit, true)
+            .get_history_with_images_for_viewer(rid, cursor, limit, true, viewer_user_id.as_ref())
             .await
             .map_err(ApiError::from)?;
         let next_cursor_str = next.map(|cursor| {
@@ -2066,6 +2108,114 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn set_chat_reaction_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::SetChatReactionRequest,
+    ) -> Result<crate::proto::client::SetChatReactionResponse, ApiError> {
+        let user_id = actor.require_user_id()?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let outcome = chat_service
+            .set_reaction_event_outcome(SetChatReaction {
+                room_id: actor.room_id(),
+                message_id: parse_chat_message_id(&req.message_id)?,
+                user_id,
+                reaction_key: req.reaction_key,
+                enabled: req.enabled,
+            })
+            .await
+            .map_err(ApiError::from)?;
+        self.broadcast_chat_event(&outcome.event);
+        Ok(crate::proto::client::SetChatReactionResponse {
+            event: Some(chat_event_to_proto(self, outcome.event).await),
+        })
+    }
+
+    pub async fn list_chat_reaction_users_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::ListChatReactionUsersRequest,
+    ) -> Result<crate::proto::client::ListChatReactionUsersResponse, ApiError> {
+        let user_id = actor.require_user_id()?;
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
+        )
+        .await?;
+        let (limit, cursor) = build_list_chat_reaction_users_request(&req, &self.public_id_codec)?;
+        let cursor =
+            cursor.map(
+                |(reacted_at, user_id)| synctv_core::models::ChatReactionUsersCursor {
+                    reacted_at,
+                    user_id,
+                },
+            );
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let page = chat_service
+            .list_reaction_users(
+                &actor.room_id(),
+                parse_chat_message_id(&req.message_id)?,
+                &user_id,
+                &req.reaction_key,
+                cursor,
+                limit,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        let user_ids = page
+            .users
+            .iter()
+            .map(|reaction_user| reaction_user.user_id)
+            .collect::<Vec<_>>();
+        let username_map = self
+            .user_service
+            .get_usernames(&user_ids)
+            .await
+            .unwrap_or_default();
+        let users = page
+            .users
+            .into_iter()
+            .map(|reaction_user| {
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(reaction_user.user_id)
+                    .expect("reaction user id must be encodable");
+                let username = username_map
+                    .get(&reaction_user.user_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("user_{user_id}"));
+                crate::proto::client::ChatReactionUser {
+                    user_id,
+                    username,
+                    reacted_at: reaction_user.reacted_at.timestamp(),
+                }
+            })
+            .collect();
+        let next_cursor = page.next_cursor.map(|cursor| {
+            let user_id = self
+                .public_id_codec
+                .encode_user_id(cursor.user_id)
+                .expect("reaction cursor user id must be encodable");
+            format!(
+                "{}|{}",
+                synctv_common::time::format_datetime_rfc3339(cursor.reacted_at),
+                user_id
+            )
+        });
+
+        Ok(crate::proto::client::ListChatReactionUsersResponse {
+            users,
+            next_cursor: next_cursor.unwrap_or_default(),
+            total: page.total,
+        })
+    }
+
     pub async fn mark_chat_read_for_actor(
         &self,
         actor: &RoomActor,
@@ -2127,7 +2277,7 @@ impl ClientApiImpl {
             synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
         )
         .await?;
-        self.get_chat_history_for_room_id(&actor.room_id(), req)
+        self.get_chat_history_for_room_id(&actor.room_id(), actor.user_id(), req)
             .await
     }
 
@@ -2146,10 +2296,11 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let message = chat_service
-            .get_message_with_images(
+            .get_message_with_images_for_viewer(
                 &actor.room_id(),
                 parse_chat_message_id(&req.message_id)?,
                 req.include_deleted,
+                actor.user_id().as_ref(),
             )
             .await
             .map_err(ApiError::from)?;
@@ -2174,12 +2325,13 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let context = chat_service
-            .get_message_context(
+            .get_message_context_for_viewer(
                 &actor.room_id(),
                 parse_chat_message_id(&req.message_id)?,
                 positive_i32(req.before_limit, 20).min(50),
                 positive_i32(req.after_limit, 20).min(50),
                 req.include_deleted,
+                actor.user_id().as_ref(),
             )
             .await
             .map_err(ApiError::from)?;
@@ -2228,17 +2380,20 @@ impl ClientApiImpl {
         };
         let limit = positive_i32(req.limit, 200).min(500);
         let messages = chat_service
-            .get_playback_messages_with_images(ChatPlaybackMessagesQuery {
-                room_id: actor.room_id(),
-                media_id,
-                playlist_id,
-                target_hash,
-                position_seconds: req.position_seconds,
-                before_seconds,
-                after_seconds,
-                limit,
-                include_deleted: req.include_deleted,
-            })
+            .get_playback_messages_with_images_for_viewer(
+                ChatPlaybackMessagesQuery {
+                    room_id: actor.room_id(),
+                    media_id,
+                    playlist_id,
+                    target_hash,
+                    position_seconds: req.position_seconds,
+                    before_seconds,
+                    after_seconds,
+                    limit,
+                    include_deleted: req.include_deleted,
+                },
+                actor.user_id().as_ref(),
+            )
             .await
             .map_err(ApiError::from)?;
 

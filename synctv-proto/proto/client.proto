@@ -124,6 +124,8 @@ service RoomService {
   rpc GetChatMessage(GetChatMessageRequest) returns (GetChatMessageResponse);
   rpc GetChatMessageContext(GetChatMessageContextRequest) returns (GetChatMessageContextResponse);
   rpc GetChatPlaybackMessages(GetChatPlaybackMessagesRequest) returns (GetChatPlaybackMessagesResponse);
+  rpc SetChatReaction(SetChatReactionRequest) returns (SetChatReactionResponse);
+  rpc ListChatReactionUsers(ListChatReactionUsersRequest) returns (ListChatReactionUsersResponse);
   rpc MarkChatRead(MarkChatReadRequest) returns (ChatReadStateResponse);
   rpc GetChatReadState(GetChatReadStateRequest) returns (ChatReadStateResponse);
 
@@ -2325,6 +2327,20 @@ message ChatMessageReceive {
   bytes playback_target = 20;
   string playback_target_hash = 21;
   optional double playback_position_seconds = 22;
+  repeated ChatReactionSummary reactions = 23;
+  int32 reaction_count = 24;
+}
+
+message ChatReactionSummary {
+  string key = 1;
+  int64 count = 2;
+  bool reacted_by_me = 3;
+}
+
+message ChatReactionUser {
+  string user_id = 1;
+  string username = 2;
+  int64 reacted_at = 3;
 }
 
 enum ChatMessageStatus {
@@ -2339,6 +2355,7 @@ enum ChatMessageEventKind {
   CHAT_MESSAGE_EVENT_KIND_CREATED = 1;
   CHAT_MESSAGE_EVENT_KIND_EDITED = 2;
   CHAT_MESSAGE_EVENT_KIND_DELETED = 3;
+  CHAT_MESSAGE_EVENT_KIND_REACTIONS_CHANGED = 4;
 }
 
 message ChatImage {
@@ -2806,6 +2823,41 @@ message DeleteChatMessageRequest {
   int64 expected_version = 2;
   string reason = 3;
   string client_operation_id = 4; // Client-generated idempotency key for delete operations.
+}
+
+message SetChatReactionRequest {
+  string message_id = 1;
+  string reaction_key = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  bool enabled = 3;
+}
+
+message SetChatReactionResponse {
+  ChatMessageEvent event = 1;
+}
+
+message ListChatReactionUsersRequest {
+  option (buf.validate.message).cel = {
+    id: "list_chat_reaction_users.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+
+  string message_id = 1;
+  string reaction_key = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  int32 limit = 3;
+  string cursor = 4;
+}
+
+message ListChatReactionUsersResponse {
+  repeated ChatReactionUser users = 1;
+  string next_cursor = 2;
+  int64 total = 3;
 }
 
 message ChatMessageEventResponse {

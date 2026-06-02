@@ -49,12 +49,13 @@ use crate::proto::client::{
     GetChatReadStateRequest, GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest,
     GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse,
     GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, JoinRoomResponse, KickRoomStreamRequest,
-    KickRoomStreamResponse, LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    KickRoomStreamResponse, LeaveRoomResponse, ListChatReactionUsersRequest,
+    ListChatReactionUsersResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
     ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
     ListRoomsResponse, MarkChatReadRequest, MoveMediaRequest, MoveMediaResponse,
     MovePlaylistResponse, ResetRoomSettingsResponse, SendChatMessageRequest,
-    SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
+    SetChatReactionRequest, SetChatReactionResponse, SetRoomPasswordResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdatePlaybackRequest, UpdatePlaylistCoverRequest,
@@ -90,6 +91,13 @@ pub type MarkChatReadBody = MarkChatReadRequest;
 pub struct ChatMessagePath {
     pub room_id: String,
     pub message_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatReactionPath {
+    pub room_id: String,
+    pub message_id: String,
+    pub reaction_key: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -3279,6 +3287,151 @@ pub async fn delete_chat_message(
         EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.delete_chat_message_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        put,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID"),
+            ("reaction_key" = String, Path, description = "Reaction key, for example like or an emoji")
+        ),
+        responses(
+            (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn set_chat_reaction(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatReactionPath>,
+) -> AppResult<Json<SetChatReactionResponse>> {
+    let req = SetChatReactionRequest {
+        message_id: path.message_id,
+        reaction_key: path.reaction_key,
+        enabled: true,
+    };
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        path.room_id,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api.set_chat_reaction_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID"),
+            ("reaction_key" = String, Path, description = "Reaction key, for example like or an emoji")
+        ),
+        responses(
+            (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn clear_chat_reaction(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatReactionPath>,
+) -> AppResult<Json<SetChatReactionResponse>> {
+    let req = SetChatReactionRequest {
+        message_id: path.message_id,
+        reaction_key: path.reaction_key,
+        enabled: false,
+    };
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        path.room_id,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api.set_chat_reaction_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}/users",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID"),
+            ("reaction_key" = String, Path, description = "Reaction key, for example like or an emoji"),
+            ListChatReactionUsersRequest
+        ),
+        responses(
+            (status = 200, description = "Users who reacted to the chat message", body = ListChatReactionUsersResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Message not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn list_chat_reaction_users(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatReactionPath>,
+    ProtoQuery(mut req): ProtoQuery<ListChatReactionUsersRequest>,
+) -> AppResult<Json<ListChatReactionUsersResponse>> {
+    req.message_id = path.message_id;
+    req.reaction_key = path.reaction_key;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        path.room_id,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api
+                .list_chat_reaction_users_for_actor(&actor, req)
+                .await
         },
     )
     .await?;

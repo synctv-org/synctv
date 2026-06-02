@@ -154,6 +154,7 @@ mod tests {
             message: ChatMessageWithImages {
                 message,
                 images: Vec::new(),
+                reactions: Vec::new(),
             },
             occurred_at,
         }

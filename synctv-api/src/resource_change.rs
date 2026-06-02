@@ -214,6 +214,7 @@ mod tests {
                     created_at: now,
                 },
                 images: Vec::new(),
+                reactions: Vec::new(),
             },
             occurred_at: now,
         }

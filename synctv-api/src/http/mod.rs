@@ -735,6 +735,10 @@ fn register_write_routes(_state: &AppState) -> Router<AppState> {
             axum::routing::delete(room::delete_chat_message),
         )
         .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
+            axum::routing::put(room::set_chat_reaction).delete(room::clear_chat_reaction),
+        )
+        .route(
             "/api/rooms/{room_id}/chat/read-state",
             post(room::mark_chat_read),
         );
@@ -777,6 +781,10 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/chat/messages/{message_id}/context",
             get(room::get_chat_message_context),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}/users",
+            get(room::list_chat_reaction_users),
         )
         .route(
             "/api/rooms/{room_id}/chat/read-state",
@@ -2377,6 +2385,21 @@ mod tests {
                 "DELETE",
                 "/api/user/passkeys/Y3JlZGVudGlhbA",
                 Some(r#"{"verification_id":"verification-id"}"#),
+            ),
+            (
+                "PUT",
+                "/api/rooms/room_123/chat/messages/42/reactions/like",
+                None,
+            ),
+            (
+                "DELETE",
+                "/api/rooms/room_123/chat/messages/42/reactions/like",
+                None,
+            ),
+            (
+                "GET",
+                "/api/rooms/room_123/chat/messages/42/reactions/like/users",
+                None,
             ),
         ] {
             let mut builder = Request::builder().method(method).uri(uri);

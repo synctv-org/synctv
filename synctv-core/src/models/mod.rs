@@ -135,9 +135,10 @@ pub use chat::{
     ChatEventKind, ChatHistoryCursor, ChatImage, ChatImageBlob, ChatImageObject,
     ChatImageOwnershipProofRange, ChatImageUploadSession, ChatMessage, ChatMessageContext,
     ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus, ChatMessageType,
-    ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReadState, ChatReadStateWithUnread,
-    CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage, MarkChatRead, NewChatImage,
-    SendChatMessage, SendChatRequest,
+    ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary,
+    ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
+    ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
+    MarkChatRead, NewChatImage, SendChatMessage, SendChatRequest, SetChatReaction,
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{

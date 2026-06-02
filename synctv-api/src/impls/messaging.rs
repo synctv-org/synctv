@@ -4614,6 +4614,8 @@ fn realtime_event_to_server_messages(
                 playback_target: Vec::new(),
                 playback_target_hash: String::new(),
                 playback_position_seconds: None,
+                reactions: Vec::new(),
+                reaction_count: 0,
             })),
         }],
         RealtimeEvent::ChatMessageEvent { .. } => Vec::new(),
@@ -4947,6 +4949,9 @@ pub(crate) fn chat_event_kind_to_proto(
         ChatEventKind::Created => crate::proto::client::ChatMessageEventKind::Created,
         ChatEventKind::Edited => crate::proto::client::ChatMessageEventKind::Edited,
         ChatEventKind::Deleted => crate::proto::client::ChatMessageEventKind::Deleted,
+        ChatEventKind::ReactionsChanged => {
+            crate::proto::client::ChatMessageEventKind::ReactionsChanged
+        }
     }
 }
 
@@ -5152,6 +5157,22 @@ pub(crate) fn chat_message_event_to_proto(
         .deleted_by
         .and_then(|id| public_id_codec.encode_user_id(id).ok())
         .unwrap_or_default();
+    let reactions = event
+        .message
+        .reactions
+        .iter()
+        .map(|reaction| crate::proto::client::ChatReactionSummary {
+            key: reaction.key.clone(),
+            count: reaction.count,
+            reacted_by_me: reaction.reacted_by_me,
+        })
+        .collect::<Vec<_>>();
+    let reaction_count = reactions
+        .iter()
+        .map(|reaction| reaction.count)
+        .sum::<i64>()
+        .try_into()
+        .unwrap_or(i32::MAX);
     crate::proto::client::ChatMessageEvent {
         event_id: event.event_id.clone(),
         room_id: room_id.clone(),
@@ -5195,6 +5216,8 @@ pub(crate) fn chat_message_event_to_proto(
             playback_position_seconds: chat_playback_position_seconds_from_metadata(
                 &message.metadata,
             ),
+            reactions,
+            reaction_count,
         }),
         occurred_at: event.occurred_at.timestamp(),
     }

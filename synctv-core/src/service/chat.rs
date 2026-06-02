@@ -4,9 +4,11 @@
 //! and content filtering.
 
 use chrono::{DateTime, Utc};
+use moka::future::Cache as AsyncCache;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::time::Duration;
 use synctv_common::ExecutionControl;
 use tracing::{debug, error, info, warn};
 
@@ -14,10 +16,11 @@ use crate::{
     models::{
         AuditAction, AuditTargetType, ChatEventKind, ChatHistoryCursor, ChatImage, ChatMessage,
         ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
-        ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReadState,
-        ChatReadStateWithUnread, CreateChatImageUploadSession, CreateFileUploadSession,
-        DeleteChatMessage, EditChatMessage, FileBlob, FileUploadSession, MarkChatRead,
-        NewChatImage, RoomId, SendChatMessage, UserId,
+        ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
+        ChatReactionUsersPage, ChatReadState, ChatReadStateWithUnread,
+        CreateChatImageUploadSession, CreateFileUploadSession, DeleteChatMessage, EditChatMessage,
+        FileBlob, FileUploadSession, MarkChatRead, NewChatImage, RoomId, SendChatMessage,
+        SetChatReaction, UserId,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
@@ -53,6 +56,17 @@ use super::file_storage::{
 /// Used by both the WebSocket handler and the service layer for consistent validation.
 pub const MAX_CHAT_MESSAGE_CHARS: usize = 500;
 pub const MAX_CHAT_IMAGES_PER_MESSAGE: usize = 10;
+const CHAT_REACTION_DETAIL_CACHE_TTL_SECS: u64 = 5;
+const CHAT_REACTION_DETAIL_CACHE_CAPACITY: u64 = 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ChatReactionDetailCacheKey {
+    room_id: RoomId,
+    message_id: i64,
+    reaction_key: String,
+    cursor: Option<ChatReactionUsersCursor>,
+    limit: i32,
+}
 
 /// Chat service for managing chat messages
 #[derive(Clone)]
@@ -68,6 +82,7 @@ pub struct ChatService {
     audit_service: Option<Arc<AuditService>>,
     /// Local room event bus for chat/domain notifications
     notification_service: NotificationService,
+    reaction_detail_cache: AsyncCache<ChatReactionDetailCacheKey, ChatReactionUsersPage>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +145,11 @@ impl ChatService {
             file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service,
             notification_service,
+            reaction_detail_cache: AsyncCache::builder()
+                .max_capacity(CHAT_REACTION_DETAIL_CACHE_CAPACITY)
+                .time_to_live(Duration::from_secs(CHAT_REACTION_DETAIL_CACHE_TTL_SECS))
+                .support_invalidation_closures()
+                .build(),
         }
     }
 
@@ -473,14 +493,35 @@ impl ChatService {
         limit: i32,
         include_deleted: bool,
     ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
+        self.get_history_with_images_for_viewer(room_id, cursor, limit, include_deleted, None)
+            .await
+    }
+
+    pub async fn get_history_with_images_for_viewer(
+        &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
         self.chat_repository
-            .list_by_room_cursor(room_id, cursor, limit, include_deleted)
+            .list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
             .await
     }
 
     pub async fn get_playback_messages_with_images(
         &self,
         query: ChatPlaybackMessagesQuery,
+    ) -> Result<Vec<ChatMessageWithImages>> {
+        self.get_playback_messages_with_images_for_viewer(query, None)
+            .await
+    }
+
+    pub async fn get_playback_messages_with_images_for_viewer(
+        &self,
+        query: ChatPlaybackMessagesQuery,
+        viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatMessageWithImages>> {
         if query.media_id.is_none() && query.playlist_id.is_none() && query.target_hash.is_none() {
             return Err(Error::InvalidInput(
@@ -498,7 +539,9 @@ impl ChatService {
                 "chat playback query time window must be non-negative finite seconds".to_string(),
             ));
         }
-        self.chat_repository.list_playback_messages(&query).await
+        self.chat_repository
+            .list_playback_messages_for_viewer(&query, viewer_user_id)
+            .await
     }
 
     pub async fn get_message_with_images(
@@ -507,9 +550,20 @@ impl ChatService {
         message_id: i64,
         include_deleted: bool,
     ) -> Result<ChatMessageWithImages> {
+        self.get_message_with_images_for_viewer(room_id, message_id, include_deleted, None)
+            .await
+    }
+
+    pub async fn get_message_with_images_for_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatMessageWithImages> {
         let message = self
             .chat_repository
-            .get_with_images_by_room_and_id(room_id, message_id)
+            .get_with_images_by_room_and_id_for_viewer(room_id, message_id, viewer_user_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
         if message.message.status == ChatMessageStatus::Deleted && !include_deleted {
@@ -526,13 +580,34 @@ impl ChatService {
         after_limit: i32,
         include_deleted: bool,
     ) -> Result<ChatMessageContext> {
+        self.get_message_context_for_viewer(
+            room_id,
+            message_id,
+            before_limit,
+            after_limit,
+            include_deleted,
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_message_context_for_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        before_limit: i32,
+        after_limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatMessageContext> {
         self.chat_repository
-            .list_context_around_message(
+            .list_context_around_message_for_viewer(
                 room_id,
                 message_id,
                 before_limit,
                 after_limit,
                 include_deleted,
+                viewer_user_id,
             )
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))
@@ -969,6 +1044,104 @@ impl ChatService {
         .map(|_| true)
     }
 
+    pub async fn set_reaction_event_outcome(
+        &self,
+        request: SetChatReaction,
+    ) -> Result<ChatMessageEventOutcome> {
+        self.permission_service
+            .check_permission(
+                &request.room_id,
+                &request.user_id,
+                crate::models::RoomPermission::VIEW_CHAT_HISTORY,
+            )
+            .await?;
+        validate_chat_reaction_key(&request.reaction_key)?;
+
+        let event = self
+            .chat_repository
+            .set_reaction_with_event(&request, &synctv_common::snanoid!(16), Utc::now())
+            .await?;
+        self.invalidate_reaction_detail_cache(
+            &request.room_id,
+            request.message_id,
+            &request.reaction_key,
+        )
+        .await;
+
+        info!(
+            room_id = %request.room_id,
+            user_id = %request.user_id,
+            message_id = %request.message_id,
+            reaction_key = %request.reaction_key,
+            enabled = request.enabled,
+            event_id = %event.event.event_id,
+            "Chat message reaction changed"
+        );
+
+        Ok(ChatMessageEventOutcome {
+            event: event.event,
+            inserted: true,
+        })
+    }
+
+    pub async fn list_reaction_users(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: &UserId,
+        reaction_key: &str,
+        cursor: Option<ChatReactionUsersCursor>,
+        limit: i32,
+    ) -> Result<ChatReactionUsersPage> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                viewer_user_id,
+                crate::models::RoomPermission::VIEW_CHAT_HISTORY,
+            )
+            .await?;
+        validate_chat_reaction_key(reaction_key)?;
+        let limit = limit.clamp(1, 100);
+        let key = ChatReactionDetailCacheKey {
+            room_id: *room_id,
+            message_id,
+            reaction_key: reaction_key.to_string(),
+            cursor,
+            limit,
+        };
+        if let Some(page) = self.reaction_detail_cache.get(&key).await {
+            return Ok(page);
+        }
+
+        let page = self
+            .chat_repository
+            .list_reaction_users(room_id, message_id, reaction_key, cursor, limit)
+            .await?;
+        self.reaction_detail_cache.insert(key, page.clone()).await;
+        Ok(page)
+    }
+
+    async fn invalidate_reaction_detail_cache(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        reaction_key: &str,
+    ) {
+        let room_id = *room_id;
+        let reaction_key = reaction_key.to_string();
+        if let Err(error) = self
+            .reaction_detail_cache
+            .invalidate_entries_if(move |key, _| {
+                key.room_id == room_id
+                    && key.message_id == message_id
+                    && key.reaction_key == reaction_key
+            })
+        {
+            debug!(%error, "Failed to invalidate chat reaction detail cache");
+        }
+        self.reaction_detail_cache.run_pending_tasks().await;
+    }
+
     /// Cleanup old chat messages for a specific room based on global settings
     ///
     /// # Arguments
@@ -1302,6 +1475,22 @@ fn validate_client_operation_id(client_operation_id: Option<&str>) -> Result<()>
                 "client_operation_id must be between 1 and 128 characters".to_string(),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_chat_reaction_key(key: &str) -> Result<()> {
+    let len = key.chars().count();
+    if !(1..=64).contains(&len) {
+        return Err(Error::InvalidInput(
+            "reaction_key must be between 1 and 64 characters".to_string(),
+        ));
+    }
+    if key.trim() != key || key.chars().any(char::is_control) {
+        return Err(Error::InvalidInput(
+            "reaction_key must not contain control characters or surrounding whitespace"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -1759,6 +1948,7 @@ mod tests {
                 message: ChatMessageWithImages {
                     message: message.clone(),
                     images: Vec::new(),
+                    reactions: Vec::new(),
                 },
                 occurred_at: Utc::now(),
             },
@@ -3102,6 +3292,213 @@ mod tests {
         .expect("delete event count should load")
         .unwrap_or(0);
         assert_eq!(delete_event_count, 1);
+    }
+
+    #[tokio::test]
+    async fn chat_reactions_update_history_and_emit_reaction_events() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let username_cache = UsernameCache::local_only("test:chat:reactions:".to_string(), 100, 60);
+        let service = test_chat_service(&pool, username_cache.clone());
+        let user_repository = Arc::new(UserRepository::new(pool.clone()));
+        let owner = user_repository
+            .create(&User::new(
+                "chat_reaction_owner".to_string(),
+                SignupMethod::Password,
+            ))
+            .await
+            .expect("owner should be created");
+        let member = user_repository
+            .create(&User::new(
+                "chat_reaction_member".to_string(),
+                SignupMethod::Password,
+            ))
+            .await
+            .expect("member should be created");
+        username_cache
+            .set(&owner.id, &owner.username)
+            .await
+            .unwrap();
+        username_cache
+            .set(&member.id, &member.username)
+            .await
+            .unwrap();
+        let room_service = RoomService::new(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only("test:chat:reactions:room:".to_string(), 100, 60),
+            ))
+            .clone(),
+        );
+        let (room, _) = room_service
+            .create_room(
+                "Reaction Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        room_service
+            .join_room(room.id, member.id, None)
+            .await
+            .expect("member should join room");
+        let message = service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("reaction-message".to_string()),
+                content: "react to this".to_string(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await
+            .expect("message should be stored");
+
+        let owner_reaction = service
+            .set_reaction_event_outcome(SetChatReaction {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: owner.id,
+                reaction_key: "like".to_string(),
+                enabled: true,
+            })
+            .await
+            .expect("owner reaction should be stored");
+        assert_eq!(owner_reaction.event.kind, ChatEventKind::ReactionsChanged);
+        assert_eq!(owner_reaction.event.message.reactions.len(), 1);
+        assert_eq!(owner_reaction.event.message.reactions[0].key, "like");
+        assert_eq!(owner_reaction.event.message.reactions[0].count, 1);
+        assert!(owner_reaction.event.message.reactions[0].reacted_by_me);
+
+        service
+            .set_reaction_event_outcome(SetChatReaction {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: member.id,
+                reaction_key: "like".to_string(),
+                enabled: true,
+            })
+            .await
+            .expect("member reaction should be stored");
+
+        let (owner_history, _) = service
+            .get_history_with_images_for_viewer(&room.id, None, 10, false, Some(&owner.id))
+            .await
+            .expect("owner history should load");
+        let owner_summary = owner_history[0]
+            .reactions
+            .iter()
+            .find(|reaction| reaction.key == "like")
+            .expect("like summary should exist");
+        assert_eq!(owner_summary.count, 2);
+        assert!(owner_summary.reacted_by_me);
+
+        service
+            .set_reaction_event_outcome(SetChatReaction {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: owner.id,
+                reaction_key: "like".to_string(),
+                enabled: false,
+            })
+            .await
+            .expect("owner reaction should clear");
+
+        let (owner_history, _) = service
+            .get_history_with_images_for_viewer(&room.id, None, 10, false, Some(&owner.id))
+            .await
+            .expect("owner history should reload");
+        let owner_summary = owner_history[0]
+            .reactions
+            .iter()
+            .find(|reaction| reaction.key == "like")
+            .expect("like summary should remain");
+        assert_eq!(owner_summary.count, 1);
+        assert!(!owner_summary.reacted_by_me);
+
+        let (member_history, _) = service
+            .get_history_with_images_for_viewer(&room.id, None, 10, false, Some(&member.id))
+            .await
+            .expect("member history should load");
+        let member_summary = member_history[0]
+            .reactions
+            .iter()
+            .find(|reaction| reaction.key == "like")
+            .expect("like summary should exist");
+        assert_eq!(member_summary.count, 1);
+        assert!(member_summary.reacted_by_me);
+
+        let page = service
+            .list_reaction_users(
+                &room.id,
+                message.message.message.id,
+                &member.id,
+                "like",
+                None,
+                10,
+            )
+            .await
+            .expect("reaction users should load");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.users.len(), 1);
+        assert_eq!(page.users[0].user_id, member.id);
+        assert!(page.next_cursor.is_none());
+
+        service
+            .set_reaction_event_outcome(SetChatReaction {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: owner.id,
+                reaction_key: "like".to_string(),
+                enabled: true,
+            })
+            .await
+            .expect("owner reaction should be restored");
+        let refreshed_page = service
+            .list_reaction_users(
+                &room.id,
+                message.message.message.id,
+                &member.id,
+                "like",
+                None,
+                10,
+            )
+            .await
+            .expect("reaction users should reload after cache invalidation");
+        assert_eq!(refreshed_page.total, 2);
+        assert_eq!(refreshed_page.users.len(), 2);
+        let page = service
+            .list_reaction_users(
+                &room.id,
+                message.message.message.id,
+                &member.id,
+                "like",
+                None,
+                1,
+            )
+            .await
+            .expect("first reaction user page should load");
+        assert_eq!(page.total, 2);
+        assert_eq!(page.users.len(), 1);
+        let cursor = page.next_cursor.expect("next cursor should be present");
+        let next = service
+            .list_reaction_users(
+                &room.id,
+                message.message.message.id,
+                &member.id,
+                "like",
+                Some(cursor),
+                1,
+            )
+            .await
+            .expect("second reaction user page should load");
+        assert_eq!(next.total, 2);
+        assert_eq!(next.users.len(), 1);
+        assert_ne!(page.users[0].user_id, next.users[0].user_id);
     }
 
     #[tokio::test]

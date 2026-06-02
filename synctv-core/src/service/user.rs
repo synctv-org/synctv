@@ -80,6 +80,9 @@ const OPAQUE_REGISTRATION_SESSION_TTL_SECS: u64 = 300;
 const OPAQUE_REGISTRATION_SESSION_CAPACITY: u64 = 10_000;
 const MFA_SESSION_TTL_SECS: u64 = 300;
 const MFA_SESSION_CAPACITY: u64 = 10_000;
+const SENSITIVE_VERIFICATION_SESSION_TTL_SECS: u64 = 300;
+const SENSITIVE_VERIFICATION_SESSION_CAPACITY: u64 = 10_000;
+const SENSITIVE_VERIFICATION_PASSWORD_BRUTE_FORCE_PREFIX: &str = "auth:sensitive:password";
 const TWO_FACTOR_REQUIRED_MESSAGE: &str =
     "Two-factor authentication is required before tokens can be issued";
 
@@ -186,6 +189,31 @@ pub struct MfaChallenge {
     pub expires_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SensitiveVerificationSession {
+    user_id: UserId,
+    required_count: usize,
+    completed_methods: Vec<AuthFactorMethod>,
+    expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SensitiveVerificationChallenge {
+    pub session_id: String,
+    pub required_count: usize,
+    pub required_methods: Vec<AuthFactorMethod>,
+    pub completed_methods: Vec<AuthFactorMethod>,
+    pub available_methods: Vec<AuthFactorMethod>,
+    pub masked_email: Option<String>,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SensitiveVerificationOutcome {
+    Pending(SensitiveVerificationChallenge),
+    Complete { verification_id: String },
+}
+
 struct TokenIssueContext<'a> {
     auth_context: Option<TokenAuthContext>,
     credential_binding: &'a TokenCredentialBinding,
@@ -282,6 +310,22 @@ pub trait MfaSessionStore: Send + Sync {
     fn supports_cross_node_single_use(&self) -> bool;
 }
 
+#[async_trait::async_trait]
+pub trait SensitiveVerificationSessionStore: Send + Sync {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &SensitiveVerificationSession,
+        ttl: Duration,
+    ) -> Result<()>;
+
+    async fn get(&self, session_id: &str) -> Result<Option<SensitiveVerificationSession>>;
+
+    async fn consume(&self, session_id: &str) -> Result<Option<SensitiveVerificationSession>>;
+
+    fn supports_cross_node_single_use(&self) -> bool;
+}
+
 #[must_use]
 pub fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
     Arc::new(InMemoryOpaqueLoginSessionStore::new())
@@ -295,6 +339,11 @@ pub fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSe
 #[must_use]
 pub fn local_mfa_session_store() -> Arc<dyn MfaSessionStore> {
     Arc::new(InMemoryMfaSessionStore::new())
+}
+
+#[must_use]
+pub fn local_sensitive_verification_session_store() -> Arc<dyn SensitiveVerificationSessionStore> {
+    Arc::new(InMemorySensitiveVerificationSessionStore::new())
 }
 
 #[must_use]
@@ -323,6 +372,16 @@ pub fn shared_mfa_session_store(
     key_prefix: impl Into<String>,
 ) -> Arc<dyn MfaSessionStore> {
     Arc::new(RedisMfaSessionStore::from_runtime(runtime, key_prefix))
+}
+
+#[must_use]
+pub fn shared_sensitive_verification_session_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn SensitiveVerificationSessionStore> {
+    Arc::new(RedisSensitiveVerificationSessionStore::from_runtime(
+        runtime, key_prefix,
+    ))
 }
 
 pub fn opaque_login_session_store_from_shared_state_profile(
@@ -390,6 +449,28 @@ pub fn mfa_session_store_from_shared_state_profile(
     }
 }
 
+pub fn sensitive_verification_session_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn SensitiveVerificationSessionStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let runtime = profile
+                .require_shared_runtime("single-use sensitive verification session storage")?;
+            Ok(shared_sensitive_verification_session_store(
+                runtime,
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::SharedBestEffort => Ok(shared_sensitive_verification_session_store(
+            profile
+                .shared_runtime()
+                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.key_prefix().to_string(),
+        )),
+        SharedStateMode::LocalOnly => Ok(local_sensitive_verification_session_store()),
+    }
+}
+
 #[derive(Clone)]
 struct OpaqueLoginSessionEntry {
     session: OpaqueLoginSession,
@@ -405,6 +486,12 @@ struct OpaqueRegistrationSessionEntry {
 #[derive(Clone)]
 struct MfaSessionEntry {
     session: MfaSession,
+    ttl: Duration,
+}
+
+#[derive(Clone)]
+struct SensitiveVerificationSessionEntry {
+    session: SensitiveVerificationSession,
     ttl: Duration,
 }
 
@@ -447,6 +534,21 @@ impl moka::Expiry<String, MfaSessionEntry> for MfaSessionExpiry {
     }
 }
 
+struct SensitiveVerificationSessionExpiry;
+
+impl moka::Expiry<String, SensitiveVerificationSessionEntry>
+    for SensitiveVerificationSessionExpiry
+{
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &SensitiveVerificationSessionEntry,
+        _now: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+}
+
 pub struct InMemoryOpaqueLoginSessionStore {
     entries: moka::sync::Cache<String, OpaqueLoginSessionEntry>,
 }
@@ -457,6 +559,10 @@ pub struct InMemoryOpaqueRegistrationSessionStore {
 
 pub struct InMemoryMfaSessionStore {
     entries: moka::sync::Cache<String, MfaSessionEntry>,
+}
+
+pub struct InMemorySensitiveVerificationSessionStore {
+    entries: moka::sync::Cache<String, SensitiveVerificationSessionEntry>,
 }
 
 impl InMemoryOpaqueLoginSessionStore {
@@ -495,6 +601,18 @@ impl InMemoryMfaSessionStore {
     }
 }
 
+impl InMemorySensitiveVerificationSessionStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: moka::sync::Cache::builder()
+                .max_capacity(SENSITIVE_VERIFICATION_SESSION_CAPACITY)
+                .expire_after(SensitiveVerificationSessionExpiry)
+                .build(),
+        }
+    }
+}
+
 impl Default for InMemoryOpaqueLoginSessionStore {
     fn default() -> Self {
         Self::new()
@@ -508,6 +626,12 @@ impl Default for InMemoryOpaqueRegistrationSessionStore {
 }
 
 impl Default for InMemoryMfaSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for InMemorySensitiveVerificationSessionStore {
     fn default() -> Self {
         Self::new()
     }
@@ -602,9 +726,44 @@ impl MfaSessionStore for InMemoryMfaSessionStore {
     }
 }
 
+#[async_trait::async_trait]
+impl SensitiveVerificationSessionStore for InMemorySensitiveVerificationSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &SensitiveVerificationSession,
+        ttl: Duration,
+    ) -> Result<()> {
+        self.entries.insert(
+            session_id.to_string(),
+            SensitiveVerificationSessionEntry {
+                session: session.clone(),
+                ttl,
+            },
+        );
+        Ok(())
+    }
+
+    async fn get(&self, session_id: &str) -> Result<Option<SensitiveVerificationSession>> {
+        Ok(self.entries.get(session_id).map(|entry| entry.session))
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<SensitiveVerificationSession>> {
+        if self.entries.get(session_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(session_id).map(|entry| entry.session))
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        false
+    }
+}
+
 const OPAQUE_LOGIN_SESSION_REDIS_NAMESPACE: &str = "auth:opaque:login";
 const OPAQUE_REGISTRATION_SESSION_REDIS_NAMESPACE: &str = "auth:opaque:registration";
 const MFA_SESSION_REDIS_NAMESPACE: &str = "auth:mfa";
+const SENSITIVE_VERIFICATION_SESSION_REDIS_NAMESPACE: &str = "auth:sensitive:verification";
 
 pub struct RedisOpaqueLoginSessionStore {
     store: RedisJsonSessionStore,
@@ -615,6 +774,10 @@ pub struct RedisOpaqueRegistrationSessionStore {
 }
 
 pub struct RedisMfaSessionStore {
+    store: RedisJsonSessionStore,
+}
+
+pub struct RedisSensitiveVerificationSessionStore {
     store: RedisJsonSessionStore,
 }
 
@@ -643,6 +806,18 @@ impl RedisOpaqueRegistrationSessionStore {
 }
 
 impl RedisMfaSessionStore {
+    #[must_use]
+    pub fn from_runtime(
+        runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        Self {
+            store: RedisJsonSessionStore::new(runtime, key_prefix),
+        }
+    }
+}
+
+impl RedisSensitiveVerificationSessionStore {
     #[must_use]
     pub fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
@@ -759,6 +934,53 @@ impl MfaSessionStore for RedisMfaSessionStore {
                 session_id,
                 "Failed to deserialize MFA session",
                 "consume MFA session from Redis",
+            )
+            .await
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait::async_trait]
+impl SensitiveVerificationSessionStore for RedisSensitiveVerificationSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &SensitiveVerificationSession,
+        ttl: Duration,
+    ) -> Result<()> {
+        self.store
+            .store(
+                SENSITIVE_VERIFICATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                session,
+                ttl,
+                "Failed to serialize sensitive verification session",
+                "store sensitive verification session in Redis",
+            )
+            .await
+    }
+
+    async fn get(&self, session_id: &str) -> Result<Option<SensitiveVerificationSession>> {
+        self.store
+            .get(
+                SENSITIVE_VERIFICATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize sensitive verification session",
+                "get sensitive verification session from Redis",
+            )
+            .await
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<SensitiveVerificationSession>> {
+        self.store
+            .consume(
+                SENSITIVE_VERIFICATION_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize sensitive verification session",
+                "consume sensitive verification session from Redis",
             )
             .await
     }
@@ -916,6 +1138,7 @@ pub struct UserService {
     opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
     mfa_session_store: Arc<dyn MfaSessionStore>,
+    sensitive_verification_session_store: Arc<dyn SensitiveVerificationSessionStore>,
     permission_service: Option<PermissionService>,
     consistency: ConsistencyCoordinator,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
@@ -930,6 +1153,7 @@ pub struct UserServiceRuntimeOptions {
     pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
     pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
     pub mfa_session_store: Option<Arc<dyn MfaSessionStore>>,
+    pub sensitive_verification_session_store: Option<Arc<dyn SensitiveVerificationSessionStore>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub permission_service: Option<PermissionService>,
     pub version_fence: Option<Arc<dyn VersionFenceStore>>,
@@ -1365,6 +1589,294 @@ impl UserService {
             access_token,
             refresh_token,
         })
+    }
+
+    fn sensitive_available_methods(
+        auth_factors: &UserAuthFactors,
+        completed_methods: &[AuthFactorMethod],
+    ) -> Vec<AuthFactorMethod> {
+        let mut methods = Vec::with_capacity(3);
+        if auth_factors.password && !completed_methods.contains(&AuthFactorMethod::Password) {
+            methods.push(AuthFactorMethod::Password);
+        }
+        if auth_factors.webauthn && !completed_methods.contains(&AuthFactorMethod::WebAuthn) {
+            methods.push(AuthFactorMethod::WebAuthn);
+        }
+        if auth_factors.email && !completed_methods.contains(&AuthFactorMethod::Email) {
+            methods.push(AuthFactorMethod::Email);
+        }
+        methods
+    }
+
+    fn sensitive_required_methods(auth_factors: &UserAuthFactors) -> Vec<AuthFactorMethod> {
+        let mut methods = Vec::with_capacity(3);
+        if auth_factors.password {
+            methods.push(AuthFactorMethod::Password);
+        }
+        if auth_factors.webauthn {
+            methods.push(AuthFactorMethod::WebAuthn);
+        }
+        if auth_factors.email {
+            methods.push(AuthFactorMethod::Email);
+        }
+        methods
+    }
+
+    async fn sensitive_challenge_from_session(
+        &self,
+        session_id: &str,
+        session: &SensitiveVerificationSession,
+    ) -> Result<SensitiveVerificationChallenge> {
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(&session.user_id)
+            .await?;
+        let email = self
+            .user_email_repository
+            .get_email(&session.user_id)
+            .await?;
+        Ok(SensitiveVerificationChallenge {
+            session_id: session_id.to_string(),
+            required_count: session.required_count,
+            required_methods: Self::sensitive_required_methods(&auth_factors),
+            completed_methods: session.completed_methods.clone(),
+            available_methods: Self::sensitive_available_methods(
+                &auth_factors,
+                &session.completed_methods,
+            ),
+            masked_email: email.as_deref().map(crate::service::mask_email),
+            expires_at: session.expires_at,
+        })
+    }
+
+    pub async fn start_sensitive_operation_verification(
+        &self,
+        user_id: &UserId,
+        auth_context: Option<TokenAuthContext>,
+    ) -> Result<SensitiveVerificationOutcome> {
+        let user = self.get_user(user_id).await?;
+        Self::validate_user_access(&user)?;
+        let preferences = self
+            .user_preferences_repository
+            .get_or_default(user_id)
+            .await?;
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(user_id)
+            .await?;
+        let required_count =
+            if preferences.two_factor_enabled && auth_context != Some(TokenAuthContext::OAuth2) {
+                2
+            } else {
+                1
+            };
+        let required_methods = Self::sensitive_required_methods(&auth_factors);
+        let can_bootstrap_from_oauth2 =
+            auth_context == Some(TokenAuthContext::OAuth2) && required_methods.is_empty();
+        if required_methods.len() < required_count && !can_bootstrap_from_oauth2 {
+            return Err(Error::InvalidInput(
+                "Sensitive operation verification requires enough local authentication methods"
+                    .to_string(),
+            ));
+        }
+
+        let session_id = synctv_common::snanoid!(48);
+        let expires_at = chrono::Utc::now().timestamp()
+            + i64::try_from(SENSITIVE_VERIFICATION_SESSION_TTL_SECS).unwrap_or(300);
+        if can_bootstrap_from_oauth2 {
+            let session = SensitiveVerificationSession {
+                user_id: *user_id,
+                required_count: 0,
+                completed_methods: Vec::new(),
+                expires_at,
+            };
+            let verification_id = synctv_common::snanoid!(48);
+            self.sensitive_verification_session_store
+                .store(
+                    &verification_id,
+                    &session,
+                    Duration::from_secs(SENSITIVE_VERIFICATION_SESSION_TTL_SECS),
+                )
+                .await?;
+            return Ok(SensitiveVerificationOutcome::Complete { verification_id });
+        }
+        let session = SensitiveVerificationSession {
+            user_id: *user_id,
+            required_count,
+            completed_methods: Vec::new(),
+            expires_at,
+        };
+        self.sensitive_verification_session_store
+            .store(
+                &session_id,
+                &session,
+                Duration::from_secs(SENSITIVE_VERIFICATION_SESSION_TTL_SECS),
+            )
+            .await?;
+        let challenge = self
+            .sensitive_challenge_from_session(&session_id, &session)
+            .await?;
+        Ok(SensitiveVerificationOutcome::Pending(challenge))
+    }
+
+    pub async fn get_sensitive_operation_user_for_method(
+        &self,
+        session_id: &str,
+        method: AuthFactorMethod,
+    ) -> Result<User> {
+        let session = self
+            .sensitive_verification_session_store
+            .get(session_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let user = self
+            .repository
+            .get_by_id(&session.user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        Self::validate_user_access(&user)?;
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(&user.id)
+            .await?;
+        let available =
+            Self::sensitive_available_methods(&auth_factors, &session.completed_methods);
+        if !available.contains(&method) {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        Ok(user)
+    }
+
+    pub async fn finish_sensitive_operation_password_verification(
+        &self,
+        session_id: &str,
+        password: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<SensitiveVerificationOutcome> {
+        let session = self
+            .sensitive_verification_session_store
+            .get(session_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        if session
+            .completed_methods
+            .contains(&AuthFactorMethod::Password)
+        {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        let brute_force_key = format!(
+            "{SENSITIVE_VERIFICATION_PASSWORD_BRUTE_FORCE_PREFIX}:{}",
+            session.user_id.as_i64()
+        );
+        self.brute_force
+            .check_subject_key_allowed_with_control(&brute_force_key, client_ip, control)
+            .await?;
+        let opaque_credential = self
+            .user_password_repository
+            .get_opaque_credential(&session.user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        if !self
+            .opaque_password_service
+            .verify_password(&opaque_credential.record, password)?
+        {
+            if let Err(error) = self
+                .brute_force
+                .record_subject_key_failure_with_control(&brute_force_key, client_ip, control)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    user_id = %session.user_id,
+                    "Failed to record sensitive password verification failure"
+                );
+            }
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        self.brute_force
+            .reset_subject_key_with_control(&brute_force_key, control)
+            .await?;
+        self.complete_sensitive_operation_method(session_id, AuthFactorMethod::Password)
+            .await
+    }
+
+    pub async fn finish_sensitive_operation_verified_method(
+        &self,
+        session_id: &str,
+        method: AuthFactorMethod,
+    ) -> Result<SensitiveVerificationOutcome> {
+        if method == AuthFactorMethod::Password {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        self.complete_sensitive_operation_method(session_id, method)
+            .await
+    }
+
+    async fn complete_sensitive_operation_method(
+        &self,
+        session_id: &str,
+        method: AuthFactorMethod,
+    ) -> Result<SensitiveVerificationOutcome> {
+        let mut session = self
+            .sensitive_verification_session_store
+            .consume(session_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let user = self
+            .repository
+            .get_by_id(&session.user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        Self::validate_user_access(&user)?;
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(&user.id)
+            .await?;
+        let available =
+            Self::sensitive_available_methods(&auth_factors, &session.completed_methods);
+        if !available.contains(&method) {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        session.completed_methods.push(method);
+        if session.completed_methods.len() >= session.required_count {
+            let verification_id = synctv_common::snanoid!(48);
+            self.sensitive_verification_session_store
+                .store(
+                    &verification_id,
+                    &session,
+                    Duration::from_secs(SENSITIVE_VERIFICATION_SESSION_TTL_SECS),
+                )
+                .await?;
+            return Ok(SensitiveVerificationOutcome::Complete { verification_id });
+        }
+        self.sensitive_verification_session_store
+            .store(
+                session_id,
+                &session,
+                Duration::from_secs(SENSITIVE_VERIFICATION_SESSION_TTL_SECS),
+            )
+            .await?;
+        let challenge = self
+            .sensitive_challenge_from_session(session_id, &session)
+            .await?;
+        Ok(SensitiveVerificationOutcome::Pending(challenge))
+    }
+
+    pub async fn consume_sensitive_operation_verification(
+        &self,
+        user_id: &UserId,
+        verification_id: &str,
+    ) -> Result<()> {
+        let session = self
+            .sensitive_verification_session_store
+            .consume(verification_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        if session.user_id != *user_id || session.completed_methods.len() < session.required_count {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        Ok(())
     }
 
     async fn query_owned_room_ids_in_tx(
@@ -2334,6 +2846,9 @@ impl UserService {
             mfa_session_store: runtime
                 .mfa_session_store
                 .unwrap_or_else(local_mfa_session_store),
+            sensitive_verification_session_store: runtime
+                .sensitive_verification_session_store
+                .unwrap_or_else(local_sensitive_verification_session_store),
             permission_service: runtime.permission_service,
             file_storage_service: runtime.file_storage_service,
             consistency: ConsistencyCoordinator::new(version_fence),
@@ -3754,7 +4269,11 @@ impl UserService {
                 self.opaque_password_service
                     .verify_dummy_password(&password)?
             };
-            (opaque_valid, Some(user_with_credential.user), password_version)
+            (
+                opaque_valid,
+                Some(user_with_credential.user),
+                password_version,
+            )
         } else {
             let _ = self
                 .opaque_password_service
@@ -4021,7 +4540,7 @@ impl UserService {
             client_ip,
             None,
         )
-            .await
+        .await
     }
 
     pub async fn login_oauth2_with_control(
@@ -4279,7 +4798,10 @@ impl UserService {
                 let mapping = UserOAuthProviderRepository::new(self.repository.pool().clone())
                     .find_by_provider_instance(&provider_instance_name, &provider_user_id)
                     .await?;
-                if mapping.as_ref().is_none_or(|mapping| mapping.user_id != *user_id) {
+                if mapping
+                    .as_ref()
+                    .is_none_or(|mapping| mapping.user_id != *user_id)
+                {
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
                 Ok(TokenCredentialBinding::OAuth2 {
@@ -5106,8 +5628,11 @@ impl UserService {
         user_id: &UserId,
         email: &str,
         token: &str,
+        verification_id: &str,
     ) -> Result<User> {
         let email = self.validate_email_bind_target(user_id, email).await?;
+        self.consume_sensitive_operation_verification(user_id, verification_id)
+            .await?;
         let mut tx = self.repository.pool().begin().await?;
         let (email, now) = self
             .email_bind_repository
@@ -5182,7 +5707,9 @@ impl UserService {
             + active_oauth2_identity_count
     }
 
-    pub async fn unbind_email(&self, user_id: &UserId) -> Result<User> {
+    pub async fn unbind_email(&self, user_id: &UserId, verification_id: &str) -> Result<User> {
+        self.consume_sensitive_operation_verification(user_id, verification_id)
+            .await?;
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
         let current_user = self
             .repository

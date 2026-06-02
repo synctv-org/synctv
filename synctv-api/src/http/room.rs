@@ -3655,9 +3655,9 @@ mod tests {
         CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, UpdatePlaybackRequest, WatchQuery,
     };
     use crate::proto::client::{
-        DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetHotRoomsRequest,
-        GetRoomMembersRequest, ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomsRequest,
-        MoveMediaRequest,
+        DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
+        GetChatMessageRequest, GetHotRoomsRequest, GetRoomMembersRequest, ListPlaylistItemsRequest,
+        ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest,
     };
 
     #[test]
@@ -4086,6 +4086,22 @@ mod tests {
 
         assert_eq!(req.limit, 20);
         assert_eq!(req.cursor, "2026-03-31T12:00:00+00:00|msg_123");
+    }
+
+    #[test]
+    fn test_chat_message_path_injected_queries_deserialize_without_message_id() {
+        let message: GetChatMessageRequest = serde_urlencoded::from_str("include_deleted=true")
+            .expect("deserialize chat message query");
+        assert!(message.message_id.is_empty());
+        assert!(message.include_deleted);
+
+        let context: GetChatMessageContextRequest =
+            serde_urlencoded::from_str("before_limit=5&after_limit=6&include_deleted=true")
+                .expect("deserialize chat message context query");
+        assert!(context.message_id.is_empty());
+        assert_eq!(context.before_limit, 5);
+        assert_eq!(context.after_limit, 6);
+        assert!(context.include_deleted);
     }
 
     #[test]

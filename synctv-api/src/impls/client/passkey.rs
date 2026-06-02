@@ -51,17 +51,15 @@ impl ClientApiImpl {
         user_id: &UserId,
         name: String,
     ) -> Result<PasskeyBindChallenge, ApiError> {
-        let request = StartPasskeyBindRequest { name };
-        crate::impls::validate_proto_request(&request)?;
         let profile = self
             .user_service
             .get_user(user_id)
             .await
             .map_err(ApiError::from)?;
-        let credential_name = if request.name.trim().is_empty() {
+        let credential_name = if name.trim().is_empty() {
             None
         } else {
-            Some(request.name.trim().to_string())
+            Some(name.trim().to_string())
         };
         let challenge = self
             .passkey_service()?
@@ -80,6 +78,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         req: StartPasskeyBindRequest,
     ) -> Result<StartPasskeyBindResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         let challenge = self.start_passkey_bind_challenge(user_id, req.name).await?;
         let options = passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(StartPasskeyBindResponse {
@@ -111,6 +110,10 @@ impl ClientApiImpl {
         req: crate::proto::client::FinishPasskeyBindRequest,
     ) -> Result<PasskeyCredentialResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        self.user_service
+            .consume_sensitive_operation_verification(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
         self.finish_passkey_bind(user_id, &req.session_id, &req.credential)
             .await
     }
@@ -133,6 +136,10 @@ impl ClientApiImpl {
         req: DeletePasskeyRequest,
     ) -> Result<DeletePasskeyResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        self.user_service
+            .consume_sensitive_operation_verification(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
         let credential_id =
             synctv_core::service::PasskeyService::decode_credential_id(&req.credential_id)
                 .map_err(ApiError::from)?;

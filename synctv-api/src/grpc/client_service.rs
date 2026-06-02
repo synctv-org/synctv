@@ -37,7 +37,8 @@ use crate::proto::client::{
     FinishOpaquePasswordResetRequest, FinishOpaquePasswordUpdateRequest,
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
     FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, FinishRoomPasswordLoginRequest,
-    FinishRoomPasswordRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
+    FinishRoomPasswordRegistrationRequest, FinishSensitiveOperationVerificationRequest,
+    FinishSensitiveOperationVerificationResponse, GetChatHistoryRequest, GetChatHistoryResponse,
     GetChatImageObjectRequest, GetChatMessageContextRequest, GetChatMessageContextResponse,
     GetChatMessageRequest, GetChatMessageResponse, GetChatPlaybackMessagesRequest,
     GetChatPlaybackMessagesResponse, GetChatReadStateRequest, GetHotRoomsRequest,
@@ -60,6 +61,7 @@ use crate::proto::client::{
     RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendChatMessageRequest, ServerMessage,
     SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest,
     StartEmailBindResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
@@ -71,6 +73,8 @@ use crate::proto::client::{
     StartPasskeyRegistrationResponse, StartPlaybackRequest, StartPlaybackResponse,
     StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
+    StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
+    StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UnbindEmailRequest, UnbindEmailResponse,
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaybackRequest,
@@ -1257,6 +1261,110 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.unbind_email(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_sensitive_operation_verification(
+        &self,
+        request: Request<StartSensitiveOperationVerificationRequest>,
+    ) -> Result<Response<StartSensitiveOperationVerificationResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .start_sensitive_operation_verification(
+                            &authenticated.user_id,
+                            crate::impls::client::token_auth_context_from_claims(
+                                &authenticated.claims,
+                            ),
+                            req,
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_sensitive_operation_passkey(
+        &self,
+        request: Request<StartSensitiveOperationPasskeyRequest>,
+    ) -> Result<Response<StartSensitiveOperationPasskeyResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .start_sensitive_operation_passkey(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn request_sensitive_operation_email_code(
+        &self,
+        request: Request<RequestSensitiveOperationEmailCodeRequest>,
+    ) -> Result<Response<RequestSensitiveOperationEmailCodeResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .request_sensitive_operation_email_code(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_sensitive_operation_verification(
+        &self,
+        request: Request<FinishSensitiveOperationVerificationRequest>,
+    ) -> Result<Response<FinishSensitiveOperationVerificationResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |request_control, authenticated| async move {
+                    client_api
+                        .finish_sensitive_operation_verification(
+                            &authenticated.user_id,
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
                 },
             )
             .await

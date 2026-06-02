@@ -2691,8 +2691,10 @@ impl RoomService {
         password: Option<String>,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
-        let proof = password
-            .map_or(RoomPasswordJoinProof::None, RoomPasswordJoinProof::Plaintext);
+        let proof = password.map_or(
+            RoomPasswordJoinProof::None,
+            RoomPasswordJoinProof::Plaintext,
+        );
         self.join_room_with_password_proof(room_id, user_id, proof, outbox_event_factory)
             .await
     }

@@ -1,16 +1,116 @@
 //! User operations: `get_profile`, `set_username`
 
 use crate::impls::ApiError;
-use crate::proto::client::OpaquePasswordUpdateVerificationMethod;
+use crate::proto::client::{
+    OpaquePasswordUpdateVerificationMethod, SensitiveOperationVerificationMethod,
+};
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
 use std::collections::HashMap;
+use synctv_core::models::EmailTokenType;
 use synctv_core::models::{FileBlob, FileUploadSession, NewStoredFile, PageParams, RoomId, UserId};
+use synctv_core::service::{
+    AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
+    TokenAuthContext,
+};
 use synctv_core::validation::UsernameValidator;
 
 use super::convert::{stored_file_reference_to_video_cover, user_to_proto};
 use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
+
+fn sensitive_method_to_proto(method: AuthFactorMethod) -> i32 {
+    match method {
+        AuthFactorMethod::Password => SensitiveOperationVerificationMethod::Password as i32,
+        AuthFactorMethod::WebAuthn => SensitiveOperationVerificationMethod::Webauthn as i32,
+        AuthFactorMethod::Email => SensitiveOperationVerificationMethod::Email as i32,
+    }
+}
+
+fn sensitive_method_from_proto(value: i32) -> Result<AuthFactorMethod, ApiError> {
+    match SensitiveOperationVerificationMethod::try_from(value) {
+        Ok(SensitiveOperationVerificationMethod::Password) => Ok(AuthFactorMethod::Password),
+        Ok(SensitiveOperationVerificationMethod::Webauthn) => Ok(AuthFactorMethod::WebAuthn),
+        Ok(SensitiveOperationVerificationMethod::Email) => Ok(AuthFactorMethod::Email),
+        _ => Err(ApiError::InvalidInput(
+            "Invalid verification method".to_string(),
+        )),
+    }
+}
+
+pub(crate) fn token_auth_context_from_claims(
+    claims: &synctv_core::service::Claims,
+) -> Option<TokenAuthContext> {
+    match claims.amr.as_deref() {
+        Some("local_2fa") => Some(TokenAuthContext::LocalTwoFactor),
+        Some("oauth2") => Some(TokenAuthContext::OAuth2),
+        _ => None,
+    }
+}
+
+fn sensitive_challenge_to_proto(
+    challenge: SensitiveVerificationChallenge,
+) -> crate::proto::client::SensitiveOperationVerificationChallenge {
+    crate::proto::client::SensitiveOperationVerificationChallenge {
+        session_id: challenge.session_id,
+        required_methods: challenge
+            .required_methods
+            .into_iter()
+            .map(sensitive_method_to_proto)
+            .collect(),
+        completed_methods: challenge
+            .completed_methods
+            .into_iter()
+            .map(sensitive_method_to_proto)
+            .collect(),
+        available_methods: challenge
+            .available_methods
+            .into_iter()
+            .map(sensitive_method_to_proto)
+            .collect(),
+        masked_email: challenge.masked_email.unwrap_or_default(),
+        expires_at: challenge.expires_at,
+        required_count: i32::try_from(challenge.required_count).unwrap_or(i32::MAX),
+    }
+}
+
+fn sensitive_outcome_to_proto(
+    outcome: SensitiveVerificationOutcome,
+) -> crate::proto::client::FinishSensitiveOperationVerificationResponse {
+    match outcome {
+        SensitiveVerificationOutcome::Pending(challenge) => {
+            crate::proto::client::FinishSensitiveOperationVerificationResponse {
+                verification_id: String::new(),
+                challenge: Some(sensitive_challenge_to_proto(challenge)),
+            }
+        }
+        SensitiveVerificationOutcome::Complete { verification_id } => {
+            crate::proto::client::FinishSensitiveOperationVerificationResponse {
+                verification_id,
+                challenge: None,
+            }
+        }
+    }
+}
+
+fn sensitive_start_outcome_to_proto(
+    outcome: SensitiveVerificationOutcome,
+) -> crate::proto::client::StartSensitiveOperationVerificationResponse {
+    match outcome {
+        SensitiveVerificationOutcome::Pending(challenge) => {
+            crate::proto::client::StartSensitiveOperationVerificationResponse {
+                challenge: Some(sensitive_challenge_to_proto(challenge)),
+                verification_id: String::new(),
+            }
+        }
+        SensitiveVerificationOutcome::Complete { verification_id } => {
+            crate::proto::client::StartSensitiveOperationVerificationResponse {
+                challenge: None,
+                verification_id,
+            }
+        }
+    }
+}
 
 fn new_file_to_avatar_proto(file: &NewStoredFile) -> crate::proto::client::UserAvatar {
     crate::proto::client::UserAvatar {
@@ -524,7 +624,7 @@ impl ClientApiImpl {
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
         let updated_user = self
             .user_service
-            .confirm_email_bind(user_id, &email, &req.token)
+            .confirm_email_bind(user_id, &email, &req.token, &req.verification_id)
             .await
             .map_err(|error| match error {
                 synctv_core::Error::InvalidInput(_) => {
@@ -548,11 +648,186 @@ impl ClientApiImpl {
         req: crate::proto::client::UnbindEmailRequest,
     ) -> Result<crate::proto::client::UnbindEmailResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let updated_user = self.user_service.unbind_email(user_id).await?;
+        let updated_user = self
+            .user_service
+            .unbind_email(user_id, &req.verification_id)
+            .await?;
 
         Ok(crate::proto::client::UnbindEmailResponse {
             user: Some(user_to_proto(&updated_user, None, &self.public_id_codec)),
         })
+    }
+
+    pub async fn start_sensitive_operation_verification(
+        &self,
+        user_id: &UserId,
+        auth_context: Option<TokenAuthContext>,
+        req: crate::proto::client::StartSensitiveOperationVerificationRequest,
+    ) -> Result<crate::proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let outcome = self
+            .user_service
+            .start_sensitive_operation_verification(user_id, auth_context)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(sensitive_start_outcome_to_proto(outcome))
+    }
+
+    pub async fn start_sensitive_operation_passkey(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::StartSensitiveOperationPasskeyRequest,
+    ) -> Result<crate::proto::client::StartSensitiveOperationPasskeyResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let user = self
+            .user_service
+            .get_sensitive_operation_user_for_method(&req.session_id, AuthFactorMethod::WebAuthn)
+            .await
+            .map_err(ApiError::from)?;
+        if user.id != *user_id {
+            return Err(ApiError::Authentication(
+                "Authentication failed".to_string(),
+            ));
+        }
+        let challenge = self
+            .passkey_service()?
+            .start_user_verification(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
+        Ok(
+            crate::proto::client::StartSensitiveOperationPasskeyResponse {
+                passkey_session_id: challenge.session_id,
+                options,
+            },
+        )
+    }
+
+    pub async fn request_sensitive_operation_email_code(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::RequestSensitiveOperationEmailCodeRequest,
+    ) -> Result<crate::proto::client::RequestSensitiveOperationEmailCodeResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let email_api = self.email_api.as_ref().ok_or_else(|| {
+            ApiError::ServiceUnavailable(
+                synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
+            )
+        })?;
+        let user = self
+            .user_service
+            .get_sensitive_operation_user_for_method(&req.session_id, AuthFactorMethod::Email)
+            .await
+            .map_err(ApiError::from)?;
+        if user.id != *user_id {
+            return Err(ApiError::Authentication(
+                "Authentication failed".to_string(),
+            ));
+        }
+        let email = self
+            .user_service
+            .get_email(user_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
+        email_api
+            .check_email_delivery_rate_limits(&email, user_id, EmailTokenType::EmailLogin, None)
+            .await?;
+        email_api
+            .email_service
+            .send_email_login_email_with_control(
+                &email,
+                &email_api.email_token_service,
+                user_id,
+                None,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(
+            crate::proto::client::RequestSensitiveOperationEmailCodeResponse {
+                message: "Verification code sent".to_string(),
+                masked_email: synctv_core::service::mask_email(&email),
+            },
+        )
+    }
+
+    pub async fn finish_sensitive_operation_verification(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::FinishSensitiveOperationVerificationRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_core::provider::ExecutionControl>,
+    ) -> Result<crate::proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let method = sensitive_method_from_proto(req.method)?;
+        let session_user = self
+            .user_service
+            .get_sensitive_operation_user_for_method(&req.session_id, method)
+            .await
+            .map_err(ApiError::from)?;
+        if session_user.id != *user_id {
+            return Err(ApiError::Authentication(
+                "Authentication failed".to_string(),
+            ));
+        }
+
+        let outcome = match method {
+            AuthFactorMethod::Password => self
+                .user_service
+                .finish_sensitive_operation_password_verification(
+                    &req.session_id,
+                    &req.password,
+                    client_ip,
+                    control,
+                )
+                .await
+                .map_err(ApiError::from)?,
+            AuthFactorMethod::Email => {
+                let email_api = self.email_api.as_ref().ok_or_else(|| {
+                    ApiError::ServiceUnavailable(
+                        synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
+                    )
+                })?;
+                email_api
+                    .email_token_service
+                    .validate_token_for_user_with_control(
+                        &req.email_token,
+                        EmailTokenType::EmailLogin,
+                        user_id,
+                        None,
+                    )
+                    .await
+                    .map_err(|_| {
+                        ApiError::Authentication("Invalid or expired verification code".to_string())
+                    })?;
+                self.user_service
+                    .finish_sensitive_operation_verified_method(
+                        &req.session_id,
+                        AuthFactorMethod::Email,
+                    )
+                    .await
+                    .map_err(ApiError::from)?
+            }
+            AuthFactorMethod::WebAuthn => {
+                self.passkey_service()?
+                    .finish_user_verification(
+                        &req.passkey_session_id,
+                        &req.passkey_credential,
+                        user_id,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                self.user_service
+                    .finish_sensitive_operation_verified_method(
+                        &req.session_id,
+                        AuthFactorMethod::WebAuthn,
+                    )
+                    .await
+                    .map_err(ApiError::from)?
+            }
+        };
+
+        Ok(sensitive_outcome_to_proto(outcome))
     }
 
     pub async fn start_opaque_password_update(

@@ -45,6 +45,10 @@ service UserService {
   rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (UserAvatarObjectResponse);
   rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (GetProfileResponse);
   rpc ClearUserAvatar(ClearUserAvatarRequest) returns (GetProfileResponse);
+  rpc StartSensitiveOperationVerification(StartSensitiveOperationVerificationRequest) returns (StartSensitiveOperationVerificationResponse);
+  rpc StartSensitiveOperationPasskey(StartSensitiveOperationPasskeyRequest) returns (StartSensitiveOperationPasskeyResponse);
+  rpc RequestSensitiveOperationEmailCode(RequestSensitiveOperationEmailCodeRequest) returns (RequestSensitiveOperationEmailCodeResponse);
+  rpc FinishSensitiveOperationVerification(FinishSensitiveOperationVerificationRequest) returns (FinishSensitiveOperationVerificationResponse);
   rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
   rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (ConfirmEmailBindResponse);
   rpc UnbindEmail(UnbindEmailRequest) returns (UnbindEmailResponse);
@@ -420,6 +424,80 @@ message MfaChallenge {
   int64 expires_at = 5;
 }
 
+enum SensitiveOperationVerificationMethod {
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_UNSPECIFIED = 0;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_PASSWORD = 1;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_WEBAUTHN = 2;
+  SENSITIVE_OPERATION_VERIFICATION_METHOD_EMAIL = 3;
+}
+
+message SensitiveOperationVerificationChallenge {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated SensitiveOperationVerificationMethod required_methods = 2;
+  repeated SensitiveOperationVerificationMethod completed_methods = 3;
+  repeated SensitiveOperationVerificationMethod available_methods = 4;
+  string masked_email = 5;
+  int64 expires_at = 6;
+  int32 required_count = 7;
+}
+
+message StartSensitiveOperationVerificationRequest {}
+
+message StartSensitiveOperationVerificationResponse {
+  SensitiveOperationVerificationChallenge challenge = 1;
+  string verification_id = 2;
+}
+
+message StartSensitiveOperationPasskeyRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message StartSensitiveOperationPasskeyResponse {
+  string passkey_session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  bytes options = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 65536
+  }];
+}
+
+message RequestSensitiveOperationEmailCodeRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message RequestSensitiveOperationEmailCodeResponse {
+  string message = 1;
+  string masked_email = 2;
+}
+
+message FinishSensitiveOperationVerificationRequest {
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  SensitiveOperationVerificationMethod method = 2 [(buf.validate.field).enum.defined_only = true];
+  string password = 3 [(buf.validate.field).string = {max_len: 1024}];
+  string email_token = 4 [(buf.validate.field).string = {max_len: 255}];
+  string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
+  bytes passkey_credential = 6 [(buf.validate.field).bytes = {max_len: 16384}];
+}
+
+message FinishSensitiveOperationVerificationResponse {
+  string verification_id = 1;
+  SensitiveOperationVerificationChallenge challenge = 2;
+}
+
 // Start a real OPAQUE password login. The server receives only the OPAQUE
 // credential request, never the plaintext password. Provide exactly one login
 // identifier: `username` or `email`.
@@ -560,6 +638,10 @@ message FinishPasskeyBindRequest {
     min_len: 1
     max_len: 65536
   }];
+  string verification_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message PasskeyCredential {
@@ -585,6 +667,10 @@ message DeletePasskeyRequest {
   string credential_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 2048
+  }];
+  string verification_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
   }];
 }
 
@@ -2841,13 +2927,22 @@ message ConfirmEmailBindRequest {
     min_len: 1
     max_len: 255
   }];
+  string verification_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message ConfirmEmailBindResponse {
   User user = 1;
 }
 
-message UnbindEmailRequest {}
+message UnbindEmailRequest {
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
 
 message UnbindEmailResponse {
   User user = 1;

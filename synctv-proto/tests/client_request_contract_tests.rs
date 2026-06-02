@@ -481,6 +481,7 @@ fn test_get_authorization_url_for_bind_request_rejects_dangerous_redirect_url() 
     let request = GetAuthorizationUrlForBindRequest {
         provider: "github".to_string(),
         redirect_url: "javascript:alert(1)".to_string(),
+        verification_id: "verification-id".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -519,6 +520,7 @@ fn test_unlink_provider_request_rejects_invalid_provider_type() {
         provider: "custom".to_string(),
         provider_user_id: String::new(),
         provider_instance_name: String::new(),
+        verification_id: "verification-id".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -532,6 +534,7 @@ fn test_unlink_provider_request_requires_instance_for_specific_identity() {
         provider: "github".to_string(),
         provider_user_id: "remote-user-1".to_string(),
         provider_instance_name: String::new(),
+        verification_id: "verification-id".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");

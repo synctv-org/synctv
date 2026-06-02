@@ -230,6 +230,10 @@ impl OAuth2ApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<GetAuthorizationUrlForBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        self.user_service
+            .consume_sensitive_operation_verification(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
         let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
         let (authorization_url, state) = self
             .get_authorization_url_for_bind_with_control(
@@ -617,6 +621,10 @@ impl OAuth2ApiImpl {
         req: UnlinkProviderRequest,
     ) -> Result<UnlinkProviderResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        self.user_service
+            .consume_sensitive_operation_verification(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
         let provider_user_id = Self::optional_non_empty_trimmed(&req.provider_user_id);
         let provider_instance_name = Self::optional_non_empty_trimmed(&req.provider_instance_name);
         let result = self
@@ -834,6 +842,7 @@ mod tests {
         let err = crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
             provider: "logto1".to_string(),
             redirect_url: "native-app://oauth2/callback".to_string(),
+            verification_id: "verification-id".to_string(),
         })
         .expect_err("custom scheme redirect URL must be rejected");
 
@@ -870,6 +879,7 @@ mod tests {
             provider: "github".to_string(),
             provider_user_id: "a".repeat(257),
             provider_instance_name: "github-main".to_string(),
+            verification_id: "verification-id".to_string(),
         })
         .expect_err("overlong provider_user_id must be rejected");
 

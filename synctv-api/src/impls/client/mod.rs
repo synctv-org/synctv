@@ -29,7 +29,10 @@ mod webrtc;
 pub(crate) use playback::{
     build_start_playback_request, build_update_playback, PlaybackUpdateCommand,
 };
-pub(crate) use user::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
+pub(crate) use user::{
+    token_auth_context_from_claims, user_notification_preferences_to_proto,
+    user_preferences_update_from_proto,
+};
 
 // Proto conversion helpers used across impls modules within this crate.
 pub(crate) mod convert;

@@ -428,16 +428,20 @@ mod tests {
         assert!(authorize.provider.is_empty());
         assert_eq!(authorize.redirect_url, "http://localhost/callback");
 
-        let bind: GetAuthorizationUrlForBindRequest =
-            serde_urlencoded::from_str("redirect_url=http%3A%2F%2Flocalhost%2Fbind")
-                .expect("bind query should not require provider");
+        let bind: GetAuthorizationUrlForBindRequest = serde_urlencoded::from_str(
+            "redirect_url=http%3A%2F%2Flocalhost%2Fbind&verification_id=verification-id",
+        )
+        .expect("bind query should not require provider");
         assert!(bind.provider.is_empty());
         assert_eq!(bind.redirect_url, "http://localhost/bind");
+        assert_eq!(bind.verification_id, "verification-id");
 
-        let unlink: UnlinkProviderRequest =
-            serde_urlencoded::from_str("provider_user_id=remote-user-1")
-                .expect("unlink query should not require provider");
+        let unlink: UnlinkProviderRequest = serde_urlencoded::from_str(
+            "provider_user_id=remote-user-1&verification_id=verification-id",
+        )
+        .expect("unlink query should not require provider");
         assert!(unlink.provider.is_empty());
+        assert_eq!(unlink.verification_id, "verification-id");
         assert_eq!(unlink.provider_user_id, "remote-user-1");
         assert!(unlink.provider_instance_name.is_empty());
     }

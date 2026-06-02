@@ -27,7 +27,8 @@ use synctv_core::{
         permission::PermissionServiceRuntime,
         user::UserServiceRuntimeOptions,
         AuthFactorMethod, AuthenticatedLogin, InMemoryTokenBlacklistStore, PasskeyService,
-        PermissionService, SecurityPipeline, UserService,
+        PermissionService, SecurityPipeline, SensitiveVerificationOutcome, TokenAuthContext,
+        UserService,
     },
     Config, Error,
 };
@@ -114,6 +115,30 @@ fn make_user(username: &str) -> User {
         banned_at: None,
         banned_by: None,
         banned_reason: None,
+    }
+}
+
+async fn password_verification_id(
+    service: &UserService,
+    user_id: &UserId,
+    password: &str,
+) -> String {
+    let outcome = service
+        .start_sensitive_operation_verification(user_id, None)
+        .await
+        .expect("start sensitive verification");
+    let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
+        panic!("password verification should start with a pending challenge");
+    };
+    match service
+        .finish_sensitive_operation_password_verification(&challenge.session_id, password, None, None)
+        .await
+        .expect("finish password verification")
+    {
+        SensitiveVerificationOutcome::Complete { verification_id } => verification_id,
+        SensitiveVerificationOutcome::Pending(_) => {
+            panic!("single-factor password verification should complete")
+        }
     }
 }
 
@@ -969,18 +994,18 @@ async fn assert_update_user_rejects_direct_email_changes(pool: PgPool) {
 
 async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     let service = create_user_service(&pool);
-    let user_repo = UserRepository::new(pool.clone());
     let email_repo = UserEmailRepository::new(pool.clone());
 
-    let created = user_repo
-        .create(&make_user("email_bind_flow_user"))
+    let original_email = "email_bind_flow_user@example.com";
+    let (created, _, _) = service
+        .register(
+            "email_bind_flow_user".to_string(),
+            Some(original_email.to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
         .await
         .expect("create email bind flow user");
-    let original_email = "email_bind_flow_user@example.com";
-    email_repo
-        .create_for_user_with_executor(&created, Some(original_email), &pool)
-        .await
-        .expect("create original email identity");
     let new_email = "email_bind_flow_new@example.com";
 
     let token = service
@@ -995,7 +1020,12 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     assert_eq!(after_start.as_deref(), Some(original_email));
 
     let mismatch_result = service
-        .confirm_email_bind(&created.id, "email_bind_flow_other@example.com", &token)
+        .confirm_email_bind(
+            &created.id,
+            "email_bind_flow_other@example.com",
+            &token,
+            &password_verification_id(&service, &created.id, "StrongPass1").await,
+        )
         .await
         .expect_err("email mismatch must reject pending bind request");
     assert!(
@@ -1010,7 +1040,12 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     assert_eq!(after_mismatch.as_deref(), Some(original_email));
 
     let updated = service
-        .confirm_email_bind(&created.id, new_email, &token)
+        .confirm_email_bind(
+            &created.id,
+            new_email,
+            &token,
+            &password_verification_id(&service, &created.id, "StrongPass1").await,
+        )
         .await
         .expect("confirm email bind");
     assert_eq!(updated.id, created.id);
@@ -1021,7 +1056,12 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     assert_eq!(updated_email.as_deref(), Some(new_email));
 
     let consumed_result = service
-        .confirm_email_bind(&created.id, new_email, &token)
+        .confirm_email_bind(
+            &created.id,
+            new_email,
+            &token,
+            &password_verification_id(&service, &created.id, "StrongPass1").await,
+        )
         .await
         .expect_err("consumed bind token must be rejected");
     assert!(
@@ -1097,6 +1137,233 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
     assert!(factors.password);
     assert!(factors.email);
     assert_eq!(factors.eligible_count(), 2);
+}
+
+async fn assert_sensitive_verification_is_one_time(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = service
+        .register(
+            "sensitive_verification_one_time".to_string(),
+            Some("sensitive_verification_one_time@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+
+    let verification_id = password_verification_id(&service, &user.id, "StrongPass1").await;
+    service
+        .consume_sensitive_operation_verification(&user.id, &verification_id)
+        .await
+        .expect("first verification consumption should succeed");
+    let reused = service
+        .consume_sensitive_operation_verification(&user.id, &verification_id)
+        .await
+        .expect_err("verification id must be single-use");
+    assert!(
+        matches!(reused, Error::Authentication(_)),
+        "expected Authentication for reused verification id, got {reused:?}"
+    );
+}
+
+async fn assert_sensitive_password_verification_is_rate_limited(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let (user, _, _) = service
+        .register(
+            "sensitive_verification_rate_limit".to_string(),
+            Some("sensitive_verification_rate_limit@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+    let outcome = service
+        .start_sensitive_operation_verification(&user.id, None)
+        .await
+        .expect("start sensitive verification");
+    let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
+        panic!("password-sensitive verification should start with a challenge");
+    };
+
+    for _ in 0..5 {
+        let result = service
+            .finish_sensitive_operation_password_verification(
+                &challenge.session_id,
+                "WrongPass1",
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Authentication(_))),
+            "wrong password should fail authentication"
+        );
+    }
+
+    let locked = service
+        .finish_sensitive_operation_password_verification(
+            &challenge.session_id,
+            "StrongPass1",
+            None,
+            None,
+        )
+        .await
+        .expect_err("sensitive password verification should lock out after repeated failures");
+    assert!(
+        matches!(locked, Error::Authentication(ref message) if message.contains("Too many failed attempts")),
+        "expected sensitive verification brute-force lockout, got {locked:?}"
+    );
+}
+
+async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabled(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let email = "sensitive_verification_2fa@example.com";
+    let (user, _, _) = service
+        .register(
+            "sensitive_verification_2fa".to_string(),
+            Some(email.to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password and email");
+    insert_trusted_email_identity(&pool, &user.id, email).await;
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+email user can enable two-factor authentication");
+
+    let outcome = service
+        .start_sensitive_operation_verification(&user.id, None)
+        .await
+        .expect("start sensitive verification");
+    let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
+        panic!("2FA-enabled sensitive verification should start with a pending challenge");
+    };
+    assert_eq!(challenge.required_count, 2);
+    assert!(challenge
+        .available_methods
+        .contains(&AuthFactorMethod::Password));
+    assert!(challenge
+        .available_methods
+        .contains(&AuthFactorMethod::Email));
+
+    let pending = service
+        .finish_sensitive_operation_password_verification(
+            &challenge.session_id,
+            "StrongPass1",
+            None,
+            None,
+        )
+        .await
+        .expect("password factor should verify");
+    let SensitiveVerificationOutcome::Pending(next_challenge) = pending else {
+        panic!("2FA-enabled sensitive verification should require another factor");
+    };
+    assert_eq!(next_challenge.required_count, 2);
+    assert_eq!(
+        next_challenge.completed_methods,
+        vec![AuthFactorMethod::Password]
+    );
+    assert!(next_challenge
+        .available_methods
+        .contains(&AuthFactorMethod::Email));
+
+    let complete = service
+        .finish_sensitive_operation_verified_method(
+            &next_challenge.session_id,
+            AuthFactorMethod::Email,
+        )
+        .await
+        .expect("email factor should complete");
+    let SensitiveVerificationOutcome::Complete { verification_id } = complete else {
+        panic!("second factor should complete sensitive verification");
+    };
+    service
+        .consume_sensitive_operation_verification(&user.id, &verification_id)
+        .await
+        .expect("completed two-factor verification should be consumable");
+}
+
+async fn assert_oauth2_session_sensitive_verification_requires_one_local_factor(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let email = "sensitive_verification_oauth2@example.com";
+    let (user, _, _) = service
+        .register(
+            "sensitive_verification_oauth2".to_string(),
+            Some(email.to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password and email");
+    insert_trusted_email_identity(&pool, &user.id, email).await;
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+email user can enable two-factor authentication");
+
+    let outcome = service
+        .start_sensitive_operation_verification(&user.id, Some(TokenAuthContext::OAuth2))
+        .await
+        .expect("start OAuth2 sensitive verification");
+    let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
+        panic!(
+            "OAuth2-session sensitive verification should start with local factors when present"
+        );
+    };
+    assert_eq!(challenge.required_count, 1);
+    assert!(challenge
+        .available_methods
+        .contains(&AuthFactorMethod::Password));
+
+    let complete = service
+        .finish_sensitive_operation_password_verification(
+            &challenge.session_id,
+            "StrongPass1",
+            None,
+            None,
+        )
+        .await
+        .expect("one local factor should complete OAuth2-session sensitive verification");
+    let SensitiveVerificationOutcome::Complete { verification_id } = complete else {
+        panic!("OAuth2-session sensitive verification should complete after one local factor");
+    };
+    service
+        .consume_sensitive_operation_verification(&user.id, &verification_id)
+        .await
+        .expect("OAuth2-session verification should be consumable");
+}
+
+async fn assert_oauth2_only_session_can_bootstrap_first_local_factor(pool: PgPool) {
+    let service = create_user_service(&pool);
+    let user_repo = UserRepository::new(pool.clone());
+    let user = user_repo
+        .create(&User::new(
+            "sensitive_verification_oauth2_only".to_string(),
+            SignupMethod::OAuth2,
+        ))
+        .await
+        .expect("create OAuth2-only user");
+    insert_oauth2_identity(
+        &pool,
+        &user.id,
+        "github",
+        "sensitive-verification-oauth2-only",
+    )
+    .await;
+
+    let outcome = service
+        .start_sensitive_operation_verification(&user.id, Some(TokenAuthContext::OAuth2))
+        .await
+        .expect("OAuth2-only account should receive a bootstrap verification id");
+    let SensitiveVerificationOutcome::Complete { verification_id } = outcome else {
+        panic!("OAuth2-only bootstrap should complete from current OAuth2 session");
+    };
+    service
+        .consume_sensitive_operation_verification(&user.id, &verification_id)
+        .await
+        .expect("OAuth2-only bootstrap verification should be consumable");
 }
 
 async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
@@ -1519,6 +1786,11 @@ async fn test_user_service_registration_login_and_delete_flows() {
     assert_email_bind_rejects_taken_email(pool.clone()).await;
 
     assert_two_factor_requires_two_usable_methods(pool.clone()).await;
+    assert_sensitive_verification_is_one_time(pool.clone()).await;
+    assert_sensitive_password_verification_is_rate_limited(pool.clone()).await;
+    assert_sensitive_verification_requires_two_local_factors_when_2fa_enabled(pool.clone()).await;
+    assert_oauth2_session_sensitive_verification_requires_one_local_factor(pool.clone()).await;
+    assert_oauth2_only_session_can_bootstrap_first_local_factor(pool.clone()).await;
     assert_two_factor_blocks_deleting_required_passkey(pool.clone()).await;
     assert_two_factor_blocks_single_factor_token_issuance(pool.clone()).await;
     assert_two_factor_access_token_context_is_enforced(pool.clone()).await;

@@ -722,6 +722,11 @@ pub async fn init_services_with_options(
                     &shared_state_profile,
                 )?,
             ),
+            sensitive_verification_session_store: Some(
+                crate::service::user::sensitive_verification_session_store_from_shared_state_profile(
+                    &shared_state_profile,
+                )?,
+            ),
             version_fence: Some(version_fence.clone()),
             permission_service: Some(PermissionService::new_with_runtime(
                 RoomMemberRepository::new(pool.clone()),
@@ -1719,7 +1724,10 @@ mod tests {
         });
 
         assert!(
-            Arc::ptr_eq(room_service.media_service().providers_manager(), &providers_manager),
+            Arc::ptr_eq(
+                room_service.media_service().providers_manager(),
+                &providers_manager
+            ),
             "room service must reuse the injected providers manager instead of constructing a hidden one"
         );
     }

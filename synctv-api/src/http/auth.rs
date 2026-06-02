@@ -58,11 +58,11 @@ pub async fn login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req =
-                    parse_auth_json_into::<LoginRequest, synctv_proto::http_serde::LoginRequestDef>(
-                        request,
-                    )
-                    .await?;
+                let req = parse_auth_json_into::<
+                    LoginRequest,
+                    synctv_proto::http_serde::LoginRequestDef,
+                >(request)
+                .await?;
                 client_api
                     .login_with_control(req, client_ip, Some(&request_control))
                     .await

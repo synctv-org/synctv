@@ -888,6 +888,22 @@ fn register_extracted_user_routes() -> Router<AppState> {
         )
         .route("/api/user/email/unbind", post(user::unbind_email))
         .route(
+            "/api/user/sensitive-verification/start",
+            post(user::start_sensitive_operation_verification),
+        )
+        .route(
+            "/api/user/sensitive-verification/passkey/start",
+            post(user::start_sensitive_operation_passkey),
+        )
+        .route(
+            "/api/user/sensitive-verification/email/request",
+            post(user::request_sensitive_operation_email_code),
+        )
+        .route(
+            "/api/user/sensitive-verification/finish",
+            post(user::finish_sensitive_operation_verification),
+        )
+        .route(
             "/api/user/preferences",
             get(user::get_user_preferences).patch(user::update_user_preferences),
         )
@@ -1253,6 +1269,12 @@ mod tests {
             serde_json::from_str(r"{}").expect("join room body");
         assert!(join_room.room_id.is_empty());
 
+        let room_password_login: crate::proto::client::StartRoomPasswordLoginRequest =
+            serde_json::from_str(r#"{"credential_request":"AQID"}"#)
+                .expect("room password login body");
+        assert!(room_password_login.room_id.is_empty());
+        assert_eq!(room_password_login.credential_request, vec![1, 2, 3]);
+
         let edit_media: crate::proto::client::EditMediaRequest =
             serde_json::from_str(r#"{"name":"Episode 1"}"#).expect("edit media body");
         assert_eq!(edit_media.name, "Episode 1");
@@ -1280,6 +1302,12 @@ mod tests {
         assert!(member_permissions.user_id.is_empty());
         assert_eq!(member_permissions.role, 2);
         assert_eq!(member_permissions.added_permissions, 1);
+
+        let delete_passkey: crate::proto::client::DeletePasskeyRequest =
+            serde_json::from_str(r#"{"verification_id":"verify_123"}"#)
+                .expect("delete passkey body");
+        assert!(delete_passkey.credential_id.is_empty());
+        assert_eq!(delete_passkey.verification_id, "verify_123");
     }
 
     #[test]
@@ -1865,7 +1893,10 @@ mod tests {
             "chat message PATCH route must accept PATCH requests"
         );
         assert!(
-            matches!(response.status(), StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED),
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED
+            ),
             "request should reach the registered route and be handled by the normal request pipeline"
         );
     }
@@ -1898,7 +1929,10 @@ mod tests {
             "chat message DELETE route must accept DELETE requests"
         );
         assert!(
-            matches!(response.status(), StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED),
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED
+            ),
             "request should reach the registered route and be handled by the normal request pipeline"
         );
     }
@@ -2335,9 +2369,15 @@ mod tests {
             (
                 "POST",
                 "/api/user/passkeys/bind/finish",
-                Some(r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#),
+                Some(
+                    r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"},"verification_id":"verification-id"}"#,
+                ),
             ),
-            ("DELETE", "/api/user/passkeys/Y3JlZGVudGlhbA", None),
+            (
+                "DELETE",
+                "/api/user/passkeys/Y3JlZGVudGlhbA",
+                Some(r#"{"verification_id":"verification-id"}"#),
+            ),
         ] {
             let mut builder = Request::builder().method(method).uri(uri);
             if body.is_some() {

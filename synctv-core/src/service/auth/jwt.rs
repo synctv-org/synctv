@@ -61,13 +61,19 @@ impl TokenAuthContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenCredentialBinding {
-    Password { version: i32 },
+    Password {
+        version: i32,
+    },
     OAuth2 {
         provider_instance_name: String,
         provider_user_id: String,
     },
-    WebAuthn { credential_id: Vec<u8> },
-    Email { email: String },
+    WebAuthn {
+        credential_id: Vec<u8>,
+    },
+    Email {
+        email: String,
+    },
 }
 
 /// JWT claims structure
@@ -662,9 +668,13 @@ impl JwtService {
                 None,
                 Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id)),
             ),
-            TokenCredentialBinding::Email { email } => {
-                (Some("email".to_string()), None, None, Some(email.clone()), None)
-            }
+            TokenCredentialBinding::Email { email } => (
+                Some("email".to_string()),
+                None,
+                None,
+                Some(email.clone()),
+                None,
+            ),
         };
 
         let claims = Claims {

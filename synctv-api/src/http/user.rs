@@ -14,8 +14,13 @@ use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
     CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    FinishPasskeyBindRequest, ListMyRoomsResponse, ListPasskeysResponse, PasskeyCredentialResponse,
-    StartPasskeyBindRequest, StartPasskeyBindResponse,
+    FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest,
+    FinishSensitiveOperationVerificationResponse, ListMyRoomsResponse, ListPasskeysResponse,
+    PasskeyCredentialResponse,
+    RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse,
+    StartPasskeyBindRequest, StartPasskeyBindResponse, StartSensitiveOperationPasskeyRequest,
+    StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
+    StartSensitiveOperationVerificationResponse,
 };
 use crate::proto::client::{
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, GetUserPreferencesResponse,
@@ -42,6 +47,11 @@ pub struct UserAvatarObjectPath {
 #[derive(Debug, serde::Deserialize)]
 pub struct UserAvatarObjectQuery {
     pub token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PasskeyCredentialPath {
+    pub credential_id: String,
 }
 
 /// Get current user info
@@ -459,6 +469,188 @@ pub async fn unbind_email(
     feature = "openapi",
     utoipa::path(
         post,
+        path = "/api/user/sensitive-verification/start",
+        tag = "User",
+        request_body = StartSensitiveOperationVerificationRequest,
+        responses(
+            (status = 200, description = "Sensitive operation verification started", body = StartSensitiveOperationVerificationResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn start_sensitive_operation_verification(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<StartSensitiveOperationVerificationRequest>,
+) -> AppResult<Json<StartSensitiveOperationVerificationResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .start_sensitive_operation_verification(
+                        &auth.user_id,
+                        crate::impls::client::token_auth_context_from_claims(&auth.claims),
+                        req,
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/sensitive-verification/passkey/start",
+        tag = "User",
+        request_body = StartSensitiveOperationPasskeyRequest,
+        responses(
+            (status = 200, description = "Sensitive operation passkey challenge created", body = StartSensitiveOperationPasskeyResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn start_sensitive_operation_passkey(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<StartSensitiveOperationPasskeyRequest>,
+) -> AppResult<Json<StartSensitiveOperationPasskeyResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .start_sensitive_operation_passkey(&auth.user_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/sensitive-verification/email/request",
+        tag = "User",
+        request_body = RequestSensitiveOperationEmailCodeRequest,
+        responses(
+            (status = 200, description = "Sensitive operation email code sent", body = RequestSensitiveOperationEmailCodeResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn request_sensitive_operation_email_code(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<RequestSensitiveOperationEmailCodeRequest>,
+) -> AppResult<Json<RequestSensitiveOperationEmailCodeResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .request_sensitive_operation_email_code(&auth.user_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/sensitive-verification/finish",
+        tag = "User",
+        request_body = FinishSensitiveOperationVerificationRequest,
+        responses(
+            (status = 200, description = "Sensitive operation verification progressed", body = FinishSensitiveOperationVerificationResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn finish_sensitive_operation_verification(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<FinishSensitiveOperationVerificationRequest>,
+) -> AppResult<Json<FinishSensitiveOperationVerificationResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |request_control, auth| async move {
+                client_api
+                    .finish_sensitive_operation_verification(
+                        &auth.user_id,
+                        req,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
         path = "/api/user/opaque-password/update/start",
         tag = "User",
         request_body = StartOpaquePasswordUpdateRequest,
@@ -665,6 +857,7 @@ pub async fn list_passkeys(
         delete,
         path = "/api/user/passkeys/{credential_id}",
         tag = "User",
+        request_body = DeletePasskeyRequest,
         params(
             ("credential_id" = String, Path, description = "Passkey credential id")
         ),
@@ -681,8 +874,10 @@ pub async fn list_passkeys(
 pub async fn delete_passkey(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(req): Path<DeletePasskeyRequest>,
+    Path(path): Path<PasskeyCredentialPath>,
+    Json(mut req): Json<DeletePasskeyRequest>,
 ) -> AppResult<Json<DeletePasskeyResponse>> {
+    req.credential_id = path.credential_id;
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));

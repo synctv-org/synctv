@@ -164,8 +164,8 @@ async fn start_tampered_opaque_room_login(
     password: &str,
     client_ip: &str,
 ) -> Result<PendingOpaqueRoomLogin, synctv_api::impls::ApiError> {
-    let mut login = start_opaque_room_login(client_api, user_id, room_id, password, client_ip)
-        .await?;
+    let mut login =
+        start_opaque_room_login(client_api, user_id, room_id, password, client_ip).await?;
     if let Some(first) = login.credential_finalization.first_mut() {
         *first ^= 0x01;
     } else {

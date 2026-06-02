@@ -57,7 +57,7 @@ pub use auth::token_blacklist::{
 pub use auth::{
     brute_force_protection_from_shared_state_profile, hash_password, verify_password,
     AuthenticatedToken, BruteForceProtection, BruteForceProtectionService, Claims, GuestClaims,
-    JwtService, SecurityPipeline, TokenBlacklistStore, TokenType,
+    JwtService, SecurityPipeline, TokenAuthContext, TokenBlacklistStore, TokenType,
 };
 pub use ban_record::{
     BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordService, BanRecordTargetType,
@@ -144,12 +144,15 @@ pub use stun_server::{
 pub use user::UserService;
 pub use user::{
     local_mfa_session_store, local_opaque_login_session_store,
-    mfa_session_store_from_shared_state_profile,
+    local_sensitive_verification_session_store, mfa_session_store_from_shared_state_profile,
     opaque_login_session_store_from_shared_state_profile,
-    opaque_registration_session_store_from_shared_state_profile, shared_mfa_session_store,
-    shared_opaque_login_session_store, shared_opaque_registration_session_store, AuthFactorMethod,
-    AuthenticatedLogin, MfaChallenge, MfaSessionStore, OpaqueLoginSessionStore,
-    OpaqueRegistrationSessionStore, RegistrationMode, RegistrationPolicy,
+    opaque_registration_session_store_from_shared_state_profile,
+    sensitive_verification_session_store_from_shared_state_profile, shared_mfa_session_store,
+    shared_opaque_login_session_store, shared_opaque_registration_session_store,
+    shared_sensitive_verification_session_store, AuthFactorMethod, AuthenticatedLogin,
+    MfaChallenge, MfaSessionStore, OpaqueLoginSessionStore, OpaqueRegistrationSessionStore,
+    RegistrationMode, RegistrationPolicy, SensitiveVerificationChallenge,
+    SensitiveVerificationOutcome, SensitiveVerificationSessionStore,
 };
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{

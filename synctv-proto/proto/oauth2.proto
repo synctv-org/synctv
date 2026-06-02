@@ -115,6 +115,11 @@ message GetAuthorizationUrlForBindRequest {
     message: "redirect_url must be empty, an https URL, or a loopback http URL"
     expression: "this == '' || (size(this) <= 2048 && (this.matches('^https://[^\\\\s]+$') || this.matches('^http://(127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(:[0-9]+)?/[^\\\\s]*$')))"
   }];
+
+  string verification_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message GetAuthorizationUrlForBindResponse {
@@ -231,6 +236,11 @@ message UnlinkProviderRequest {
       max_len: 64
     }
   ];
+
+  string verification_id = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 
   option (buf.validate.message).cel = {
     id: "oauth2.unlink_provider.instance_for_specific_identity"

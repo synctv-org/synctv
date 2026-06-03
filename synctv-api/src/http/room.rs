@@ -200,17 +200,16 @@ pub struct GetPlaybackQuery {
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct WatchQuery {
-    pub version: Option<String>,
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
-    pub after_event_id: Option<String>,
+    pub after_event_sequence: Option<i64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct WatchPlaybackSnapshotQuery {
-    pub version: Option<String>,
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
+    pub after_event_sequence: Option<i64>,
     pub media_id: Option<String>,
     pub playlist_id: Option<String>,
     #[serde(default, with = "synctv_proto::http_serde::json_bytes")]
@@ -299,11 +298,28 @@ fn parse_watch_delivery_mode(value: Option<&str>) -> AppResult<i32> {
     }
 }
 
-fn watch_options(version: Option<&str>, delivery_mode: Option<&str>) -> AppResult<WatchOptions> {
+fn watch_options(delivery_mode: Option<&str>) -> AppResult<WatchOptions> {
     Ok(WatchOptions {
-        version: version.unwrap_or_default().to_string(),
         delivery_mode: parse_watch_delivery_mode(delivery_mode)?,
     })
+}
+
+fn watch_after_event_sequence(
+    headers: &HeaderMap,
+    query_sequence: Option<i64>,
+) -> AppResult<Option<i64>> {
+    match headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| super::AppError::bad_request("Invalid Last-Event-ID event sequence")),
+        None => Ok(query_sequence),
+    }
 }
 
 fn parse_delivery_preference(
@@ -498,35 +514,18 @@ fn sse_event_from_server_message(
 fn sse_event_id_from_resource_changed(
     changed: &crate::proto::client::ResourceChanged,
 ) -> Option<String> {
-    let Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) =
-        changed.payload.as_ref()
-    else {
-        return None;
-    };
-    let trimmed = event.event_id.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn chat_watch_after_event_id(headers: &HeaderMap, query: &WatchQuery) -> Option<String> {
-    header_last_event_id(headers).or_else(|| trimmed_query_after_event_id(query))
-}
-
-fn header_last_event_id(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn trimmed_query_after_event_id(query: &WatchQuery) -> Option<String> {
-    query
-        .after_event_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+    changed
+        .event_cursor
+        .as_ref()
+        .map(|cursor| cursor.sequence.to_string())
+        .or_else(|| {
+            let Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) =
+                changed.payload.as_ref()
+            else {
+                return None;
+            };
+            Some(event.sequence.to_string())
+        })
 }
 
 async fn open_resource_watch_sse(
@@ -1457,15 +1456,17 @@ pub async fn watch_playback_state(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    headers: HeaderMap,
     Query(query): Query<WatchQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchPlaybackStateRequest {
-        options: Some(watch_options(
-            query.version.as_deref(),
-            query.delivery_mode.as_deref(),
-        )?),
+        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        playback_state: Some(crate::proto::client::ObservePlaybackState {
+            after_event_sequence,
+        }),
     };
     let observe = crate::impls::messaging::watch_playback_state_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
@@ -1475,21 +1476,21 @@ pub async fn watch_playback_snapshot(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    headers: HeaderMap,
     Query(query): Query<WatchPlaybackSnapshotQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackSnapshotRequest {
-        options: Some(watch_options(
-            query.version.as_deref(),
-            query.delivery_mode.as_deref(),
-        )?),
+        options: Some(watch_options(query.delivery_mode.as_deref())?),
         playback_snapshot: Some(crate::proto::client::ObservePlaybackSnapshot {
             media_id: query.media_id.unwrap_or_default(),
             playlist_id: query.playlist_id.unwrap_or_default(),
             target: query.target,
             playback_client_profile,
+            after_event_sequence,
         }),
     };
     let observe = crate::impls::messaging::watch_playback_snapshot_observe(request);
@@ -1500,15 +1501,17 @@ pub async fn watch_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    headers: HeaderMap,
     Query(query): Query<WatchQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchRoomSettingsRequest {
-        options: Some(watch_options(
-            query.version.as_deref(),
-            query.delivery_mode.as_deref(),
-        )?),
+        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        room_settings: Some(crate::proto::client::ObserveRoomSettings {
+            after_event_sequence,
+        }),
     };
     let observe = crate::impls::messaging::watch_room_settings_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
@@ -1518,17 +1521,19 @@ pub async fn watch_playlist_items(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    headers: HeaderMap,
     Query(query): Query<WatchQuery>,
     ProtoQuery(request): ProtoQuery<ListPlaylistItemsRequest>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchPlaylistItemsRequest {
-        options: Some(watch_options(
-            query.version.as_deref(),
-            query.delivery_mode.as_deref(),
-        )?),
-        request: Some(request),
+        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        playlist_items: Some(crate::proto::client::ObservePlaylistItems {
+            request: Some(request),
+            after_event_sequence,
+        }),
     };
     let observe = crate::impls::messaging::watch_playlist_items_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
@@ -1538,17 +1543,19 @@ pub async fn watch_room_members(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    headers: HeaderMap,
     Query(query): Query<WatchQuery>,
     ProtoQuery(request): ProtoQuery<GetRoomMembersRequest>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchRoomMembersRequest {
-        options: Some(watch_options(
-            query.version.as_deref(),
-            query.delivery_mode.as_deref(),
-        )?),
-        request: Some(request),
+        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        room_members: Some(crate::proto::client::ObserveRoomMembers {
+            request: Some(request),
+            after_event_sequence,
+        }),
     };
     let observe = crate::impls::messaging::watch_room_members_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
@@ -1563,7 +1570,7 @@ pub async fn watch_room_members(
         params(
             ("room_id" = String, Path, description = "Room ID"),
             ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
-            ("after_event_id" = Option<String>, Query, description = "Replay chat events strictly after this event id"),
+            ("after_event_sequence" = Option<i64>, Query, description = "Replay chat events strictly after this durable event sequence"),
             ("delivery_mode" = Option<String>, Query, description = "Resource watch delivery mode")
         ),
         responses(
@@ -1587,17 +1594,13 @@ pub async fn watch_chat_events(
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchChatEventsRequest {
-        options: Some(watch_options(
-            query.version.as_deref(),
-            query.delivery_mode.as_deref(),
-        )?),
-        chat_events: Some(crate::proto::client::ObserveChatEvents::default()),
+        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        chat_events: Some(crate::proto::client::ObserveChatEvents {
+            after_event_sequence,
+        }),
     };
-    let mut request = request;
-    if let Some(after_event_id) = chat_watch_after_event_id(&headers, &query) {
-        request.chat_events = Some(crate::proto::client::ObserveChatEvents { after_event_id });
-    }
     let observe = crate::impls::messaging::watch_chat_events_observe(request);
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
@@ -3802,10 +3805,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        build_get_playback_request, chat_watch_after_event_id, parse_optional_query_bool,
-        parse_optional_query_i32, sse_event_from_server_message,
-        sse_event_id_from_resource_changed, AddMediaBatchBody, CancelOnDropStream,
-        CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, UpdatePlaybackRequest, WatchQuery,
+        build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
+        sse_event_from_server_message, sse_event_id_from_resource_changed, AddMediaBatchBody,
+        CancelOnDropStream, CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery,
+        UpdatePlaybackRequest,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
@@ -4318,42 +4321,9 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_watch_after_event_id_uses_last_event_id_header() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "last-event-id",
-            axum::http::HeaderValue::from_static(" chat-event-2 "),
-        );
-        let query = WatchQuery {
-            after_event_id: Some("chat-event-1".to_string()),
-            ..WatchQuery::default()
-        };
-
-        assert_eq!(
-            chat_watch_after_event_id(&headers, &query).as_deref(),
-            Some("chat-event-2")
-        );
-    }
-
-    #[test]
-    fn test_chat_watch_after_event_id_falls_back_to_query() {
-        let headers = axum::http::HeaderMap::new();
-        let query = WatchQuery {
-            after_event_id: Some(" chat-event-1 ".to_string()),
-            ..WatchQuery::default()
-        };
-
-        assert_eq!(
-            chat_watch_after_event_id(&headers, &query).as_deref(),
-            Some("chat-event-1")
-        );
-    }
-
-    #[test]
-    fn test_sse_event_id_from_resource_changed_uses_chat_event_id() {
+    fn test_sse_event_id_from_resource_changed_uses_event_sequence() {
         let changed = crate::proto::client::ResourceChanged {
             observe_id: "chat-events".to_string(),
-            version: "snapshot-version".to_string(),
             payload: Some(crate::proto::client::resource_changed::Payload::ChatEvent(
                 crate::proto::client::ChatMessageEvent {
                     event_id: " chat-event-3 ".to_string(),
@@ -4361,18 +4331,20 @@ mod tests {
                     kind: crate::proto::client::ChatMessageEventKind::Created as i32,
                     message: None,
                     occurred_at: 123,
+                    sequence: 3,
                 },
             )),
+            event_cursor: None,
         };
 
         assert_eq!(
             sse_event_id_from_resource_changed(&changed).as_deref(),
-            Some("chat-event-3")
+            Some("3")
         );
     }
 
     #[tokio::test]
-    async fn test_chat_resource_changed_sse_event_includes_chat_event_id() {
+    async fn test_chat_resource_changed_sse_event_includes_event_sequence() {
         use crate::proto::client::resource_changed::Payload;
         use crate::proto::client::server_message::Message;
         use axum::response::IntoResponse;
@@ -4381,14 +4353,15 @@ mod tests {
             message: Some(Message::ResourceChanged(
                 crate::proto::client::ResourceChanged {
                     observe_id: "chat-events".to_string(),
-                    version: "snapshot-version".to_string(),
                     payload: Some(Payload::ChatEvent(crate::proto::client::ChatMessageEvent {
                         event_id: "chat-event-3".to_string(),
                         room_id: "room_test".to_string(),
                         kind: crate::proto::client::ChatMessageEventKind::Created as i32,
                         message: None,
                         occurred_at: 123,
+                        sequence: 3,
                     })),
+                    event_cursor: None,
                 },
             )),
         };
@@ -4408,7 +4381,7 @@ mod tests {
             .expect("SSE body should render");
         let rendered = std::str::from_utf8(&body).expect("SSE body should be utf-8");
 
-        assert!(rendered.contains("id: chat-event-3\n"));
+        assert!(rendered.contains("id: 3\n"));
         assert!(rendered.contains("event: changed\n"));
     }
 

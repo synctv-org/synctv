@@ -17,8 +17,10 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{Playlist, RoomPlaybackState, User, UserId, UserRole, UserStatus},
-    repository::UserRepository,
+    models::{
+        Media, MediaId, Playlist, RoomId, RoomPlaybackState, User, UserId, UserRole, UserStatus,
+    },
+    repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         playback::{BroadcastResult, PlaybackBroadcaster},
@@ -70,6 +72,42 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+async fn attach_test_media(pool: &PgPool, room_id: RoomId, owner_id: UserId) -> RoomPlaybackState {
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id,
+        creator_id: Some(owner_id),
+        name: "Playback Broadcast Test Video".to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        cover_file_reference_id: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media = MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("test media should be created");
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let mut state = playback_repo
+        .create_or_get(&room_id)
+        .await
+        .expect("playback state should be created");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    playback_repo
+        .update(&state)
+        .await
+        .expect("playback state should attach test media")
 }
 
 async fn create_top_level_playlist(
@@ -239,6 +277,7 @@ async fn test_seek_triggers_broadcast() {
         )
         .await
         .unwrap();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
@@ -467,6 +506,7 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
         )
         .await
         .unwrap();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
@@ -821,6 +861,7 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
         )
         .await
         .unwrap();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
@@ -905,6 +946,8 @@ async fn test_cluster_mode_multiple_rooms() {
         )
         .await
         .unwrap();
+    attach_test_media(&pool, room1.id, owner.id).await;
+    attach_test_media(&pool, room2.id, owner.id).await;
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());

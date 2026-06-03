@@ -1244,7 +1244,7 @@ impl AdminApiImpl {
                 .encode_room_id(*room_id)
                 .expect("positive room id must encode as public ID"),
             name: String::new(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -4320,7 +4320,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
-        let command = crate::impls::client::build_update_playback(req)?;
+        let command = crate::impls::client::build_update_playback(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
@@ -4330,10 +4330,31 @@ impl AdminApiImpl {
                 position,
                 speed,
                 version,
+                expected_source,
             } => {
-                self.room_service
-                    .admin_update_playback_as(rid, &actor, playing, position, speed, version)
-                    .await
+                let service = self.room_service.playback_service();
+                match expected_source {
+                    Some(expected_source) => {
+                        service
+                            .admin_update_multiple_checked_source_with_version(
+                                rid,
+                                *actor.user_id(),
+                                playing,
+                                position,
+                                speed,
+                                version,
+                                expected_source,
+                            )
+                            .await
+                    }
+                    None => {
+                        self.room_service
+                            .admin_update_playback_as(
+                                rid, &actor, playing, position, speed, version,
+                            )
+                            .await
+                    }
+                }
             }
         }
         .map_err(ApiError::from)?;
@@ -10414,6 +10435,11 @@ mod tests {
                     position: Some(12.5),
                     speed: None,
                     version: Some(state.version),
+                    expected_media_id: Some(
+                        admin_api.public_id_codec.encode_media_id(media.id).unwrap(),
+                    ),
+                    expected_playlist_id: Some(String::new()),
+                    expected_target_hash: Some(state.target_hash()),
                 },
                 &global_admin.id,
                 &RequestContext::default(),

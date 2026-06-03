@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT MIN(sequence) AS min_sequence, MAX(sequence) AS max_sequence\n            FROM room_resource_events\n            WHERE room_id = $1\n              AND resource_type = ANY($2::TEXT[])\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "min_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "max_sequence",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "b67a7036439757b931783d684552670017fe0242537851e3a0c347a9aadcab57"
+}

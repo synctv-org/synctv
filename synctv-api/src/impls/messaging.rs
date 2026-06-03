@@ -901,6 +901,17 @@ impl ResourceWatchSession {
                 return Err(RealtimeJoinError::from(error));
             }
         }
+        if let Err(error) = self
+            .resource_observer
+            .replay_room_resource_events_after(observe)
+            .await
+        {
+            self.event_service.unsubscribe(&self.connection_id);
+            self.connection_service
+                .unregister(&self.connection_id)
+                .await;
+            return Err(RealtimeJoinError::from(error));
+        }
 
         Ok(PreparedResourceWatchSession {
             session: self,
@@ -1194,7 +1205,7 @@ pub fn watch_playback_state_observe(
         WatchResourceKind::PlaybackState,
         req.options,
         crate::proto::client::observe_resource::Resource::PlaybackState(
-            crate::proto::client::ObservePlaybackState {},
+            req.playback_state.unwrap_or_default(),
         ),
     )
 }
@@ -1218,7 +1229,7 @@ pub fn watch_room_settings_observe(
         WatchResourceKind::RoomSettings,
         req.options,
         crate::proto::client::observe_resource::Resource::RoomSettings(
-            crate::proto::client::ObserveRoomSettings {},
+            req.room_settings.unwrap_or_default(),
         ),
     )
 }
@@ -1230,9 +1241,7 @@ pub fn watch_playlist_items_observe(
         WatchResourceKind::PlaylistItems,
         req.options,
         crate::proto::client::observe_resource::Resource::PlaylistItems(
-            crate::proto::client::ObservePlaylistItems {
-                request: req.request,
-            },
+            req.playlist_items.unwrap_or_default(),
         ),
     )
 }
@@ -1244,9 +1253,7 @@ pub fn watch_room_members_observe(
         WatchResourceKind::RoomMembers,
         req.options,
         crate::proto::client::observe_resource::Resource::RoomMembers(
-            crate::proto::client::ObserveRoomMembers {
-                request: req.request,
-            },
+            req.room_members.unwrap_or_default(),
         ),
     )
 }
@@ -1271,7 +1278,6 @@ fn build_watch_observe(
     let options = options.unwrap_or_default();
     ObserveResource {
         observe_id: kind.observe_id().to_string(),
-        version: options.version,
         delivery_mode: options.delivery_mode,
         resource: Some(resource),
     }
@@ -3932,6 +3938,9 @@ impl StreamMessageHandler {
                 self.resource_observer
                     .replay_chat_events_after(&self.chat_service, observe)
                     .await?;
+                self.resource_observer
+                    .replay_room_resource_events_after(observe)
+                    .await?;
             }
             Some(Message::UnobserveResource(unobserve)) => {
                 self.resource_observer
@@ -4369,6 +4378,24 @@ impl StreamMessageHandler {
             .get_state(&self.room_id)
             .await
             .map_err(|e| e.to_string())?;
+        let expected_source = crate::impls::client::build_playback_source_expectation(
+            report.expected_media_id.clone(),
+            report.expected_playlist_id.clone(),
+            report.expected_target_hash.clone(),
+            &self.public_id_codec,
+        )
+        .map_err(|error| error.to_string())?;
+        if expected_source
+            .as_ref()
+            .is_some_and(|expected_source| !expected_source.matches(&state))
+        {
+            tracing::debug!(
+                user_id = %self.user_id,
+                room_id = %self.room_id,
+                "Playback progress report ignored: playback source changed"
+            );
+            return Ok(());
+        }
 
         // Only accept progress reports when playback is active and the
         // reported state matches the server's playing state
@@ -4419,13 +4446,32 @@ impl StreamMessageHandler {
                 // Update the canonical position and broadcast to same-replica
                 // clients so they can detect drift. The sender is excluded by
                 // event_id filtering (each connection ignores events it originated).
-                match playback_service
-                    .update_state(self.room_id, |s| {
-                        s.position = report.position;
-                        s.updated_at = chrono::Utc::now();
-                    })
-                    .await
-                {
+                let update_result = if let Some(expected_source) = expected_source {
+                    playback_service
+                        .update_multiple_checked_source_with_version(
+                            self.room_id,
+                            self.user_id,
+                            None,
+                            Some(report.position),
+                            None,
+                            Some(state.version),
+                            expected_source,
+                        )
+                        .await
+                } else {
+                    playback_service
+                        .update_multiple_with_version(
+                            self.room_id,
+                            self.user_id,
+                            None,
+                            Some(report.position),
+                            None,
+                            Some(state.version),
+                        )
+                        .await
+                };
+
+                match update_result {
                     Ok(updated_state) => {
                         // Record the write for throttling
                         {
@@ -4480,8 +4526,9 @@ impl StreamMessageHandler {
         if self.principal.is_guest() {
             return Err("Guests cannot control playback".to_string());
         }
-        let command = crate::impls::client::build_update_playback(*update)
-            .map_err(|error| error.to_string())?;
+        let command =
+            crate::impls::client::build_update_playback(update.clone(), &self.public_id_codec)
+                .map_err(|error| error.to_string())?;
         let previous_state = self
             .room_service
             .playback_service()
@@ -4494,20 +4541,37 @@ impl StreamMessageHandler {
             position,
             speed,
             version,
+            expected_source,
         } = command;
-        let state = self
-            .room_service
-            .playback_service()
-            .update_multiple_with_version(
-                self.room_id,
-                self.user_id,
-                playing,
-                position,
-                speed,
-                version,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+        let playback_service = self.room_service.playback_service();
+        let state = match expected_source {
+            Some(expected_source) => {
+                playback_service
+                    .update_multiple_checked_source_with_version(
+                        self.room_id,
+                        self.user_id,
+                        playing,
+                        position,
+                        speed,
+                        version,
+                        expected_source,
+                    )
+                    .await
+            }
+            None => {
+                playback_service
+                    .update_multiple_with_version(
+                        self.room_id,
+                        self.user_id,
+                        playing,
+                        position,
+                        speed,
+                        version,
+                    )
+                    .await
+            }
+        }
+        .map_err(|e| e.to_string())?;
         if let Some(service) = &self.playback_snapshot_service {
             service
                 .handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
@@ -4640,6 +4704,7 @@ fn realtime_event_to_server_messages(
                         .map(|id| encode_playlist(*id))
                         .unwrap_or_default(),
                     target: state.target.clone(),
+                    target_hash: state.target_hash(),
                 }),
             })),
         }],
@@ -5220,6 +5285,7 @@ pub(crate) fn chat_message_event_to_proto(
             reaction_count,
         }),
         occurred_at: event.occurred_at.timestamp(),
+        sequence: event.sequence,
     }
 }
 

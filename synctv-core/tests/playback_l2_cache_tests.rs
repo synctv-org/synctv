@@ -17,8 +17,8 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{RoomId, User, UserId, UserRole, UserStatus},
-    repository::UserRepository,
+    models::{Media, MediaId, RoomId, User, UserId, UserRole, UserStatus},
+    repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, RoomService, UserService,
@@ -82,6 +82,46 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+async fn attach_test_media(
+    pool: &PgPool,
+    room_id: RoomId,
+    owner_id: UserId,
+) -> synctv_core::models::RoomPlaybackState {
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id,
+        creator_id: Some(owner_id),
+        name: "Playback Cache Test Video".to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        cover_file_reference_id: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media = MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("test media should be created");
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let mut state = playback_repo
+        .create_or_get(&room_id)
+        .await
+        .expect("playback state should be created");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    playback_repo
+        .update(&state)
+        .await
+        .expect("playback state should attach test media")
 }
 
 // Test 1: L1 Cache Hit Behavior
@@ -218,9 +258,19 @@ async fn test_playback_state_l2_miss_reads_from_db() {
 
     // Verify in PostgreSQL directly
     let db_state: synctv_core::models::RoomPlaybackState = sqlx::query_as(
-        "SELECT room_id, playing_media_id, playing_playlist_id, target, \
-         \"position\", speed, is_playing, updated_at, version \
-         FROM room_playback_state WHERE room_id = $1",
+        "SELECT state.room_id,
+                state.playing_media_id,
+                state.playing_playlist_id,
+                state.target,
+                state.current_progress_id,
+                COALESCE(progress.\"position\", 0.0) AS \"position\",
+                state.speed,
+                state.is_playing,
+                state.updated_at,
+                state.version
+         FROM room_playback_state state
+         LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
+         WHERE state.room_id = $1",
     )
     .bind(room.id)
     .fetch_one(&pool)
@@ -318,6 +368,7 @@ async fn test_playback_state_cross_replica_consistency() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Update playback state
     let updated_state = playback_service
@@ -384,6 +435,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Get initial state (populates cache)
     let initial_state = playback_service.get_state(&room.id).await.unwrap();
@@ -433,6 +485,7 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    let attached_state = attach_test_media(&pool, room.id, owner.id).await;
 
     let cached_state = playback_service
         .get_state_eventually_consistent(&room.id)
@@ -440,11 +493,22 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
         .unwrap();
 
     sqlx::query(
-        r#"UPDATE room_playback_state
-           SET "position" = $2, version = version + 1, updated_at = NOW()
-           WHERE room_id = $1"#,
+        r#"WITH progress_update AS (
+               UPDATE room_playback_progress
+               SET "position" = $2, version = version + 1
+               WHERE id = $1
+               RETURNING room_id
+           )
+           UPDATE room_playback_state state
+           SET version = version + 1, updated_at = NOW()
+           FROM progress_update
+           WHERE state.room_id = progress_update.room_id"#,
     )
-    .bind(room.id)
+    .bind(
+        attached_state
+            .current_progress_id
+            .expect("current progress id"),
+    )
     .bind(77.0_f64)
     .execute(&pool)
     .await
@@ -648,6 +712,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Update state
     let result = playback_service

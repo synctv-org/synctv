@@ -1678,7 +1678,7 @@ mod tests {
                             playlist_id: String::new(),
                             room_id: "room_test".to_string(),
                             name: String::new(),
-                            position: 0.0,
+                            playlist_position: 0.0,
                             playback_infos: std::collections::HashMap::new(),
                             default_mode: String::new(),
                             metadata: std::collections::HashMap::new(),

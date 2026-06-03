@@ -5,7 +5,8 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{User, UserId, UserRole, UserStatus},
+    models::{Media, MediaId, RoomId, User, UserId, UserRole, UserStatus},
+    repository::{MediaRepository, RoomPlaybackStateRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, RoomService, UserService,
@@ -55,4 +56,50 @@ pub fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+#[allow(dead_code)]
+pub async fn set_current_test_media(
+    pool: &PgPool,
+    room_id: RoomId,
+    creator_id: UserId,
+    name: &str,
+) -> Media {
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id,
+        creator_id: Some(creator_id),
+        name: name.to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        cover_file_reference_id: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media = MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("test media should be created");
+
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let mut state = playback_repo
+        .create_or_get(&room_id)
+        .await
+        .expect("playback state should be created");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    state = playback_repo
+        .update(&state)
+        .await
+        .expect("playback state should point at test media");
+    assert_eq!(state.playing_media_id, Some(media.id));
+
+    media
 }

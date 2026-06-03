@@ -932,6 +932,11 @@ fn test_update_playback_rejects_missing_type() {
         position: Some(1.0),
         speed: None,
         version: None,
+        expected_media_id: Some(String::new()),
+        expected_playlist_id: Some(String::new()),
+        expected_target_hash: Some(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        ),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -950,6 +955,11 @@ fn test_update_playback_allows_full_seek_state() {
         position: Some(42.5),
         speed: Some(1.25),
         version: Some(7),
+        expected_media_id: Some(String::new()),
+        expected_playlist_id: Some(String::new()),
+        expected_target_hash: Some(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        ),
     };
 
     synctv_proto::validate(&request).expect("request should be valid");

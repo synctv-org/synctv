@@ -101,9 +101,23 @@ fn json_i64(value: &Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
 }
 
+fn optional_event_sequence(sequence: impl Into<String>) -> Option<i64> {
+    let sequence = sequence.into();
+    let sequence = sequence.trim();
+    if sequence.is_empty() {
+        None
+    } else {
+        Some(
+            sequence
+                .parse()
+                .expect("observe event sequence must be numeric"),
+        )
+    }
+}
+
 fn observe_playback_snapshot_message(
     observe_id: &str,
-    version: impl Into<String>,
+    after_event_sequence: impl Into<String>,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
         client_message, observe_resource, ObservePlaybackSnapshot, ObserveResource,
@@ -113,7 +127,6 @@ fn observe_playback_snapshot_message(
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::PlaybackSnapshot(
                 ObservePlaybackSnapshot {
@@ -121,6 +134,7 @@ fn observe_playback_snapshot_message(
                     playlist_id: String::new(),
                     target: Vec::new(),
                     playback_client_profile: None,
+                    after_event_sequence: optional_event_sequence(after_event_sequence),
                 },
             )),
         })),
@@ -129,7 +143,7 @@ fn observe_playback_snapshot_message(
 
 fn observe_room_settings_message(
     observe_id: &str,
-    version: impl Into<String>,
+    after_event_sequence: impl Into<String>,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
         client_message, observe_resource, ObserveResource, ObserveRoomSettings,
@@ -139,10 +153,11 @@ fn observe_room_settings_message(
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::RoomSettings(
-                ObserveRoomSettings {},
+                ObserveRoomSettings {
+                    after_event_sequence: optional_event_sequence(after_event_sequence),
+                },
             )),
         })),
     }
@@ -150,7 +165,7 @@ fn observe_room_settings_message(
 
 fn observe_playlist_items_message(
     observe_id: &str,
-    version: impl Into<String>,
+    after_event_sequence: impl Into<String>,
     request: synctv_proto::client::ListPlaylistItemsRequest,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
@@ -161,11 +176,11 @@ fn observe_playlist_items_message(
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::PlaylistItems(
                 ObservePlaylistItems {
                     request: Some(request),
+                    after_event_sequence: optional_event_sequence(after_event_sequence),
                 },
             )),
         })),
@@ -174,7 +189,7 @@ fn observe_playlist_items_message(
 
 fn observe_room_members_message(
     observe_id: &str,
-    version: impl Into<String>,
+    after_event_sequence: impl Into<String>,
     request: synctv_proto::client::GetRoomMembersRequest,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
@@ -184,11 +199,11 @@ fn observe_room_members_message(
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::RoomMembers(
                 ObserveRoomMembers {
                     request: Some(request),
+                    after_event_sequence: optional_event_sequence(after_event_sequence),
                 },
             )),
         })),
@@ -2070,10 +2085,9 @@ fn observe_chat_events_message(observe_id: &str) -> synctv_proto::client::Client
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
-            version: String::new(),
             delivery_mode: ResourceDeliveryMode::NotifyOnly as i32,
             resource: Some(observe_resource::Resource::ChatEvents(ObserveChatEvents {
-                after_event_id: String::new(),
+                after_event_sequence: None,
             })),
         })),
     }
@@ -8075,6 +8089,9 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     position: None,
                     speed: None,
                     version: None,
+                    expected_media_id: None,
+                    expected_playlist_id: None,
+                    expected_target_hash: None,
                 },
             )),
         },
@@ -8107,6 +8124,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     position: Some(17.5),
                     speed: None,
                     version: None,
+                    expected_media_id: Some(media_one_id.clone()),
+                    expected_playlist_id: Some(String::new()),
+                    expected_target_hash: Some(
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                            .to_string(),
+                    ),
                 },
             )),
         },
@@ -8140,6 +8163,9 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     position: None,
                     speed: Some(1.5),
                     version: None,
+                    expected_media_id: None,
+                    expected_playlist_id: None,
+                    expected_target_hash: None,
                 },
             )),
         },
@@ -8173,6 +8199,9 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                     position: None,
                     speed: None,
                     version: None,
+                    expected_media_id: None,
+                    expected_playlist_id: None,
+                    expected_target_hash: None,
                 },
             )),
         },

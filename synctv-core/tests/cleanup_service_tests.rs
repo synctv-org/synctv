@@ -86,6 +86,8 @@ async fn test_zero_retention_skips_all_tasks() {
         notification_retention_days: 0,
         notification_max_retention_days: 0,
         chat_max_messages_per_room: 0,
+        room_resource_event_retention_seconds: 0,
+        playback_progress_retention_days: 0,
         unreferenced_file_retention_seconds: 0,
     };
 
@@ -117,6 +119,7 @@ async fn test_zero_retention_skips_all_tasks() {
         result.chat_messages_deleted, 0,
         "Zero retention should skip chat cleanup"
     );
+    assert_eq!(result.room_resource_events_deleted, 0);
 }
 
 // Note: start_periodic checks is_leader() inside the loop. We test that NeverLeader
@@ -176,6 +179,8 @@ async fn test_partial_config_only_some_tasks_enabled() {
         notification_retention_days: 0,
         notification_max_retention_days: 0,
         chat_max_messages_per_room: 0,
+        room_resource_event_retention_seconds: 0,
+        playback_progress_retention_days: 0,
         unreferenced_file_retention_seconds: 0,
     };
 
@@ -264,6 +269,8 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
             notification_retention_days: 0,
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 0,
+            room_resource_event_retention_seconds: 0,
+            playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
         },
         Arc::new(AlwaysLeader),
@@ -349,6 +356,8 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
             notification_retention_days: 0,
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 1,
+            room_resource_event_retention_seconds: 0,
+            playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
         },
         Arc::new(AlwaysLeader),

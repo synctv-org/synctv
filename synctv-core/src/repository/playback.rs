@@ -1,7 +1,7 @@
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
+    models::{MediaId, PlaylistId, RoomId, RoomPlaybackProgress, RoomPlaybackState, UserId},
     Error, Result,
 };
 
@@ -22,6 +22,309 @@ impl RoomPlaybackStateRepository {
         &self.pool
     }
 
+    async fn progress_for_source_with_executor(
+        &self,
+        room_id: &RoomId,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target_hash: &str,
+        conn: &mut PgConnection,
+    ) -> Result<Option<RoomPlaybackProgress>> {
+        let progress = sqlx::query_as!(
+            RoomPlaybackProgress,
+            r#"
+            SELECT id,
+                   room_id AS "room_id: RoomId",
+                   media_id AS "media_id: MediaId",
+                   playlist_id AS "playlist_id: PlaylistId",
+                   target,
+                   target_hash,
+                   "position",
+                   created_at,
+                   updated_at,
+                   version
+            FROM room_playback_progress
+            WHERE room_id = $1
+              AND media_id IS NOT DISTINCT FROM $2
+              AND playlist_id IS NOT DISTINCT FROM $3
+              AND target_hash = $4
+            "#,
+            room_id as &RoomId,
+            media_id as Option<MediaId>,
+            playlist_id as Option<PlaylistId>,
+            target_hash,
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        Ok(progress)
+    }
+
+    async fn progress_by_id_with_executor(
+        &self,
+        progress_id: i64,
+        room_id: &RoomId,
+        conn: &mut PgConnection,
+    ) -> Result<Option<RoomPlaybackProgress>> {
+        let progress = sqlx::query_as!(
+            RoomPlaybackProgress,
+            r#"
+            SELECT id,
+                   room_id AS "room_id: RoomId",
+                   media_id AS "media_id: MediaId",
+                   playlist_id AS "playlist_id: PlaylistId",
+                   target,
+                   target_hash,
+                   "position",
+                   created_at,
+                   updated_at,
+                   version
+            FROM room_playback_progress
+            WHERE id = $1
+              AND room_id = $2
+            "#,
+            progress_id,
+            room_id as &RoomId,
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        Ok(progress)
+    }
+
+    async fn create_progress_with_executor(
+        &self,
+        state: &RoomPlaybackState,
+        conn: &mut PgConnection,
+    ) -> Result<RoomPlaybackProgress> {
+        let target_hash = state.target_hash();
+        let progress = sqlx::query_as!(
+            RoomPlaybackProgress,
+            r#"
+            INSERT INTO room_playback_progress (
+                room_id,
+                media_id,
+                playlist_id,
+                target,
+                target_hash,
+                "position",
+                version
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, 0)
+            ON CONFLICT (
+                room_id,
+                COALESCE(media_id, 0),
+                COALESCE(playlist_id, 0),
+                target_hash
+            )
+            DO UPDATE SET target = room_playback_progress.target
+            RETURNING id,
+                      room_id AS "room_id: RoomId",
+                      media_id AS "media_id: MediaId",
+                      playlist_id AS "playlist_id: PlaylistId",
+                      target,
+                      target_hash,
+                      "position",
+                      created_at,
+                      updated_at,
+                      version
+            "#,
+            state.room_id as RoomId,
+            state.playing_media_id as Option<MediaId>,
+            state.playing_playlist_id as Option<PlaylistId>,
+            state.target.clone(),
+            target_hash,
+            state.position,
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+
+        Ok(progress)
+    }
+
+    async fn update_progress_position_with_executor(
+        &self,
+        progress_id: i64,
+        room_id: &RoomId,
+        position: f64,
+        conn: &mut PgConnection,
+    ) -> Result<RoomPlaybackProgress> {
+        let progress = sqlx::query_as!(
+            RoomPlaybackProgress,
+            r#"
+            UPDATE room_playback_progress
+            SET "position" = $3,
+                version = version + 1
+            WHERE id = $1
+              AND room_id = $2
+            RETURNING id,
+                      room_id AS "room_id: RoomId",
+                      media_id AS "media_id: MediaId",
+                      playlist_id AS "playlist_id: PlaylistId",
+                      target,
+                      target_hash,
+                      "position",
+                      created_at,
+                      updated_at,
+                      version
+            "#,
+            progress_id,
+            room_id as &RoomId,
+            position,
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+
+        Ok(progress)
+    }
+
+    async fn resolve_progress_for_state_with_executor(
+        &self,
+        state: &RoomPlaybackState,
+        previous_progress_position: Option<f64>,
+        conn: &mut PgConnection,
+    ) -> Result<(Option<i64>, f64)> {
+        let current_progress = match state.current_progress_id {
+            Some(progress_id) => {
+                self.progress_by_id_with_executor(progress_id, &state.room_id, conn)
+                    .await?
+            }
+            None => None,
+        };
+
+        if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
+            if let Some(progress) = current_progress {
+                let snapshot_position = previous_progress_position.unwrap_or(state.position);
+                let _ = self
+                    .update_progress_position_with_executor(
+                        progress.id,
+                        &state.room_id,
+                        snapshot_position,
+                        conn,
+                    )
+                    .await?;
+            }
+            return Ok((None, 0.0));
+        }
+
+        if let Some(progress) = current_progress {
+            let target_hash = state.target_hash();
+            if progress.media_id == state.playing_media_id
+                && progress.playlist_id == state.playing_playlist_id
+                && progress.target_hash.eq_ignore_ascii_case(&target_hash)
+            {
+                let progress = self
+                    .update_progress_position_with_executor(
+                        progress.id,
+                        &state.room_id,
+                        state.position,
+                        conn,
+                    )
+                    .await?;
+                return Ok((Some(progress.id), progress.position));
+            }
+
+            let snapshot_position = previous_progress_position.unwrap_or(state.position);
+            let _ = self
+                .update_progress_position_with_executor(
+                    progress.id,
+                    &state.room_id,
+                    snapshot_position,
+                    conn,
+                )
+                .await?;
+        }
+
+        let target_hash = state.target_hash();
+        if let Some(progress) = self
+            .progress_for_source_with_executor(
+                &state.room_id,
+                state.playing_media_id,
+                state.playing_playlist_id,
+                &target_hash,
+                conn,
+            )
+            .await?
+        {
+            return Ok((Some(progress.id), progress.position));
+        }
+
+        let progress = self.create_progress_with_executor(state, conn).await?;
+        Ok((Some(progress.id), progress.position))
+    }
+
+    async fn update_with_exact_version_on_conn(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+        previous_progress_position: Option<f64>,
+        conn: &mut PgConnection,
+    ) -> Result<RoomPlaybackState> {
+        if new_version <= state.version {
+            return Err(Error::InvalidInput(format!(
+                "new playback version {new_version} must be greater than expected version {}",
+                state.version
+            )));
+        }
+
+        let (current_progress_id, _position) = self
+            .resolve_progress_for_state_with_executor(state, previous_progress_position, conn)
+            .await?;
+
+        let result = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"WITH updated AS (
+                UPDATE room_playback_state
+                SET playing_media_id = $2,
+                    playing_playlist_id = $3,
+                    target = $4,
+                    current_progress_id = $5,
+                    speed = $6,
+                    is_playing = $7,
+                    updated_at = NOW(),
+                    version = $9
+                WHERE room_id = $1 AND version = $8
+                RETURNING room_id,
+                          playing_media_id,
+                          playing_playlist_id,
+                          target,
+                          current_progress_id,
+                          speed,
+                          is_playing,
+                          updated_at,
+                          version
+            )
+            SELECT updated.room_id AS "room_id: RoomId",
+                   updated.playing_media_id AS "playing_media_id: MediaId",
+                   updated.playing_playlist_id AS "playing_playlist_id: PlaylistId",
+                   updated.target,
+                   updated.current_progress_id,
+                   COALESCE(progress."position", 0.0) AS "position!",
+                   updated.speed AS "speed!",
+                   updated.is_playing,
+                   updated.updated_at,
+                   updated.version
+            FROM updated
+            LEFT JOIN room_playback_progress progress ON progress.id = updated.current_progress_id"#,
+            state.room_id as RoomId,
+            state.playing_media_id as Option<MediaId>,
+            state.playing_playlist_id as Option<PlaylistId>,
+            state.target.clone(),
+            current_progress_id,
+            state.speed,
+            state.is_playing,
+            state.version,
+            new_version,
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        match result {
+            Some(state) => Ok(state),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
     /// Create or get playback state for room
     ///
     /// Uses `ON CONFLICT DO NOTHING` followed by a SELECT to avoid triggering
@@ -31,11 +334,10 @@ impl RoomPlaybackStateRepository {
 
         // Attempt insert; if the row already exists, do nothing
         sqlx::query!(
-            "INSERT INTO room_playback_state (room_id, \"position\", speed, is_playing, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO room_playback_state (room_id, speed, is_playing, updated_at, version)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (room_id) DO NOTHING",
             room_id as &RoomId,
-            state.position,
             state.speed,
             state.is_playing,
             state.updated_at,
@@ -47,17 +349,19 @@ impl RoomPlaybackStateRepository {
         // Fetch the row (either just inserted or already existing)
         let result = sqlx::query_as!(
             RoomPlaybackState,
-            r#"SELECT room_id as "room_id: RoomId",
-                      playing_media_id as "playing_media_id: MediaId",
-                      playing_playlist_id as "playing_playlist_id: PlaylistId",
-                      target,
-                      "position",
-                      speed,
-                      is_playing,
-                      updated_at,
-                      version
-             FROM room_playback_state
-             WHERE room_id = $1"#,
+            r#"SELECT state.room_id as "room_id: RoomId",
+                      state.playing_media_id as "playing_media_id: MediaId",
+                      state.playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      state.target,
+                      state.current_progress_id,
+                      COALESCE(progress."position", 0.0) AS "position!",
+                      state.speed AS "speed!",
+                      state.is_playing,
+                      state.updated_at,
+                      state.version
+             FROM room_playback_state state
+             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
+             WHERE state.room_id = $1"#,
             room_id as &RoomId,
         )
         .fetch_one(&self.pool)
@@ -81,11 +385,10 @@ impl RoomPlaybackStateRepository {
         let state = RoomPlaybackState::new(*room_id);
 
         sqlx::query!(
-            "INSERT INTO room_playback_state (room_id, \"position\", speed, is_playing, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO room_playback_state (room_id, speed, is_playing, updated_at, version)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (room_id) DO NOTHING",
             room_id as &RoomId,
-            state.position,
             state.speed,
             state.is_playing,
             state.updated_at,
@@ -96,17 +399,19 @@ impl RoomPlaybackStateRepository {
 
         let result = sqlx::query_as!(
             RoomPlaybackState,
-            r#"SELECT room_id as "room_id: RoomId",
-                      playing_media_id as "playing_media_id: MediaId",
-                      playing_playlist_id as "playing_playlist_id: PlaylistId",
-                      target,
-                      "position",
-                      speed,
-                      is_playing,
-                      updated_at,
-                      version
-             FROM room_playback_state
-             WHERE room_id = $1"#,
+            r#"SELECT state.room_id as "room_id: RoomId",
+                      state.playing_media_id as "playing_media_id: MediaId",
+                      state.playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      state.target,
+                      state.current_progress_id,
+                      COALESCE(progress."position", 0.0) AS "position!",
+                      state.speed AS "speed!",
+                      state.is_playing,
+                      state.updated_at,
+                      state.version
+             FROM room_playback_state state
+             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
+             WHERE state.room_id = $1"#,
             room_id as &RoomId,
         )
         .fetch_one(&mut *conn)
@@ -119,17 +424,19 @@ impl RoomPlaybackStateRepository {
     pub async fn get(&self, room_id: &RoomId) -> Result<Option<RoomPlaybackState>> {
         let result = sqlx::query_as!(
             RoomPlaybackState,
-            r#"SELECT room_id as "room_id: RoomId",
-                      playing_media_id as "playing_media_id: MediaId",
-                      playing_playlist_id as "playing_playlist_id: PlaylistId",
-                      target,
-                      "position",
-                      speed,
-                      is_playing,
-                      updated_at,
-                      version
-             FROM room_playback_state
-             WHERE room_id = $1"#,
+            r#"SELECT state.room_id as "room_id: RoomId",
+                      state.playing_media_id as "playing_media_id: MediaId",
+                      state.playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      state.target,
+                      state.current_progress_id,
+                      COALESCE(progress."position", 0.0) AS "position!",
+                      state.speed AS "speed!",
+                      state.is_playing,
+                      state.updated_at,
+                      state.version
+             FROM room_playback_state state
+             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
+             WHERE state.room_id = $1"#,
             room_id as &RoomId,
         )
         .fetch_optional(&self.pool)
@@ -140,37 +447,20 @@ impl RoomPlaybackStateRepository {
 
     /// Update playback state with optimistic locking
     pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
-        let result = sqlx::query_as!(
-            RoomPlaybackState,
-            r#"UPDATE room_playback_state
-             SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
-                 "position" = $5, speed = $6, is_playing = $7,
-                 updated_at = NOW(), version = version + 1
-             WHERE room_id = $1 AND version = $8
-             RETURNING room_id as "room_id: RoomId",
-                       playing_media_id as "playing_media_id: MediaId",
-                       playing_playlist_id as "playing_playlist_id: PlaylistId",
-                       target,
-                       "position",
-                       speed,
-                       is_playing,
-                       updated_at,
-                       version"#,
-            state.room_id as RoomId,
-            state.playing_media_id as Option<MediaId>,
-            state.playing_playlist_id as Option<PlaylistId>,
-            state.target.clone(),
-            state.position,
-            state.speed,
-            state.is_playing,
-            state.version,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let mut tx = self.pool.begin().await?;
+        let result = self
+            .update_with_exact_version_on_conn(state, state.version + 1, None, &mut *tx)
+            .await;
 
         match result {
-            Some(s) => Ok(s),
-            None => Err(Error::OptimisticLockConflict),
+            Ok(state) => {
+                tx.commit().await?;
+                Ok(state)
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
         }
     }
 
@@ -183,59 +473,70 @@ impl RoomPlaybackStateRepository {
         state: &RoomPlaybackState,
         new_version: i64,
     ) -> Result<RoomPlaybackState> {
-        self.update_with_exact_version_executor(state, new_version, &self.pool)
-            .await
+        let mut tx = self.pool.begin().await?;
+        let result = self
+            .update_with_exact_version_on_conn(state, new_version, None, &mut *tx)
+            .await;
+
+        match result {
+            Ok(state) => {
+                tx.commit().await?;
+                Ok(state)
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
     }
 
-    pub async fn update_with_exact_version_executor<'e, E>(
+    pub async fn update_with_exact_version_and_previous_progress(
         &self,
         state: &RoomPlaybackState,
         new_version: i64,
-        executor: E,
-    ) -> Result<RoomPlaybackState>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        if new_version <= state.version {
-            return Err(Error::InvalidInput(format!(
-                "new playback version {new_version} must be greater than expected version {}",
-                state.version
-            )));
-        }
-
-        let result = sqlx::query_as!(
-            RoomPlaybackState,
-            r#"UPDATE room_playback_state
-             SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
-                 "position" = $5, speed = $6, is_playing = $7,
-                 updated_at = NOW(), version = $9
-             WHERE room_id = $1 AND version = $8
-             RETURNING room_id as "room_id: RoomId",
-                       playing_media_id as "playing_media_id: MediaId",
-                       playing_playlist_id as "playing_playlist_id: PlaylistId",
-                       target,
-                       "position",
-                       speed,
-                       is_playing,
-                       updated_at,
-                       version"#,
-            state.room_id as RoomId,
-            state.playing_media_id as Option<MediaId>,
-            state.playing_playlist_id as Option<PlaylistId>,
-            state.target.clone(),
-            state.position,
-            state.speed,
-            state.is_playing,
-            state.version,
-            new_version,
-        )
-        .fetch_optional(executor)
-        .await?;
+        previous_progress_position: Option<f64>,
+    ) -> Result<RoomPlaybackState> {
+        let mut tx = self.pool.begin().await?;
+        let result = self
+            .update_with_exact_version_on_conn(
+                state,
+                new_version,
+                previous_progress_position,
+                &mut *tx,
+            )
+            .await;
 
         match result {
-            Some(s) => Ok(s),
-            None => Err(Error::OptimisticLockConflict),
+            Ok(state) => {
+                tx.commit().await?;
+                Ok(state)
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
         }
+    }
+
+    pub async fn update_with_exact_version_executor(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+        conn: &mut PgConnection,
+    ) -> Result<RoomPlaybackState> {
+        self.update_with_exact_version_on_conn(state, new_version, None, conn)
+            .await
+    }
+
+    pub async fn update_with_exact_version_executor_and_previous_progress(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+        previous_progress_position: Option<f64>,
+        conn: &mut PgConnection,
+    ) -> Result<RoomPlaybackState> {
+        self.update_with_exact_version_on_conn(state, new_version, previous_progress_position, conn)
+            .await
     }
 
     /// Reset playback state for every room currently playing media or playlists
@@ -247,33 +548,61 @@ impl RoomPlaybackStateRepository {
         let states = sqlx::query_as!(
             RoomPlaybackState,
             r#"
-            WITH impacted_rooms AS (
-                SELECT DISTINCT rps.room_id
+            WITH impacted_states AS (
+                SELECT DISTINCT rps.room_id,
+                                rps.current_progress_id,
+                                rps.is_playing,
+                                rps.speed,
+                                rps.updated_at
                 FROM room_playback_state rps
                 LEFT JOIN media m ON m.id = rps.playing_media_id
                 LEFT JOIN playlists p ON p.id = rps.playing_playlist_id
                 WHERE m.creator_id = $1 OR p.creator_id = $1
+            ),
+            reset_progress AS (
+                UPDATE room_playback_progress progress
+                SET "position" = CASE
+                        WHEN impacted.is_playing THEN progress."position" + GREATEST(EXTRACT(EPOCH FROM (NOW() - impacted.updated_at)), 0) * impacted.speed
+                        ELSE progress."position"
+                    END,
+                    version = version + 1
+                FROM impacted_states impacted
+                WHERE progress.id = impacted.current_progress_id
+                RETURNING progress.id
+            ),
+            updated AS (
+                UPDATE room_playback_state rps
+                SET playing_media_id = NULL,
+                    playing_playlist_id = NULL,
+                    target = ''::bytea,
+                    current_progress_id = NULL,
+                    speed = 1.0,
+                    is_playing = false,
+                    updated_at = NOW(),
+                    version = version + 1
+                FROM impacted_states impacted
+                WHERE rps.room_id = impacted.room_id
+                RETURNING rps.room_id,
+                          rps.playing_media_id,
+                          rps.playing_playlist_id,
+                          rps.target,
+                          rps.current_progress_id,
+                          rps.speed,
+                          rps.is_playing,
+                          rps.updated_at,
+                          rps.version
             )
-            UPDATE room_playback_state rps
-            SET playing_media_id = NULL,
-                playing_playlist_id = NULL,
-                target = ''::bytea,
-                "position" = 0,
-                speed = 1.0,
-                is_playing = false,
-                updated_at = NOW(),
-                version = version + 1
-            FROM impacted_rooms impacted
-            WHERE rps.room_id = impacted.room_id
-            RETURNING rps.room_id as "room_id: RoomId",
-                      rps.playing_media_id as "playing_media_id: MediaId",
-                      rps.playing_playlist_id as "playing_playlist_id: PlaylistId",
-                      rps.target,
-                      rps."position",
-                      rps.speed,
-                      rps.is_playing,
-                      rps.updated_at,
-                      rps.version
+            SELECT updated.room_id as "room_id: RoomId",
+                   updated.playing_media_id as "playing_media_id: MediaId",
+                   updated.playing_playlist_id as "playing_playlist_id: PlaylistId",
+                   updated.target,
+                   updated.current_progress_id,
+                   0.0::DOUBLE PRECISION AS "position!",
+                   updated.speed AS "speed!",
+                   updated.is_playing,
+                   updated.updated_at,
+                   updated.version
+            FROM updated
             "#,
             creator_id as &UserId,
         )
@@ -314,13 +643,15 @@ impl RoomPlaybackStateRepository {
                    rps.playing_media_id as "playing_media_id: MediaId",
                    rps.playing_playlist_id as "playing_playlist_id: PlaylistId",
                    rps.target,
-                   rps."position",
-                   rps.speed,
+                   rps.current_progress_id,
+                   COALESCE(progress."position", 0.0) AS "position!",
+                   rps.speed AS "speed!",
                    rps.is_playing,
                    rps.updated_at,
                    rps.version
             FROM room_playback_state rps
             JOIN impacted_rooms impacted ON impacted.room_id = rps.room_id
+            LEFT JOIN room_playback_progress progress ON progress.id = rps.current_progress_id
             FOR UPDATE OF rps
             "#,
             creator_id as &UserId,
@@ -335,7 +666,39 @@ impl RoomPlaybackStateRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Media;
+    use crate::repository::media::MediaRepository;
     use synctv_core_testing::create_test_pool;
+
+    async fn attach_test_media(
+        pool: &PgPool,
+        playback_repo: &RoomPlaybackStateRepository,
+        mut state: RoomPlaybackState,
+        owner_id: UserId,
+    ) -> RoomPlaybackState {
+        let media = Media::from_provider(
+            None,
+            state.room_id,
+            Some(owner_id),
+            "Playback Position Test Video".to_string(),
+            serde_json::json!({"url": "https://example.com/video.mp4"}),
+            "direct_url",
+            None,
+            0.0,
+        );
+        let media = MediaRepository::new(pool.clone())
+            .create(&media)
+            .await
+            .expect("test media should be created");
+        state.playing_media_id = Some(media.id);
+        state.playing_playlist_id = None;
+        state.target.clear();
+        state.position = 0.0;
+        playback_repo
+            .update(&state)
+            .await
+            .expect("playback state should attach test media")
+    }
 
     /// Integration test: Create and get playback state
     #[tokio::test]
@@ -517,8 +880,9 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playback state
-        let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
-        assert_eq!(state.version, 0);
+        let state = playback_repo.create_or_get(&room.id).await.unwrap();
+        let mut state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
+        assert_eq!(state.version, 1);
 
         // Multiple updates
         for position in [10.0, 20.0, 30.0, 40.0, 50.0] {
@@ -552,7 +916,8 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playback state
-        let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
+        let state = playback_repo.create_or_get(&room.id).await.unwrap();
+        let mut state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
         // Test zero position
         state.position = 0.0;

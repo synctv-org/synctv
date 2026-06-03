@@ -315,6 +315,7 @@ message PlaybackState {
   int64 version = 7; // For optimistic locking
   string playing_playlist_id = 8; // Currently playing playlist
   bytes target = 9; // Provider-facing playback target payload (empty for static media or cleared state)
+  string target_hash = 10; // SHA-256 hex of target, used by clients when reporting progress or seeking
 }
 
 message RegisterResponse {
@@ -1867,6 +1868,13 @@ message UpdatePlaybackRequest {
   optional double position = 3;
   optional double speed = 4;
   optional int64 version = 5;
+  // Optional source guard. When any expected_* field is supplied, all expected_* fields are required.
+  // Empty string means the current source has no media id.
+  optional string expected_media_id = 6;
+  // Empty string means the current source has no playlist id.
+  optional string expected_playlist_id = 7;
+  // SHA-256 hex of PlaybackState.target.
+  optional string expected_target_hash = 8;
 }
 
 enum PlaybackDeliveryPreference {
@@ -1934,7 +1942,7 @@ message PlaybackSnapshot {
   string playlist_id = 2; // Playlist ID
   string room_id = 3; // Room ID
   string name = 4; // Media name
-  double position = 5; // Order position in playlist
+  double playlist_position = 5; // Order position in playlist
 
   // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
   // Provider can define arbitrary mode names
@@ -2084,8 +2092,6 @@ message ObserveResource {
     min_len: 1
     max_len: 128
   }];
-  // Empty means the client has no local version yet.
-  string version = 2;
   ResourceDeliveryMode delivery_mode = 3 [(buf.validate.field).enum.defined_only = true];
   oneof resource {
     ObservePlaybackState playback_state = 4;
@@ -2104,40 +2110,54 @@ message UnobserveResource {
   }];
 }
 
-message ObservePlaybackState {}
+message ObservePlaybackState {
+  // Current room playback control state: playing media, playlist, target, position and speed.
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 1;
+}
 
 message ObservePlaybackSnapshot {
-  // Client-side cached playback source identity. Used together with `version`
-  // so reconnects don't suppress required refreshes when the source changed
-  // but the DB-derived version collided.
+  // Player-ready aggregate for the current playback source.
+  // Client-side cached playback source identity.
   string media_id = 1;
   string playlist_id = 2;
   bytes target = 3;
   PlaybackClientProfile playback_client_profile = 4;
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 5;
 }
 
-message ObserveRoomSettings {}
+message ObserveRoomSettings {
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 1;
+}
 
 message ObservePlaylistItems {
   ListPlaylistItemsRequest request = 1;
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 2;
 }
 
 message ObserveRoomMembers {
   GetRoomMembersRequest request = 1;
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 2;
 }
 
 message ObserveChatEvents {
-  // Empty means start with newly-created events only. Use GetChatHistory for backfill.
-  string after_event_id = 1;
+  // Replays events with a durable per-room chat event sequence greater than this value.
+  // Unset starts from live chat events; 0 replays retained chat events from the empty watermark.
+  // Use GetChatHistory for message backfill.
+  optional int64 after_event_sequence = 2;
 }
 
 message WatchOptions {
-  string version = 1;
-  ResourceDeliveryMode delivery_mode = 2;
+  ResourceDeliveryMode delivery_mode = 1;
 }
 
 message WatchPlaybackStateRequest {
   WatchOptions options = 1;
+  ObservePlaybackState playback_state = 2;
 }
 
 message WatchPlaybackSnapshotRequest {
@@ -2147,16 +2167,17 @@ message WatchPlaybackSnapshotRequest {
 
 message WatchRoomSettingsRequest {
   WatchOptions options = 1;
+  ObserveRoomSettings room_settings = 2;
 }
 
 message WatchPlaylistItemsRequest {
   WatchOptions options = 1;
-  ListPlaylistItemsRequest request = 2;
+  ObservePlaylistItems playlist_items = 2;
 }
 
 message WatchRoomMembersRequest {
   WatchOptions options = 1;
-  GetRoomMembersRequest request = 2;
+  ObserveRoomMembers room_members = 2;
 }
 
 message WatchChatEventsRequest {
@@ -2219,6 +2240,13 @@ message WatchChatEventsEvent {
 message PlaybackProgressReport {
   double position = 1; // Playback position in seconds
   bool is_playing = 2; // Whether the client is currently playing
+  // Optional source guard. When any expected_* field is supplied, all expected_* fields are required.
+  // Empty string means the current source has no media id.
+  optional string expected_media_id = 3;
+  // Empty string means the current source has no playlist id.
+  optional string expected_playlist_id = 4;
+  // SHA-256 hex of PlaybackState.target.
+  optional string expected_target_hash = 5;
 }
 
 message ServerMessage {
@@ -2259,15 +2287,14 @@ message ServerMessage {
 
 message ResourceObserved {
   string observe_id = 1;
-  string version = 2;
   bool changed = 3;
+  EventCursor event_cursor = 4;
 }
 
 message ResourceChangedOnly {}
 
 message ResourceChanged {
   string observe_id = 1;
-  string version = 2;
   oneof payload {
     ResourceChangedOnly changed_only = 3;
     PlaybackState playback_state = 4;
@@ -2277,6 +2304,7 @@ message ResourceChanged {
     GetRoomMembersResponse room_members = 8;
     ChatMessageEvent chat_event = 9;
   }
+  EventCursor event_cursor = 10;
 }
 
 message ResourceObserveError {
@@ -2732,6 +2760,7 @@ message ChatMessageEvent {
   ChatMessageEventKind kind = 3;
   ChatMessageReceive message = 4;
   int64 occurred_at = 5;
+  int64 sequence = 6;
 }
 
 message HeartbeatMessage {
@@ -2877,6 +2906,12 @@ message GetChatHistoryRequest {
 message GetChatHistoryResponse {
   repeated ChatMessageReceive messages = 1;
   string next_cursor = 2; // Pass this as cursor in the next request. Empty when no more messages.
+  EventCursor event_cursor = 3; // Chat event watermark captured before the page read; observe chat events after this cursor to avoid gaps.
+}
+
+message EventCursor {
+  string event_id = 1;
+  int64 sequence = 2;
 }
 
 message GetChatMessageRequest {

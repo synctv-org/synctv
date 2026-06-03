@@ -7,7 +7,7 @@ use synctv_core_testing::create_test_pool;
 
 mod playback_state_machine_support;
 
-use playback_state_machine_support::{make_room_service, make_user};
+use playback_state_machine_support::{make_room_service, make_user, set_current_test_media};
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -30,6 +30,7 @@ async fn test_speed_change_preserves_position() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    set_current_test_media(&pool, room.id, owner.id, "Speed Position Video").await;
     playback_service
         .seek(room.id, owner.id, 100.0)
         .await
@@ -102,6 +103,7 @@ async fn test_reset_returns_to_initial_state() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    set_current_test_media(&pool, room.id, owner.id, "Reset Video").await;
     playback_service
         .seek(room.id, owner.id, 200.0)
         .await

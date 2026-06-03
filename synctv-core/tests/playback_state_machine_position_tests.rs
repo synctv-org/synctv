@@ -11,7 +11,7 @@ use synctv_core_testing::create_test_pool;
 
 mod playback_state_machine_support;
 
-use playback_state_machine_support::{make_room_service, make_user};
+use playback_state_machine_support::{make_room_service, make_user, set_current_test_media};
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -34,6 +34,7 @@ async fn test_position_preserved_on_pause() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    set_current_test_media(&pool, room.id, owner.id, "Pause Position Video").await;
     playback_service
         .seek(room.id, owner.id, 120.0)
         .await
@@ -94,6 +95,7 @@ async fn test_position_reset_on_media_switch() {
     media_repo.create(&media).await.unwrap();
 
     let playback_service = room_service.playback_service();
+    set_current_test_media(&pool, room.id, owner.id, "Previous Video").await;
     playback_service
         .seek(room.id, owner.id, 150.0)
         .await
@@ -106,6 +108,61 @@ async fn test_position_reset_on_media_switch() {
 
     assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
+
+    room_service.playback_service().shutdown().await;
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reset_preserves_progress_for_current_media() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("sm_pos_reset_resume"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Position Reset Resume Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playback_service = room_service.playback_service();
+    let media = set_current_test_media(&pool, room.id, owner.id, "Reset Resume Video").await;
+    playback_service
+        .seek(room.id, owner.id, 90.0)
+        .await
+        .unwrap();
+    playback_service
+        .set_playing(room.id, owner.id, true)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let reset_state = playback_service.reset(room.id, owner.id).await.unwrap();
+    assert!(reset_state.playing_media_id.is_none());
+    assert!((reset_state.position - 0.0).abs() < f64::EPSILON);
+
+    let resumed_state = playback_service
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(resumed_state.playing_media_id, Some(media.id));
+    assert!(
+        resumed_state.position >= 90.0,
+        "switching back should resume from the calibrated stop position, got {}",
+        resumed_state.position
+    );
 
     room_service.playback_service().shutdown().await;
     pool.close().await;

@@ -519,6 +519,9 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
                 position: Some(12.5),
                 speed: None,
                 version: Some(state.version),
+                expected_media_id: Some(state.playing_media_id.clone()),
+                expected_playlist_id: Some(state.playing_playlist_id.clone()),
+                expected_target_hash: Some(state.target_hash.clone()),
             },
         )
         .await

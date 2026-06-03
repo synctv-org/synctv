@@ -63,6 +63,36 @@ fn make_room(name: &str, owner: &UserId) -> Room {
     }
 }
 
+async fn attach_test_media(
+    pool: &sqlx::PgPool,
+    playback_repo: &RoomPlaybackStateRepository,
+    mut state: synctv_core::models::RoomPlaybackState,
+    owner_id: UserId,
+) -> synctv_core::models::RoomPlaybackState {
+    let media = Media::from_provider(
+        None,
+        state.room_id,
+        Some(owner_id),
+        "Playback Repository Test Video".to_string(),
+        serde_json::json!({"url": "https://example.com/video.mp4"}),
+        "direct_url",
+        None,
+        0.0,
+    );
+    let media = MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("test media should be created");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    playback_repo
+        .update(&state)
+        .await
+        .expect("playback state should attach test media")
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_create_or_get_idempotent() {
@@ -105,6 +135,7 @@ async fn test_update_optimistic_lock_conflict() {
         .unwrap();
 
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Task 1 updates with correct version
     let mut state_t1 = state.clone();

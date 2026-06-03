@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)\n            FROM chat_message_events e\n            JOIN chat_messages m\n              ON m.room_id = e.room_id\n             AND m.id = e.message_id\n             AND m.created_at = e.message_created_at\n            WHERE e.room_id = $1\n              AND e.sequence > $2\n              AND e.event_type = 'chat_message_created'\n              AND m.status <> $3\n              AND (m.user_id IS NULL OR m.user_id <> $4)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "605184e29c845316bd446641cfa15a482e8b20e9bd19bbedcd10a52cad569241"
+}

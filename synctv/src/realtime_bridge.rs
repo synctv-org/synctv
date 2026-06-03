@@ -392,6 +392,7 @@ mod tests {
             playing_media_id: Some(MediaId::expect_positive(120_002)),
             playing_playlist_id: Some(PlaylistId::expect_positive(120_003)),
             target: Vec::new(),
+            current_progress_id: None,
             is_playing: true,
             position: 42.0,
             speed: 1.0,

@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT state.room_id as \"room_id: RoomId\",\n                      state.playing_media_id as \"playing_media_id: MediaId\",\n                      state.playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n                      state.target,\n                      state.current_progress_id,\n                      COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                      state.speed AS \"speed!\",\n                      state.is_playing,\n                      state.updated_at,\n                      state.version\n             FROM room_playback_state state\n             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n             WHERE state.room_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_media_id: MediaId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "playing_playlist_id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "target",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "current_progress_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "position!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 6,
+        "name": "speed!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_playing",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      true,
+      null,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cc16ba11e62a58b0ad93db9246624bbdeb6225594d52a9f09aa67cfd05ec200d"
+}

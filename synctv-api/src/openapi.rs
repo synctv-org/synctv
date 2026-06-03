@@ -760,7 +760,7 @@ mod tests {
             &doc,
             "/api/rooms/{room_id}/watch/chat-events",
             "get",
-            "after_event_id",
+            "after_event_sequence",
             "query",
         );
     }

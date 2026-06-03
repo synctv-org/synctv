@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH impacted_rooms AS (\n                SELECT DISTINCT rps.room_id\n                FROM room_playback_state rps\n                LEFT JOIN media m ON m.id = rps.playing_media_id\n                LEFT JOIN playlists p ON p.id = rps.playing_playlist_id\n                WHERE m.creator_id = $1 OR p.creator_id = $1\n            )\n            SELECT rps.room_id as \"room_id: RoomId\",\n                   rps.playing_media_id as \"playing_media_id: MediaId\",\n                   rps.playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n                   rps.target,\n                   rps.current_progress_id,\n                   COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                   rps.speed AS \"speed!\",\n                   rps.is_playing,\n                   rps.updated_at,\n                   rps.version\n            FROM room_playback_state rps\n            JOIN impacted_rooms impacted ON impacted.room_id = rps.room_id\n            LEFT JOIN room_playback_progress progress ON progress.id = rps.current_progress_id\n            FOR UPDATE OF rps\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_media_id: MediaId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "playing_playlist_id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "target",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "current_progress_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "position!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 6,
+        "name": "speed!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_playing",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      true,
+      null,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a5216d281557e32e98d0e3563a29cb6b41bb4c0cc7cd5f3550473a0b1f482d01"
+}

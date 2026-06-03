@@ -222,6 +222,7 @@ async fn chat_event_to_proto(
         kind: crate::impls::messaging::chat_event_kind_to_proto(event.kind) as i32,
         message: Some(chat_message_to_proto(api, event.message, username)),
         occurred_at: event.occurred_at.timestamp(),
+        sequence: event.sequence,
     }
 }
 
@@ -1876,11 +1877,17 @@ impl ClientApiImpl {
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
-        let (messages, next) = chat_service
-            .get_history_with_images_for_viewer(rid, cursor, limit, true, viewer_user_id.as_ref())
+        let page = chat_service
+            .get_history_page_with_images_for_viewer(
+                rid,
+                cursor,
+                limit,
+                true,
+                viewer_user_id.as_ref(),
+            )
             .await
             .map_err(ApiError::from)?;
-        let next_cursor_str = next.map(|cursor| {
+        let next_cursor_str = page.next_cursor.map(|cursor| {
             format!(
                 "{}|{}",
                 synctv_common::time::format_datetime_rfc3339(cursor.created_at),
@@ -1889,7 +1896,8 @@ impl ClientApiImpl {
         });
 
         // Collect unique user IDs to batch fetch usernames
-        let user_ids: Vec<synctv_core::models::UserId> = messages
+        let user_ids: Vec<synctv_core::models::UserId> = page
+            .messages
             .iter()
             .filter_map(|m| m.message.user_id)
             .collect::<std::collections::HashSet<_>>()
@@ -1904,7 +1912,8 @@ impl ClientApiImpl {
             .unwrap_or_default();
 
         // Convert to proto format
-        let proto_messages = messages
+        let proto_messages = page
+            .messages
             .into_iter()
             .map(|m| {
                 let (user_id_str, username) = match &m.message.user_id {
@@ -1931,6 +1940,10 @@ impl ClientApiImpl {
         Ok(crate::proto::client::GetChatHistoryResponse {
             messages: proto_messages,
             next_cursor: next_cursor_str.unwrap_or_default(),
+            event_cursor: Some(crate::proto::client::EventCursor {
+                event_id: page.event_cursor.event_id.unwrap_or_default(),
+                sequence: page.event_cursor.sequence,
+            }),
         })
     }
 

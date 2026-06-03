@@ -313,7 +313,9 @@ mod tests {
         let prepared = service.prepare_permission_changed_outbox_fanout(user, user);
         let factory = prepared.outbox_factory();
 
-        assert!(factory(&permission_snapshot(user, user)).is_none());
+        let event = factory(&permission_snapshot(user, user))
+            .expect("permission change should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         assert_eq!(
@@ -332,7 +334,9 @@ mod tests {
             user_id("actor"),
         );
         let factory = prepared.outbox_factory();
-        assert!(factory(&permission_snapshot(user_id("target"), user_id("actor"))).is_none());
+        let event = factory(&permission_snapshot(user_id("target"), user_id("actor")))
+            .expect("permission change should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
         let event = rx.recv().await.expect("prepared event should publish");
         assert!(matches!(
@@ -346,12 +350,13 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let prepared = PreparedUserLeftFanout::new(channel_realtime_fanout_service(tx));
         let factory = prepared.outbox_factory();
-        assert!(factory(&UserLeftOutboxSnapshot {
+        let event = factory(&UserLeftOutboxSnapshot {
             room_id: room_id(),
             user_id: user_id("target"),
             username: "target-user".to_string(),
         })
-        .is_none());
+        .expect("user left should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
         let event = rx.recv().await.expect("prepared event should publish");
         assert!(matches!(event.event, RealtimeEvent::UserLeft { .. }));

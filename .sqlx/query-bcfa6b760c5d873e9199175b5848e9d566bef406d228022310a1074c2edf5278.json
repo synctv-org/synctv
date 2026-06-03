@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,\n                   occurred_at\n            FROM chat_message_events\n            WHERE room_id = $1\n              AND sequence > $2\n              AND event_type IN (\n                  'chat_message_created',\n                  'chat_message_edited',\n                  'chat_message_deleted',\n                  'chat_message_reactions_changed'\n              )\n            ORDER BY sequence ASC\n            LIMIT $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_user_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "event_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "occurred_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bcfa6b760c5d873e9199175b5848e9d566bef406d228022310a1074c2edf5278"
+}

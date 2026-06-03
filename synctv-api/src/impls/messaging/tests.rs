@@ -63,6 +63,7 @@ fn chat_event_with_content(
     let now = chrono::Utc::now();
     ChatMessageEvent {
         event_id: event_id.into(),
+        sequence: 1,
         room_id,
         actor_user_id: user_id,
         kind: ChatEventKind::Created,
@@ -318,16 +319,17 @@ impl RecordingStream {
 
 fn observe_playback_state_message(
     observe_id: &'static str,
-    version: impl Into<String>,
+    _version: impl Into<String>,
 ) -> crate::proto::client::client_message::Message {
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
                 crate::proto::client::observe_resource::Resource::PlaybackState(
-                    crate::proto::client::ObservePlaybackState {},
+                    crate::proto::client::ObservePlaybackState {
+                        after_event_sequence: None,
+                    },
                 ),
             ),
         },
@@ -336,7 +338,7 @@ fn observe_playback_state_message(
 
 fn observe_playback_snapshot_message(
     observe_id: &'static str,
-    version: impl Into<String>,
+    _version: impl Into<String>,
     media_id: impl Into<String>,
     playlist_id: impl Into<String>,
     target: Vec<u8>,
@@ -345,7 +347,6 @@ fn observe_playback_snapshot_message(
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
                 crate::proto::client::observe_resource::Resource::PlaybackSnapshot(
@@ -354,6 +355,7 @@ fn observe_playback_snapshot_message(
                         playlist_id: playlist_id.into(),
                         target,
                         playback_client_profile,
+                        after_event_sequence: None,
                     },
                 ),
             ),
@@ -363,16 +365,17 @@ fn observe_playback_snapshot_message(
 
 fn observe_room_settings_message(
     observe_id: impl Into<String>,
-    version: impl Into<String>,
+    _version: impl Into<String>,
 ) -> crate::proto::client::client_message::Message {
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.into(),
-            version: version.into(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
                 crate::proto::client::observe_resource::Resource::RoomSettings(
-                    crate::proto::client::ObserveRoomSettings {},
+                    crate::proto::client::ObserveRoomSettings {
+                        after_event_sequence: None,
+                    },
                 ),
             ),
         },
@@ -381,18 +384,18 @@ fn observe_room_settings_message(
 
 fn observe_playlist_items_message(
     observe_id: &'static str,
-    version: impl Into<String>,
+    _version: impl Into<String>,
     request: crate::proto::client::ListPlaylistItemsRequest,
 ) -> crate::proto::client::client_message::Message {
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
                 crate::proto::client::observe_resource::Resource::PlaylistItems(
                     crate::proto::client::ObservePlaylistItems {
                         request: Some(request),
+                        after_event_sequence: None,
                     },
                 ),
             ),
@@ -402,18 +405,18 @@ fn observe_playlist_items_message(
 
 fn observe_room_members_message(
     observe_id: &'static str,
-    version: impl Into<String>,
+    _version: impl Into<String>,
     request: crate::proto::client::GetRoomMembersRequest,
 ) -> crate::proto::client::client_message::Message {
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            version: version.into(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
                 crate::proto::client::observe_resource::Resource::RoomMembers(
                     crate::proto::client::ObserveRoomMembers {
                         request: Some(request),
+                        after_event_sequence: None,
                     },
                 ),
             ),
@@ -423,17 +426,22 @@ fn observe_room_members_message(
 
 fn observe_chat_events_message(
     observe_id: impl Into<String>,
-    after_event_id: impl Into<String>,
+) -> crate::proto::client::client_message::Message {
+    observe_chat_events_message_with_sequence(observe_id, None)
+}
+
+fn observe_chat_events_message_with_sequence(
+    observe_id: impl Into<String>,
+    after_event_sequence: Option<i64>,
 ) -> crate::proto::client::client_message::Message {
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.into(),
-            version: String::new(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::NotifyOnly as i32,
             resource: Some(
                 crate::proto::client::observe_resource::Resource::ChatEvents(
                     crate::proto::client::ObserveChatEvents {
-                        after_event_id: after_event_id.into(),
+                        after_event_sequence,
                     },
                 ),
             ),
@@ -1998,7 +2006,7 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
 
     handler
         .handle_client_message(&ClientMessage {
-            message: Some(observe_chat_events_message("chat-events", String::new())),
+            message: Some(observe_chat_events_message("chat-events")),
         })
         .await
         .expect("chat observe should register");
@@ -2065,9 +2073,9 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
 }
 
 #[tokio::test]
-async fn test_observe_chat_events_replays_events_after_event_id() {
+async fn test_observe_chat_events_replays_single_event_after_sequence() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_realtime_manager("test_chat_event_replay_after_event_id").await;
+    let event_service = test_realtime_manager("test_chat_event_replay_after_sequence").await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
     let chat_service = test_chat_service(pool.clone());
@@ -2151,13 +2159,13 @@ async fn test_observe_chat_events_replays_events_after_event_id() {
 
     handler
         .handle_client_message(&ClientMessage {
-            message: Some(observe_chat_events_message(
+            message: Some(observe_chat_events_message_with_sequence(
                 "chat-replay",
-                first.event_id.clone(),
+                Some(first.sequence),
             )),
         })
         .await
-        .expect("chat observe should replay events after event id");
+        .expect("chat observe should replay events after sequence");
 
     let replayed = message_sender
         .sent_messages()
@@ -2171,6 +2179,110 @@ async fn test_observe_chat_events_replays_events_after_event_id() {
         })
         .collect::<Vec<_>>();
     assert_eq!(replayed, vec!["second replay", "third replay"]);
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn test_observe_chat_events_replays_events_after_sequence() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let event_service = test_realtime_manager("test_chat_event_replay_after_sequence").await;
+    let connection_service = test_connection_manager();
+    let room_service = test_room_service(pool.clone());
+    let chat_service = test_chat_service(pool.clone());
+    let user_service = room_service.user_service().clone();
+    let owner = user_service
+        .register(
+            "chat-replay-seq-owner".to_string(),
+            Some("chat-replay-seq-owner@test.invalid".to_string()),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("owner should register")
+        .0;
+    let (room, _) = room_service
+        .create_room(
+            "Chat Replay Sequence Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("room should be created");
+
+    let first = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: owner.id,
+            client_message_id: Some("replay-seq-1".to_string()),
+            content: "first sequence replay".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect("first message should be stored");
+    let second = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: owner.id,
+            client_message_id: Some("replay-seq-2".to_string()),
+            content: "second sequence replay".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .expect("second message should be stored");
+
+    let message_sender = RecordingMessageSender::new();
+    let handler = StreamMessageHandler::new(
+        room.id,
+        owner.id,
+        owner.username.clone(),
+        &room_service,
+        chat_service,
+        event_service.clone(),
+        connection_service.clone(),
+        Arc::new(RateLimiter::local_only(
+            "test:chat-replay-sequence:".to_string(),
+        )),
+        Arc::new(RateLimitConfig::default()),
+        Arc::new(ContentFilter::new()),
+        Arc::new(crate::PublicIdCodec::default_for_tests()),
+        message_sender.clone(),
+    );
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_chat_events_message_with_sequence(
+                "chat-replay-sequence",
+                Some(first.sequence),
+            )),
+        })
+        .await
+        .expect("chat observe should replay events after sequence");
+
+    let replayed = message_sender
+        .sent_messages()
+        .iter()
+        .filter_map(|message| match resource_changed_payload(message) {
+            Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) => event
+                .message
+                .as_ref()
+                .map(|message| (message.content.clone(), event.sequence)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replayed,
+        vec![("second sequence replay".to_string(), second.sequence)]
+    );
 
     shutdown_test_runtime_resources(event_service, connection_service).await;
     pool.close().await;
@@ -2251,7 +2363,7 @@ async fn test_observe_chat_events_requires_view_chat_history_permission_for_memb
     let error = fixture
         .handler
         .handle_client_message(&ClientMessage {
-            message: Some(observe_chat_events_message("chat-events", String::new())),
+            message: Some(observe_chat_events_message("chat-events")),
         })
         .await
         .expect_err("chat events observation should require VIEW_CHAT_HISTORY");
@@ -2390,7 +2502,7 @@ async fn test_observe_playback_snapshot_without_version_sends_snapshot_immediate
                     playlist_id: String::new(),
                     room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
                     name: "test media".to_string(),
-                    position: 0.0,
+                    playlist_position: 0.0,
                     playback_infos: std::collections::HashMap::new(),
                     default_mode: String::new(),
                     metadata: std::collections::HashMap::new(),
@@ -2454,7 +2566,89 @@ async fn test_observe_playback_snapshot_without_version_sends_snapshot_immediate
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_state_with_current_version_skips_immediate_resend() {
+async fn test_observe_playback_snapshot_with_replay_cursor_returns_event_cursor() {
+    let message_sender = RecordingMessageSender::new();
+    let fixture =
+        create_start_handler_fixture("observe_pb_snapshot_cursor", message_sender.clone()).await;
+    let handler = fixture
+        .handler
+        .clone()
+        .with_playback_snapshot_service(Arc::new(FakePlaybackSnapshotService {
+            snapshot: crate::proto::client::PlaybackSnapshot {
+                media_id: public_media_id(),
+                playlist_id: String::new(),
+                room_id: public_id_codec()
+                    .encode_room_id(fixture.handler.room_id)
+                    .unwrap(),
+                name: "test media".to_string(),
+                playlist_position: 0.0,
+                playback_infos: std::collections::HashMap::new(),
+                default_mode: String::new(),
+                metadata: std::collections::HashMap::new(),
+                version: "snapshot-v1".to_string(),
+                expires_at: Some(12345),
+            },
+        }));
+    let request = crate::proto::client::ObserveResource {
+        observe_id: "playback-snapshot".to_string(),
+        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        resource: Some(
+            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(
+                crate::proto::client::ObservePlaybackSnapshot {
+                    media_id: String::new(),
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    playback_client_profile: None,
+                    after_event_sequence: Some(42),
+                },
+            ),
+        ),
+    };
+
+    handler
+        .resource_observer
+        .handle_observe_resource(&request)
+        .await
+        .expect("playback snapshot observe should register");
+
+    let messages = message_sender.sent_messages();
+    let observed = messages
+        .iter()
+        .find_map(|message| match &message.message {
+            Some(Message::ResourceObserved(observed)) => Some(observed),
+            _ => None,
+        })
+        .expect("observe should send ResourceObserved");
+    assert_eq!(
+        observed.event_cursor.as_ref().map(|cursor| cursor.sequence),
+        Some(42)
+    );
+
+    let changed = messages
+        .iter()
+        .find_map(|message| match &message.message {
+            Some(Message::ResourceChanged(changed))
+                if changed.observe_id == "playback-snapshot" =>
+            {
+                Some(changed)
+            }
+            _ => None,
+        })
+        .expect("observe should send initial playback snapshot");
+    assert_eq!(
+        changed.event_cursor.as_ref().map(|cursor| cursor.sequence),
+        Some(42)
+    );
+    assert!(resource_playback_snapshot(&ServerMessage {
+        message: Some(Message::ResourceChanged(changed.clone()))
+    })
+    .is_some_and(|snapshot| snapshot.version == "snapshot-v1"));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_observe_playback_state_sends_current_snapshot() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
         "observe_playback_state_same_version",
@@ -2500,8 +2694,8 @@ async fn test_observe_playback_state_with_current_version_skips_immediate_resend
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playback_state(message).is_none() }),
-        "matching playback state version should not trigger an immediate resend"
+            .any(|message| { resource_playback_state(message).is_some() }),
+        "observe should send the current playback state snapshot"
     );
     assert!(
         stream_state
@@ -2518,8 +2712,7 @@ async fn test_observe_playback_state_with_current_version_skips_immediate_resend
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_snapshot_with_current_version_and_matching_source_skips_immediate_resend(
-) {
+async fn test_observe_playback_snapshot_with_matching_source_sends_current_snapshot() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
         create_start_handler_fixture("observe_pb_snap_same_src", message_sender.clone()).await;
@@ -2536,7 +2729,7 @@ async fn test_observe_playback_snapshot_with_current_version_and_matching_source
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "test media".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -2570,8 +2763,9 @@ async fn test_observe_playback_snapshot_with_current_version_and_matching_source
     assert!(
         sent_messages
             .iter()
-            .all(|message| { resource_playback_snapshot(message).is_none() }),
-        "matching playback snapshot version should not trigger an immediate resend: {sent_messages:?}"
+            .any(|message| resource_playback_snapshot(message)
+                .is_some_and(|snapshot| snapshot.version == "snapshot-v1")),
+        "observe should send the current playback snapshot: {sent_messages:?}"
     );
     let stream_messages = stream_state.sent_messages();
     assert!(
@@ -2609,7 +2803,7 @@ async fn test_observe_playback_snapshot_with_current_version_but_different_sourc
                     playlist_id: String::new(),
                     room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
                     name: "test media".to_string(),
-                    position: 0.0,
+                    playlist_position: 0.0,
                     playback_infos: std::collections::HashMap::new(),
                     default_mode: String::new(),
                     metadata: std::collections::HashMap::new(),
@@ -2676,7 +2870,7 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "test media".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -2708,8 +2902,9 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playback_snapshot(message).is_none() }),
-        "same snapshot version should not resend immediately"
+            .any(|message| resource_playback_snapshot(message)
+                .is_some_and(|snapshot| snapshot.version == "1")),
+        "observe should send the current playback snapshot"
     );
 
     snapshot_service.replace(crate::proto::client::PlaybackSnapshot {
@@ -2717,7 +2912,7 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
         name: "test media".to_string(),
-        position: 0.0,
+        playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
@@ -2735,6 +2930,7 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 12.0,
             speed: 1.0,
             is_playing: true,
@@ -2815,7 +3011,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback_snapshot()
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "credential-backed media".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -2855,7 +3051,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback_snapshot()
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
         name: "credential-backed media".to_string(),
-        position: 0.0,
+        playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
@@ -2943,7 +3139,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback_sna
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "credential-backed media".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -3058,7 +3254,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "observe-playback-media-update".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -3090,8 +3286,9 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playback_snapshot(message).is_none() }),
-        "matching playback snapshot version should not resend immediately"
+            .any(|message| resource_playback_snapshot(message)
+                .is_some_and(|snapshot| snapshot.version == media.version.to_string())),
+        "observe should send the current playback snapshot"
     );
 
     let updated_media = handler
@@ -3110,7 +3307,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
         name: "observe-playback-media-update-v2".to_string(),
-        position: 0.0,
+        playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
         metadata: std::collections::HashMap::from([(
@@ -3211,7 +3408,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
             playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "observe-playback-playlist-update".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -3243,8 +3440,9 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playback_snapshot(message).is_none() }),
-        "matching playback snapshot version should not resend immediately"
+            .any(|message| resource_playback_snapshot(message)
+                .is_some_and(|snapshot| snapshot.version == playlist.version.to_string())),
+        "observe should send the current playback snapshot"
     );
 
     let updated_playlist = handler
@@ -3267,7 +3465,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
         playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
         name: "observe-playback-playlist-update-v2".to_string(),
-        position: 0.0,
+        playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
         metadata: std::collections::HashMap::from([(
@@ -3334,7 +3532,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: String::new(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -3346,7 +3544,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: String::new(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::from([(
@@ -3382,8 +3580,9 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playback_snapshot(message).is_none() }),
-        "matching playback snapshot version should not resend immediately"
+            .any(|message| resource_playback_snapshot(message)
+                .is_some_and(|snapshot| snapshot.version == "1")),
+        "observe should send the current playback snapshot"
     );
 
     let updated_state = handler
@@ -3456,7 +3655,7 @@ async fn test_playback_snapshot_refresh_failure_removes_observation_without_clos
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: "test media".to_string(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -3512,6 +3711,7 @@ async fn test_playback_snapshot_refresh_failure_removes_observation_without_clos
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 5.0,
             speed: 1.0,
             is_playing: true,
@@ -3587,7 +3787,7 @@ async fn test_playback_snapshot_observation_refreshes_when_snapshot_expires_with
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: String::new(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -3599,7 +3799,7 @@ async fn test_playback_snapshot_observation_refreshes_when_snapshot_expires_with
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             name: String::new(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::from([(
@@ -4070,7 +4270,7 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
 
 #[tokio::test]
 async fn test_resource_changed_send_failure_propagates_and_removes_observation() {
-    let message_sender = FailingMessageSender::fail_after(1);
+    let message_sender = FailingMessageSender::fail_after(2);
     let handler = test_message_handler(
         message_sender.clone(),
         test_realtime_manager("resource_changed_send_failure").await,
@@ -4102,8 +4302,8 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
             )),
         })
         .await
-        .expect("observe should register with only ResourceObserved sent");
-    assert_eq!(message_sender.send_calls(), 1);
+        .expect("observe should register with initial snapshot sent");
+    assert_eq!(message_sender.send_calls(), 2);
 
     snapshot_service.replace(empty_playlist_items_response("items-v2"));
     let error = handler
@@ -4127,7 +4327,7 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
 
 #[tokio::test]
 async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
-    let failing_sender = FailingMessageSender::fail_after(1);
+    let failing_sender = FailingMessageSender::fail_after(2);
     let healthy_sender = RecordingMessageSender::new();
     let event_service = test_realtime_manager("other_subscriber_send_failure").await;
     let connection_service = test_connection_manager();
@@ -4875,7 +5075,7 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playlist_items_with_current_version_skips_immediate_resend() {
+async fn test_observe_playlist_items_sends_current_snapshot() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
         "observe_playlist_items_same_version",
@@ -4936,8 +5136,9 @@ async fn test_observe_playlist_items_with_current_version_skips_immediate_resend
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playlist_items(message).is_none() }),
-        "matching playlist items version should not trigger an immediate resend"
+            .any(|message| resource_playlist_items(message)
+                .is_some_and(|items| items.version == "items-v1")),
+        "observe should send the current playlist items snapshot"
     );
     let stream_messages = stream_state.sent_messages();
     assert!(
@@ -5013,8 +5214,9 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_playlist_items(message).is_none() }),
-        "same playlist items version should not resend immediately"
+            .any(|message| resource_playlist_items(message)
+                .is_some_and(|items| items.version == "items-v1")),
+        "observe should send the current playlist items snapshot"
     );
 
     snapshot_service.replace(crate::proto::client::ListPlaylistItemsResponse {
@@ -5166,7 +5368,7 @@ async fn test_observe_room_members_without_version_sends_snapshot_immediately() 
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_room_members_with_current_version_skips_immediate_resend() {
+async fn test_observe_room_members_sends_current_snapshot() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
         create_start_handler_fixture("observe_room_members_same_version", message_sender.clone())
@@ -5215,8 +5417,9 @@ async fn test_observe_room_members_with_current_version_skips_immediate_resend()
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_room_members(message).is_none() }),
-        "matching room members version should not trigger an immediate resend"
+            .any(|message| resource_room_members(message)
+                .is_some_and(|members| members.version == "members-v1")),
+        "observe should send the current room members snapshot"
     );
     assert!(
         stream_state
@@ -5280,8 +5483,9 @@ async fn test_observed_room_members_receive_future_permission_updates() {
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_room_members(message).is_none() }),
-        "same room members version should not resend immediately"
+            .any(|message| resource_room_members(message)
+                .is_some_and(|members| members.version == "members-v1")),
+        "observe should send the current room members snapshot"
     );
 
     snapshot_service.replace(crate::proto::client::GetRoomMembersResponse {
@@ -5388,8 +5592,9 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_room_members(message).is_none() }),
-        "same room members version should not resend immediately"
+            .any(|message| resource_room_members(message)
+                .is_some_and(|members| members.version == "members-v1")),
+        "observe should send the current room members snapshot"
     );
 
     snapshot_service.replace(crate::proto::client::GetRoomMembersResponse {
@@ -5444,7 +5649,7 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_room_settings_with_current_version_skips_immediate_resend() {
+async fn test_observe_room_settings_sends_current_snapshot() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
         create_start_handler_fixture("observe_room_settings_same_version", message_sender.clone())
@@ -5482,8 +5687,9 @@ async fn test_observe_room_settings_with_current_version_skips_immediate_resend(
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_room_settings(message).is_none() }),
-        "matching room settings version should not trigger an immediate resend"
+            .any(|message| resource_room_settings(message)
+                .is_some_and(|settings| settings.version == 7)),
+        "observe should send the current room settings snapshot"
     );
     let stream_messages = stream_state.sent_messages();
     assert!(
@@ -5539,8 +5745,9 @@ async fn test_observed_room_settings_receive_future_updates() {
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| { resource_room_settings(message).is_none() }),
-        "same room settings version should not resend immediately"
+            .any(|message| resource_room_settings(message)
+                .is_some_and(|settings| settings.version == 7)),
+        "observe should send the current room settings snapshot"
     );
 
     snapshot_service.replace(crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
@@ -5713,6 +5920,7 @@ fn test_durable_chat_message_event_conversion() {
         actor_user_id: user_id(),
         event: ChatMessageEvent {
             event_id: "chat-event-1".to_string(),
+            sequence: 1,
             room_id: room_id(),
             actor_user_id: user_id(),
             kind: ChatEventKind::Deleted,
@@ -5757,6 +5965,7 @@ fn test_playback_state_changed_event_conversion() {
         playing_media_id: Some(media_id()),
         playing_playlist_id: None,
         target: Vec::new(),
+        current_progress_id: None,
         position: 123.456,
         speed: 1.5,
         is_playing: true,

@@ -16,11 +16,10 @@ use crate::proto::client::{
     CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
     FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest,
     FinishSensitiveOperationVerificationResponse, ListMyRoomsResponse, ListPasskeysResponse,
-    PasskeyCredentialResponse,
-    RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse,
-    StartPasskeyBindRequest, StartPasskeyBindResponse, StartSensitiveOperationPasskeyRequest,
-    StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
-    StartSensitiveOperationVerificationResponse,
+    PasskeyCredentialResponse, RequestSensitiveOperationEmailCodeRequest,
+    RequestSensitiveOperationEmailCodeResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
+    StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
+    StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
 };
 use crate::proto::client::{
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, GetUserPreferencesResponse,

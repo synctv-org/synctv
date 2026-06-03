@@ -335,6 +335,8 @@ sqlx_i16_enum!(ChatEventKind, "Invalid chat event kind", {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageEvent {
     pub event_id: String,
+    #[serde(default)]
+    pub sequence: i64,
     pub room_id: RoomId,
     pub actor_user_id: UserId,
     pub kind: ChatEventKind,
@@ -346,6 +348,12 @@ pub struct ChatMessageEvent {
 pub struct ChatMessageEventLog {
     pub sequence: i64,
     pub event: ChatMessageEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventCursor {
+    pub event_id: Option<String>,
+    pub sequence: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -372,10 +380,17 @@ pub struct MarkChatRead {
     pub message_id: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatHistoryCursor {
     pub created_at: DateTime<Utc>,
     pub id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatHistoryPage {
+    pub messages: Vec<ChatMessageWithImages>,
+    pub next_cursor: Option<ChatHistoryCursor>,
+    pub event_cursor: EventCursor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

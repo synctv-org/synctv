@@ -6,6 +6,8 @@
 //! - Expired media provider credentials
 //! - Old notifications
 //! - Old chat messages (per-room cap)
+//! - Expired room resource events
+//! - Stale playback progress rows
 //!
 //! Runs as a background task with configurable intervals and retention periods.
 //!
@@ -24,7 +26,7 @@ use tracing::{info, warn};
 use super::{FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry};
 use crate::{
     models::{ChatImage, FileReferenceTarget},
-    repository::FileStorageRepository,
+    repository::{FileStorageRepository, RoomResourceEventRepository},
     InternalExt, Result,
 };
 
@@ -45,6 +47,10 @@ pub struct CleanupConfig {
     pub notification_max_retention_days: u32,
     /// Maximum chat messages to keep per room (0 = unlimited)
     pub chat_max_messages_per_room: i64,
+    /// Seconds to retain room resource events for watch resume/audit (0 = disabled)
+    pub room_resource_event_retention_seconds: u64,
+    /// Days to retain playback progress rows not referenced by current playback (0 = disabled)
+    pub playback_progress_retention_days: u32,
     /// Seconds to keep uploaded file objects that have no active product reference (0 = disabled)
     pub unreferenced_file_retention_seconds: u64,
 }
@@ -59,6 +65,8 @@ impl Default for CleanupConfig {
             notification_retention_days: 30,
             notification_max_retention_days: 90,
             chat_max_messages_per_room: 0, // unlimited by default
+            room_resource_event_retention_seconds: 3_600,
+            playback_progress_retention_days: 15,
             unreferenced_file_retention_seconds: 86_400,
         }
     }
@@ -79,6 +87,10 @@ pub struct CleanupResult {
     pub notifications_deleted: u64,
     /// Number of old chat messages deleted
     pub chat_messages_deleted: u64,
+    /// Number of expired room resource events deleted
+    pub room_resource_events_deleted: u64,
+    /// Number of stale playback progress rows deleted
+    pub playback_progress_deleted: u64,
     /// Number of expired token blacklist entries deleted
     pub token_blacklist_deleted: u64,
     /// Number of unreferenced file objects cleaned
@@ -260,6 +272,32 @@ impl CleanupService {
         }
 
         // 7. Cleanup expired token blacklist entries (prevents unbounded table growth)
+        if self.config.room_resource_event_retention_seconds > 0 {
+            match self.cleanup_room_resource_events().await {
+                Ok(count) => {
+                    result.room_resource_events_deleted = count;
+                    if count > 0 {
+                        info!(count, "Deleted expired room resource events");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to cleanup room resource events"),
+            }
+        }
+
+        // 8. Cleanup stale playback progress rows.
+        if self.config.playback_progress_retention_days > 0 {
+            match self.cleanup_stale_playback_progress().await {
+                Ok(count) => {
+                    result.playback_progress_deleted = count;
+                    if count > 0 {
+                        info!(count, "Deleted stale playback progress rows");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to cleanup playback progress"),
+            }
+        }
+
+        // 9. Cleanup expired token blacklist entries (prevents unbounded table growth)
         match self.cleanup_token_blacklist().await {
             Ok(count) => {
                 result.token_blacklist_deleted = count;
@@ -270,7 +308,7 @@ impl CleanupService {
             Err(e) => warn!(error = %e, "Failed to cleanup token blacklist"),
         }
 
-        // 8. Cleanup uploaded file objects that were never attached to a product row.
+        // 10. Cleanup uploaded file objects that were never attached to a product row.
         match self.cleanup_expired_file_references().await {
             Ok(count) => {
                 if count > 0 {
@@ -487,6 +525,35 @@ impl CleanupService {
         .internal_with_err("Failed to cleanup token blacklist")?
         .unwrap_or(0);
         Ok(deleted_count.max(0).cast_unsigned())
+    }
+
+    async fn cleanup_room_resource_events(&self) -> Result<u64> {
+        let retention_seconds =
+            i64::try_from(self.config.room_resource_event_retention_seconds).unwrap_or(i64::MAX);
+        RoomResourceEventRepository::new(self.pool.clone())
+            .delete_older_than(retention_seconds)
+            .await
+    }
+
+    async fn cleanup_stale_playback_progress(&self) -> Result<u64> {
+        let days = Self::u32_to_i32_saturating(self.config.playback_progress_retention_days);
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM room_playback_progress progress
+            WHERE progress.updated_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM room_playback_state state
+                  WHERE state.current_progress_id = progress.id
+              )
+            "#,
+            days,
+        )
+        .execute(&self.pool)
+        .await
+        .internal_with_err("Failed to cleanup stale playback progress")?;
+
+        Ok(result.rows_affected())
     }
 
     async fn cleanup_expired_file_references(&self) -> Result<u64> {
@@ -728,6 +795,7 @@ keep_count
                     + result.credentials_deleted
                     + result.notifications_deleted
                     + result.chat_messages_deleted
+                    + result.room_resource_events_deleted
                     + result.token_blacklist_deleted;
 
                 if total > 0 {
@@ -738,6 +806,7 @@ keep_count
                         credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,
                         chat_messages = result.chat_messages_deleted,
+                        room_resource_events = result.room_resource_events_deleted,
                         total,
                         "Data cleanup completed"
                     );

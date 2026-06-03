@@ -137,9 +137,6 @@ impl<T: 'static> PreparedOutboxFanout<T> {
                 .lock()
                 .expect("prepared realtime fanout event mutex should not be poisoned") =
                 Some(event.clone());
-            if !realtime_fanout.is_distributed_enabled() {
-                return None;
-            }
             realtime_fanout.outbox_event(&event)
         }))
     }
@@ -165,8 +162,8 @@ impl RealtimeFanoutService for NoopRealtimeFanoutService {
         false
     }
 
-    fn outbox_event(&self, _event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        None
+    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
+        Some(new_durable_event(event))
     }
 
     fn publish_after_outbox_commit(&self, _event: RealtimeEvent) {}
@@ -201,8 +198,8 @@ impl RealtimeFanoutService for LocalRealtimeFanoutService {
         true
     }
 
-    fn outbox_event(&self, _event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        None
+    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
+        Some(new_durable_event(event))
     }
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
@@ -293,12 +290,20 @@ pub(crate) fn broadcast_event_locally(
 fn new_outbox_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
     NewRealtimeOutboxEvent {
         id: event.event_id().to_string(),
+        enqueue_outbox: true,
         aggregate_type: aggregate_type(event).to_string(),
         aggregate_id: aggregate_id(event),
         event_type: event.event_type().to_string(),
         event_version: 1,
         aggregate_version: aggregate_version(event),
         payload: serde_json::to_value(event).expect("RealtimeEvent serialization should not fail"),
+    }
+}
+
+fn new_durable_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
+    NewRealtimeOutboxEvent {
+        enqueue_outbox: false,
+        ..new_outbox_event(event)
     }
 }
 
@@ -394,8 +399,8 @@ impl RealtimeFanoutService for ChannelRealtimeFanoutService {
         self.sender.send(request).await.is_ok()
     }
 
-    fn outbox_event(&self, _event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        None
+    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
+        Some(new_durable_event(event))
     }
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
@@ -555,7 +560,9 @@ mod tests {
             .outbox_factory()
             .expect("local fanout still needs a callback to capture the committed event");
 
-        assert!(factory(&RoomId::expect_positive(10_000_161)).is_none());
+        let event = factory(&RoomId::expect_positive(10_000_161))
+            .expect("local fanout should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
@@ -618,7 +625,10 @@ mod tests {
             RealtimeDeliveryRequirement::DistributedIfAvailable,
         );
 
-        assert!(plan.outbox_event().is_none());
+        let event = plan
+            .outbox_event()
+            .expect("noop fanout should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         assert_eq!(
             plan.delivery_requirement(),
             RealtimeDeliveryRequirement::DistributedIfAvailable

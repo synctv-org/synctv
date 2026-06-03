@@ -601,6 +601,7 @@ pub(crate) fn playback_state_to_proto(
                     .expect("positive playlist ID must encode")
             }),
         target: state.target.clone(),
+        target_hash: state.target_hash(),
     }
 }
 
@@ -853,7 +854,7 @@ pub(crate) fn playback_snapshot_to_proto(
             .encode_room_id(result.room_id)
             .expect("positive room ID must encode"),
         name: result.name.clone(),
-        position: result.position,
+        playlist_position: result.position,
         playback_infos,
         default_mode: result.default_mode.clone(),
         metadata,

@@ -30,6 +30,22 @@ pub struct SwitchPlaybackTarget {
     pub target: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaybackSourceExpectation {
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target_hash: String,
+}
+
+impl PlaybackSourceExpectation {
+    #[must_use]
+    pub fn matches(&self, state: &RoomPlaybackState) -> bool {
+        self.media_id == state.playing_media_id
+            && self.playlist_id == state.playing_playlist_id
+            && self.target_hash.eq_ignore_ascii_case(&state.target_hash())
+    }
+}
+
 #[derive(Debug)]
 enum NextTarget {
     Static(crate::models::Media),
@@ -154,6 +170,16 @@ fn validate_playback_speed_value(speed: f64) -> Result<()> {
     Ok(())
 }
 
+fn validate_position_update_source(state: &RoomPlaybackState) -> Result<()> {
+    if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
+        return Err(Error::InvalidInput(
+            "playback position update requires a current playback source".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()> {
     match (&target.media_id, &target.playlist_id) {
         (Some(_), Some(_)) => Err(Error::InvalidInput(
@@ -169,6 +195,27 @@ fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()> {
             "target is required when switching to a dynamic playlist item".to_string(),
         )),
         _ => Ok(()),
+    }
+}
+
+fn playback_source_is_set(state: &RoomPlaybackState) -> bool {
+    state.playing_media_id.is_some() || state.playing_playlist_id.is_some()
+}
+
+fn playback_source_changed(before: &RoomPlaybackState, after: &RoomPlaybackState) -> bool {
+    before.playing_media_id != after.playing_media_id
+        || before.playing_playlist_id != after.playing_playlist_id
+        || before.target != after.target
+}
+
+fn previous_progress_position_for_source_transition(
+    before: &RoomPlaybackState,
+    after: &RoomPlaybackState,
+) -> Option<f64> {
+    if playback_source_is_set(before) && playback_source_changed(before, after) {
+        Some(before.computed_position())
+    } else {
+        None
     }
 }
 
@@ -426,13 +473,27 @@ impl PlaybackService {
         state: &RoomPlaybackState,
         observed_version: i64,
     ) -> Result<RoomPlaybackState> {
+        self.persist_playback_update_with_previous_progress(state, observed_version, None)
+            .await
+    }
+
+    async fn persist_playback_update_with_previous_progress(
+        &self,
+        state: &RoomPlaybackState,
+        observed_version: i64,
+        previous_progress_position: Option<f64>,
+    ) -> Result<RoomPlaybackState> {
         let reservation = self
             .begin_playback_write_from_db_version(&state.room_id, observed_version)
             .await?;
         if let Some(reservation) = &reservation {
             match self
                 .playback_repo
-                .update_with_exact_version(state, reservation.version)
+                .update_with_exact_version_and_previous_progress(
+                    state,
+                    reservation.version,
+                    previous_progress_position,
+                )
                 .await
             {
                 Ok(updated_state) => {
@@ -452,7 +513,14 @@ impl PlaybackService {
                 }
             }
         } else {
-            let updated_state = self.playback_repo.update(state).await?;
+            let updated_state = self
+                .playback_repo
+                .update_with_exact_version_and_previous_progress(
+                    state,
+                    state.version + 1,
+                    previous_progress_position,
+                )
+                .await?;
             self.finalize_committed_playback_write_best_effort(
                 &state.room_id,
                 None,
@@ -1155,30 +1223,21 @@ impl PlaybackService {
         user_id: UserId,
         position: f64,
     ) -> Result<SeekResponse> {
-        validate_seek_position(position)?;
-
-        self.permission_service
-            .check_permission(
-                &room_id,
-                &user_id,
-                crate::models::RoomPermission::PLAY_CONTROL,
-            )
-            .await?;
-
         let result = self
-            .update_state(room_id, |state| {
-                state.position = position;
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            })
+            .update_multiple_internal(
+                room_id,
+                user_id,
+                None,
+                Some(position),
+                None,
+                None,
+                None,
+                false,
+            )
             .await;
 
         match result {
-            Ok(state) => {
-                // Cache invalidation is already handled inside update_state()
-                self.broadcast_state_change(&state);
-                Ok(SeekResponse::success(state))
-            }
+            Ok(state) => Ok(SeekResponse::success(state)),
             Err(error)
                 if crate::service::optimistic_retry::is_retry_exhausted(
                     &error,
@@ -1449,6 +1508,7 @@ impl PlaybackService {
 
                 // Apply update to the fetched state and try to save with optimistic locking
                 let mut updated_state = state;
+                let previous_state = updated_state.clone();
                 match &next_target {
                     NextTarget::Static(next) => {
                         match self
@@ -1497,9 +1557,15 @@ impl PlaybackService {
                 updated_state.position = 0.0;
                 updated_state.is_playing = true;
                 updated_state.updated_at = chrono::Utc::now();
+                let previous_progress_position =
+                    previous_progress_position_for_source_transition(&previous_state, &updated_state);
 
                 let saved_state = self
-                    .persist_playback_update(&updated_state, observed_version)
+                    .persist_playback_update_with_previous_progress(
+                        &updated_state,
+                        observed_version,
+                        previous_progress_position,
+                    )
                     .await?;
                 self.write_playback_cache(&saved_state).await;
 
@@ -1597,6 +1663,21 @@ impl PlaybackService {
     where
         F: Fn(&mut RoomPlaybackState),
     {
+        self.update_state_checked(room_id, |state| {
+            update_fn(state);
+            Ok(())
+        })
+        .await
+    }
+
+    async fn update_state_checked<F>(
+        &self,
+        room_id: RoomId,
+        update_fn: F,
+    ) -> Result<RoomPlaybackState>
+    where
+        F: Fn(&mut RoomPlaybackState) -> Result<()>,
+    {
         crate::service::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
@@ -1611,11 +1692,18 @@ impl PlaybackService {
                     };
 
                     let observed_version = state.version;
+                    let previous_state = state.clone();
                     // Apply update
-                    update_fn(&mut state);
+                    update_fn(&mut state)?;
+                    let previous_progress_position =
+                        previous_progress_position_for_source_transition(&previous_state, &state);
 
                     let updated_state = self
-                        .persist_playback_update(&state, observed_version)
+                        .persist_playback_update_with_previous_progress(
+                            &state,
+                            observed_version,
+                            previous_progress_position,
+                        )
                         .await?;
                     self.write_playback_cache(&updated_state).await;
 
@@ -1632,37 +1720,6 @@ impl PlaybackService {
             },
         )
         .await
-    }
-
-    async fn update_state_with_expected_version<F>(
-        &self,
-        room_id: RoomId,
-        expected_version: i64,
-        update_fn: F,
-    ) -> Result<RoomPlaybackState>
-    where
-        F: Fn(&mut RoomPlaybackState),
-    {
-        let mut state = match self.playback_repo.get(&room_id).await? {
-            Some(s) => s,
-            None => self.playback_repo.create_or_get(&room_id).await?,
-        };
-
-        if state.version != expected_version {
-            return Err(Error::OptimisticLockConflict);
-        }
-
-        let observed_version = state.version;
-        update_fn(&mut state);
-        let updated_state = self
-            .persist_playback_update(&state, observed_version)
-            .await?;
-        self.write_playback_cache(&updated_state).await;
-
-        self.broadcast_invalidation_with_retry(&room_id, &updated_state, "update_state")
-            .await;
-
-        Ok(updated_state)
     }
 
     /// Reset playback to initial state
@@ -1719,6 +1776,7 @@ impl PlaybackService {
                     let room_id = state.room_id;
                     reservations.push((room_id, reservation));
 
+                    let previous_state = state.clone();
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
                     state.target.clear();
@@ -1726,10 +1784,17 @@ impl PlaybackService {
                     state.speed = 1.0;
                     state.is_playing = false;
                     state.updated_at = chrono::Utc::now();
+                    let previous_progress_position =
+                        previous_progress_position_for_source_transition(&previous_state, &state);
 
                     let updated = self
                         .playback_repo
-                        .update_with_exact_version_executor(&state, reserved_version, &mut *tx)
+                        .update_with_exact_version_executor_and_previous_progress(
+                            &state,
+                            reserved_version,
+                            previous_progress_position,
+                            &mut *tx,
+                        )
                         .await?;
                     reset_states.push(updated);
                 }
@@ -2005,6 +2070,31 @@ impl PlaybackService {
             position,
             speed,
             expected_version,
+            None,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_multiple_checked_source_with_version(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        playing: Option<bool>,
+        position: Option<f64>,
+        speed: Option<f64>,
+        expected_version: Option<i64>,
+        expected_source: PlaybackSourceExpectation,
+    ) -> Result<RoomPlaybackState> {
+        self.update_multiple_internal(
+            room_id,
+            user_id,
+            playing,
+            position,
+            speed,
+            expected_version,
+            Some(expected_source),
             false,
         )
         .await
@@ -2029,6 +2119,31 @@ impl PlaybackService {
             position,
             speed,
             expected_version,
+            None,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admin_update_multiple_checked_source_with_version(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        playing: Option<bool>,
+        position: Option<f64>,
+        speed: Option<f64>,
+        expected_version: Option<i64>,
+        expected_source: PlaybackSourceExpectation,
+    ) -> Result<RoomPlaybackState> {
+        self.update_multiple_internal(
+            room_id,
+            actor_user_id,
+            playing,
+            position,
+            speed,
+            expected_version,
+            Some(expected_source),
             true,
         )
         .await
@@ -2043,6 +2158,7 @@ impl PlaybackService {
         position: Option<f64>,
         speed: Option<f64>,
         expected_version: Option<i64>,
+        expected_source: Option<PlaybackSourceExpectation>,
         bypass_permission: bool,
     ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
@@ -2094,9 +2210,43 @@ impl PlaybackService {
             // version is incremented by the SQL UPDATE, not here
         };
 
-        let state = if let Some(expected) = expected_version {
-            self.update_state_with_expected_version(room_id, expected, apply_update)
-                .await?
+        let state = if expected_version.is_some() || expected_source.is_some() {
+            let mut state = match self.playback_repo.get(&room_id).await? {
+                Some(state) => state,
+                None => self.playback_repo.create_or_get(&room_id).await?,
+            };
+
+            if position.is_some() {
+                validate_position_update_source(&state)?;
+            }
+            if expected_version.is_some_and(|expected| state.version != expected) {
+                return Err(Error::OptimisticLockConflict);
+            }
+            if expected_source
+                .as_ref()
+                .is_some_and(|expected| !expected.matches(&state))
+            {
+                return Err(Error::OptimisticLockConflict);
+            }
+
+            let observed_version = state.version;
+            apply_update(&mut state);
+            let updated_state = self
+                .persist_playback_update(&state, observed_version)
+                .await?;
+            self.write_playback_cache(&updated_state).await;
+
+            self.broadcast_invalidation_with_retry(&room_id, &updated_state, "update_state")
+                .await;
+
+            updated_state
+        } else if position.is_some() {
+            self.update_state_checked(room_id, |state| {
+                validate_position_update_source(state)?;
+                apply_update(state);
+                Ok(())
+            })
+            .await?
         } else {
             self.update_state(room_id, apply_update).await?
         };
@@ -2341,6 +2491,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 10.0,
             speed: 1.0,
             is_playing: false,
@@ -2357,6 +2508,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 42.0,
             speed: 1.0,
             is_playing: true,
@@ -2424,6 +2576,33 @@ mod tests {
     }
 
     #[test]
+    fn test_position_update_requires_current_playback_source() {
+        let mut state = RoomPlaybackState {
+            room_id: RoomId::expect_positive(20_001),
+            playing_media_id: None,
+            playing_playlist_id: None,
+            target: Vec::new(),
+            current_progress_id: None,
+            position: 0.0,
+            speed: 1.0,
+            is_playing: false,
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        let err = validate_position_update_source(&state).unwrap_err();
+        assert!(matches!(err, Error::InvalidInput(_)));
+
+        state.playing_media_id = Some(MediaId::expect_positive(30_001));
+        assert!(validate_position_update_source(&state).is_ok());
+
+        state.playing_media_id = None;
+        state.playing_playlist_id = Some(PlaylistId::expect_positive(40_001));
+        state.target = b"dynamic-target".to_vec();
+        assert!(validate_position_update_source(&state).is_ok());
+    }
+
+    #[test]
     fn test_update_state_constants() {
         assert_eq!(PlaybackService::MAX_RETRIES, 5);
         assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
@@ -2454,6 +2633,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 42.0,
             speed: 1.0,
             is_playing: true,
@@ -2495,6 +2675,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 64.0,
             speed: 1.0,
             is_playing: true,
@@ -2552,6 +2733,7 @@ mod tests {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 88.0,
             speed: 1.0,
             is_playing: true,
@@ -2803,6 +2985,7 @@ mod tests {
                 playing_media_id: None,
                 playing_playlist_id: None,
                 target: Vec::new(),
+                current_progress_id: None,
                 position,
                 speed: 1.0,
                 is_playing: false,

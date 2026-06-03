@@ -3,6 +3,7 @@
 //! Coordinates periodic database maintenance in a single background task:
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
 //! - Cleanup of chat messages older than the configurable retention cap (default: 90 days)
+//! - Cleanup of expired room resource events
 //!
 //! Note: partition creation/retention is owned by dedicated managers:
 //! - `AuditPartitionManager` for `audit_logs`
@@ -18,7 +19,7 @@ use super::{
     SettingsRegistry,
 };
 use crate::models::{ChatImage, FileReferenceTarget};
-use crate::repository::FileStorageRepository;
+use crate::repository::{FileStorageRepository, RoomResourceEventRepository};
 
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
@@ -103,6 +104,14 @@ impl DatabaseMaintenanceService {
 
     fn unreferenced_file_retention_seconds(&self) -> i64 {
         i64::try_from(self.config.unreferenced_file_retention_seconds).unwrap_or(i64::MAX)
+    }
+
+    fn room_resource_event_retention_seconds(&self) -> i64 {
+        i64::try_from(self.config.room_resource_event_retention_seconds).unwrap_or(i64::MAX)
+    }
+
+    fn playback_progress_retention_days(&self) -> i32 {
+        u32_to_i32(self.config.playback_progress_retention_days)
     }
 
     /// Delete expired email tokens.
@@ -255,6 +264,47 @@ impl DatabaseMaintenanceService {
                     );
                 }
             }
+        }
+        Ok(())
+    }
+
+    pub async fn run_cleanup_room_resource_events(&self) -> crate::Result<()> {
+        if self.config.room_resource_event_retention_seconds == 0 {
+            return Ok(());
+        }
+
+        let deleted = RoomResourceEventRepository::new(self.pool.clone())
+            .delete_older_than(self.room_resource_event_retention_seconds())
+            .await?;
+        if deleted > 0 {
+            info!(deleted, "Expired room resource event cleanup completed");
+        }
+        Ok(())
+    }
+
+    pub async fn run_cleanup_playback_progress(&self) -> crate::Result<()> {
+        if self.config.playback_progress_retention_days == 0 {
+            return Ok(());
+        }
+
+        let deleted = sqlx::query!(
+            r#"
+            DELETE FROM room_playback_progress progress
+            WHERE progress.updated_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM room_playback_state state
+                  WHERE state.current_progress_id = progress.id
+              )
+            "#,
+            self.playback_progress_retention_days(),
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if deleted > 0 {
+            info!(deleted, "Stale playback progress cleanup completed");
         }
         Ok(())
     }
@@ -447,6 +497,12 @@ impl DatabaseMaintenanceService {
         if let Err(e) = self.run_cleanup_old_chat_messages().await {
             error!(error = %e, "Old chat message cleanup failed");
         }
+        if let Err(e) = self.run_cleanup_room_resource_events().await {
+            error!(error = %e, "Room resource event cleanup failed");
+        }
+        if let Err(e) = self.run_cleanup_playback_progress().await {
+            error!(error = %e, "Playback progress cleanup failed");
+        }
         if let Err(e) = self.run_cleanup_expired_file_references().await {
             error!(error = %e, "Expired file reference cleanup failed");
         }
@@ -509,6 +565,12 @@ impl DatabaseMaintenanceService {
                         }
                         if let Err(e) = service.run_cleanup_old_chat_messages().await {
                             error!(error = %e, "Scheduled old chat message cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_room_resource_events().await {
+                            error!(error = %e, "Scheduled room resource event cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_playback_progress().await {
+                            error!(error = %e, "Scheduled playback progress cleanup failed");
                         }
                         if let Err(e) = service.run_cleanup_expired_file_references().await {
                             error!(error = %e, "Scheduled expired file reference cleanup failed");

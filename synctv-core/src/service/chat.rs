@@ -14,8 +14,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, ChatEventKind, ChatHistoryCursor, ChatImage, ChatMessage,
-        ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
+        AuditAction, AuditTargetType, ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage,
+        ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
         ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
         ChatReactionUsersPage, ChatReadState, ChatReadStateWithUnread,
         CreateChatImageUploadSession, CreateFileUploadSession, DeleteChatMessage, EditChatMessage,
@@ -510,6 +510,19 @@ impl ChatService {
             .await
     }
 
+    pub async fn get_history_page_with_images_for_viewer(
+        &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatHistoryPage> {
+        self.chat_repository
+            .list_history_page_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
+            .await
+    }
+
     pub async fn get_playback_messages_with_images(
         &self,
         query: ChatPlaybackMessagesQuery,
@@ -629,6 +642,35 @@ impl ChatService {
             }
             result => result,
         }
+    }
+
+    pub async fn get_events_after_sequence(
+        &self,
+        room_id: &RoomId,
+        after_sequence: i64,
+        limit: i32,
+    ) -> Result<Vec<ChatMessageEventLog>> {
+        self.chat_repository
+            .list_events_after_sequence(room_id, after_sequence, limit)
+            .await
+    }
+
+    pub async fn is_event_sequence_retained_for_room(
+        &self,
+        room_id: &RoomId,
+        after_sequence: i64,
+    ) -> Result<bool> {
+        let after_sequence = after_sequence.max(0);
+
+        let Some((min_sequence, _max_sequence)) = self
+            .chat_repository
+            .retained_chat_event_sequence_bounds(room_id)
+            .await?
+        else {
+            return Ok(after_sequence == 0);
+        };
+
+        Ok(min_sequence <= after_sequence.saturating_add(1))
     }
 
     pub async fn mark_read(&self, request: MarkChatRead) -> Result<ChatReadStateWithUnread> {
@@ -1942,6 +1984,7 @@ mod tests {
             sequence: 12,
             event: ChatMessageEvent {
                 event_id: "event-12".to_string(),
+                sequence: 12,
                 room_id: message.room_id,
                 actor_user_id: UserId::expect_positive(2),
                 kind: crate::models::ChatEventKind::Edited,
@@ -3062,11 +3105,13 @@ mod tests {
             r"
             SELECT COUNT(*)
             FROM chat_message_events
-            WHERE room_id = $1 AND message_id = $2 AND kind = $3
+            WHERE room_id = $1
+              AND message_id = $2
+              AND event_type = $3
             ",
             room.id.as_i64(),
             first.message.message.id,
-            i16::from(ChatEventKind::Created)
+            "chat_message_created"
         )
         .fetch_one(&pool)
         .await
@@ -3172,11 +3217,13 @@ mod tests {
             r"
             SELECT COUNT(*)
             FROM chat_message_events
-            WHERE room_id = $1 AND message_id = $2 AND kind = $3
+            WHERE room_id = $1
+              AND message_id = $2
+              AND event_type = $3
             ",
             room.id.as_i64(),
             created.message.message.id,
-            i16::from(ChatEventKind::Edited)
+            "chat_message_edited"
         )
         .fetch_one(&pool)
         .await
@@ -3281,11 +3328,13 @@ mod tests {
             r"
             SELECT COUNT(*)
             FROM chat_message_events
-            WHERE room_id = $1 AND message_id = $2 AND kind = $3
+            WHERE room_id = $1
+              AND message_id = $2
+              AND event_type = $3
             ",
             room.id.as_i64(),
             created.message.message.id,
-            i16::from(ChatEventKind::Deleted)
+            "chat_message_deleted"
         )
         .fetch_one(&pool)
         .await

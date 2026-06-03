@@ -1245,12 +1245,11 @@ mod websocket_e2e {
             message: Some(client_message::Message::ObserveResource(
                 synctv_proto::client::ObserveResource {
                     observe_id: observe_id.to_string(),
-                    version: String::new(),
                     delivery_mode: synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32,
                     resource: Some(
                         synctv_proto::client::observe_resource::Resource::ChatEvents(
                             synctv_proto::client::ObserveChatEvents {
-                                after_event_id: String::new(),
+                                after_event_sequence: None,
                             },
                         ),
                     ),

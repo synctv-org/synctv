@@ -203,6 +203,7 @@ mod tests {
         fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
             Some(NewRealtimeOutboxEvent {
                 id: event.event_id().to_string(),
+                enqueue_outbox: true,
                 aggregate_type: "playlist".to_string(),
                 aggregate_id: event
                     .room_id()

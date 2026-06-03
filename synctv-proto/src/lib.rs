@@ -211,6 +211,7 @@ mod tests {
             version: 42,
             playing_playlist_id: "playlist-1".into(),
             target: br#"{"item_id":"provider-item-42"}"#.to_vec(),
+            target_hash: "sample-target-hash".into(),
         };
         let bytes = state.encode_to_vec();
         let decoded = crate::client::PlaybackState::decode(bytes.as_slice()).unwrap();
@@ -242,6 +243,12 @@ mod tests {
             playback_target: Vec::new(),
             playback_target_hash: String::new(),
             playback_position_seconds: None,
+            reactions: vec![crate::client::ChatReactionSummary {
+                key: "like".into(),
+                count: 2,
+                reacted_by_me: true,
+            }],
+            reaction_count: 2,
         };
         let bytes = msg.encode_to_vec();
         let decoded = crate::client::ChatMessageReceive::decode(bytes.as_slice()).unwrap();
@@ -283,6 +290,7 @@ mod tests {
                         version: 1,
                         playing_playlist_id: String::new(),
                         target: Vec::new(),
+                        target_hash: String::new(),
                     }),
                 },
             )),
@@ -438,6 +446,7 @@ mod tests {
             version: 42,
             playing_playlist_id: "playlist-1".into(),
             target: Vec::new(),
+            target_hash: String::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         let decoded: crate::client::PlaybackState = serde_json::from_str(&json).unwrap();

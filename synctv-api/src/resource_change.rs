@@ -191,6 +191,7 @@ mod tests {
         let now = Utc::now();
         ChatMessageEvent {
             event_id: "chat-event".to_string(),
+            sequence: 1,
             room_id: room_id(),
             actor_user_id: user_id(),
             kind: ChatEventKind::Created,

@@ -98,8 +98,7 @@ impl RuntimeModePlan {
         );
         let local_realtime_profile =
             build_realtime_state_profile(None, &infra.config.redis.key_prefix, false);
-        let realtime_outbox =
-            cluster_runtime.then(|| Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())));
+        let realtime_outbox = Some(Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())));
 
         Self {
             cluster_runtime,
@@ -1172,6 +1171,7 @@ impl Application {
                         credentials_deleted = cleanup_result.credentials_deleted,
                         notifications_deleted = cleanup_result.notifications_deleted,
                         chat_messages_deleted = cleanup_result.chat_messages_deleted,
+                        room_resource_events_deleted = cleanup_result.room_resource_events_deleted,
                         token_blacklist_deleted = cleanup_result.token_blacklist_deleted,
                         unreferenced_files_deleted = cleanup_result.unreferenced_files_deleted,
                         "Deferred cleanup completed after leadership gain"
@@ -1744,7 +1744,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_runtime_mode_plan_keeps_standalone_local_and_without_outbox() {
+    async fn test_runtime_mode_plan_keeps_standalone_local_with_durable_event_store() {
         let mut config = minimal_valid_startup_config();
         config.cluster.enabled = false;
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
@@ -1759,7 +1759,7 @@ mod tests {
         let plan = RuntimeModePlan::from_infrastructure(&infra);
 
         assert!(!plan.cluster_runtime());
-        assert!(plan.realtime_outbox().is_none());
+        assert!(plan.realtime_outbox().is_some());
         assert_eq!(
             plan.cache_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly

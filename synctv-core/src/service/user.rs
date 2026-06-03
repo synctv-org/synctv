@@ -2101,25 +2101,53 @@ impl UserService {
                     .map_or(playback_version + 1, |reservation| reservation.version);
                 let reset_result: Result<RoomPlaybackState> = match sqlx::query_as!(
                     RoomPlaybackState,
-                    r#"UPDATE room_playback_state
-	                     SET playing_media_id = NULL,
-	                         playing_playlist_id = NULL,
-	                         target = ''::bytea,
-	                         "position" = 0,
-	                         speed = 1.0,
-	                         is_playing = false,
-	                         version = $2,
-	                         updated_at = NOW()
-	                     WHERE room_id = $1 AND version = $3
-	                     RETURNING room_id as "room_id: RoomId",
-	                               playing_media_id as "playing_media_id: MediaId",
-	                               playing_playlist_id as "playing_playlist_id: PlaylistId",
-	                               target,
-	                               "position",
-	                               speed,
-	                               is_playing,
-	                               updated_at,
-	                               version"#,
+                    r#"WITH current_state AS (
+                            SELECT room_id, current_progress_id
+                            FROM room_playback_state
+                            WHERE room_id = $1 AND version = $3
+                            FOR UPDATE
+                        ),
+                        reset_progress AS (
+                            UPDATE room_playback_progress progress
+                            SET "position" = 0,
+                                version = version + 1
+                            FROM current_state
+                            WHERE progress.id = current_state.current_progress_id
+                            RETURNING progress.id
+                        ),
+                        updated AS (
+                            UPDATE room_playback_state state
+                            SET playing_media_id = NULL,
+                                playing_playlist_id = NULL,
+                                target = ''::bytea,
+                                current_progress_id = NULL,
+                                speed = 1.0,
+                                is_playing = false,
+                                version = $2,
+                                updated_at = NOW()
+                            FROM current_state
+                            WHERE state.room_id = current_state.room_id
+                            RETURNING state.room_id,
+                                      state.playing_media_id,
+                                      state.playing_playlist_id,
+                                      state.target,
+                                      state.current_progress_id,
+                                      state.speed,
+                                      state.is_playing,
+                                      state.updated_at,
+                                      state.version
+                        )
+                        SELECT room_id as "room_id: RoomId",
+                               playing_media_id as "playing_media_id: MediaId",
+                               playing_playlist_id as "playing_playlist_id: PlaylistId",
+                               target,
+                               current_progress_id,
+                               0.0::DOUBLE PRECISION AS "position!",
+                               speed AS "speed!",
+                               is_playing,
+                               updated_at,
+                               version
+                        FROM updated"#,
                     room_id as &RoomId,
                     reserved_version,
                     playback_version,
@@ -2148,6 +2176,18 @@ impl UserService {
 
         if !media_ids.is_empty() {
             let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
+            if let Err(error) = sqlx::query!(
+                "DELETE FROM room_playback_progress WHERE room_id = $1 AND media_id = ANY($2)",
+                room_id as &RoomId,
+                &media_id_strs,
+            )
+            .execute(&mut **tx)
+            .await
+            {
+                self.abort_playback_reset_fence_option(playback_fence.as_ref())
+                    .await;
+                return Err(error.into());
+            }
             if let Err(error) = sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
                 .execute(&mut **tx)
                 .await
@@ -2160,6 +2200,18 @@ impl UserService {
 
         if !playlist_ids.is_empty() {
             let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
+            if let Err(error) = sqlx::query!(
+                "DELETE FROM room_playback_progress WHERE room_id = $1 AND playlist_id = ANY($2)",
+                room_id as &RoomId,
+                &playlist_id_strs,
+            )
+            .execute(&mut **tx)
+            .await
+            {
+                self.abort_playback_reset_fence_option(playback_fence.as_ref())
+                    .await;
+                return Err(error.into());
+            }
             if let Err(error) = sqlx::query!(
                 "DELETE FROM playlists WHERE id = ANY($1)",
                 &playlist_id_strs

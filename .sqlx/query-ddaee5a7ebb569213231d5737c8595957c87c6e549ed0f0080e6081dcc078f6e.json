@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id,\n                   room_id AS \"room_id: RoomId\",\n                   media_id AS \"media_id: MediaId\",\n                   playlist_id AS \"playlist_id: PlaylistId\",\n                   target,\n                   target_hash,\n                   \"position\",\n                   created_at,\n                   updated_at,\n                   version\n            FROM room_playback_progress\n            WHERE room_id = $1\n              AND media_id IS NOT DISTINCT FROM $2\n              AND playlist_id IS NOT DISTINCT FROM $3\n              AND target_hash = $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "media_id: MediaId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "playlist_id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "target",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "target_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "position",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ddaee5a7ebb569213231d5737c8595957c87c6e549ed0f0080e6081dcc078f6e"
+}

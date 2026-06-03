@@ -148,6 +148,7 @@ mod tests {
         message.created_at = occurred_at;
         ChatMessageEvent {
             event_id: "evt_test".to_string(),
+            sequence: 1,
             room_id,
             actor_user_id: user_id,
             kind: ChatEventKind::Created,

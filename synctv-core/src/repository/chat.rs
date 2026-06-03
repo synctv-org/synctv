@@ -3,10 +3,11 @@ use sqlx::{Executor, PgPool, Postgres, Row, Transaction};
 
 use crate::{
     models::{
-        ChatEventKind, ChatHistoryCursor, ChatImage, ChatMessage, ChatMessageContext,
-        ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus, ChatMessageWithImages,
-        ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor,
-        ChatReactionUsersPage, ChatReadState, NewChatImage, RoomId, SetChatReaction, UserId,
+        ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatMessage,
+        ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
+        ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser,
+        ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState, EventCursor, NewChatImage,
+        RoomId, SetChatReaction, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -129,6 +130,7 @@ impl ChatRepository {
         let inserted_images = self.insert_images_in_tx(&mut tx, &inserted, images).await?;
         let event = ChatMessageEvent {
             event_id: event_id.to_string(),
+            sequence: 0,
             room_id: message.room_id,
             actor_user_id: message.user_id.ok_or_else(|| {
                 Error::InvalidInput("Chat event requires a message sender".to_string())
@@ -260,6 +262,7 @@ impl ChatRepository {
         });
         let event = ChatMessageEvent {
             event_id: event_id.to_string(),
+            sequence: 0,
             room_id: request.room_id,
             actor_user_id: request.user_id,
             kind: ChatEventKind::ReactionsChanged,
@@ -423,6 +426,7 @@ impl ChatRepository {
                 })?;
             let event = ChatMessageEvent {
                 event_id: synctv_common::snanoid!(16),
+                sequence: 0,
                 room_id: *room_id,
                 actor_user_id: *user_id,
                 kind: ChatEventKind::Created,
@@ -517,10 +521,17 @@ impl ChatRepository {
             sqlx::query_as_unchecked!(
                 ChatEventRow,
                 r"
-                SELECT sequence, event_id, room_id, message_id, message_created_at,
-                       actor_user_id, kind, message_version, event_payload, occurred_at
+                SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                       occurred_at
                 FROM chat_message_events
-                WHERE room_id = $1 AND sequence > $2
+                WHERE room_id = $1
+                  AND sequence > $2
+                  AND event_type IN (
+                      'chat_message_created',
+                      'chat_message_edited',
+                      'chat_message_deleted',
+                      'chat_message_reactions_changed'
+                  )
                 ORDER BY sequence ASC
                 LIMIT $3
                 ",
@@ -534,10 +545,16 @@ impl ChatRepository {
             sqlx::query_as_unchecked!(
                 ChatEventRow,
                 r"
-                SELECT sequence, event_id, room_id, message_id, message_created_at,
-                       actor_user_id, kind, message_version, event_payload, occurred_at
+                SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                       occurred_at
                 FROM chat_message_events
                 WHERE room_id = $1
+                  AND event_type IN (
+                      'chat_message_created',
+                      'chat_message_edited',
+                      'chat_message_deleted',
+                      'chat_message_reactions_changed'
+                  )
                 ORDER BY sequence ASC
                 LIMIT $2
                 ",
@@ -551,6 +568,100 @@ impl ChatRepository {
         rows.into_iter().map(ChatEventRow::try_into_log).collect()
     }
 
+    pub async fn list_events_after_sequence(
+        &self,
+        room_id: &RoomId,
+        after_sequence: i64,
+        limit: i32,
+    ) -> Result<Vec<ChatMessageEventLog>> {
+        let limit = limit.clamp(1, 500);
+        let after_sequence = after_sequence.max(0);
+        let rows = sqlx::query_as_unchecked!(
+            ChatEventRow,
+            r"
+            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                   occurred_at
+            FROM chat_message_events
+            WHERE room_id = $1
+              AND sequence > $2
+              AND event_type IN (
+                  'chat_message_created',
+                  'chat_message_edited',
+                  'chat_message_deleted',
+                  'chat_message_reactions_changed'
+              )
+            ORDER BY sequence ASC
+            LIMIT $3
+            ",
+            room_id.as_i64(),
+            after_sequence,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(ChatEventRow::try_into_log).collect()
+    }
+
+    pub async fn latest_event_cursor_for_room(&self, room_id: &RoomId) -> Result<EventCursor> {
+        let row = sqlx::query!(
+            r"
+            SELECT event_id, sequence
+            FROM chat_message_events
+            WHERE room_id = $1
+              AND event_type IN (
+                  'chat_message_created',
+                  'chat_message_edited',
+                  'chat_message_deleted',
+                  'chat_message_reactions_changed'
+              )
+            ORDER BY sequence DESC
+            LIMIT 1
+            ",
+            room_id.as_i64()
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map_or(
+            EventCursor {
+                event_id: None,
+                sequence: 0,
+            },
+            |row| EventCursor {
+                event_id: Some(row.event_id),
+                sequence: row.sequence,
+            },
+        ))
+    }
+
+    pub async fn retained_chat_event_sequence_bounds(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Option<(i64, i64)>> {
+        let row = sqlx::query!(
+            r"
+            SELECT MIN(sequence) AS min_sequence, MAX(sequence) AS max_sequence
+            FROM chat_message_events
+            WHERE room_id = $1
+              AND event_type IN (
+                  'chat_message_created',
+                  'chat_message_edited',
+                  'chat_message_deleted',
+                  'chat_message_reactions_changed'
+              )
+            ",
+            room_id.as_i64()
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row
+            .min_sequence
+            .zip(row.max_sequence)
+            .map(|(min_sequence, max_sequence)| (min_sequence, max_sequence)))
+    }
+
     pub async fn latest_event_for_message(
         &self,
         room_id: &RoomId,
@@ -560,10 +671,18 @@ impl ChatRepository {
         let row = sqlx::query_as_unchecked!(
             ChatEventRow,
             r"
-            SELECT sequence, event_id, room_id, message_id, message_created_at,
-                   actor_user_id, kind, message_version, event_payload, occurred_at
+            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                   occurred_at
             FROM chat_message_events
-            WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3
+            WHERE room_id = $1
+              AND event_type IN (
+                  'chat_message_created',
+                  'chat_message_edited',
+                  'chat_message_deleted',
+                  'chat_message_reactions_changed'
+              )
+              AND message_id = $2
+              AND message_created_at = $3
             ORDER BY sequence DESC
             LIMIT 1
             ",
@@ -586,17 +705,19 @@ impl ChatRepository {
         let row = sqlx::query_as_unchecked!(
             ChatEventRow,
             r"
-            SELECT sequence, event_id, room_id, message_id, message_created_at,
-                   actor_user_id, kind, message_version, event_payload, occurred_at
+            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                   occurred_at
             FROM chat_message_events
-            WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3 AND kind = $4
+            WHERE event_type = 'chat_message_created'
+              AND room_id = $1
+              AND message_id = $2
+              AND message_created_at = $3
             ORDER BY sequence ASC
             LIMIT 1
             ",
             room_id.as_i64(),
             message_id,
-            message_created_at,
-            i16::from(ChatEventKind::Created)
+            message_created_at
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -733,16 +854,17 @@ event_sequence
             SELECT COUNT(*)
             FROM chat_message_events e
             JOIN chat_messages m
-              ON m.id = e.message_id AND m.created_at = e.message_created_at
+              ON m.room_id = e.room_id
+             AND m.id = e.message_id
+             AND m.created_at = e.message_created_at
             WHERE e.room_id = $1
               AND e.sequence > $2
-              AND e.kind = $3
-              AND m.status <> $4
-              AND (m.user_id IS NULL OR m.user_id <> $5)
+              AND e.event_type = 'chat_message_created'
+              AND m.status <> $3
+              AND (m.user_id IS NULL OR m.user_id <> $4)
             ",
             room_id.as_i64(),
             sequence,
-            i16::from(ChatEventKind::Created),
             i16::from(ChatMessageStatus::Deleted),
             user_id.as_i64()
         )
@@ -854,6 +976,26 @@ limit
             .await?;
 
         Ok((messages, next_cursor))
+    }
+
+    pub async fn list_history_page_for_viewer(
+        &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatHistoryPage> {
+        let event_cursor = self.latest_event_cursor_for_room(room_id).await?;
+        let (messages, next_cursor) = self
+            .list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
+            .await?;
+
+        Ok(ChatHistoryPage {
+            messages,
+            next_cursor,
+            event_cursor,
+        })
     }
 
     pub async fn list_playback_messages(
@@ -1224,6 +1366,7 @@ message_id
             .await?;
         let event = ChatMessageEvent {
             event_id: request.event_id.to_string(),
+            sequence: 0,
             room_id: *request.room_id,
             actor_user_id: *request.actor_user_id,
             kind: ChatEventKind::Edited,
@@ -1241,7 +1384,7 @@ message_id
                 request.room_id,
                 request.actor_user_id,
                 operation,
-                &logged.event.event_id,
+                &logged.event,
             )
             .await?;
         }
@@ -1373,6 +1516,7 @@ message_id
         };
         let event = ChatMessageEvent {
             event_id: request.event_id.to_string(),
+            sequence: 0,
             room_id: *request.room_id,
             actor_user_id: *request.deleted_by,
             kind: ChatEventKind::Deleted,
@@ -1390,7 +1534,7 @@ message_id
                 request.room_id,
                 request.deleted_by,
                 operation,
-                &logged.event.event_id,
+                &logged.event,
             )
             .await?;
         }
@@ -1618,25 +1762,25 @@ message_id
         user_id: &UserId,
         client_message_id: &str,
     ) -> Result<Option<IdempotencyRow>> {
-        let row = sqlx::query(
+        let row = sqlx::query!(
             r"
             SELECT request_hash, message_id, message_created_at, event_id
             FROM chat_message_idempotency
             WHERE room_id = $1 AND user_id = $2 AND client_message_id = $3
             FOR UPDATE
             ",
+            room_id.as_i64(),
+            user_id.as_i64(),
+            client_message_id
         )
-        .bind(room_id.as_i64())
-        .bind(user_id.as_i64())
-        .bind(client_message_id)
         .fetch_optional(&mut **tx)
         .await?;
 
         Ok(row.map(|row| IdempotencyRow {
-            request_hash: row.get("request_hash"),
-            message_id: row.get("message_id"),
-            message_created_at: row.get("message_created_at"),
-            event_id: row.get("event_id"),
+            request_hash: row.request_hash,
+            message_id: row.message_id,
+            message_created_at: row.message_created_at,
+            event_id: row.event_id,
         }))
     }
 
@@ -1672,17 +1816,20 @@ message_id
             })?;
 
         if let Some(existing_event_id) = request.existing.event_id {
-            return self
+            if let Some(event) = self
                 .get_event_by_id_in_tx(tx, &request.message.room_id, &existing_event_id)
                 .await?
-                .ok_or_else(|| {
-                    Error::Internal("idempotency record points to a missing chat event".to_string())
-                })
-                .map(Some);
+            {
+                return Ok(Some(event));
+            }
+            return Err(Error::Internal(
+                "idempotency record points to a missing durable chat event".to_string(),
+            ));
         }
 
         let event = ChatMessageEvent {
             event_id: request.event_id.to_string(),
+            sequence: 0,
             room_id: request.message.room_id,
             actor_user_id: request.message.user_id.ok_or_else(|| {
                 Error::InvalidInput("Chat event requires a message sender".to_string())
@@ -1759,41 +1906,39 @@ message_id
         operation_kind: ChatEventKind,
         request_hash: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let row = sqlx::query(
+        let row = sqlx::query!(
             r"
             SELECT operation_kind, request_hash, event_id
             FROM chat_message_operation_idempotency
             WHERE room_id = $1 AND user_id = $2 AND client_operation_id = $3
             FOR UPDATE
             ",
+            room_id.as_i64(),
+            user_id.as_i64(),
+            client_operation_id
         )
-        .bind(room_id.as_i64())
-        .bind(user_id.as_i64())
-        .bind(client_operation_id)
         .fetch_optional(&mut **tx)
         .await?;
         let Some(row) = row else {
             return Ok(None);
         };
 
-        let existing_kind: i16 = row.get("operation_kind");
-        let existing_hash: String = row.get("request_hash");
+        let existing_kind = row.operation_kind;
+        let existing_hash = row.request_hash;
         if existing_kind != i16::from(operation_kind) || existing_hash != request_hash {
             return Err(Error::Conflict(
                 "client_operation_id was already used with a different operation".to_string(),
             ));
         }
-        let Some(event_id) = row.get::<Option<String>, _>("event_id") else {
+        let Some(event_id) = row.event_id else {
             return Ok(None);
         };
-        self.get_event_by_id_in_tx(tx, room_id, &event_id)
-            .await?
-            .ok_or_else(|| {
-                Error::Internal(
-                    "operation idempotency record points to a missing chat event".to_string(),
-                )
-            })
-            .map(Some)
+        if let Some(event) = self.get_event_by_id_in_tx(tx, room_id, &event_id).await? {
+            return Ok(Some(event));
+        }
+        Err(Error::Internal(
+            "operation idempotency record points to a missing durable chat event".to_string(),
+        ))
     }
 
     async fn complete_message_operation_in_tx(
@@ -1802,7 +1947,7 @@ message_id
         room_id: &RoomId,
         user_id: &UserId,
         operation: &ChatMessageOperationIdempotency<'_>,
-        event_id: &str,
+        event: &ChatMessageEvent,
     ) -> Result<()> {
         sqlx::query!(
             r"
@@ -1813,7 +1958,7 @@ message_id
             room_id.as_i64(),
             user_id.as_i64(),
             operation.client_operation_id,
-            event_id
+            &event.event_id
         )
         .execute(&mut **tx)
         .await?;
@@ -1909,25 +2054,28 @@ created_at
         event: &ChatMessageEvent,
     ) -> Result<ChatMessageEventLog> {
         let payload = serde_json::to_value(event)?;
+        let summary = chat_event_summary(event);
+        let event_type = chat_event_type(event.kind);
         let row = sqlx::query_as_unchecked!(
             ChatEventRow,
             r"
             INSERT INTO chat_message_events (
-                event_id, room_id, message_id, message_created_at, actor_user_id,
-                kind, message_version, event_payload, occurred_at
+                event_id, room_id, actor_user_id, message_id, message_created_at,
+                event_type, event_version, message_version, payload, summary, occurred_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING sequence, event_id, room_id, message_id, message_created_at,
-                      actor_user_id, kind, message_version, event_payload, occurred_at
+            VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9, $10)
+            RETURNING sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                      occurred_at
             ",
             &event.event_id,
             event.room_id.as_i64(),
+            event.actor_user_id.as_i64(),
             event.message.message.id,
             event.message.message.created_at,
-            event.actor_user_id.as_i64(),
-            i16::from(event.kind),
+            event_type,
             event.message.message.version,
             payload,
+            summary,
             event.occurred_at
         )
         .fetch_one(&mut **tx)
@@ -1944,10 +2092,17 @@ created_at
         let row = sqlx::query_as_unchecked!(
             ChatEventRow,
             r"
-            SELECT sequence, event_id, room_id, message_id, message_created_at,
-                   actor_user_id, kind, message_version, event_payload, occurred_at
+            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
+                   occurred_at
             FROM chat_message_events
-            WHERE room_id = $1 AND event_id = $2
+            WHERE room_id = $1
+              AND event_id = $2
+              AND event_type IN (
+                  'chat_message_created',
+                  'chat_message_edited',
+                  'chat_message_deleted',
+                  'chat_message_reactions_changed'
+              )
             ",
             room_id.as_i64(),
             event_id
@@ -2165,36 +2320,51 @@ pub struct IdempotentChatEventInsert {
     pub inserted: bool,
 }
 
+fn chat_event_type(kind: ChatEventKind) -> &'static str {
+    match kind {
+        ChatEventKind::Created => "chat_message_created",
+        ChatEventKind::Edited => "chat_message_edited",
+        ChatEventKind::Deleted => "chat_message_deleted",
+        ChatEventKind::ReactionsChanged => "chat_message_reactions_changed",
+    }
+}
+
+fn chat_event_summary(event: &ChatMessageEvent) -> serde_json::Value {
+    serde_json::json!({
+        "kind": i16::from(event.kind),
+        "message_id": event.message.message.id,
+        "message_created_at": event.message.message.created_at,
+        "message_version": event.message.message.version,
+        "actor_user_id": event.actor_user_id.as_i64(),
+    })
+}
+
 #[derive(sqlx::FromRow)]
 struct ChatEventRow {
     sequence: i64,
     event_id: String,
-    room_id: i64,
-    message_id: i64,
-    message_created_at: DateTime<Utc>,
-    actor_user_id: i64,
-    kind: i16,
-    message_version: i64,
-    event_payload: serde_json::Value,
+    room_id: Option<i64>,
+    actor_user_id: Option<i64>,
+    event_payload: Option<serde_json::Value>,
     occurred_at: DateTime<Utc>,
 }
 
 impl ChatEventRow {
     fn try_into_log(self) -> Result<ChatMessageEventLog> {
-        let event: ChatMessageEvent = serde_json::from_value(self.event_payload)?;
+        let payload = self.event_payload.ok_or_else(|| {
+            Error::Internal("Chat resource event is missing replay payload".to_string())
+        })?;
+        let mut event: ChatMessageEvent = serde_json::from_value(payload)?;
         if event.event_id != self.event_id
-            || event.room_id.as_i64() != self.room_id
-            || event.actor_user_id.as_i64() != self.actor_user_id
-            || i16::from(event.kind) != self.kind
-            || event.message.message.id != self.message_id
-            || event.message.message.created_at != self.message_created_at
-            || event.message.message.version != self.message_version
+            || Some(event.room_id.as_i64()) != self.room_id
+            || Some(event.actor_user_id.as_i64()) != self.actor_user_id
             || event.occurred_at != self.occurred_at
         {
             return Err(Error::Internal(
                 "Chat event outbox payload does not match indexed columns".to_string(),
             ));
         }
+        event.sequence = self.sequence;
         Ok(ChatMessageEventLog {
             sequence: self.sequence,
             event,

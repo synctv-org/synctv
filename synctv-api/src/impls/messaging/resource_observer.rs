@@ -6,6 +6,7 @@ use std::time::Duration;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
+    repository::RoomResourceEventRepository,
     service::{ChatService, RoomService},
 };
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
@@ -28,13 +29,24 @@ const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
 pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
 const CHAT_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
+const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
 
-fn chat_event_version(event: &synctv_core::models::ChatMessageEvent) -> String {
-    format!(
-        "{}:{}",
-        event.occurred_at.timestamp_millis(),
-        event.event_id
-    )
+fn event_cursor_for_chat_event(
+    event: &synctv_core::models::ChatMessageEvent,
+) -> crate::proto::client::EventCursor {
+    crate::proto::client::EventCursor {
+        event_id: event.event_id.clone(),
+        sequence: event.sequence,
+    }
+}
+
+fn proto_event_cursor(
+    cursor: synctv_core::models::EventCursor,
+) -> crate::proto::client::EventCursor {
+    crate::proto::client::EventCursor {
+        event_id: cursor.event_id.unwrap_or_default(),
+        sequence: cursor.sequence,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -46,23 +58,23 @@ struct ResourceObserverState {
 #[derive(Debug, Clone)]
 struct ResourceObservation {
     observe_id: String,
-    last_version: String,
+    last_fingerprint: String,
     delivery_mode: ResourceDeliveryMode,
     resource: ObservedResource,
     last_source: Option<PlaybackSnapshotSource>,
     expires_at: Option<i64>,
+    last_sent_event_sequence: i64,
 }
 
 #[derive(Debug, Clone)]
 struct ObservationUpdate {
-    version: String,
     changed: bool,
     changed_message: Option<crate::proto::client::ResourceChanged>,
 }
 
 #[derive(Debug, Clone)]
 struct ResourceEvaluation {
-    version: String,
+    fingerprint: String,
     source: Option<PlaybackSnapshotSource>,
     expires_at: Option<i64>,
     payload: crate::proto::client::resource_changed::Payload,
@@ -231,6 +243,7 @@ struct CompletedMediaResourceRefresh {
 
 pub(super) struct MediaResourceHub {
     room_id: RoomId,
+    pool: sqlx::PgPool,
     state: tokio::sync::Mutex<MediaResourceHubState>,
 }
 
@@ -249,6 +262,7 @@ fn media_resource_hub(room_id: RoomId, room_service: &Arc<RoomService>) -> Arc<M
     }
     let hub = Arc::new(MediaResourceHub {
         room_id,
+        pool: room_service.pool().clone(),
         state: tokio::sync::Mutex::new(MediaResourceHubState::default()),
     });
     hubs.insert(key, Arc::downgrade(&hub));
@@ -358,6 +372,23 @@ impl PlaybackSnapshotSource {
 }
 
 impl ResourceObservation {
+    fn room_resource_cursor_types(&self) -> Option<&'static [&'static str]> {
+        match &self.resource {
+            ObservedResource::PlaybackState => Some(&["playback_state"]),
+            ObservedResource::PlaybackSnapshot { .. } => {
+                Some(&["playback_state", "media", "playlist"])
+            }
+            ObservedResource::RoomSettings => Some(&["room_settings", "room"]),
+            ObservedResource::PlaylistItems { .. } => {
+                Some(&["playlist_items", "playlist", "media"])
+            }
+            ObservedResource::RoomMembers { .. } => {
+                Some(&["room_members", "room_settings", "room"])
+            }
+            ObservedResource::ChatEvents => None,
+        }
+    }
+
     fn evaluation_key(&self) -> ObservationEvaluationKey {
         let delivery_mode = self.delivery_mode as i32;
         match &self.resource {
@@ -557,6 +588,15 @@ impl ResourceObserver {
         }
     }
 
+    async fn local_observation(&self, observe_id: &str) -> Option<ResourceObservation> {
+        self.state
+            .lock()
+            .await
+            .observations
+            .get(observe_id)
+            .cloned()
+    }
+
     async fn remove_local_observation(&self, observe_id: &str) {
         let mut state = self.state.lock().await;
         state.observations.remove(observe_id);
@@ -652,6 +692,57 @@ impl ResourceObserver {
         state.observations.insert(observe_id.clone(), observation);
         state.observations.get(&observe_id).cloned()
     }
+
+    fn observation_start_sequence(
+        observation: &ResourceObservation,
+        request: &crate::proto::client::ObserveResource,
+    ) -> i64 {
+        let requested_sequence = Self::requested_replay_sequence(request).unwrap_or(0).max(0);
+        if matches!(observation.resource, ObservedResource::ChatEvents)
+            || observation.room_resource_cursor_types().is_some()
+        {
+            requested_sequence
+        } else {
+            0
+        }
+    }
+
+    fn requested_replay_sequence(request: &crate::proto::client::ObserveResource) -> Option<i64> {
+        request
+            .resource
+            .as_ref()
+            .and_then(|resource| match resource {
+                crate::proto::client::observe_resource::Resource::PlaybackState(observe) => {
+                    observe.after_event_sequence
+                }
+                crate::proto::client::observe_resource::Resource::PlaybackSnapshot(observe) => {
+                    observe.after_event_sequence
+                }
+                crate::proto::client::observe_resource::Resource::RoomSettings(observe) => {
+                    observe.after_event_sequence
+                }
+                crate::proto::client::observe_resource::Resource::PlaylistItems(observe) => {
+                    observe.after_event_sequence
+                }
+                crate::proto::client::observe_resource::Resource::RoomMembers(observe) => {
+                    observe.after_event_sequence
+                }
+                crate::proto::client::observe_resource::Resource::ChatEvents(observe) => {
+                    observe.after_event_sequence
+                }
+            })
+    }
+
+    fn apply_event_cursor_to_observation(
+        observation: &mut ResourceObservation,
+        cursor: &crate::proto::client::EventCursor,
+    ) -> bool {
+        if cursor.sequence <= observation.last_sent_event_sequence {
+            return false;
+        }
+        observation.last_sent_event_sequence = cursor.sequence;
+        true
+    }
 }
 
 impl MediaResourceHub {
@@ -731,11 +822,27 @@ impl MediaResourceHub {
         if invalidations.is_empty() {
             return Ok(());
         }
+        let event_cursor = match RoomResourceEventRepository::new(self.pool.clone())
+            .room_event_cursor_by_event_id(&self.room_id, event.event_id())
+            .await
+        {
+            Ok(cursor) => cursor.map(proto_event_cursor),
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %self.room_id,
+                    event_id = %event.event_id(),
+                    error = %error,
+                    "Failed to load durable room resource event cursor for live refresh"
+                );
+                None
+            }
+        };
         let outcome = self
             .refresh_for_invalidations_with_key(
                 Some(format!("cluster:{}", event.event_id())),
                 invalidations,
                 false,
+                event_cursor,
             )
             .await;
         if let Some(error) = outcome.error_for_connection(fatal_connection_id) {
@@ -751,7 +858,7 @@ impl MediaResourceHub {
         invalidations: Vec<ResourceInvalidation>,
         force: bool,
     ) -> ResourceRefreshOutcome {
-        self.refresh_for_invalidations_with_key(None, invalidations, force)
+        self.refresh_for_invalidations_with_key(None, invalidations, force, None)
             .await
     }
 
@@ -760,6 +867,7 @@ impl MediaResourceHub {
         refresh_key: Option<String>,
         invalidations: Vec<ResourceInvalidation>,
         force: bool,
+        event_cursor: Option<crate::proto::client::EventCursor>,
     ) -> ResourceRefreshOutcome {
         if invalidations.is_empty() {
             return ResourceRefreshOutcome::default();
@@ -772,15 +880,19 @@ impl MediaResourceHub {
             let result = entry
                 .result
                 .get_or_init(|| async {
-                    self.refresh_for_invalidations_uncached(&invalidations, force)
-                        .await
+                    self.refresh_for_invalidations_uncached(
+                        &invalidations,
+                        force,
+                        event_cursor.clone(),
+                    )
+                    .await
                 })
                 .await
                 .clone();
             self.finish_deduped_refresh(&refresh_key, &entry).await;
             return result;
         }
-        self.refresh_for_invalidations_uncached(&invalidations, force)
+        self.refresh_for_invalidations_uncached(&invalidations, force, event_cursor)
             .await
     }
 
@@ -843,7 +955,7 @@ impl MediaResourceHub {
                     return ResourceRefreshOutcome::default();
                 }
                 self.bump_resource_generation().await;
-                self.refresh_subscription_batch(subscriptions).await
+                self.refresh_subscription_batch(subscriptions, None).await
             })
             .await
             .clone();
@@ -975,11 +1087,14 @@ impl MediaResourceHub {
             }
         }
 
-        self.refresh_subscription_batch(refresh_plan.into_iter().map(
-            |(key, (observer, observation, force, revision))| {
-                (key, observer, observation, force, revision)
-            },
-        ))
+        self.refresh_subscription_batch(
+            refresh_plan
+                .into_iter()
+                .map(|(key, (observer, observation, force, revision))| {
+                    (key, observer, observation, force, revision)
+                }),
+            None,
+        )
         .await
     }
 
@@ -987,6 +1102,7 @@ impl MediaResourceHub {
         &self,
         invalidations: &[ResourceInvalidation],
         force: bool,
+        event_cursor: Option<crate::proto::client::EventCursor>,
     ) -> ResourceRefreshOutcome {
         let subscriptions = self.snapshot_subscriptions().await;
         let mut refresh_plan = HashMap::<
@@ -1010,10 +1126,15 @@ impl MediaResourceHub {
                         continue;
                     }
                     let mut updated_observation = observation.clone();
-                    updated_observation.last_version = chat_event_version(event);
+                    let cursor = event_cursor_for_chat_event(event);
+                    if !ResourceObserver::apply_event_cursor_to_observation(
+                        &mut updated_observation,
+                        &cursor,
+                    ) {
+                        continue;
+                    }
                     let changed = crate::proto::client::ResourceChanged {
                         observe_id: updated_observation.observe_id.clone(),
-                        version: updated_observation.last_version.clone(),
                         payload: Some(crate::proto::client::resource_changed::Payload::ChatEvent(
                             chat_message_event_to_proto(
                                 event,
@@ -1021,6 +1142,7 @@ impl MediaResourceHub {
                                 observer.room_id,
                             ),
                         )),
+                        event_cursor: Some(cursor),
                     };
                     match self
                         .send_and_commit_subscription_update(
@@ -1094,11 +1216,14 @@ impl MediaResourceHub {
         }
 
         let mut outcome = self
-            .refresh_subscription_batch(refresh_plan.into_iter().map(
-                |(key, (observer, observation, force, revision))| {
-                    (key, observer, observation, force, revision)
-                },
-            ))
+            .refresh_subscription_batch(
+                refresh_plan
+                    .into_iter()
+                    .map(|(key, (observer, observation, force, revision))| {
+                        (key, observer, observation, force, revision)
+                    }),
+                event_cursor,
+            )
             .await;
         outcome.send_failures.extend(chat_outcome.send_failures);
         outcome
@@ -1127,7 +1252,11 @@ impl MediaResourceHub {
             .collect()
     }
 
-    async fn refresh_subscription_batch<I>(&self, subscriptions: I) -> ResourceRefreshOutcome
+    async fn refresh_subscription_batch<I>(
+        &self,
+        subscriptions: I,
+        event_cursor: Option<crate::proto::client::EventCursor>,
+    ) -> ResourceRefreshOutcome
     where
         I: IntoIterator<
             Item = (
@@ -1182,13 +1311,27 @@ impl MediaResourceHub {
                             entry.force,
                             evaluation.clone(),
                         );
+                        if let Some(cursor) = event_cursor.as_ref() {
+                            if !ResourceObserver::apply_event_cursor_to_observation(
+                                &mut entry.observation,
+                                cursor,
+                            ) {
+                                continue;
+                            }
+                        }
+                        let mut changed_message = update.changed_message;
+                        if let (Some(changed), Some(cursor)) =
+                            (changed_message.as_mut(), event_cursor.as_ref())
+                        {
+                            changed.event_cursor = Some(cursor.clone());
+                        }
                         match self
                             .send_and_commit_subscription_update(
                                 &entry.key,
                                 entry.revision,
                                 &entry.observer,
                                 entry.observation.clone(),
-                                update.changed_message,
+                                changed_message,
                             )
                             .await
                         {
@@ -1321,6 +1464,21 @@ impl ResourceObserver {
         }
     }
 
+    async fn reject_expired_replay_cursor(
+        &self,
+        observe_id: &str,
+        message: impl Into<String>,
+    ) -> Result<(), String> {
+        self.remove_local_observation(observe_id).await;
+        self.room_hub
+            .unregister_observation(&self.connection_id, observe_id)
+            .await;
+        self.send_server_message(Self::resource_observe_error_message(
+            observe_id.to_string(),
+            crate::impls::ApiError::InvalidInput(message.into()),
+        ))
+    }
+
     fn normalize_delivery_mode(mode: i32) -> ResourceDeliveryMode {
         match ResourceDeliveryMode::try_from(mode).unwrap_or(ResourceDeliveryMode::Unspecified) {
             ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
@@ -1378,11 +1536,12 @@ impl ResourceObserver {
 
         Ok(ResourceObservation {
             observe_id: observe_id.to_string(),
-            last_version: request.version.clone(),
+            last_fingerprint: String::new(),
             delivery_mode: Self::normalize_delivery_mode(request.delivery_mode),
             resource,
             last_source,
             expires_at: None,
+            last_sent_event_sequence: 0,
         })
     }
 
@@ -1414,8 +1573,66 @@ impl ResourceObserver {
             return Ok(());
         }
 
+        let start_sequence = Self::observation_start_sequence(&observation, request);
+        let requested_replay_sequence =
+            Self::requested_replay_sequence(request).map(|sequence| sequence.max(0));
+        let is_chat_observation = matches!(observation.resource, ObservedResource::ChatEvents);
+        let observed_cursor = if is_chat_observation {
+            Some(crate::proto::client::EventCursor {
+                event_id: String::new(),
+                sequence: start_sequence,
+            })
+        } else {
+            match observation.room_resource_cursor_types() {
+                Some(resource_types) if !resource_types.is_empty() => {
+                    if requested_replay_sequence.is_some() {
+                        Some(crate::proto::client::EventCursor {
+                            event_id: String::new(),
+                            sequence: start_sequence,
+                        })
+                    } else {
+                        #[cfg(test)]
+                        {
+                            None
+                        }
+                        #[cfg(not(test))]
+                        {
+                            let repository =
+                                RoomResourceEventRepository::new(self.room_service.pool().clone());
+                            match repository
+                                .latest_room_event_cursor_for_resource_types(
+                                    &self.room_id,
+                                    resource_types,
+                                )
+                                .await
+                            {
+                                Ok(cursor) => Some(proto_event_cursor(cursor)),
+                                Err(error) => {
+                                    let observe_id = observation.observe_id;
+                                    self.release_pending_observation_slot(&observe_id).await;
+                                    self.send_server_message(
+                                        Self::resource_observe_error_message(
+                                            observe_id,
+                                            crate::impls::ApiError::Internal(error.to_string()),
+                                        ),
+                                    )?;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => None,
+            }
+        };
+        observation.last_sent_event_sequence = observed_cursor
+            .as_ref()
+            .map_or(start_sequence, |cursor| cursor.sequence);
         match self.evaluate_observation(&mut observation).await {
-            Ok(update) => {
+            Ok(mut update) => {
+                if is_chat_observation {
+                    update.changed_message = None;
+                }
                 observation.consume_one_shot_options();
                 let Some(observation) = self.commit_local_observation(observation).await else {
                     return Ok(());
@@ -1426,8 +1643,8 @@ impl ResourceObserver {
                         crate::proto::client::server_message::Message::ResourceObserved(
                             crate::proto::client::ResourceObserved {
                                 observe_id: observe_id.clone(),
-                                version: update.version.clone(),
                                 changed: update.changed,
+                                event_cursor: observed_cursor.clone(),
                             },
                         ),
                     ),
@@ -1435,7 +1652,8 @@ impl ResourceObserver {
                     self.remove_local_observation(&observe_id).await;
                     return Err(error);
                 }
-                if let Some(changed) = update.changed_message {
+                if let Some(mut changed) = update.changed_message {
+                    changed.event_cursor = observed_cursor;
                     if let Err(error) = self.send_server_message(ServerMessage {
                         message: Some(
                             crate::proto::client::server_message::Message::ResourceChanged(changed),
@@ -1462,7 +1680,7 @@ impl ResourceObserver {
     }
 
     pub(super) async fn replay_chat_events_after(
-        &self,
+        self: &Arc<Self>,
         chat_service: &ChatService,
         request: &crate::proto::client::ObserveResource,
     ) -> Result<(), String> {
@@ -1472,57 +1690,202 @@ impl ResourceObserver {
             return Ok(());
         };
         let observe_id = request.observe_id.trim();
-        let mut after_event_id = chat_events.after_event_id.trim().to_string();
-        if observe_id.is_empty() || after_event_id.is_empty() {
+        let Some(mut after_event_sequence) = chat_events
+            .after_event_sequence
+            .map(|sequence| sequence.max(0))
+        else {
             return Ok(());
-        }
-
-        loop {
-            let events = chat_service
-                .get_events_after(
-                    &self.room_id,
-                    Some(after_event_id.as_str()),
-                    CHAT_EVENT_REPLAY_BATCH_LIMIT,
-                )
+        };
+        if !observe_id.is_empty() {
+            if !chat_service
+                .is_event_sequence_retained_for_room(&self.room_id, after_event_sequence)
                 .await
-                .map_err(|error| error.to_string())?;
-            if events.is_empty() {
-                break;
+                .map_err(|error| error.to_string())?
+            {
+                self.reject_expired_replay_cursor(
+                    observe_id,
+                    "Chat event cursor expired; fetch chat history again and restart observe",
+                )
+                .await?;
+                return Ok(());
             }
 
-            for logged in &events {
-                let event = &logged.event;
-                let version = chat_event_version(event);
-                self.send_server_message(ServerMessage {
-                    message: Some(
-                        crate::proto::client::server_message::Message::ResourceChanged(
-                            crate::proto::client::ResourceChanged {
-                                observe_id: observe_id.to_string(),
-                                version: version.clone(),
-                                payload: Some(
-                                    crate::proto::client::resource_changed::Payload::ChatEvent(
-                                        chat_message_event_to_proto(
-                                            event,
-                                            &self.public_id_codec,
-                                            self.room_id,
+            loop {
+                let events = chat_service
+                    .get_events_after_sequence(
+                        &self.room_id,
+                        after_event_sequence,
+                        CHAT_EVENT_REPLAY_BATCH_LIMIT,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if events.is_empty() {
+                    return Ok(());
+                }
+
+                for logged in &events {
+                    let event = &logged.event;
+                    after_event_sequence = event.sequence;
+                    let Some(mut observation) = self.local_observation(observe_id).await else {
+                        return Ok(());
+                    };
+                    let cursor = event_cursor_for_chat_event(event);
+                    if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
+                        continue;
+                    }
+                    self.send_server_message(ServerMessage {
+                        message: Some(
+                            crate::proto::client::server_message::Message::ResourceChanged(
+                                crate::proto::client::ResourceChanged {
+                                    observe_id: observe_id.to_string(),
+                                    payload: Some(
+                                        crate::proto::client::resource_changed::Payload::ChatEvent(
+                                            chat_message_event_to_proto(
+                                                event,
+                                                &self.public_id_codec,
+                                                self.room_id,
+                                            ),
                                         ),
                                     ),
-                                ),
-                            },
+                                    event_cursor: Some(cursor),
+                                },
+                            ),
                         ),
-                    ),
-                })?;
-                self.update_local_observation_version(observe_id, version)
-                    .await;
-                after_event_id = event.event_id.clone();
-            }
+                    })?;
+                    self.replace_local_observation(observation.clone()).await;
+                    self.room_hub.register_observation(self, observation).await;
+                }
 
-            if events.len() < usize::try_from(CHAT_EVENT_REPLAY_BATCH_LIMIT).unwrap_or(usize::MAX) {
-                break;
+                if events.len()
+                    < usize::try_from(CHAT_EVENT_REPLAY_BATCH_LIMIT).unwrap_or(usize::MAX)
+                {
+                    return Ok(());
+                }
             }
         }
 
         Ok(())
+    }
+
+    pub(super) async fn replay_room_resource_events_after(
+        self: &Arc<Self>,
+        request: &crate::proto::client::ObserveResource,
+    ) -> Result<(), String> {
+        if matches!(
+            request.resource.as_ref(),
+            Some(crate::proto::client::observe_resource::Resource::ChatEvents(_))
+        ) {
+            return Ok(());
+        }
+
+        let observe_id = request.observe_id.trim();
+        let Some(mut after_event_sequence) =
+            Self::requested_replay_sequence(request).map(|sequence| sequence.max(0))
+        else {
+            return Ok(());
+        };
+        let Some(observation) = self.local_observation(observe_id).await else {
+            return Ok(());
+        };
+        let Some(resource_types) = observation.room_resource_cursor_types() else {
+            return Ok(());
+        };
+        if resource_types.is_empty() {
+            return Ok(());
+        }
+
+        let repository = RoomResourceEventRepository::new(self.room_service.pool().clone());
+        if !repository
+            .is_room_event_sequence_retained_for_resource_types(
+                &self.room_id,
+                resource_types,
+                after_event_sequence,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            self.reject_expired_replay_cursor(
+                observe_id,
+                "Room resource event cursor expired; fetch the resource snapshot again and restart observe",
+            )
+            .await?;
+            return Ok(());
+        }
+
+        loop {
+            let events = repository
+                .list_room_events_after_sequence_for_resource_types(
+                    &self.room_id,
+                    resource_types,
+                    after_event_sequence,
+                    ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if events.is_empty() {
+                return Ok(());
+            }
+
+            for logged in &events {
+                after_event_sequence = logged.sequence;
+                let Some(payload) = logged.payload.clone() else {
+                    tracing::warn!(
+                        room_id = %self.room_id,
+                        event_id = %logged.event_id,
+                        sequence = logged.sequence,
+                        event_type = %logged.event_type,
+                        resource_type = %logged.resource_type,
+                        "Room resource replay skipped event without payload"
+                    );
+                    continue;
+                };
+                let realtime_event: RealtimeEvent =
+                    serde_json::from_value(payload).map_err(|error| {
+                        format!(
+                            "Failed to decode room resource event {} at sequence {}: {error}",
+                            logged.event_id, logged.sequence
+                        )
+                    })?;
+                let invalidations = resource_invalidations_for_room_event(&realtime_event);
+                let Some(mut observation) = self.local_observation(observe_id).await else {
+                    return Ok(());
+                };
+                if !invalidations.iter().any(|invalidation| {
+                    Self::observation_invalidated_by_invalidation(&observation, invalidation)
+                }) {
+                    continue;
+                }
+
+                let cursor = crate::proto::client::EventCursor {
+                    event_id: logged.event_id.clone(),
+                    sequence: logged.sequence,
+                };
+                if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
+                    continue;
+                }
+                let mut update = self
+                    .evaluate_observation_with_force(&mut observation, true)
+                    .await?;
+                if let Some(changed) = update.changed_message.as_mut() {
+                    changed.event_cursor = Some(cursor);
+                    self.send_server_message(ServerMessage {
+                        message: Some(
+                            crate::proto::client::server_message::Message::ResourceChanged(
+                                changed.clone(),
+                            ),
+                        ),
+                    })?;
+                }
+                self.replace_local_observation(observation.clone()).await;
+                self.room_hub.register_observation(self, observation).await;
+            }
+
+            if events.len()
+                < usize::try_from(ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT).unwrap_or(usize::MAX)
+            {
+                return Ok(());
+            }
+        }
     }
 
     pub(super) async fn handle_unobserve_resource(
@@ -1535,13 +1898,6 @@ impl ResourceObserver {
             .unregister_observation(&self.connection_id, observe_id)
             .await;
         Ok(())
-    }
-
-    async fn update_local_observation_version(&self, observe_id: &str, version: String) {
-        let mut state = self.state.lock().await;
-        if let Some(observation) = state.observations.get_mut(observe_id) {
-            observation.last_version = version;
-        }
     }
 
     pub(super) async fn next_playback_snapshot_refresh_deadline(
@@ -1619,6 +1975,7 @@ impl ResourceObserver {
                 )),
                 vec![invalidation],
                 true,
+                None,
             )
             .await;
         if let Some(error) = outcome.error_for_connection(Some(&self.connection_id)) {
@@ -1894,7 +2251,7 @@ impl ResourceObserver {
     ) -> Result<ResourceEvaluation, String> {
         use crate::proto::client::resource_changed::Payload;
 
-        let (version, source, expires_at, payload) = match resource {
+        let (fingerprint, source, expires_at, payload) = match resource {
             ObservedResource::PlaybackState => {
                 let state = self
                     .room_service
@@ -2031,7 +2388,7 @@ impl ResourceObserver {
         };
 
         Ok(ResourceEvaluation {
-            version,
+            fingerprint,
             source,
             expires_at,
             payload,
@@ -2044,7 +2401,7 @@ impl ResourceObserver {
         evaluation: ResourceEvaluation,
     ) -> ObservationUpdate {
         let ResourceEvaluation {
-            version,
+            fingerprint,
             source,
             expires_at,
             payload,
@@ -2055,20 +2412,20 @@ impl ResourceObserver {
         let expired = observation
             .expires_at
             .is_some_and(|expires_at| chrono::Utc::now().timestamp() >= expires_at);
-        let changed = force || observation.last_version != version || source_changed || expired;
+        let changed =
+            force || observation.last_fingerprint != fingerprint || source_changed || expired;
 
-        observation.last_version.clone_from(&version);
+        observation.last_fingerprint.clone_from(&fingerprint);
         observation.last_source = source;
         observation.expires_at = expires_at;
 
         let changed_message = changed.then(|| crate::proto::client::ResourceChanged {
             observe_id: observation.observe_id.clone(),
-            version: version.clone(),
             payload: Some(payload),
+            event_cursor: None,
         });
 
         ObservationUpdate {
-            version,
             changed,
             changed_message,
         }

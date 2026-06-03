@@ -17,7 +17,7 @@ use synctv_core::{
         room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, User, UserId, UserRole,
         UserStatus,
     },
-    repository::{MediaRepository, UserRepository},
+    repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, RoomService, UserService,
@@ -96,6 +96,46 @@ async fn create_top_level_playlist(
         .create(&playlist)
         .await
         .expect("Top-level playlist should be created")
+}
+
+async fn attach_test_media(
+    pool: &PgPool,
+    room_id: synctv_core::models::RoomId,
+    owner_id: UserId,
+) -> synctv_core::models::RoomPlaybackState {
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id,
+        creator_id: Some(owner_id),
+        name: "Playback Service Test Video".to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        cover_file_reference_id: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media = MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("test media should be created");
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let mut state = playback_repo
+        .create_or_get(&room_id)
+        .await
+        .expect("playback state should be created");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    playback_repo
+        .update(&state)
+        .await
+        .expect("playback state should attach test media")
 }
 
 #[tokio::test]
@@ -259,6 +299,7 @@ async fn test_switch_media_resets_position() {
 
     // First seek to a non-zero position
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
     playback_service
         .seek(room.id, owner.id, 42.5)
         .await
@@ -489,6 +530,7 @@ async fn test_playback_optimistic_lock_concurrent() {
         .create_room("OLC Room".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn multiple concurrent seek operations
     let mut handles = vec![];
@@ -560,6 +602,7 @@ async fn test_rapid_sequential_seek_operations() {
         )
         .await
         .unwrap();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn 10 concurrent seek operations
     let mut handles = vec![];
@@ -1108,6 +1151,7 @@ async fn test_seek_success_returns_applied_true() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // A simple seek should succeed and report seek_applied=true
     let response = playback_service
@@ -1155,6 +1199,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn many concurrent seeks to trigger retry exhaustion
     let mut handles = vec![];
@@ -1236,6 +1281,7 @@ async fn test_seek_response_always_contains_valid_state() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // First set a known position
     playback_service
@@ -1282,6 +1328,7 @@ async fn test_seek_degraded_response_has_informative_message() {
         )
         .await
         .unwrap();
+    attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn many concurrent seeks
     let mut handles = vec![];

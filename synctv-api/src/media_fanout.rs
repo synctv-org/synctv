@@ -704,10 +704,8 @@ mod tests {
             .outbox_factory()
             .expect("distributed realtime fanout should prepare an outbox factory");
 
-        assert!(
-            factory(&media()).is_none(),
-            "test channel fanout does not provide persistent outbox rows"
-        );
+        let event = factory(&media()).expect("fanout should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         let request = rx
@@ -731,7 +729,9 @@ mod tests {
             .outbox_factory()
             .expect("local realtime fanout should still capture committed events");
 
-        assert!(factory(&media()).is_none());
+        let event =
+            factory(&media()).expect("local fanout should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);

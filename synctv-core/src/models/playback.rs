@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::id::{MediaId, PlaylistId, RoomId};
 
@@ -9,11 +10,26 @@ pub struct RoomPlaybackState {
     pub playing_media_id: Option<MediaId>,
     pub playing_playlist_id: Option<PlaylistId>,
     pub target: Vec<u8>,
+    pub current_progress_id: Option<i64>,
     pub position: f64, // playback position in seconds
     pub speed: f64,    // 0.5, 1.0, 1.5, 2.0, etc.
     pub is_playing: bool,
     pub updated_at: DateTime<Utc>,
     pub version: i64, // For optimistic locking
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
+pub struct RoomPlaybackProgress {
+    pub id: i64,
+    pub room_id: RoomId,
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target: Vec<u8>,
+    pub target_hash: String,
+    pub position: f64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub version: i64,
 }
 
 impl RoomPlaybackState {
@@ -24,6 +40,7 @@ impl RoomPlaybackState {
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
+            current_progress_id: None,
             position: 0.0,
             speed: 1.0,
             is_playing: false,
@@ -57,6 +74,11 @@ impl RoomPlaybackState {
             self.position
         }
     }
+
+    #[must_use]
+    pub fn target_hash(&self) -> String {
+        hex::encode(Sha256::digest(&self.target))
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +94,7 @@ mod tests {
         assert!(state.playing_media_id.is_none());
         assert!(state.playing_playlist_id.is_none());
         assert!(state.target.is_empty());
+        assert!(state.current_progress_id.is_none());
         assert!((state.position - 0.0).abs() < f64::EPSILON);
         assert!((state.speed - 1.0).abs() < f64::EPSILON);
         assert!(!state.is_playing);

@@ -5,6 +5,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
+use synctv_core::service::playback::PlaybackSourceExpectation;
 
 use super::convert::{
     bilibili_live_danmaku_for_static_media, playback_client_profile_from_proto,
@@ -71,6 +72,7 @@ pub(crate) enum PlaybackUpdateCommand {
         position: Option<f64>,
         speed: Option<f64>,
         version: Option<i64>,
+        expected_source: Option<PlaybackSourceExpectation>,
     },
 }
 
@@ -107,6 +109,7 @@ pub(crate) fn build_start_playback_request(
 
 pub(crate) fn build_update_playback(
     update: crate::proto::client::UpdatePlaybackRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<PlaybackUpdateCommand, ApiError> {
     crate::impls::validate_proto_request(&update)?;
     let crate::proto::client::UpdatePlaybackRequest {
@@ -115,6 +118,9 @@ pub(crate) fn build_update_playback(
         position,
         speed,
         version,
+        expected_media_id,
+        expected_playlist_id,
+        expected_target_hash,
     } = update;
 
     let update_type = crate::proto::client::PlaybackUpdateType::try_from(r#type)
@@ -128,8 +134,7 @@ pub(crate) fn build_update_playback(
         crate::impls::validation::validate_playback_speed(speed)
             .map_err(|err| ApiError::InvalidInput(err.to_string()))?;
     }
-
-    match update_type {
+    let playing = match update_type {
         crate::proto::client::PlaybackUpdateType::Unspecified => {
             return Err(ApiError::InvalidInput(
                 "Playback update type is required".to_string(),
@@ -141,12 +146,7 @@ pub(crate) fn build_update_playback(
                     "play update cannot request paused state".to_string(),
                 ));
             }
-            return Ok(PlaybackUpdateCommand::Patch {
-                playing: Some(true),
-                position,
-                speed,
-                version,
-            });
+            Some(true)
         }
         crate::proto::client::PlaybackUpdateType::Pause => {
             if playing == Some(true) {
@@ -154,12 +154,7 @@ pub(crate) fn build_update_playback(
                     "pause update cannot request playing state".to_string(),
                 ));
             }
-            return Ok(PlaybackUpdateCommand::Patch {
-                playing: Some(false),
-                position,
-                speed,
-                version,
-            });
+            Some(false)
         }
         crate::proto::client::PlaybackUpdateType::Seek => {
             if position.is_none() {
@@ -167,6 +162,7 @@ pub(crate) fn build_update_playback(
                     "seek update requires position".to_string(),
                 ));
             }
+            playing
         }
         crate::proto::client::PlaybackUpdateType::Speed => {
             if speed.is_none() {
@@ -174,15 +170,71 @@ pub(crate) fn build_update_playback(
                     "speed update requires speed".to_string(),
                 ));
             }
+            playing
         }
-    }
+    };
+
+    let expected_source = build_playback_source_expectation(
+        expected_media_id,
+        expected_playlist_id,
+        expected_target_hash,
+        public_id_codec,
+    )?;
 
     Ok(PlaybackUpdateCommand::Patch {
         playing,
         position,
         speed,
         version,
+        expected_source,
     })
+}
+
+pub(crate) fn build_playback_source_expectation(
+    expected_media_id: Option<String>,
+    expected_playlist_id: Option<String>,
+    expected_target_hash: Option<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<Option<PlaybackSourceExpectation>, ApiError> {
+    if expected_media_id.is_none()
+        && expected_playlist_id.is_none()
+        && expected_target_hash.is_none()
+    {
+        return Ok(None);
+    }
+
+    let expected_media_id = expected_media_id.ok_or_else(|| {
+        ApiError::InvalidInput(
+            "expected_media_id is required when expected source is supplied".to_string(),
+        )
+    })?;
+    let expected_playlist_id = expected_playlist_id.ok_or_else(|| {
+        ApiError::InvalidInput(
+            "expected_playlist_id is required when expected source is supplied".to_string(),
+        )
+    })?;
+    let expected_target_hash = expected_target_hash.ok_or_else(|| {
+        ApiError::InvalidInput(
+            "expected_target_hash is required when expected source is supplied".to_string(),
+        )
+    })?;
+
+    let media_id =
+        crate::impls::proto_validated_optional_media_id(expected_media_id, public_id_codec)?;
+    let playlist_id =
+        crate::impls::proto_validated_optional_playlist_id(expected_playlist_id, public_id_codec)?;
+    let target_hash = expected_target_hash.trim().to_ascii_lowercase();
+    if target_hash.len() != 64 || !target_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ApiError::InvalidInput(
+            "expected_target_hash must be a SHA-256 hex digest".to_string(),
+        ));
+    }
+
+    Ok(Some(PlaybackSourceExpectation {
+        media_id,
+        playlist_id,
+        target_hash,
+    }))
 }
 
 impl ClientApiImpl {
@@ -555,7 +607,7 @@ impl ClientApiImpl {
                 .encode_room_id(*room_id)
                 .expect("positive room id must encode as public ID"),
             name: String::new(),
-            position: 0.0,
+            playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -855,7 +907,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let command = build_update_playback(req)?;
+        let command = build_update_playback(req, &self.public_id_codec)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         let state = match command {
@@ -864,12 +916,33 @@ impl ClientApiImpl {
                 position,
                 speed,
                 version,
-            } => self
-                .room_service
-                .playback_service()
-                .update_multiple_with_version(rid, uid, playing, position, speed, version)
-                .await
-                .map_err(ApiError::from)?,
+                expected_source,
+            } => {
+                let service = self.room_service.playback_service();
+                match expected_source {
+                    Some(expected_source) => {
+                        service
+                            .update_multiple_checked_source_with_version(
+                                rid,
+                                uid,
+                                playing,
+                                position,
+                                speed,
+                                version,
+                                expected_source,
+                            )
+                            .await
+                    }
+                    None => {
+                        service
+                            .update_multiple_with_version(
+                                rid, uid, playing, position, speed, version,
+                            )
+                            .await
+                    }
+                }
+                .map_err(ApiError::from)?
+            }
         };
         self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
             .await;
@@ -971,6 +1044,9 @@ mod start_playback_builder_tests {
     use chrono::Utc;
     use synctv_core::models::{Media, MediaId, PlaylistId, RoomId};
 
+    const EMPTY_TARGET_HASH: &str =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
     #[test]
     fn test_build_start_playback_request_rejects_proto_contract_violation() {
         let codec = crate::PublicIdCodec::default_for_tests();
@@ -1012,8 +1088,12 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_rejects_missing_type() {
-        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest::default())
-            .unwrap_err();
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let err = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest::default(),
+            &codec,
+        )
+        .unwrap_err();
 
         let message = err.to_string();
         assert!(
@@ -1024,13 +1104,20 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_rejects_playing_false_for_play() {
-        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
-            r#type: crate::proto::client::PlaybackUpdateType::Play as i32,
-            playing: Some(false),
-            position: None,
-            speed: None,
-            version: None,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let err = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest {
+                r#type: crate::proto::client::PlaybackUpdateType::Play as i32,
+                playing: Some(false),
+                position: None,
+                speed: None,
+                version: None,
+                expected_media_id: None,
+                expected_playlist_id: None,
+                expected_target_hash: None,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         assert!(err.to_string().contains("cannot request paused state"));
@@ -1038,13 +1125,20 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_play_defaults_to_playing() {
-        let parsed = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
-            r#type: crate::proto::client::PlaybackUpdateType::Play as i32,
-            playing: None,
-            position: Some(12.5),
-            speed: Some(1.25),
-            version: Some(8),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let parsed = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest {
+                r#type: crate::proto::client::PlaybackUpdateType::Play as i32,
+                playing: None,
+                position: None,
+                speed: Some(1.25),
+                version: Some(8),
+                expected_media_id: None,
+                expected_playlist_id: None,
+                expected_target_hash: None,
+            },
+            &codec,
+        )
         .unwrap();
 
         match parsed {
@@ -1053,24 +1147,33 @@ mod start_playback_builder_tests {
                 position,
                 speed,
                 version,
+                expected_source,
             } => {
                 assert_eq!(playing, Some(true));
-                assert_eq!(position, Some(12.5));
+                assert_eq!(position, None);
                 assert_eq!(speed, Some(1.25));
                 assert_eq!(version, Some(8));
+                assert!(expected_source.is_none());
             }
         }
     }
 
     #[test]
     fn test_build_update_playback_pause_defaults_to_paused() {
-        let parsed = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
-            r#type: crate::proto::client::PlaybackUpdateType::Pause as i32,
-            playing: None,
-            position: None,
-            speed: None,
-            version: Some(9),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let parsed = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest {
+                r#type: crate::proto::client::PlaybackUpdateType::Pause as i32,
+                playing: None,
+                position: None,
+                speed: None,
+                version: Some(9),
+                expected_media_id: None,
+                expected_playlist_id: None,
+                expected_target_hash: None,
+            },
+            &codec,
+        )
         .unwrap();
 
         match parsed {
@@ -1079,24 +1182,33 @@ mod start_playback_builder_tests {
                 position,
                 speed,
                 version,
+                expected_source,
             } => {
                 assert_eq!(playing, Some(false));
                 assert_eq!(position, None);
                 assert_eq!(speed, None);
                 assert_eq!(version, Some(9));
+                assert!(expected_source.is_none());
             }
         }
     }
 
     #[test]
     fn test_build_update_playback_seek_requires_position() {
-        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
-            r#type: crate::proto::client::PlaybackUpdateType::Seek as i32,
-            playing: None,
-            position: None,
-            speed: Some(1.5),
-            version: None,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let err = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest {
+                r#type: crate::proto::client::PlaybackUpdateType::Seek as i32,
+                playing: None,
+                position: None,
+                speed: Some(1.5),
+                version: None,
+                expected_media_id: None,
+                expected_playlist_id: None,
+                expected_target_hash: None,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         assert!(err.to_string().contains("requires position"));
@@ -1104,13 +1216,20 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_speed_requires_speed() {
-        let err = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
-            r#type: crate::proto::client::PlaybackUpdateType::Speed as i32,
-            playing: Some(true),
-            position: Some(5.0),
-            speed: None,
-            version: None,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let err = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest {
+                r#type: crate::proto::client::PlaybackUpdateType::Speed as i32,
+                playing: Some(true),
+                position: Some(5.0),
+                speed: None,
+                version: None,
+                expected_media_id: None,
+                expected_playlist_id: None,
+                expected_target_hash: None,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         assert!(err.to_string().contains("requires speed"));
@@ -1118,13 +1237,22 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_seek_parses_full_state() {
-        let parsed = build_update_playback(crate::proto::client::UpdatePlaybackRequest {
-            r#type: crate::proto::client::PlaybackUpdateType::Seek as i32,
-            playing: Some(false),
-            position: Some(42.5),
-            speed: Some(1.5),
-            version: Some(9),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let media_id = MediaId::expect_positive(55);
+        let media_public_id = codec.encode_media_id(media_id).unwrap();
+        let parsed = build_update_playback(
+            crate::proto::client::UpdatePlaybackRequest {
+                r#type: crate::proto::client::PlaybackUpdateType::Seek as i32,
+                playing: Some(false),
+                position: Some(42.5),
+                speed: Some(1.5),
+                version: Some(9),
+                expected_media_id: Some(media_public_id),
+                expected_playlist_id: Some(String::new()),
+                expected_target_hash: Some(EMPTY_TARGET_HASH.to_string()),
+            },
+            &codec,
+        )
         .unwrap();
 
         match parsed {
@@ -1133,11 +1261,17 @@ mod start_playback_builder_tests {
                 position,
                 speed,
                 version,
+                expected_source,
             } => {
                 assert_eq!(playing, Some(false));
                 assert_eq!(position, Some(42.5));
                 assert_eq!(speed, Some(1.5));
                 assert_eq!(version, Some(9));
+                let expected_source =
+                    expected_source.expect("seek should carry source expectation");
+                assert_eq!(expected_source.media_id, Some(media_id));
+                assert!(expected_source.playlist_id.is_none());
+                assert_eq!(expected_source.target_hash, EMPTY_TARGET_HASH);
             }
         }
     }

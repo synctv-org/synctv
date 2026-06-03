@@ -9,7 +9,7 @@ use synctv_core_testing::create_test_pool;
 
 mod playback_state_machine_support;
 
-use playback_state_machine_support::{make_room_service, make_user};
+use playback_state_machine_support::{make_room_service, make_user, set_current_test_media};
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -91,6 +91,7 @@ async fn test_version_increments_on_state_change() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    set_current_test_media(&pool, room.id, owner.id, "Version Test Video").await;
 
     let state = playback_service.get_state(&room.id).await.unwrap();
     let initial_version = state.version;

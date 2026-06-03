@@ -131,7 +131,12 @@ async fn password_verification_id(
         panic!("password verification should start with a pending challenge");
     };
     match service
-        .finish_sensitive_operation_password_verification(&challenge.session_id, password, None, None)
+        .finish_sensitive_operation_password_verification(
+            &challenge.session_id,
+            password,
+            None,
+            None,
+        )
         .await
         .expect("finish password verification")
     {
@@ -577,13 +582,27 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         .await
         .expect("create surviving media");
 
-    sqlx::query(
-        "INSERT INTO room_playback_state
-             (room_id, playing_media_id, playing_playlist_id, target, \"position\", speed, is_playing, updated_at, version)
-         VALUES ($1, $2, NULL, ''::bytea, 12.5, 1.0, TRUE, NOW(), 0)",
+    let foreign_progress_id: i64 = sqlx::query_scalar(
+        "INSERT INTO room_playback_progress
+             (room_id, media_id, playlist_id, target, target_hash, \"position\", version)
+         VALUES ($1, $2, NULL, ''::bytea, $3, 12.5, 0)
+         RETURNING id",
     )
     .bind(foreign_room.id)
     .bind(foreign_media.id)
+    .bind("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    .fetch_one(&pool)
+    .await
+    .expect("create playback progress");
+
+    sqlx::query(
+        "INSERT INTO room_playback_state
+             (room_id, playing_media_id, playing_playlist_id, target, current_progress_id, speed, is_playing, updated_at, version)
+         VALUES ($1, $2, NULL, ''::bytea, $3, 1.0, TRUE, NOW(), 0)",
+    )
+    .bind(foreign_room.id)
+    .bind(foreign_media.id)
+    .bind(foreign_progress_id)
     .execute(&pool)
     .await
     .expect("create playback state");

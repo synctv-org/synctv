@@ -13,8 +13,8 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{User, UserId, UserRole, UserStatus},
-    repository::{playback::RoomPlaybackStateRepository, UserRepository},
+    models::{Media, MediaId, User, UserId, UserRole, UserStatus},
+    repository::{playback::RoomPlaybackStateRepository, MediaRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, RoomService, UserService,
@@ -68,6 +68,42 @@ fn make_user(username: &str) -> User {
     }
 }
 
+async fn attach_test_media(
+    pool: &PgPool,
+    playback_repo: &RoomPlaybackStateRepository,
+    mut state: synctv_core::models::RoomPlaybackState,
+    owner_id: UserId,
+) -> synctv_core::models::RoomPlaybackState {
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id: state.room_id,
+        creator_id: Some(owner_id),
+        name: "Optimistic Lock Test Video".to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        cover_file_reference_id: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media = MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("test media should be created");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    playback_repo
+        .update(&state)
+        .await
+        .expect("playback state should attach test media")
+}
+
 // Optimistic Lock Tests: Repository Level
 
 /// Test: Update with matching version succeeds
@@ -97,14 +133,18 @@ async fn test_repo_update_with_matching_version_succeeds() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
-    assert_eq!(state.version, 0, "Initial version should be 0");
+    let state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Update with matching version
     let mut updated = state.clone();
     updated.position = 50.0;
     let result = playback_repo.update(&updated).await.unwrap();
 
-    assert_eq!(result.version, 1, "Version should be incremented to 1");
+    assert_eq!(
+        result.version,
+        state.version + 1,
+        "Version should be incremented"
+    );
     assert!(
         (result.position - 50.0).abs() < f64::EPSILON,
         "Current time should be updated"
@@ -138,12 +178,13 @@ async fn test_repo_update_with_stale_version_fails() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // First update succeeds, version becomes 1
     let mut first_update = state.clone();
     first_update.position = 100.0;
     let first_result = playback_repo.update(&first_update).await.unwrap();
-    assert_eq!(first_result.version, 1);
+    assert_eq!(first_result.version, state.version + 1);
 
     // Second update with stale version 0 should fail
     let mut stale_update = state.clone(); // Still has version 0
@@ -157,7 +198,10 @@ async fn test_repo_update_with_stale_version_fails() {
 
     // Verify data wasn't corrupted
     let current = playback_repo.get(&room.id).await.unwrap().unwrap();
-    assert_eq!(current.version, 1, "Version should still be 1");
+    assert_eq!(
+        current.version, first_result.version,
+        "Version should remain at the first update"
+    );
     assert!(
         (current.position - 100.0).abs() < f64::EPSILON,
         "Current time should be from first update"
@@ -230,6 +274,10 @@ async fn test_concurrent_seek_with_retry() {
         )
         .await
         .unwrap();
+
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn 5 concurrent seek operations
     let mut handles = vec![];
@@ -304,6 +352,9 @@ async fn test_retry_handles_version_conflicts() {
         .unwrap();
 
     let playback_service = room_service.playback_service();
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // First operation
     let _state1 = playback_service
@@ -352,6 +403,10 @@ async fn test_retry_exhaustion_returns_degraded_response() {
         )
         .await
         .unwrap();
+
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn many concurrent seeks to trigger retry exhaustion
     let mut handles = vec![];
@@ -429,6 +484,10 @@ async fn test_concurrent_mixed_operations() {
         )
         .await
         .unwrap();
+
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn different types of operations concurrently
     let mut seek_handles = vec![];
@@ -582,6 +641,10 @@ async fn test_high_contention_operations_remain_consistent() {
         )
         .await
         .unwrap();
+
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn 50 concurrent operations
     let mut handles = vec![];

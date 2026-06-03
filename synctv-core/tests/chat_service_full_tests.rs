@@ -1438,6 +1438,91 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("chat_history_cursor_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Chat History Cursor Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let empty_page = chat_service
+        .get_history_page_with_images_for_viewer(&room.id, None, 10, true, Some(&creator.id))
+        .await
+        .unwrap();
+    assert_eq!(empty_page.event_cursor.sequence, 0);
+    assert!(empty_page.event_cursor.event_id.is_none());
+
+    let first = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("history-cursor-1".to_string()),
+            content: "cursor one".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let second = chat_service
+        .send_message_event(SendChatMessage {
+            room_id: room.id,
+            user_id: creator.id,
+            client_message_id: Some("history-cursor-2".to_string()),
+            content: "cursor two".to_string(),
+            message_type: ChatMessageType::Text,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            images: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    let page = chat_service
+        .get_history_page_with_images_for_viewer(&room.id, None, 10, true, Some(&creator.id))
+        .await
+        .unwrap();
+    assert_eq!(page.messages.len(), 2);
+    assert_eq!(page.event_cursor.sequence, second.sequence);
+    assert_eq!(
+        page.event_cursor.event_id.as_deref(),
+        Some(second.event_id.as_str())
+    );
+
+    let replay_from_empty = chat_service
+        .get_events_after_sequence(&room.id, empty_page.event_cursor.sequence, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        replay_from_empty
+            .iter()
+            .map(|event| event.event.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.event_id.as_str(), second.event_id.as_str()]
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_events_after_unknown_event_id_returns_invalid_cursor() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

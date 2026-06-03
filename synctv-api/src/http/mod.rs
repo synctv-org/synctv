@@ -2056,7 +2056,7 @@ mod tests {
         }
 
         assert!(rendered.contains("event: changed\n"));
-        assert!(rendered.contains(&format!("id: {}\n", sent.event_id)));
+        assert!(rendered.contains(&format!("id: {}\n", sent.sequence)));
         assert!(rendered.contains("live push event"));
     }
 
@@ -2159,7 +2159,7 @@ mod tests {
                         axum::http::header::AUTHORIZATION,
                         format!("Bearer {access_token}"),
                     )
-                    .header("last-event-id", first.event_id)
+                    .header("last-event-id", first.sequence.to_string())
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -2190,7 +2190,7 @@ mod tests {
         assert!(rendered.contains("third replay"));
         assert!(
             !rendered.contains("first replay"),
-            "Last-Event-ID should replay events strictly after the supplied event id"
+            "Last-Event-ID should replay events strictly after the supplied sequence"
         );
     }
 
@@ -2252,7 +2252,7 @@ mod tests {
                         axum::http::header::AUTHORIZATION,
                         format!("Bearer {access_token}"),
                     )
-                    .header("last-event-id", "missing-chat-event")
+                    .header("last-event-id", "missing-chat-sequence")
                     .body(Body::empty())
                     .expect("request"),
             )

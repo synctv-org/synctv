@@ -132,13 +132,13 @@ pub mod user_preferences;
 
 pub use audit::{AuditAction, AuditTargetType};
 pub use chat::{
-    ChatEventKind, ChatHistoryCursor, ChatImage, ChatImageBlob, ChatImageObject,
+    ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatImageBlob, ChatImageObject,
     ChatImageOwnershipProofRange, ChatImageUploadSession, ChatMessage, ChatMessageContext,
     ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus, ChatMessageType,
     ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary,
     ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
     ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
-    MarkChatRead, NewChatImage, SendChatMessage, SendChatRequest, SetChatReaction,
+    EventCursor, MarkChatRead, NewChatImage, SendChatMessage, SendChatRequest, SetChatReaction,
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{
@@ -171,7 +171,7 @@ pub use permission::{
     Role as RoomRole, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
     RoomPermission, RoomPermissionSet,
 };
-pub use playback::RoomPlaybackState;
+pub use playback::{RoomPlaybackProgress, RoomPlaybackState};
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
     UpdatePlaylistRequest,

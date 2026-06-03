@@ -439,10 +439,8 @@ mod tests {
             .expect("standalone local fanout should still capture the created room event");
         let room = synctv_core::models::Room::new("created room".to_string(), user_id());
 
-        assert!(
-            factory(&room).is_none(),
-            "standalone local fanout must not create an outbox row"
-        );
+        let event = factory(&room).expect("local fanout should prepare a durable resource event");
+        assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         let room_events = recorder.room_events();

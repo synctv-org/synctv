@@ -5555,6 +5555,9 @@ async fn execute_room_playback_update(
                 position,
                 speed,
                 version,
+                expected_media_id: None,
+                expected_playlist_id: None,
+                expected_target_hash: None,
             }),
         }
     )?;
@@ -7159,6 +7162,7 @@ struct HumanPlaybackState {
     updated_at: String,
     version: i64,
     playing_playlist_id: String,
+    target_hash: String,
     target: Value,
 }
 
@@ -8020,6 +8024,7 @@ impl ToHuman for synctv_proto::client::PlaybackState {
             updated_at: humanize_timestamp(self.updated_at),
             version: self.version,
             playing_playlist_id: self.playing_playlist_id.clone(),
+            target_hash: self.target_hash.clone(),
             target: parse_json_bytes(&self.target),
         }
     }
@@ -13598,7 +13603,7 @@ mod tests {
                     playlist_id: String::new(),
                     room_id: "room-1".into(),
                     name: "Example".into(),
-                    position: 1.0,
+                    playlist_position: 1.0,
                     playback_infos: std::collections::HashMap::from([(
                         "direct".to_string(),
                         synctv_proto::client::PlaybackInfo {

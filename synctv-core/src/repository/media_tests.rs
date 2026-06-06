@@ -65,13 +65,14 @@ fn test_push_media_scope_filters_treats_empty_provider_instance_as_default() {
     let built = builder.build();
     assert!(built
         .sql()
+        .as_str()
         .contains("NULLIF(m.provider_instance_name, '') IS NULL"));
 }
 
 fn media_order_by_sql(query: &MediaListQuery) -> String {
     let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
     MediaRepository::push_media_list_order_by(&mut builder, query);
-    builder.sql().to_string()
+    builder.sql().as_str().to_string()
 }
 
 #[test]

@@ -74,7 +74,7 @@ async fn run_migrate_with_connection(
         .map_err(|e| anyhow::anyhow!("Failed to disable statement_timeout for migrations: {e}"))?;
 
     sqlx::migrate!("../migrations")
-        .run_direct(&mut **conn)
+        .run_direct(None, &mut **conn, false)
         .await
         .map_err(|e| {
             error!("Failed to run migrations: {}", e);

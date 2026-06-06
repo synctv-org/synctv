@@ -783,7 +783,7 @@ impl UserRepository {
     }
 
     fn push_user_list_from_and_filters<'a>(
-        builder: &mut QueryBuilder<'a, Postgres>,
+        builder: &mut QueryBuilder<Postgres>,
         query: &'a UserListQuery,
         role_scope: UserListRoleScope,
         search_pattern: Option<&'a str>,

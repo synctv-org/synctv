@@ -26,6 +26,10 @@ use crate::docker::{
     ProcessLock, TEST_RUN_LABEL,
 };
 
+fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(sql)
+}
+
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "18";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 300;
@@ -182,7 +186,10 @@ impl SharedPostgresServer {
             quote_identifier(database_name)
         );
 
-        if let Err(err) = sqlx::query(&sql).execute(&self.admin_pool).await {
+        if let Err(err) = sqlx::query(trusted_dynamic_sql(sql))
+            .execute(&self.admin_pool)
+            .await
+        {
             eprintln!("warning: failed to drop postgres test database {database_name}: {err}");
         }
     }
@@ -218,13 +225,13 @@ impl TestContainer {
 
         let database = quote_identifier(&self.database_name);
         let drop_sql = format!("DROP DATABASE IF EXISTS {database} WITH (FORCE)");
-        sqlx::query(&drop_sql)
+        sqlx::query(trusted_dynamic_sql(drop_sql))
             .execute(&self.shared.admin_pool)
             .await
             .expect("test database should be dropped before empty recreation");
 
         let create_sql = format!("CREATE DATABASE {database}");
-        sqlx::query(&create_sql)
+        sqlx::query(trusted_dynamic_sql(create_sql))
             .execute(&self.shared.admin_pool)
             .await
             .expect("test database should be recreated empty");
@@ -673,19 +680,21 @@ async fn recreate_template_database(
         "ALTER DATABASE {} WITH IS_TEMPLATE false",
         quote_identifier(template_database)
     );
-    let _ = sqlx::query(&untemplate_sql).execute(admin_pool).await;
+    let _ = sqlx::query(trusted_dynamic_sql(untemplate_sql))
+        .execute(admin_pool)
+        .await;
 
     let drop_sql = format!(
         "DROP DATABASE IF EXISTS {} WITH (FORCE)",
         quote_identifier(template_database)
     );
-    sqlx::query(&drop_sql)
+    sqlx::query(trusted_dynamic_sql(drop_sql))
         .execute(admin_pool)
         .await
         .expect("template database cleanup should succeed");
 
     let create_sql = format!("CREATE DATABASE {}", quote_identifier(template_database));
-    sqlx::query(&create_sql)
+    sqlx::query(trusted_dynamic_sql(create_sql))
         .execute(admin_pool)
         .await
         .expect("template database creation should succeed");
@@ -708,7 +717,7 @@ async fn recreate_template_database(
         "ALTER DATABASE {} WITH ALLOW_CONNECTIONS false",
         quote_identifier(template_database)
     );
-    sqlx::query(&no_connections_sql)
+    sqlx::query(trusted_dynamic_sql(no_connections_sql))
         .execute(admin_pool)
         .await
         .expect("template database should disallow new connections");
@@ -716,7 +725,7 @@ async fn recreate_template_database(
     let terminate_sql = format!(
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{template_database}' AND pid <> pg_backend_pid()"
     );
-    sqlx::query(&terminate_sql)
+    sqlx::query(trusted_dynamic_sql(terminate_sql))
         .execute(admin_pool)
         .await
         .expect("template database should terminate lingering sessions");
@@ -725,7 +734,7 @@ async fn recreate_template_database(
         "ALTER DATABASE {} WITH IS_TEMPLATE true",
         quote_identifier(template_database)
     );
-    sqlx::query(&mark_template_sql)
+    sqlx::query(trusted_dynamic_sql(mark_template_sql))
         .execute(admin_pool)
         .await
         .expect("template database should be marked reusable");
@@ -879,7 +888,7 @@ async fn provision_test_database(requested_db_name: &str, label: &str) -> TestCo
         .await
         .expect("direct postgres admin connection for template clone should succeed");
 
-    sqlx::query(&create_sql)
+    sqlx::query(trusted_dynamic_sql(create_sql))
         .execute(&mut admin_connection)
         .await
         .expect("test database creation from template should succeed");

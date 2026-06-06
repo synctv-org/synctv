@@ -9,6 +9,10 @@
 use synctv_core::service::{auth::token_blacklist::PgTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::create_test_pool;
 
+fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(sql)
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
@@ -62,6 +66,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     let store = PgTokenBlacklistStore::new(pool.clone());
     let key = format!("family:pg_atomicity_guard:{}", synctv_common::snanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
+    let key_sql_literal = key.replace('\'', "''");
 
     let trigger_fn_sql = r"
         CREATE OR REPLACE FUNCTION fail_token_blacklist_family_insert()
@@ -74,9 +79,12 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
         END;
         $$ LANGUAGE plpgsql;
         "
-    .replace("REPLACE_ME", &key);
+    .replace("REPLACE_ME", &key_sql_literal);
 
-    sqlx::query(&trigger_fn_sql).execute(&pool).await.unwrap();
+    sqlx::query(trusted_dynamic_sql(trigger_fn_sql))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     sqlx::query(
         "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_family_insert ON auth_token_blacklist",

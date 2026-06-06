@@ -126,7 +126,7 @@ impl ProviderInstanceRepository {
     }
 
     fn push_list_order_by(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         query: &ProviderInstanceListQuery,
     ) {
         use crate::models::SortDirection;
@@ -161,7 +161,7 @@ impl ProviderInstanceRepository {
     }
 
     fn push_list_filters(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         query: &ProviderInstanceListQuery,
     ) -> Result<()> {
         builder.push(" WHERE TRUE");

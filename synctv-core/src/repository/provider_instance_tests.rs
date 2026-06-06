@@ -9,7 +9,7 @@ use serde_json::json;
 fn order_by_sql(query: &ProviderInstanceListQuery) -> String {
     let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
     ProviderInstanceRepository::push_list_order_by(&mut builder, query);
-    builder.sql().to_string()
+    builder.sql().as_str().to_string()
 }
 
 #[test]

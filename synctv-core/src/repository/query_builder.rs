@@ -11,6 +11,10 @@
 
 use crate::{Error, Result};
 
+pub(crate) fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(sql)
+}
+
 /// A single condition in the WHERE clause.
 enum Condition {
     /// A static SQL fragment with no bound parameter (e.g. `r.deleted_at IS NULL`).

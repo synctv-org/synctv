@@ -6,6 +6,7 @@ use crate::{
         PageParams, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
         RoomMemberWithUser, RoomRole, RoomStatus, UserId,
     },
+    repository::query_builder::trusted_dynamic_sql,
     Error, Result,
 };
 
@@ -282,7 +283,7 @@ impl RoomMemberRepository {
     }
 
     fn push_room_member_order_by(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         query: &RoomMemberListQuery,
     ) {
         builder.push(" ORDER BY ");
@@ -2402,7 +2403,7 @@ impl RoomMemberRepository {
         );
 
         let rows = Self::bind_my_room_filters(
-            sqlx::query_as::<_, MyRoomListRow>(&sql)
+            sqlx::query_as::<_, MyRoomListRow>(trusted_dynamic_sql(sql))
                 .bind(user_id)
                 .bind(limit)
                 .bind(offset),
@@ -2461,7 +2462,7 @@ impl RoomMemberRepository {
         );
 
         let rows = Self::bind_my_room_filters(
-            sqlx::query_as::<_, MyRoomListRow>(&sql)
+            sqlx::query_as::<_, MyRoomListRow>(trusted_dynamic_sql(sql))
                 .bind(user_id)
                 .bind(limit)
                 .bind(offset),
@@ -2685,7 +2686,7 @@ mod tests {
     fn room_member_order_by_sql(query: &RoomMemberListQuery) -> String {
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
         RoomMemberRepository::push_room_member_order_by(&mut builder, query);
-        builder.sql().to_string()
+        builder.sql().as_str().to_string()
     }
 
     #[test]

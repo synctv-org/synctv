@@ -91,7 +91,7 @@ impl NotificationRepository {
     }
 
     fn push_list_order_by(
-        qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         query: &NotificationListQuery,
     ) {
         use crate::models::SortDirection;

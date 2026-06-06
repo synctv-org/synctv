@@ -139,7 +139,7 @@ impl MediaRepository {
     }
 
     fn push_media_list_order_by(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         query: &MediaListQuery,
     ) {
         use crate::models::{MediaListSortBy, SortDirection};
@@ -196,7 +196,7 @@ impl MediaRepository {
     }
 
     fn push_media_scope_filters(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         room_id: &RoomId,
         playlist_id: Option<&PlaylistId>,
         query: &MediaListQuery,

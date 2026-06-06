@@ -140,7 +140,7 @@ impl PlaylistRepository {
     }
 
     fn push_playlist_list_order_by(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         query: &PlaylistListQuery,
     ) {
         use crate::models::{PlaylistListSortBy, SortDirection};
@@ -179,7 +179,7 @@ impl PlaylistRepository {
     }
 
     fn push_playlist_scope_filters(
-        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         room_id: &RoomId,
         parent_id: Option<&PlaylistId>,
         query: &PlaylistListQuery,

@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
+use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::global_settings::SettingsRegistry;
 use crate::service::partitioning::{
     current_database_date, quote_ident, size_centi_mib, table_exists,
@@ -104,42 +105,42 @@ impl ChatPartitionManager {
             let partition_name = format!("chat_messages_{}", start_date.format("%Y_%m_%d"));
             let partition_ident = quote_ident(&partition_name);
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF chat_messages \
                  FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| Error::Internal(format!("Failed to create chat partition: {e}")))?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, created_at DESC, id DESC)",
                 quote_ident(&format!("{partition_name}_idx_room_pagination"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, created_at DESC)",
                 quote_ident(&format!("{partition_name}_idx_user_created"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(created_at DESC)",
                 quote_ident(&format!("{partition_name}_idx_created_at"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, status, created_at DESC, id DESC)",
                 quote_ident(&format!("{partition_name}_idx_status"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
@@ -188,10 +189,13 @@ impl ChatPartitionManager {
         .collect::<Vec<_>>();
 
         for partition in &partitions {
-            sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to drop old chat partition: {e}")))?;
+            sqlx::query(trusted_dynamic_sql(format!(
+                "DROP TABLE IF EXISTS {}",
+                quote_ident(partition)
+            )))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to drop old chat partition: {e}")))?;
         }
 
         let dropped_count = len_to_i64(partitions.len(), "dropped chat partition count")?;

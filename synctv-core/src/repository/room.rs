@@ -472,7 +472,7 @@ impl RoomRepository {
         Ok(deleted)
     }
 
-    fn push_room_projection(builder: &mut QueryBuilder<'_, Postgres>) {
+    fn push_room_projection(builder: &mut QueryBuilder<Postgres>) {
         builder.push(
             r"
             r.id,
@@ -496,7 +496,7 @@ impl RoomRepository {
         );
     }
 
-    fn push_where_prefix(builder: &mut QueryBuilder<'_, Postgres>, has_condition: &mut bool) {
+    fn push_where_prefix(builder: &mut QueryBuilder<Postgres>, has_condition: &mut bool) {
         if *has_condition {
             builder.push(" AND ");
         } else {
@@ -506,7 +506,7 @@ impl RoomRepository {
     }
 
     fn push_room_list_filters<'q>(
-        builder: &mut QueryBuilder<'q, Postgres>,
+        builder: &mut QueryBuilder<Postgres>,
         query: &'q RoomListQuery,
         search_pattern: Option<&'q String>,
         has_condition: &mut bool,

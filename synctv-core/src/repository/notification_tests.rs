@@ -64,7 +64,7 @@ fn test_notification_list_query_with_filters() {
 fn notification_order_by_sql(query: &NotificationListQuery) -> String {
     let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
     NotificationRepository::push_list_order_by(&mut builder, query);
-    builder.sql().to_string()
+    builder.sql().as_str().to_string()
 }
 
 #[test]

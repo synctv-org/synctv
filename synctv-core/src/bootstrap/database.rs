@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tracing::Level;
 use tracing::{error, info};
 
+use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::resilience::timeout::DB_QUERY_TIMEOUT;
 use crate::Config;
 
@@ -119,10 +120,14 @@ async fn apply_session_settings(
     statement_timeout_ms: u128,
     client_min_messages: &'static str,
 ) -> std::result::Result<(), sqlx::Error> {
-    conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
-        .await?;
-    conn.execute(format!("SET client_min_messages = '{client_min_messages}'").as_str())
-        .await?;
+    conn.execute(trusted_dynamic_sql(format!(
+        "SET statement_timeout = {statement_timeout_ms}"
+    )))
+    .await?;
+    conn.execute(trusted_dynamic_sql(format!(
+        "SET client_min_messages = '{client_min_messages}'"
+    )))
+    .await?;
     Ok(())
 }
 

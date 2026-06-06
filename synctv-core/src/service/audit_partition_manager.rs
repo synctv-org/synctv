@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
+use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
     add_months, current_database_date, quote_ident, size_centi_gib, size_centi_mib, start_of_month,
     table_exists,
@@ -171,42 +172,42 @@ impl AuditPartitionManager {
             .await
             .internal_with_err("Failed to acquire DDL connection for single partition creation")?;
 
-        sqlx::query(&format!(
+        sqlx::query(trusted_dynamic_sql(format!(
             "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF audit_logs \
              FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .internal_with_err("Failed to create audit partition")?;
 
-        sqlx::query(&format!(
+        sqlx::query(trusted_dynamic_sql(format!(
             "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(actor_id, created_at DESC) WHERE actor_id IS NOT NULL",
             quote_ident(&format!("{partition_name}_idx_actor_created"))
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .internal_with_err("Failed to create audit partition index")?;
 
-        sqlx::query(&format!(
+        sqlx::query(trusted_dynamic_sql(format!(
             "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(action, created_at DESC)",
             quote_ident(&format!("{partition_name}_idx_action_created"))
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .internal_with_err("Failed to create audit partition index")?;
 
-        sqlx::query(&format!(
+        sqlx::query(trusted_dynamic_sql(format!(
             "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(target_type, target_id, created_at DESC) WHERE target_type IS NOT NULL",
             quote_ident(&format!("{partition_name}_idx_target_created"))
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .internal_with_err("Failed to create audit partition index")?;
 
-        sqlx::query(&format!(
+        sqlx::query(trusted_dynamic_sql(format!(
             "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(ip_address) WHERE ip_address IS NOT NULL",
             quote_ident(&format!("{partition_name}_idx_ip_address"))
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .internal_with_err("Failed to create audit partition index")?;
@@ -256,10 +257,13 @@ impl AuditPartitionManager {
         .collect::<Vec<_>>();
 
         for partition in &dropped_partitions {
-            sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))
-                .execute(&mut *conn)
-                .await
-                .internal_with_err("Failed to drop audit partition")?;
+            sqlx::query(trusted_dynamic_sql(format!(
+                "DROP TABLE IF EXISTS {}",
+                quote_ident(partition)
+            )))
+            .execute(&mut *conn)
+            .await
+            .internal_with_err("Failed to drop audit partition")?;
         }
 
         let dropped_count = len_to_i32(dropped_partitions.len(), "dropped audit partition count")?;

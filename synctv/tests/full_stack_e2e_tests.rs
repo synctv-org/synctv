@@ -54,6 +54,18 @@ const BOOTSTRAP_ROOT_USERNAME: &str = "e2e_root";
 const TEST_CREDENTIAL_ENCRYPTION_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(sql)
+}
+
+fn quote_pg_ident(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_pg_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 struct TestOpaqueCipherSuite;
 
 impl CipherSuite for TestOpaqueCipherSuite {
@@ -5999,23 +6011,25 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
 
     let limited_role = format!("status_reader_{}", unique_test_suffix());
     let limited_password = "StatusPwd12345!";
+    let limited_role_ident = quote_pg_ident(&limited_role);
+    let database_ident = quote_pg_ident(postgres.database_name());
+    let limited_password_literal = quote_pg_literal(limited_password);
     let admin_pool = connect_test_pool_url(&database_url).await;
-    sqlx::query(&format!(
-        "CREATE ROLE \"{limited_role}\" LOGIN PASSWORD '{limited_password}'"
-    ))
+    sqlx::query(trusted_dynamic_sql(format!(
+        "CREATE ROLE {limited_role_ident} LOGIN PASSWORD {limited_password_literal}"
+    )))
     .execute(&admin_pool)
     .await
     .expect("test should create a limited role");
-    sqlx::query(&format!(
-        "GRANT CONNECT ON DATABASE \"{}\" TO \"{limited_role}\"",
-        postgres.database_name()
-    ))
+    sqlx::query(trusted_dynamic_sql(format!(
+        "GRANT CONNECT ON DATABASE {database_ident} TO {limited_role_ident}"
+    )))
     .execute(&admin_pool)
     .await
     .expect("test should grant database connect");
-    sqlx::query(&format!(
-        "GRANT USAGE ON SCHEMA public TO \"{limited_role}\""
-    ))
+    sqlx::query(trusted_dynamic_sql(format!(
+        "GRANT USAGE ON SCHEMA public TO {limited_role_ident}"
+    )))
     .execute(&admin_pool)
     .await
     .expect("test should grant schema usage without table reads");

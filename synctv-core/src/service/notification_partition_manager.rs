@@ -11,6 +11,7 @@ use tracing::{error, info};
 
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
+use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
     add_months, current_database_date, quote_ident, size_centi_mib, start_of_month, table_exists,
 };
@@ -93,40 +94,40 @@ impl NotificationPartitionManager {
             let partition_name = format!("notifications_{}", start_date.format("%Y_%m"));
             let partition_ident = quote_ident(&partition_name);
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF notifications \
                  FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| {
                 Error::Internal(format!("Failed to create notification partition: {e}"))
             })?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, is_read, created_at DESC)",
                 quote_ident(&format!("{partition_name}_idx_user_read_created"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| {
                 Error::Internal(format!("Failed to create notification partition index: {e}"))
             })?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, created_at DESC) WHERE is_read = FALSE",
                 quote_ident(&format!("{partition_name}_idx_user_unread"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| {
                 Error::Internal(format!("Failed to create notification partition index: {e}"))
             })?;
 
-            sqlx::query(&format!(
+            sqlx::query(trusted_dynamic_sql(format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, type, created_at DESC) WHERE is_read = FALSE",
                 quote_ident(&format!("{partition_name}_idx_user_type_created"))
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .map_err(|e| {
@@ -180,12 +181,15 @@ impl NotificationPartitionManager {
         .collect::<Vec<_>>();
 
         for partition in &partitions {
-            sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to drop old notification partition: {e}"))
-                })?;
+            sqlx::query(trusted_dynamic_sql(format!(
+                "DROP TABLE IF EXISTS {}",
+                quote_ident(partition)
+            )))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to drop old notification partition: {e}"))
+            })?;
         }
 
         let dropped_count = len_to_i64(partitions.len(), "dropped notification partition count")?;

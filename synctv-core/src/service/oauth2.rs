@@ -26,7 +26,7 @@ use crate::{
     cache::KeyBuilder,
     models::{oauth2_client::OAuth2Provider, SignupMethod, User, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
-    repository::UserOAuthProviderRepository,
+    repository::{query_builder::trusted_dynamic_sql, UserOAuthProviderRepository},
     service::{
         user::PendingRegistrationConflict, OAuth2SignupPolicy, SettingsRegistry, UserService,
     },
@@ -1310,7 +1310,7 @@ impl OAuth2Service {
         let mut new_user = None;
         for (attempt, candidate) in candidates.iter().enumerate() {
             let savepoint = format!("oauth2_user_create_{attempt}");
-            sqlx::query(&format!("SAVEPOINT {savepoint}"))
+            sqlx::query(trusted_dynamic_sql(format!("SAVEPOINT {savepoint}")))
                 .execute(&mut *tx)
                 .await
                 .internal_with_err("Failed to create OAuth2 user savepoint")?;
@@ -1335,12 +1335,14 @@ impl OAuth2Service {
                         )
                         .await
                     {
-                        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
-                            .execute(&mut *tx)
-                            .await
-                            .internal_with_err(
-                                "Failed to roll back OAuth2 user savepoint after email create error",
-                            )?;
+                        sqlx::query(trusted_dynamic_sql(format!(
+                            "ROLLBACK TO SAVEPOINT {savepoint}"
+                        )))
+                        .execute(&mut *tx)
+                        .await
+                        .internal_with_err(
+                            "Failed to roll back OAuth2 user savepoint after email create error",
+                        )?;
                         match error {
                             Error::AlreadyExists(_) => {
                                 return Err(Error::AlreadyExists(
@@ -1351,10 +1353,12 @@ impl OAuth2Service {
                             err => return Err(err),
                         }
                     }
-                    sqlx::query(&format!("RELEASE SAVEPOINT {savepoint}"))
-                        .execute(&mut *tx)
-                        .await
-                        .internal_with_err("Failed to release OAuth2 user savepoint")?;
+                    sqlx::query(trusted_dynamic_sql(format!(
+                        "RELEASE SAVEPOINT {savepoint}"
+                    )))
+                    .execute(&mut *tx)
+                    .await
+                    .internal_with_err("Failed to release OAuth2 user savepoint")?;
 
                     user_service
                         .cache_oauth2_username_best_effort(&created_user.id, candidate)
@@ -1385,20 +1389,24 @@ impl OAuth2Service {
                     break;
                 }
                 Err(error) if UserService::is_username_conflict(&error) => {
-                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
-                        .execute(&mut *tx)
-                        .await
-                        .internal_with_err(
-                            "Failed to roll back OAuth2 user savepoint after username collision",
-                        )?;
+                    sqlx::query(trusted_dynamic_sql(format!(
+                        "ROLLBACK TO SAVEPOINT {savepoint}"
+                    )))
+                    .execute(&mut *tx)
+                    .await
+                    .internal_with_err(
+                        "Failed to roll back OAuth2 user savepoint after username collision",
+                    )?;
                 }
                 Err(err) => {
-                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
-                        .execute(&mut *tx)
-                        .await
-                        .internal_with_err(
-                            "Failed to roll back OAuth2 user savepoint after create error",
-                        )?;
+                    sqlx::query(trusted_dynamic_sql(format!(
+                        "ROLLBACK TO SAVEPOINT {savepoint}"
+                    )))
+                    .execute(&mut *tx)
+                    .await
+                    .internal_with_err(
+                        "Failed to roll back OAuth2 user savepoint after create error",
+                    )?;
                     return Err(err);
                 }
             }

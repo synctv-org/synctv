@@ -2,7 +2,6 @@
 //!
 //! Tests the core RTMP authentication components with real `PostgreSQL` and Redis via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test `rtmp_auth_integration_tests`
 //! Run with ignored tests: cargo test -p synctv-core --test `rtmp_auth_integration_tests` -- --ignored
 //!
 //! # Test Coverage
@@ -22,7 +21,6 @@ use std::sync::Arc;
 
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         MediaId, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
         SignupMethod, User, UserId, UserRole, UserStatus,
@@ -57,16 +55,14 @@ fn create_jwt_service() -> JwtService {
 fn create_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -76,12 +72,13 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
 fn create_room_service(pool: sqlx::PgPool) -> RoomService {
     let user_service = create_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 fn create_publish_key_service() -> PublishKeyService {
     let jwt_service = create_jwt_service();
-    PublishKeyService::new(jwt_service, 24) // 24 hour TTL
+    PublishKeyService::new(jwt_service, 24).expect("publish key service should build")
+    // 24 hour TTL
 }
 
 async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -> User {
@@ -201,16 +198,22 @@ async fn rtmp_auth_test_expired_token_rejected() {
 
     let jwt_service = JwtService::new("test-secret-key-for-expired-token-tests-32chars")
         .expect("Failed to create JWT service");
-    let publish_key_service = PublishKeyService::new(jwt_service, 0);
+    let publish_key_service =
+        PublishKeyService::new(jwt_service.clone(), 24).expect("publish key service should build");
+    let now = chrono::Utc::now().timestamp();
+    let token = jwt_service
+        .sign_custom(&serde_json::json!({
+            "room_id": room.id.to_string(),
+            "media_id": media_id.to_string(),
+            "user_id": user.id.to_string(),
+            "perm_live_control": true,
+            "iat": now - 7200,
+            "exp": now - 3600,
+            "jti": "expired_rtmp_publish_key_test",
+        }))
+        .expect("Failed to generate expired publish key");
 
-    // Generate and immediately expire token
-    let key = publish_key_service
-        .generate_publish_key(&room.id, &media_id, &user.id)
-        .expect("Failed to generate publish key");
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    let result = publish_key_service.validate_publish_key(&key.token).await;
+    let result = publish_key_service.validate_publish_key(&token).await;
 
     assert!(result.is_err(), "Expired token should be rejected");
 

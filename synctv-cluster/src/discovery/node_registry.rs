@@ -209,16 +209,28 @@ fn create_redis_circuit_breaker(
     CbConfig::new().failure_policy(policy).build()
 }
 
-fn unix_time_millis_u64() -> u64 {
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX)
+fn unix_epoch_elapsed() -> Duration {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "System clock is before UNIX_EPOCH while reading cluster node registry time"
+            );
+            Duration::ZERO
+        }
+    }
 }
 
+fn unix_time_millis_u64() -> u64 {
+    u64::try_from(unix_epoch_elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn unix_time_secs_u64() -> u64 {
+    unix_epoch_elapsed().as_secs()
+}
+
+#[cfg(any(test, feature = "test-support"))]
 fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -720,10 +732,7 @@ impl NodeRegistry {
         let mut guard = self.cached_conn.lock().await;
 
         // Check if we need to verify connection health
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = unix_epoch_elapsed().as_secs();
         let last_check = self.last_health_check.load(Ordering::Relaxed);
         let needs_health_check = now.saturating_sub(last_check) >= HEALTH_CHECK_INTERVAL_SECS;
 
@@ -1501,11 +1510,8 @@ impl NodeRegistry {
         match self.get_all_nodes_uncached().await {
             Ok(result) => {
                 // Record successful refresh timestamp
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                self.last_refreshed.store(now, Ordering::Relaxed);
+                self.last_refreshed
+                    .store(unix_time_secs_u64(), Ordering::Relaxed);
                 self.nodes_cache.insert((), result.clone()).await;
                 Ok(result)
             }
@@ -1754,10 +1760,7 @@ impl NodeRegistry {
             // Never refreshed — consider stale
             return true;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = unix_time_secs_u64();
         now.saturating_sub(last) > NODES_STALE_THRESHOLD_SECS
     }
 
@@ -1837,12 +1840,14 @@ impl NodeRegistry {
 
     /// Test-only hook to override the cluster mode.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_set_cluster_mode(&self, mode: ClusterMode) {
         *self.cluster_mode.write() = mode;
     }
 
     /// Test-only hook to override the last refresh timestamp.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_set_last_refreshed_at(&self, unix_secs: u64) {
         self.last_refreshed.store(unix_secs, Ordering::Relaxed);
     }
@@ -1910,24 +1915,28 @@ impl NodeRegistry {
 
     /// Check if currently in re-registration backoff period (async wrapper for tests).
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_in_reregister_backoff(&self) -> bool {
         self.is_in_reregister_backoff_sync()
     }
 
     /// Get the current re-registration backoff duration.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn current_reregister_backoff(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.reregister_backoff_ms.load(Ordering::Relaxed))
     }
 
     /// Get the timestamp of the last re-registration attempt (for tests).
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn last_reregister_attempt(&self) -> u64 {
         self.last_reregister_attempt.load(Ordering::Relaxed)
     }
 
     /// Set a specific backoff duration for testing purposes.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_reregister_backoff_for_test(&self, duration: std::time::Duration) {
         self.reregister_backoff_ms
             .store(duration_millis_u64(duration), Ordering::Relaxed);

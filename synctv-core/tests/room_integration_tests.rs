@@ -2,7 +2,6 @@
 //!
 //! Tests the complete room lifecycle: create, read, update, soft delete, CASCADE behavior.
 //!
-//! Run with: cargo test --test `room_integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

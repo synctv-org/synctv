@@ -3,7 +3,6 @@
 //! Tests the complete authentication flow: register -> login -> operations -> logout
 //! with all security checks enforced by `SecurityPipeline`.
 //!
-//! Run with: cargo test --test `auth_integration_tests`
 //!
 //! # Test Coverage
 //!
@@ -19,7 +18,7 @@
 
 use std::sync::Arc;
 
-use opaque_ke::argon2::Argon2;
+use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
@@ -29,13 +28,12 @@ use opaque_ke::{
 use sqlx::PgPool;
 use synctv_core::{
     cache,
-    config::PasswordComplexityConfig,
     models::UserStatus,
     repository::UserRepository,
     service::{
-        auth::{jwt::JwtService, SecurityPipeline},
-        AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore,
-        UserService,
+        auth::{jwt::JwtService, SecurityPipeline, SecurityPipelineRuntime},
+        AccountRegistrationOutcome, AuthenticatedLogin, BruteForceProtection,
+        InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
     },
     Error, KeyBuilder,
 };
@@ -46,7 +44,7 @@ struct TestOpaqueCipherSuite;
 impl CipherSuite for TestOpaqueCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
     type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, sha2_010::Sha512>;
-    type Ksf = Argon2<'static>;
+    type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
 fn create_jwt_service() -> JwtService {
@@ -61,31 +59,36 @@ fn create_user_service(pool: &PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    UserService::new_with_runtime(
         pool,
         jwt_service,
         username_cache,
-        PasswordComplexityConfig::default(),
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    svc.enable_password_registration_for_tests();
-    svc
+        synctv_core::service::user::UserServiceRuntimeOptions {
+            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
+                enabled: true,
+                need_review: false,
+            }),
+            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+        },
+    )
 }
 
-fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::User, String, String) {
-    match login {
-        AuthenticatedLogin::Complete {
-            user,
-            access_token,
-            refresh_token,
-            ..
-        } => (user, access_token, refresh_token),
-        AuthenticatedLogin::MfaRequired { .. } => {
-            panic!("expected complete login, got MFA challenge")
-        }
-    }
+fn security_pipeline_with_blacklist(
+    user_service: Arc<UserService>,
+    token_blacklist: Arc<dyn TokenBlacklistStore>,
+    key_builder: KeyBuilder,
+) -> SecurityPipeline {
+    SecurityPipeline::new_with_runtime(
+        user_service,
+        SecurityPipelineRuntime {
+            user_cache: None,
+            token_blacklist: Some(token_blacklist),
+            key_builder: Some(key_builder),
+        },
+    )
 }
 
 async fn opaque_login(
@@ -171,7 +174,7 @@ async fn opaque_register(
         )
         .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
 
-    service
+    match service
         .finish_opaque_registration_with_control(
             &challenge.session_id,
             client_finish.message.serialize().to_vec(),
@@ -179,6 +182,18 @@ async fn opaque_register(
             None,
         )
         .await
+    {
+        Ok(AccountRegistrationOutcome::Registered {
+            user,
+            access_token,
+            refresh_token,
+            ..
+        }) => Ok((user, Some(access_token), Some(refresh_token))),
+        Ok(AccountRegistrationOutcome::PendingReview(_)) => Err(Error::Internal(
+            "opaque_register helper received pending review outcome".to_string(),
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 async fn opaque_update_password(
@@ -248,22 +263,19 @@ async fn scenario_password_change_invalidates_old_tokens() {
     let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let original_password = "OriginalPassword123!".to_string();
 
-    let (user, _, _) = user_service
-        .register(
-            username.clone(),
-            Some(email),
-            original_password.clone(),
-            None,
-        )
-        .await
-        .expect("Failed to register user");
+    let (user, _, _) = opaque_register(
+        &user_service,
+        username.clone(),
+        Some(email),
+        &original_password,
+    )
+    .await
+    .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = expect_complete_login(
-        user_service
-            .login(username.clone(), original_password.clone(), None)
+    let (_user, access_token, _refresh_token) =
+        opaque_login(&user_service, username.clone(), &original_password)
             .await
-            .expect("Failed to login"),
-    );
+            .expect("Failed to login");
 
     let old_claims = jwt_service
         .verify_access_token(&access_token)
@@ -271,8 +283,8 @@ async fn scenario_password_change_invalidates_old_tokens() {
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
-    let pipeline = SecurityPipeline::new(user_service.clone())
-        .with_token_blacklist(token_blacklist, key_builder);
+    let pipeline =
+        security_pipeline_with_blacklist(user_service.clone(), token_blacklist, key_builder);
 
     let auth_result = pipeline.check(&old_claims).await;
     assert!(
@@ -281,10 +293,9 @@ async fn scenario_password_change_invalidates_old_tokens() {
     );
 
     let new_password = "NewPassword456!";
-    user_service
-        .set_password(&user.id, new_password)
+    opaque_update_password(&user_service, &user.id, &original_password, new_password)
         .await
-        .expect("Failed to change password");
+        .expect("Failed to change password through OPAQUE update");
 
     let auth_result = pipeline.check(&old_claims).await;
     assert!(
@@ -302,12 +313,6 @@ async fn scenario_password_change_invalidates_old_tokens() {
         opaque_login(&user_service, username, new_password)
             .await
             .expect("Failed to login with new OPAQUE password");
-    expect_complete_login(
-        user_service
-            .login(user.username.clone(), new_password.to_string(), None)
-            .await
-            .expect("Failed to login with new plaintext password"),
-    );
 
     let new_claims = jwt_service
         .verify_access_token(&new_access_token)
@@ -320,7 +325,7 @@ async fn scenario_password_change_invalidates_old_tokens() {
     );
 }
 
-async fn scenario_opaque_registration_allows_plaintext_login() {
+async fn scenario_opaque_registration_allows_opaque_login() {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(&pool));
 
@@ -331,18 +336,12 @@ async fn scenario_opaque_registration_allows_plaintext_login() {
         .await
         .expect("Failed to register user with OPAQUE");
 
-    expect_complete_login(
-        user_service
-            .login(username.clone(), password.to_string(), None)
-            .await
-            .expect("Failed to login with plaintext password after OPAQUE registration"),
-    );
     opaque_login(&user_service, username, password)
         .await
         .expect("Failed to login with OPAQUE password after OPAQUE registration");
 }
 
-async fn scenario_opaque_password_update_allows_plaintext_login() {
+async fn scenario_opaque_password_update_allows_opaque_login() {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(&pool));
 
@@ -357,12 +356,6 @@ async fn scenario_opaque_password_update_allows_plaintext_login() {
         .await
         .expect("Failed to update password with OPAQUE");
 
-    expect_complete_login(
-        user_service
-            .login(username.clone(), new_password.to_string(), None)
-            .await
-            .expect("Failed to login with plaintext password after OPAQUE update"),
-    );
     opaque_login(&user_service, username, new_password)
         .await
         .expect("Failed to login with OPAQUE password after OPAQUE update");
@@ -378,17 +371,14 @@ async fn scenario_ban_user_invalidates_tokens() {
     let username = format!("banned_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    user_service
-        .register(username.clone(), None, password.clone(), None)
+    opaque_register(&user_service, username.clone(), None, &password)
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = expect_complete_login(
-        user_service
-            .login(username.clone(), password, None)
+    let (_user, access_token, _refresh_token) =
+        opaque_login(&user_service, username.clone(), &password)
             .await
-            .expect("Failed to login"),
-    );
+            .expect("Failed to login");
 
     let claims = jwt_service
         .verify_access_token(&access_token)
@@ -396,8 +386,8 @@ async fn scenario_ban_user_invalidates_tokens() {
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
-    let pipeline = SecurityPipeline::new(user_service.clone())
-        .with_token_blacklist(token_blacklist, key_builder);
+    let pipeline =
+        security_pipeline_with_blacklist(user_service.clone(), token_blacklist, key_builder);
 
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_ok(), "Token should work before ban");
@@ -433,17 +423,13 @@ async fn scenario_blacklisted_access_token_rejected() {
     let username = format!("blacklist_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    user_service
-        .register(username.clone(), None, password.clone(), None)
+    opaque_register(&user_service, username.clone(), None, &password)
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = expect_complete_login(
-        user_service
-            .login(username, password, None)
-            .await
-            .expect("Failed to login"),
-    );
+    let (_user, access_token, _refresh_token) = opaque_login(&user_service, username, &password)
+        .await
+        .expect("Failed to login");
 
     let claims = jwt_service
         .verify_access_token(&access_token)
@@ -451,8 +437,11 @@ async fn scenario_blacklisted_access_token_rejected() {
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
-    let pipeline = SecurityPipeline::new(user_service.clone())
-        .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
+    let pipeline = security_pipeline_with_blacklist(
+        user_service.clone(),
+        token_blacklist.clone(),
+        key_builder.clone(),
+    );
 
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_ok(), "Token should work before blacklisting");
@@ -481,17 +470,13 @@ async fn scenario_refresh_token_validation() {
     let username = format!("refresh_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    user_service
-        .register(username.clone(), None, password.clone(), None)
+    opaque_register(&user_service, username.clone(), None, &password)
         .await
         .expect("Failed to register user");
 
-    let (_user, _access_token, refresh_token) = expect_complete_login(
-        user_service
-            .login(username, password, None)
-            .await
-            .expect("Failed to login"),
-    );
+    let (_user, _access_token, refresh_token) = opaque_login(&user_service, username, &password)
+        .await
+        .expect("Failed to login");
 
     // Refresh token should work
     let refresh_result = user_service.refresh_token(refresh_token).await;
@@ -518,20 +503,17 @@ async fn scenario_complete_authentication_flow() {
     let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let password = "SecurePassword123!".to_string();
 
-    let (user, _, _) = user_service
-        .register(username.clone(), Some(email), password.clone(), None)
+    let (user, _, _) = opaque_register(&user_service, username.clone(), Some(email), &password)
         .await
         .expect("Failed to register user");
 
     assert_eq!(user.username, username.to_lowercase());
     assert_eq!(user.status, UserStatus::Active);
 
-    let (_user, access_token, refresh_token) = expect_complete_login(
-        user_service
-            .login(username.clone(), password.clone(), None)
+    let (_user, access_token, refresh_token) =
+        opaque_login(&user_service, username.clone(), &password)
             .await
-            .expect("Failed to login"),
-    );
+            .expect("Failed to login");
 
     assert!(!access_token.is_empty());
     assert!(!refresh_token.is_empty());
@@ -544,8 +526,8 @@ async fn scenario_complete_authentication_flow() {
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
-    let pipeline = SecurityPipeline::new(user_service.clone())
-        .with_token_blacklist(token_blacklist, key_builder);
+    let pipeline =
+        security_pipeline_with_blacklist(user_service.clone(), token_blacklist, key_builder);
 
     let auth_result = pipeline
         .check(&claims)
@@ -579,15 +561,11 @@ async fn scenario_login_wrong_password_fails() {
     let username = format!("wrong_pwd_user_{}", synctv_common::snanoid!(8));
     let password = "CorrectPassword123!".to_string();
 
-    user_service
-        .register(username.clone(), None, password, None)
+    opaque_register(&user_service, username.clone(), None, &password)
         .await
         .expect("Failed to register user");
 
-    // Try to login with wrong password
-    let login_result = user_service
-        .login(username, "WrongPassword456!".to_string(), None)
-        .await;
+    let login_result = opaque_login(&user_service, username, "WrongPassword456!").await;
 
     assert!(
         login_result.is_err(),
@@ -604,17 +582,13 @@ async fn scenario_deleted_user_cannot_authenticate() {
     let username = format!("deleted_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    let (user, _, _) = user_service
-        .register(username.clone(), None, password.clone(), None)
+    let (user, _, _) = opaque_register(&user_service, username.clone(), None, &password)
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = expect_complete_login(
-        user_service
-            .login(username, password, None)
-            .await
-            .expect("Failed to login"),
-    );
+    let (_user, access_token, _refresh_token) = opaque_login(&user_service, username, &password)
+        .await
+        .expect("Failed to login");
 
     let claims = jwt_service
         .verify_access_token(&access_token)
@@ -629,8 +603,7 @@ async fn scenario_deleted_user_cannot_authenticate() {
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
-    let pipeline =
-        SecurityPipeline::new(user_service).with_token_blacklist(token_blacklist, key_builder);
+    let pipeline = security_pipeline_with_blacklist(user_service, token_blacklist, key_builder);
 
     // Token should be rejected because user is deleted
     let auth_result = pipeline.check(&claims).await;
@@ -684,12 +657,12 @@ async fn test_deleted_user_cannot_authenticate() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_opaque_registration_allows_plaintext_login() {
-    scenario_opaque_registration_allows_plaintext_login().await;
+async fn test_opaque_registration_allows_opaque_login() {
+    scenario_opaque_registration_allows_opaque_login().await;
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_opaque_password_update_allows_plaintext_login() {
-    scenario_opaque_password_update_allows_plaintext_login().await;
+async fn test_opaque_password_update_allows_opaque_login() {
+    scenario_opaque_password_update_allows_opaque_login().await;
 }

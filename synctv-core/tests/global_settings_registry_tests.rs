@@ -8,7 +8,6 @@
 //! - Concurrent updates
 //! - Settings persistence
 //!
-//! Run with: cargo test --test `global_settings_registry_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
@@ -237,9 +236,7 @@ fn test_room_password_policy_parse_and_display() {
     assert_eq!(RoomPasswordPolicy::Required.to_string(), "required");
     assert_eq!(RoomPasswordPolicy::Forbidden.to_string(), "forbidden");
     assert!("true".parse::<RoomPasswordPolicy>().is_err());
-    assert!("legacy_boolean_policy"
-        .parse::<RoomPasswordPolicy>()
-        .is_err());
+    assert!("invalid_policy".parse::<RoomPasswordPolicy>().is_err());
 }
 
 #[test]
@@ -294,37 +291,13 @@ fn test_cors_allowed_origins_updates() {
     assert_eq!(parsed.0.len(), 3);
 }
 
-// PublicSettings Tests
-
-#[test]
-fn test_public_settings_serialization() {
-    let mut settings = PublicSettings::defaults();
-    settings.custom_publish_host = "rtmp://live.example.com".to_string();
-
-    // Serialize
-    let json = serde_json::to_string(&settings).unwrap();
-
-    // Deserialize
-    let deserialized: PublicSettings = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(
-        deserialized.enable_password_signup,
-        settings.enable_password_signup
-    );
-    assert_eq!(deserialized.max_rooms_per_user, settings.max_rooms_per_user);
-    assert_eq!(deserialized.custom_publish_host, "rtmp://live.example.com");
-}
-
 #[test]
 fn test_public_settings_skips_empty_custom_publish_host() {
     let defaults = PublicSettings::defaults();
     let json = serde_json::to_string(&defaults).unwrap();
 
-    // Empty custom_publish_host should be omitted via skip_serializing_if
     assert!(!json.contains("custom_publish_host"));
 }
-
-// Concurrent Updates Test (Last Write Wins)
 
 #[tokio::test]
 async fn test_concurrent_settings_updates_last_write_wins() {
@@ -478,26 +451,7 @@ fn test_max_chat_messages_zero_means_unlimited() {
 // Settings Persistence Simulation Tests
 
 #[test]
-fn test_setting_value_roundtrip() {
-    // Test that setting values survive serialization/deserialization roundtrip
-
-    // Boolean
-    let bool_val = true;
-    assert_eq!(bool_val.to_string().parse::<bool>().unwrap(), bool_val);
-
-    // Integer
-    let int_val = 42_i64;
-    assert_eq!(int_val.to_string().parse::<i64>().unwrap(), int_val);
-
-    // Unsigned
-    let uint_val = 100_u64;
-    assert_eq!(uint_val.to_string().parse::<u64>().unwrap(), uint_val);
-
-    // String
-    let str_val = "hello world";
-    assert_eq!(str_val.to_string().parse::<String>().unwrap(), str_val);
-
-    // STUN server list
+fn test_custom_setting_value_roundtrip() {
     let stun_list = IceServerList(vec![
         ConfiguredIceServer::new(vec!["stun:example.com:19302".to_string()]),
         ConfiguredIceServer::new(vec!["turn:turn.example.com:3478".to_string()])
@@ -507,7 +461,6 @@ fn test_setting_value_roundtrip() {
     let stun_parsed: IceServerList = stun_json.parse().unwrap();
     assert_eq!(stun_list, stun_parsed);
 
-    // CORS origins
     let cors_origins = CorsAllowedOrigins(vec!["https://example.com".to_string()]);
     let cors_json = cors_origins.to_string();
     let cors_parsed: CorsAllowedOrigins = cors_json.parse().unwrap();

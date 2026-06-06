@@ -19,49 +19,57 @@ impl PreparedRoomSettingsFanout {
     }
 
     #[must_use]
-    fn from_event(event: RealtimeEvent, realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
+    fn from_event(
+        event: RealtimeEvent,
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    ) -> synctv_core::Result<Self> {
         let plan = PreparedRealtimeFanoutPlan::new(
             realtime_fanout.clone(),
             event,
             RealtimeDeliveryRequirement::DistributedIfAvailable,
-        );
-        Self {
+        )
+        .map_err(synctv_core::Error::Internal)?;
+        Ok(Self {
             plan,
             realtime_fanout,
-        }
+        })
     }
 
     #[must_use]
-    pub fn settings_outbox_factory(&self) -> Option<RealtimeOutboxSettingsEventFactory> {
-        self.plan.outbox_event()?;
-
+    pub fn settings_outbox_factory(&self) -> RealtimeOutboxSettingsEventFactory {
         let prepared = self.clone();
-        Some(Arc::new(move |settings: &RoomSettings, version| {
-            let settings_json = serde_json::to_vec(settings).ok()?;
+        Arc::new(move |settings: &RoomSettings, version| {
+            let settings_json = serde_json::to_vec(settings)?;
             let event = room_settings_event_with_settings_and_version(
                 prepared.event(),
                 settings_json,
                 version,
             );
-            prepared.realtime_fanout.outbox_event(&event)
-        }))
+            prepared
+                .realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
+        })
     }
 
     #[must_use]
-    pub fn with_version(&self, version: i64) -> Self {
+    pub fn with_version(&self, version: i64) -> synctv_core::Result<Self> {
         Self::from_event(
             room_settings_event_with_version(self.event(), version),
             self.realtime_fanout.clone(),
         )
     }
 
-    #[must_use]
-    pub fn with_settings_and_version(&self, settings: &RoomSettings, version: i64) -> Option<Self> {
-        let settings_json = serde_json::to_vec(settings).ok()?;
-        Some(Self::from_event(
+    pub fn with_settings_and_version(
+        &self,
+        settings: &RoomSettings,
+        version: i64,
+    ) -> synctv_core::Result<Self> {
+        let settings_json = serde_json::to_vec(settings)?;
+        Self::from_event(
             room_settings_event_with_settings_and_version(self.event(), settings_json, version),
             self.realtime_fanout.clone(),
-        ))
+        )
     }
 }
 
@@ -69,7 +77,7 @@ impl std::fmt::Debug for PreparedRoomSettingsFanout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedRoomSettingsFanout")
             .field("event", self.event())
-            .field("has_outbox_event", &self.plan.outbox_event().is_some())
+            .field("outbox_event", &self.plan.outbox_event())
             .finish()
     }
 }
@@ -82,7 +90,7 @@ pub trait RoomSettingsFanoutService: Send + Sync {
         actor_username: &str,
         settings_json: Vec<u8>,
         version: i64,
-    ) -> PreparedRoomSettingsFanout;
+    ) -> synctv_core::Result<PreparedRoomSettingsFanout>;
 
     fn publish_prepared_after_outbox_commit(&self, prepared: PreparedRoomSettingsFanout);
 }
@@ -117,7 +125,7 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
         actor_username: &str,
         settings_json: Vec<u8>,
         version: i64,
-    ) -> PreparedRoomSettingsFanout {
+    ) -> synctv_core::Result<PreparedRoomSettingsFanout> {
         let event = RealtimeEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,
@@ -194,7 +202,7 @@ pub fn default_room_settings_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_room_settings_fanout_service;
-    use crate::realtime_fanout::default_realtime_fanout_service_with_realtime;
+    use crate::realtime_fanout::local_realtime_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -274,17 +282,19 @@ mod tests {
     #[tokio::test]
     async fn test_standalone_room_settings_fanout_broadcasts_locally() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_room_settings_fanout_service(
-            default_realtime_fanout_service_with_realtime(None, false, Some(event_service.clone())),
-        );
+        let service = default_room_settings_fanout_service(local_realtime_fanout_service(
+            event_service.clone(),
+        ));
 
-        let prepared = service.prepare_settings_changed(
-            &room_id(),
-            &user_id(),
-            "tester",
-            br#"{"chat_enabled":false}"#.to_vec(),
-            11,
-        );
+        let prepared = service
+            .prepare_settings_changed(
+                &room_id(),
+                &user_id(),
+                "tester",
+                br#"{"chat_enabled":false}"#.to_vec(),
+                11,
+            )
+            .expect("room settings fanout should prepare");
         service.publish_prepared_after_outbox_commit(prepared);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
@@ -305,10 +315,11 @@ mod tests {
     #[tokio::test]
     async fn test_prepared_room_settings_fanout_keeps_event_identity_when_snapshot_is_applied() {
         let service = default_room_settings_fanout_service(
-            default_realtime_fanout_service_with_realtime(None, true, None),
+            crate::realtime_fanout::disabled_realtime_fanout_service(),
         );
-        let prepared =
-            service.prepare_settings_changed(&room_id(), &user_id(), "tester", Vec::new(), 0);
+        let prepared = service
+            .prepare_settings_changed(&room_id(), &user_id(), "tester", Vec::new(), 0)
+            .expect("room settings fanout should prepare");
         let original_event_id = prepared.event().event_id().to_string();
 
         let prepared = prepared

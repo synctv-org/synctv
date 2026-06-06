@@ -12,7 +12,8 @@ use synctv_proto::client::{
     RoomJoinReviewPathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
     RoomPathRequest, RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection,
     StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
-    UpdatePlaybackRequest, UpdatePlaylistRequest, WebSocketConnectRequest,
+    UpdatePlaybackRequest, UpdatePlaylistRequest, UploadUserAvatarObjectRequest,
+    WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{
     ListProviderBackendsRequest, ProviderInstanceQuery, ProviderProxyPathRequest,
@@ -31,6 +32,25 @@ fn test_add_media_request_allows_room_root_without_playlist_id() {
     };
 
     assert!(request.playlist_id.is_none());
+}
+
+#[test]
+fn test_upload_object_content_type_is_optional() {
+    let message = synctv_proto::DESCRIPTOR_POOL
+        .get_message_by_name("synctv.client.UploadUserAvatarObjectRequest")
+        .expect("UploadUserAvatarObjectRequest descriptor should exist");
+    let content_type = message
+        .get_field_by_name("content_type")
+        .expect("content_type field should exist");
+
+    assert!(content_type.supports_presence());
+
+    let request: UploadUserAvatarObjectRequest = serde_json::from_str(
+        r#"{"encoded_object_key":"object","token":"token","data":[112,97,121,108,111,97,100]}"#,
+    )
+    .expect("missing content_type should deserialize");
+
+    assert_eq!(request.content_type, None);
 }
 
 #[test]

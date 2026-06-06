@@ -54,11 +54,22 @@ pub struct CachedRoom {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+pub struct CachedRoomSnapshot {
+    pub id: String,
+    pub name: String,
+    pub owner_id: String,
+    pub is_public: bool,
+    pub status: RoomStatus,
+    pub is_banned: bool,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl CachedRoom {
     /// Create a new `CachedRoom` with default status (Active), not banned, not deleted.
     ///
-    /// This is a convenience constructor for the common case. For full control
-    /// over all fields, use [`with_all_fields`].
+    /// This is a convenience constructor for active, visible room snapshots.
     #[must_use]
     pub fn new(
         id: String,
@@ -82,8 +93,7 @@ impl CachedRoom {
 
     /// Create a new `CachedRoom` with explicit `updated_at` timestamp
     ///
-    /// Uses default status (Active), not banned, not deleted. For full control
-    /// over all fields, use [`with_all_fields`].
+    /// Uses default status (Active), not banned, not deleted.
     #[must_use]
     pub const fn with_updated_at(
         id: String,
@@ -106,30 +116,18 @@ impl CachedRoom {
         }
     }
 
-    /// Create a `CachedRoom` with all fields specified explicitly.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub const fn with_all_fields(
-        id: String,
-        name: String,
-        owner_id: String,
-        is_public: bool,
-        status: RoomStatus,
-        is_banned: bool,
-        deleted_at: Option<chrono::DateTime<chrono::Utc>>,
-        created_at: chrono::DateTime<chrono::Utc>,
-        updated_at: chrono::DateTime<chrono::Utc>,
-    ) -> Self {
+    pub fn from_snapshot(snapshot: CachedRoomSnapshot) -> Self {
         Self {
-            id,
-            name,
-            owner_id,
-            is_public,
-            status,
-            is_banned,
-            deleted_at,
-            created_at,
-            updated_at,
+            id: snapshot.id,
+            name: snapshot.name,
+            owner_id: snapshot.owner_id,
+            is_public: snapshot.is_public,
+            status: snapshot.status,
+            is_banned: snapshot.is_banned,
+            deleted_at: snapshot.deleted_at,
+            created_at: snapshot.created_at,
+            updated_at: snapshot.updated_at,
         }
     }
 
@@ -197,9 +195,8 @@ impl CachedRoom {
 /// Convert a `Room` model to a `CachedRoom`.
 ///
 /// `is_public` defaults to `false` because the `Room` model does not have
-/// an `is_public` field -- it is determined by room settings. Callers that
-/// know the room visibility should use [`CachedRoom::with_all_fields`]
-/// instead.
+/// an `is_public` field -- it is determined by room settings. Callers with
+/// a complete room/settings snapshot should use [`CachedRoom::from_snapshot`].
 impl From<&crate::models::Room> for CachedRoom {
     fn from(room: &crate::models::Room) -> Self {
         Self {
@@ -237,7 +234,7 @@ impl RoomCache {
         l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
-    ) -> Result<Self> {
+    ) -> Self {
         let inner = TieredCache::new(
             l2,
             l1_max_capacity,
@@ -245,8 +242,8 @@ impl RoomCache {
             l2_ttl_seconds,
             key_prefix,
             "room".to_string(),
-        )?;
-        Ok(Self { inner })
+        );
+        Self { inner }
     }
 
     /// Get room data from cache
@@ -359,8 +356,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room1");
         let room = create_test_room("room1", "Test Room", "user1");
@@ -386,8 +382,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let result = cache.invalidate_by_id("not-a-room-id").await;
 
@@ -402,8 +397,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room1 = create_test_room_id("room1");
         let room2 = create_test_room_id("room2");
@@ -445,22 +439,21 @@ mod tests {
             5,
             0,
             "test:status:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room_closed");
         let now = chrono::Utc::now();
-        let room = CachedRoom::with_all_fields(
-            "room_closed".to_string(),
-            "Closed Room".to_string(),
-            "owner1".to_string(),
-            true,
-            RoomStatus::Closed,
-            false,
-            None,
-            now,
-            now,
-        );
+        let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
+            id: "room_closed".to_string(),
+            name: "Closed Room".to_string(),
+            owner_id: "owner1".to_string(),
+            is_public: true,
+            status: RoomStatus::Closed,
+            is_banned: false,
+            deleted_at: None,
+            created_at: now,
+            updated_at: now,
+        });
 
         cache.set(&room_id, room).await.unwrap();
         let retrieved = cache.get(&room_id).await.unwrap().unwrap();
@@ -479,22 +472,22 @@ mod tests {
             5,
             0,
             "test:banned:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room_banned");
         let now = chrono::Utc::now();
-        let room = CachedRoom::with_all_fields(
-            "room_banned".to_string(),
-            "Banned Room".to_string(),
-            "owner1".to_string(),
-            true,
-            RoomStatus::Active,
-            true, // is_banned
+        let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
+            id: "room_banned".to_string(),
+            name: "Banned Room".to_string(),
+            owner_id: "owner1".to_string(),
+            is_public: true,
+            status: RoomStatus::Active,
+            is_banned: true,
+            deleted_at: // is_banned
             None,
-            now,
-            now,
-        );
+            created_at: now,
+            updated_at: now,
+        });
 
         cache.set(&room_id, room).await.unwrap();
         let retrieved = cache.get(&room_id).await.unwrap().unwrap();
@@ -515,23 +508,22 @@ mod tests {
             5,
             0,
             "test:deleted:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room_deleted");
         let now = chrono::Utc::now();
         let deleted_time = now - chrono::Duration::hours(1);
-        let room = CachedRoom::with_all_fields(
-            "room_deleted".to_string(),
-            "Deleted Room".to_string(),
-            "owner1".to_string(),
-            false,
-            RoomStatus::Active,
-            false,
-            Some(deleted_time),
-            now,
-            now,
-        );
+        let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
+            id: "room_deleted".to_string(),
+            name: "Deleted Room".to_string(),
+            owner_id: "owner1".to_string(),
+            is_public: false,
+            status: RoomStatus::Active,
+            is_banned: false,
+            deleted_at: Some(deleted_time),
+            created_at: now,
+            updated_at: now,
+        });
 
         cache.set(&room_id, room).await.unwrap();
         let retrieved = cache.get(&room_id).await.unwrap().unwrap();

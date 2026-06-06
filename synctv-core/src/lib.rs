@@ -118,4 +118,4 @@ pub use redis_runtime::{
     RedisConnectionRuntime, RedisCoordinationRuntime, SharedRedisConnectionRuntime,
 };
 pub use shared_state::{SharedStateMode, SharedStateProfile};
-pub use transaction::{with_transaction, UnitOfWork};
+pub use transaction::with_transaction;

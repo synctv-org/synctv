@@ -18,6 +18,7 @@ mod membership_event_fanout;
 pub mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
+mod playback_fanout;
 mod playlist_fanout;
 pub mod proto;
 pub mod realtime_fanout;

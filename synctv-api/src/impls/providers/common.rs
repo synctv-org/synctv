@@ -7,7 +7,9 @@ use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::provider::ProviderError;
 use synctv_core::repository::UserProviderCredentialRepository;
-use synctv_core::service::{AuditService, ProvidersManager, RemoteProviderManager, UserService};
+use synctv_core::service::{
+    AuditEventParams, AuditService, ProvidersManager, RemoteProviderManager, UserService,
+};
 use synctv_proto::providers::common::ProviderInstanceQuery;
 
 use crate::impls::admin::{validate_admin_auth, RequestContext, ValidatedAdmin};
@@ -28,14 +30,8 @@ pub struct ProviderBind {
 const PROVIDER_BINDS_UNAVAILABLE_MESSAGE: &str =
     "Provider bind information is temporarily unavailable";
 
-fn i64_to_i32_saturating(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or_else(|_| {
-        if value.is_negative() {
-            i32::MIN
-        } else {
-            i32::MAX
-        }
-    })
+fn i64_to_i32(value: i64, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
 fn filter_provider_binds(
@@ -79,7 +75,7 @@ pub async fn get_provider_credentials(
     provider_name: &str,
     instance_name: Option<&str>,
 ) -> Result<Vec<UserProviderCredential>, ApiError> {
-    let requested_instance_name = normalize_provider_instance_name(instance_name);
+    let requested_instance_name = provider_instance_name_from_optional_value(instance_name)?;
     let credentials = repo.get_by_user(*user_id).await.map_err(|error| {
         tracing::error!(
             user_id = %user_id,
@@ -126,6 +122,25 @@ pub fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, Ap
     Ok(Some(instance_name))
 }
 
+pub fn provider_instance_name_from_optional_value(
+    value: Option<&str>,
+) -> Result<Option<&str>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    provider_instance_name_from_value(value)
+}
+
+pub(crate) fn provider_instance_name_for_provider(
+    value: Option<&str>,
+) -> Result<Option<&str>, ProviderError> {
+    let Some(instance_name) = normalize_provider_instance_name(value) else {
+        return Ok(None);
+    };
+    validate_provider_instance_name(instance_name).map_err(ProviderError::InvalidConfig)?;
+    Ok(Some(instance_name))
+}
+
 pub fn provider_instance_name_from_query(
     query: &ProviderInstanceQuery,
 ) -> Result<Option<&str>, ApiError> {
@@ -162,6 +177,12 @@ pub struct ProviderCommonApiImpl {
     request_executor: Option<Arc<RequestExecutor>>,
 }
 
+#[derive(Clone, Default)]
+pub struct ProviderCommonApiRuntime {
+    pub providers_manager: Option<Arc<ProvidersManager>>,
+    pub request_executor: Option<Arc<RequestExecutor>>,
+}
+
 impl ProviderCommonApiImpl {
     #[must_use]
     pub fn new(
@@ -169,28 +190,28 @@ impl ProviderCommonApiImpl {
         user_service: Arc<UserService>,
         audit_service: Arc<AuditService>,
     ) -> Self {
-        Self {
+        Self::new_with_runtime(
             provider_instance_manager,
-            providers_manager: None,
             user_service,
             audit_service,
-            request_executor: None,
-        }
+            ProviderCommonApiRuntime::default(),
+        )
     }
 
     #[must_use]
-    pub fn with_providers_manager(
-        mut self,
-        providers_manager: Option<Arc<ProvidersManager>>,
+    pub fn new_with_runtime(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+        user_service: Arc<UserService>,
+        audit_service: Arc<AuditService>,
+        runtime: ProviderCommonApiRuntime,
     ) -> Self {
-        self.providers_manager = providers_manager;
-        self
-    }
-
-    #[must_use]
-    pub fn with_request_executor(mut self, request_executor: Arc<RequestExecutor>) -> Self {
-        self.request_executor = Some(request_executor);
-        self
+        Self {
+            provider_instance_manager,
+            providers_manager: runtime.providers_manager,
+            user_service,
+            audit_service,
+            request_executor: runtime.request_executor,
+        }
     }
 
     fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
@@ -314,24 +335,31 @@ impl ProviderCommonApiImpl {
         details: serde_json::Value,
         ctx: &RequestContext,
     ) {
-        let admin_username = self
-            .user_service
-            .get_user(admin_user_id)
-            .await
-            .map_or_else(|_| admin_user_id.to_string(), |user| user.username);
+        let admin_username = match self.user_service.get_user(admin_user_id).await {
+            Ok(user) => user.username,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    admin_user_id = %admin_user_id,
+                    action = %action,
+                    "AUDIT LOG SKIPPED: failed to resolve provider admin actor username"
+                );
+                return;
+            }
+        };
 
         if let Err(error) = self
             .audit_service
-            .log(
-                admin_user_id.to_string(),
-                admin_username.clone(),
+            .log(AuditEventParams {
+                actor_id: admin_user_id.to_string(),
+                actor_username: admin_username.clone(),
                 action,
                 target_type,
                 target_id,
                 details,
-                ctx.ip_address.clone(),
-                ctx.user_agent.clone(),
-            )
+                ip_address: ctx.ip_address.clone(),
+                user_agent: ctx.user_agent.clone(),
+            })
             .await
         {
             tracing::error!(
@@ -445,7 +473,7 @@ impl ProviderCommonApiImpl {
                         provider_instance_to_proto(instance, status)
                     })
                     .collect(),
-                total: i64_to_i32_saturating(total),
+                total: i64_to_i32(total, "provider instance count")?,
             },
         )
     }
@@ -848,7 +876,6 @@ mod tests {
     use chrono::{Duration, Utc};
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::ProviderInstance;
     use synctv_core::repository::ProviderInstanceRepository;
     use synctv_core::service::{
@@ -871,15 +898,23 @@ mod tests {
             provider_instance_name_from_query(&query).expect("query should validate"),
             Some("alist-main")
         );
+
+        let query = ProviderInstanceQuery {
+            instance_name: "bad instance!".to_string(),
+        };
+        assert!(matches!(
+            provider_instance_name_from_query(&query),
+            Err(ApiError::InvalidInput(message))
+                if message.contains("provider instance name")
+        ));
     }
 
     fn test_user_service(pool: &sqlx::PgPool) -> UserService {
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
                 .expect("test JWT service should build"),
             UsernameCache::local_only("test:username:".to_string(), 100, 60),
-            PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
@@ -893,12 +928,15 @@ mod tests {
     ) -> ProviderCommonApiImpl {
         let user_service = Arc::new(test_user_service(&pool));
         let (audit_service, _flush_handle) = AuditService::new(pool);
-        ProviderCommonApiImpl::new(
+        ProviderCommonApiImpl::new_with_runtime(
             provider_instance_manager,
             user_service,
             Arc::new(audit_service),
+            ProviderCommonApiRuntime {
+                providers_manager,
+                request_executor: None,
+            },
         )
-        .with_providers_manager(providers_manager)
     }
 
     #[test]

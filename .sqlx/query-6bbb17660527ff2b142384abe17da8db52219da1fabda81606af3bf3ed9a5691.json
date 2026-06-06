@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT email\n            FROM auth_email_bind_requests\n            WHERE token = $1\n              AND user_id = $2\n              AND LOWER(email) = LOWER($3)\n              AND used_at IS NULL\n              AND expires_at > CURRENT_TIMESTAMP\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "email",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6bbb17660527ff2b142384abe17da8db52219da1fabda81606af3bf3ed9a5691"
+}

@@ -2,7 +2,6 @@
 //!
 //! Tests verify that the application properly detects and handles deadlocks.
 //!
-//! Run with: cargo test --test `database_deadlock_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 

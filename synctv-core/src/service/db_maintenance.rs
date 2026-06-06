@@ -20,20 +20,35 @@ use super::{
 };
 use crate::models::{ChatImage, FileReferenceTarget};
 use crate::repository::{FileStorageRepository, RoomResourceEventRepository};
+use crate::Result as CoreResult;
 
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
 const FILE_CLEANUP_RETRY_LIMIT: i64 = 100;
 
-fn u32_to_i32(value: u32) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
+fn u32_to_i32(value: u32, field: &'static str) -> CoreResult<i32> {
+    i32::try_from(value).map_err(|_| crate::Error::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn len_to_u64(len: usize, field: &'static str) -> CoreResult<u64> {
+    u64::try_from(len).map_err(|_| crate::Error::Internal(format!("{field} exceeds u64::MAX")))
+}
+
+fn retention_seconds_to_i64(value: u64, field: &'static str) -> CoreResult<i64> {
+    i64::try_from(value).map_err(|_| crate::Error::Internal(format!("{field} exceeds i64::MAX")))
 }
 
 /// Unified database maintenance service.
 ///
-/// Calls the SQL maintenance functions that exist in migrations but were
-/// previously never invoked by application code. Runs as a leader-gated
-/// background task to avoid duplicate work across replicas.
+/// Runs SQL maintenance functions as a leader-gated background task to avoid
+/// duplicate work across replicas.
+#[derive(Clone, Default)]
+pub struct DatabaseMaintenanceOptions {
+    pub config: CleanupConfig,
+    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub file_storage_service: Option<Arc<dyn FileStorageService>>,
+}
+
 pub struct DatabaseMaintenanceService {
     pool: PgPool,
     config: CleanupConfig,
@@ -46,76 +61,84 @@ impl DatabaseMaintenanceService {
     /// Create a new maintenance service.
     #[must_use]
     pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
+        Self::new_with_options(pool, leader_check, DatabaseMaintenanceOptions::default())
+    }
+
+    /// Create a new maintenance service with explicit runtime dependencies.
+    #[must_use]
+    pub fn new_with_options(
+        pool: PgPool,
+        leader_check: Arc<dyn LeaderCheck>,
+        options: DatabaseMaintenanceOptions,
+    ) -> Self {
         Self {
             pool,
-            config: CleanupConfig::default(),
+            config: options.config,
             leader_check,
-            settings_registry: None,
-            file_storage_service: None,
+            settings_registry: options.settings_registry,
+            file_storage_service: options.file_storage_service,
         }
     }
 
-    /// Override cleanup retention/buffer configuration so maintenance and
-    /// runtime cleanup share the same source of truth.
-    #[must_use]
-    pub const fn with_cleanup_config(mut self, config: CleanupConfig) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Set the settings registry for configurable retention periods.
-    #[must_use]
-    pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
-        self.settings_registry = Some(registry);
-        self
-    }
-
-    /// Set the file storage service used to clean up file objects when
-    /// references are deleted or retention jobs purge rows.
-    #[must_use]
-    pub fn with_file_storage_service(mut self, service: Arc<dyn FileStorageService>) -> Self {
-        self.file_storage_service = Some(service);
-        self
-    }
-
     /// Get the configured chat message retention period in days.
-    fn chat_message_retention_days(&self) -> i64 {
-        self.settings_registry
-            .as_ref()
-            .and_then(|r| r.chat_message_retention_days.get().ok())
-            .unwrap_or(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS)
+    fn chat_message_retention_days(&self) -> CoreResult<i64> {
+        match self.settings_registry.as_ref() {
+            Some(registry) => registry.chat_message_retention_days.get(),
+            None => Ok(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS),
+        }
     }
 
-    fn notification_retention_days(&self) -> i32 {
-        u32_to_i32(self.config.notification_retention_days)
+    fn notification_retention_days(&self) -> CoreResult<i32> {
+        u32_to_i32(
+            self.config.notification_retention_days,
+            "notification_retention_days",
+        )
     }
 
-    fn notification_max_retention_days(&self) -> i32 {
-        u32_to_i32(self.config.notification_max_retention_days)
+    fn notification_max_retention_days(&self) -> CoreResult<i32> {
+        u32_to_i32(
+            self.config.notification_max_retention_days,
+            "notification_max_retention_days",
+        )
     }
 
-    fn expired_token_retention_days(&self) -> i32 {
-        u32_to_i32(self.config.expired_token_retention_days)
+    fn expired_token_retention_days(&self) -> CoreResult<i32> {
+        u32_to_i32(
+            self.config.expired_token_retention_days,
+            "expired_token_retention_days",
+        )
     }
 
-    fn expired_credential_buffer_hours(&self) -> i32 {
-        u32_to_i32(self.config.expired_credential_buffer_hours)
+    fn expired_credential_buffer_hours(&self) -> CoreResult<i32> {
+        u32_to_i32(
+            self.config.expired_credential_buffer_hours,
+            "expired_credential_buffer_hours",
+        )
     }
 
-    fn unreferenced_file_retention_seconds(&self) -> i64 {
-        i64::try_from(self.config.unreferenced_file_retention_seconds).unwrap_or(i64::MAX)
+    fn unreferenced_file_retention_seconds(&self) -> CoreResult<i64> {
+        retention_seconds_to_i64(
+            self.config.unreferenced_file_retention_seconds,
+            "unreferenced_file_retention_seconds",
+        )
     }
 
-    fn room_resource_event_retention_seconds(&self) -> i64 {
-        i64::try_from(self.config.room_resource_event_retention_seconds).unwrap_or(i64::MAX)
+    fn room_resource_event_retention_seconds(&self) -> CoreResult<i64> {
+        retention_seconds_to_i64(
+            self.config.room_resource_event_retention_seconds,
+            "room_resource_event_retention_seconds",
+        )
     }
 
-    fn playback_progress_retention_days(&self) -> i32 {
-        u32_to_i32(self.config.playback_progress_retention_days)
+    fn playback_progress_retention_days(&self) -> CoreResult<i32> {
+        u32_to_i32(
+            self.config.playback_progress_retention_days,
+            "playback_progress_retention_days",
+        )
     }
 
     /// Delete expired email tokens.
-    pub async fn run_cleanup_email_tokens(&self) -> Result<(), sqlx::Error> {
+    pub async fn run_cleanup_email_tokens(&self) -> crate::Result<()> {
         if self.config.expired_token_retention_days == 0 {
             return Ok(());
         }
@@ -125,7 +148,7 @@ impl DatabaseMaintenanceService {
             DELETE FROM auth_email_tokens
             WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
-            self.expired_token_retention_days()
+            self.expired_token_retention_days()?
         )
         .execute(&self.pool)
         .await?;
@@ -138,7 +161,7 @@ impl DatabaseMaintenanceService {
     }
 
     /// Delete old notifications using the shared cleanup retention settings.
-    pub async fn run_cleanup_notifications(&self) -> Result<(), sqlx::Error> {
+    pub async fn run_cleanup_notifications(&self) -> crate::Result<()> {
         let read_deleted = if self.config.notification_retention_days > 0 {
             sqlx::query!(
                 r"
@@ -146,7 +169,7 @@ impl DatabaseMaintenanceService {
                 WHERE is_read = TRUE
                   AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
                 ",
-                self.notification_retention_days()
+                self.notification_retention_days()?
             )
             .execute(&self.pool)
             .await?
@@ -161,7 +184,7 @@ impl DatabaseMaintenanceService {
                 DELETE FROM notifications
                 WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
                 ",
-                self.notification_max_retention_days()
+                self.notification_max_retention_days()?
             )
             .execute(&self.pool)
             .await?
@@ -187,23 +210,33 @@ impl DatabaseMaintenanceService {
     /// per-room count-based cleanup (which only targets rooms with recent
     /// activity). Partition pruning makes this fast because the `created_at`
     /// filter maps directly to daily partitions.
-    pub async fn run_cleanup_old_chat_messages(&self) -> Result<(), sqlx::Error> {
-        let retention_days = self.chat_message_retention_days();
+    pub async fn run_cleanup_old_chat_messages(&self) -> CoreResult<()> {
+        let retention_days = self.chat_message_retention_days()?;
         let interval = format!("{retention_days} days");
 
         let images = if let Some(storage) = &self.file_storage_service {
-            let images = sqlx::query_as_unchecked!(
+            let images = sqlx::query_as!(
                 ChatImage,
-                r"
-                SELECT i.id, i.room_id, i.message_id, i.message_created_at, i.storage_backend,
-                       i.object_key, i.url, i.mime_type, i.size_bytes, i.width, i.height,
-                       i.metadata, i.created_at
+                r#"
+                SELECT i.id,
+                       i.room_id AS "room_id: crate::models::RoomId",
+                       i.message_id,
+                       i.message_created_at,
+                       i.storage_backend,
+                       i.object_key,
+                       i.url,
+                       i.mime_type,
+                       i.size_bytes,
+                       i.width,
+                       i.height,
+                       i.metadata,
+                       i.created_at
                 FROM chat_message_images i
                 INNER JOIN chat_messages m
                     ON m.id = i.message_id AND m.created_at = i.message_created_at
                 WHERE m.created_at <= NOW() - $1::text::interval
                 ORDER BY m.created_at, m.id, i.created_at
-                ",
+                "#,
                 &interval
             )
             .fetch_all(&self.pool)
@@ -274,7 +307,7 @@ impl DatabaseMaintenanceService {
         }
 
         let deleted = RoomResourceEventRepository::new(self.pool.clone())
-            .delete_older_than(self.room_resource_event_retention_seconds())
+            .delete_older_than(self.room_resource_event_retention_seconds()?)
             .await?;
         if deleted > 0 {
             info!(deleted, "Expired room resource event cleanup completed");
@@ -297,7 +330,7 @@ impl DatabaseMaintenanceService {
                   WHERE state.current_progress_id = progress.id
               )
             "#,
-            self.playback_progress_retention_days(),
+            self.playback_progress_retention_days()?,
         )
         .execute(&self.pool)
         .await?
@@ -386,7 +419,7 @@ impl DatabaseMaintenanceService {
         };
         let repository = FileStorageRepository::new(self.pool.clone());
         let files = repository
-            .list_unreferenced_objects(self.unreferenced_file_retention_seconds(), 100)
+            .list_unreferenced_objects(self.unreferenced_file_retention_seconds()?, 100)
             .await?;
         if files.is_empty() {
             return Ok(0);
@@ -406,7 +439,7 @@ impl DatabaseMaintenanceService {
             .await
         {
             Ok(()) => {
-                let deleted = u64::try_from(references.len()).unwrap_or(u64::MAX);
+                let deleted = len_to_u64(references.len(), "unreferenced file count")?;
                 if deleted > 0 {
                     info!(deleted, "Unreferenced file object cleanup completed");
                 }
@@ -441,7 +474,7 @@ impl DatabaseMaintenanceService {
             .delete_files(FileStorageCleanupOrigin::ReferenceExpired, &references)
             .await
         {
-            Ok(()) => Ok(u64::try_from(references.len()).unwrap_or(u64::MAX)),
+            Ok(()) => len_to_u64(references.len(), "expired file reference count"),
             Err(error) => {
                 repository
                     .enqueue_cleanup_jobs(
@@ -457,7 +490,7 @@ impl DatabaseMaintenanceService {
     }
 
     /// Delete expired provider credentials.
-    pub async fn run_cleanup_credentials(&self) -> Result<(), sqlx::Error> {
+    pub async fn run_cleanup_credentials(&self) -> crate::Result<()> {
         if self.config.expired_credential_buffer_hours == 0 {
             return Ok(());
         }
@@ -468,7 +501,7 @@ impl DatabaseMaintenanceService {
             WHERE expires_at IS NOT NULL
               AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)
             ",
-            self.expired_credential_buffer_hours()
+            self.expired_credential_buffer_hours()?
         )
         .execute(&self.pool)
         .await?;
@@ -607,17 +640,23 @@ mod tests {
     async fn test_custom_cleanup_config_is_used_by_db_maintenance() {
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let leader = Arc::new(AlwaysLeader);
-        let svc =
-            DatabaseMaintenanceService::new(pool, leader).with_cleanup_config(CleanupConfig {
-                expired_credential_buffer_hours: 6,
-                notification_retention_days: 14,
-                notification_max_retention_days: 45,
-                ..CleanupConfig::default()
-            });
+        let svc = DatabaseMaintenanceService::new_with_options(
+            pool,
+            leader,
+            DatabaseMaintenanceOptions {
+                config: CleanupConfig {
+                    expired_credential_buffer_hours: 6,
+                    notification_retention_days: 14,
+                    notification_max_retention_days: 45,
+                    ..CleanupConfig::default()
+                },
+                ..DatabaseMaintenanceOptions::default()
+            },
+        );
 
-        assert_eq!(svc.notification_retention_days(), 14);
-        assert_eq!(svc.notification_max_retention_days(), 45);
-        assert_eq!(svc.expired_credential_buffer_hours(), 6);
+        assert_eq!(svc.notification_retention_days().unwrap(), 14);
+        assert_eq!(svc.notification_max_retention_days().unwrap(), 45);
+        assert_eq!(svc.expired_credential_buffer_hours().unwrap(), 6);
     }
 
     /// Dummy leader check that always returns true (for tests).

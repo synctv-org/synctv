@@ -4,7 +4,6 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{Media, MediaId, RoomId, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, RoomPlaybackStateRepository},
     service::{
@@ -17,16 +16,14 @@ pub fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -35,7 +32,7 @@ pub fn make_user_service(pool: &PgPool) -> UserService {
 
 pub fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 pub fn make_user(username: &str) -> User {
@@ -58,7 +55,10 @@ pub fn make_user(username: &str) -> User {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared integration-test support is compiled once per test target"
+)]
 pub async fn set_current_test_media(
     pool: &PgPool,
     room_id: RoomId,

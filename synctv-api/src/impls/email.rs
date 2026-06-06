@@ -10,9 +10,10 @@ use synctv_core::service::{
     EmailTokenService, RequestRateLimiterService, UserService,
 };
 use synctv_proto::client::{
-    ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest, RequestMfaEmailCodeRequest,
-    RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse, VerifyMfaEmailCodeRequest,
+    ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest,
+    RequestEmailRegistrationRequest, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
+    RequestPasswordResetRequest, RequestPasswordResetResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse, VerifyMfaEmailCodeRequest,
 };
 
 use crate::impls::ApiError;
@@ -21,6 +22,8 @@ const GENERIC_PASSWORD_RESET_MESSAGE: &str =
     "If an account exists with this email, a password reset code will be sent.";
 const GENERIC_EMAIL_LOGIN_MESSAGE: &str =
     "If an active account exists with this email, a login code will be sent.";
+const GENERIC_EMAIL_REGISTRATION_MESSAGE: &str =
+    "If registration is available for this email, a registration code will be sent.";
 const EMAIL_ADDR_MAX_REQUESTS: u32 = 3;
 const EMAIL_ADDR_WINDOW_SECONDS: u64 = 3600;
 
@@ -56,6 +59,13 @@ pub trait EmailDeliveryService: Send + Sync {
         user_id: &synctv_core::models::UserId,
         control: Option<&ExecutionControl>,
     ) -> synctv_core::Result<String>;
+
+    async fn send_email_registration_token_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -102,6 +112,16 @@ impl EmailDeliveryService for EmailService {
         )
         .await
     }
+
+    async fn send_email_registration_token_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> synctv_core::Result<()> {
+        EmailService::send_email_registration_token_email_with_control(self, email, token, control)
+            .await
+    }
 }
 
 /// Shared email operations implementation.
@@ -131,6 +151,10 @@ pub struct ConfirmPasswordResetResult {
 
 /// Request email login result
 pub struct RequestEmailLoginResult {
+    pub message: String,
+}
+
+pub struct RequestEmailRegistrationResult {
     pub message: String,
 }
 
@@ -249,10 +273,12 @@ impl EmailApiImpl {
         }
     }
 
-    fn public_user_id(&self, user_id: synctv_core::models::UserId) -> String {
+    fn public_user_id(&self, user_id: synctv_core::models::UserId) -> Result<String, ApiError> {
         self.public_id_codec
             .encode_user_id(user_id)
-            .expect("positive user ID must encode")
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode user public id: {error}"))
+            })
     }
 
     /// Request a password reset email.
@@ -376,6 +402,53 @@ impl EmailApiImpl {
         })
     }
 
+    pub async fn request_email_registration_with_control(
+        &self,
+        req: RequestEmailRegistrationRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestEmailRegistrationResult, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let username = crate::impls::validation::validate_username(&req.username)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let email = crate::impls::validation::validate_email(&req.email)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+
+        self.check_email_rate_limit(&email, control).await?;
+        let token = self
+            .user_service
+            .create_email_registration_token_with_control(
+                username,
+                email.clone(),
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        if let Err(error) = self
+            .email_service
+            .send_email_registration_token_email_with_control(&email, &token, control)
+            .await
+        {
+            if let Err(cleanup_error) = self
+                .user_service
+                .delete_unused_email_registration_token(&token)
+                .await
+            {
+                tracing::warn!(
+                    error = %cleanup_error,
+                    "Failed to delete email registration token after send failure"
+                );
+            }
+            return Err(ApiError::from(error));
+        }
+
+        Ok(RequestEmailRegistrationResult {
+            message: GENERIC_EMAIL_REGISTRATION_MESSAGE.to_string(),
+        })
+    }
+
     /// Start a password reset by consuming the email token and creating an
     /// OPAQUE registration session for the replacement password.
     pub async fn start_opaque_password_reset(
@@ -490,7 +563,7 @@ impl EmailApiImpl {
 
         Ok(ConfirmPasswordResetResult {
             message: "Password reset successfully".to_string(),
-            user_id: self.public_user_id(user.id),
+            user_id: self.public_user_id(user.id)?,
         })
     }
 
@@ -568,7 +641,7 @@ impl EmailApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(ConfirmEmailLoginResult {
-            user_id: self.public_user_id(user.id),
+            user_id: self.public_user_id(user.id)?,
             login,
         })
     }
@@ -683,8 +756,8 @@ mod tests {
     use synctv_core::models::{EmailTokenType, SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::service::AuthenticatedLogin;
     use synctv_core::service::{
-        auth::BruteForceProtection, EmailTokenService, InMemoryTokenBlacklistStore, JwtService,
-        RateLimiter, UserService,
+        auth::BruteForceProtection, user::UserServiceRuntimeOptions, EmailTokenService,
+        InMemoryTokenBlacklistStore, JwtService, RateLimiter, UserService,
     };
 
     #[derive(Clone)]
@@ -724,6 +797,15 @@ mod tests {
                 .generate_token(user_id, EmailTokenType::EmailLogin)
                 .await
         }
+
+        async fn send_email_registration_token_email_with_control(
+            &self,
+            _email: &str,
+            _token: &str,
+            _control: Option<&synctv_core::provider::ExecutionControl>,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
     }
 
     fn make_user(username: &str) -> User {
@@ -750,16 +832,23 @@ mod tests {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let jwt_service =
             JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars").unwrap();
-        let mut user_service = UserService::new(
+        let user_service = UserService::new_with_runtime(
             &pool,
             jwt_service,
             username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
+            UserServiceRuntimeOptions {
+                password_registration_policy_override: Some(
+                    synctv_core::service::RegistrationPolicy {
+                        enabled: true,
+                        need_review: false,
+                    },
+                ),
+                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            },
         );
-        user_service.enable_password_registration_for_tests();
         let user_service = Arc::new(user_service);
 
         EmailApiImpl::new(
@@ -767,7 +856,7 @@ mod tests {
             Arc::new(TestEmailDeliveryService),
             Arc::new(EmailTokenService::new(pool)),
             RateLimiter::local_only("email-api-tests:".to_string()),
-            Arc::new(crate::PublicIdCodec::default_for_tests()),
+            Arc::new(crate::PublicIdCodec::plain()),
         )
     }
 
@@ -826,7 +915,7 @@ mod tests {
         let first_login = api.confirm_email_login(&email, &first, None).await.unwrap();
         assert_eq!(
             first_login.user_id,
-            api.public_user_id(created.id),
+            api.public_user_id(created.id).unwrap(),
             "first login code should authenticate the target user"
         );
         assert!(
@@ -847,7 +936,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             second_login.user_id,
-            api.public_user_id(created.id),
+            api.public_user_id(created.id).unwrap(),
             "second outstanding login code should remain usable"
         );
         assert!(
@@ -869,30 +958,26 @@ mod tests {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool);
         let email = format!("mfa_{}@example.com", synctv_common::snanoid!(8));
-        let (user, _, _) = api
-            .user_service
-            .register(
-                "mfa_email_user".to_string(),
-                Some(email.clone()),
-                "StrongPass1".to_string(),
-                None,
-            )
-            .await
-            .unwrap();
+        let (user, _, _) = synctv_core_testing::opaque_register_user(
+            api.user_service.as_ref(),
+            "mfa_email_user",
+            Some(email.clone()),
+            "StrongPass1",
+        )
+        .await
+        .unwrap();
         api.user_service
             .set_two_factor_enabled(&user.id, true)
             .await
             .unwrap();
 
-        let first_factor = api
-            .user_service
-            .login(
-                "mfa_email_user".to_string(),
-                "StrongPass1".to_string(),
-                None,
-            )
-            .await
-            .unwrap();
+        let first_factor = synctv_core_testing::opaque_login_user_with_challenge(
+            api.user_service.as_ref(),
+            "mfa_email_user",
+            "StrongPass1",
+        )
+        .await
+        .unwrap();
         let AuthenticatedLogin::MfaRequired { challenge, .. } = first_factor else {
             panic!("password first factor should require MFA");
         };

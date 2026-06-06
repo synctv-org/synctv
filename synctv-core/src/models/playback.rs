@@ -49,19 +49,7 @@ impl RoomPlaybackState {
         }
     }
 
-    /// Compute the current playback time accounting for elapsed wall-clock time.
-    ///
-    /// When playback is active (`is_playing == true`), the stored `position`
-    /// becomes stale immediately after the last DB write.  This method extrapolates
-    /// the position using `speed` and the time elapsed since `updated_at`.
-    ///
-    /// # NTP / clock adjustment caveat
-    ///
-    /// This calculation uses `Utc::now()` which is subject to NTP clock adjustments.
-    /// If the system clock jumps backward, the elapsed time could be negative (clamped
-    /// to 0.0 below). If it jumps forward, the extrapolated position will overshoot.
-    /// Clients should use their own local monotonic clock for smooth playback
-    /// interpolation and treat this server-side value as a periodic sync reference.
+    /// Computes the server-side playback position from the persisted anchor.
     #[must_use]
     pub fn computed_position(&self) -> f64 {
         if self.is_playing {
@@ -86,33 +74,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_playback_state_new() {
-        let room_id = RoomId::expect_positive(70_001);
-        let state = RoomPlaybackState::new(room_id);
+    fn computed_position_advances_while_playing() {
+        let mut state = RoomPlaybackState::new(RoomId::expect_positive(70_001));
+        state.position = 30.0;
+        state.speed = 2.0;
+        state.is_playing = true;
+        state.updated_at = Utc::now() - chrono::Duration::seconds(5);
 
-        assert_eq!(state.room_id, room_id);
-        assert!(state.playing_media_id.is_none());
-        assert!(state.playing_playlist_id.is_none());
-        assert!(state.target.is_empty());
-        assert!(state.current_progress_id.is_none());
-        assert!((state.position - 0.0).abs() < f64::EPSILON);
-        assert!((state.speed - 1.0).abs() < f64::EPSILON);
-        assert!(!state.is_playing);
-        assert_eq!(state.version, 0);
+        let position = state.computed_position();
+
+        assert!(
+            position >= 39.0,
+            "computed position should include elapsed playback time, got {position}"
+        );
     }
 
     #[test]
-    fn test_playback_state_serialization_roundtrip() {
-        let room_id = RoomId::expect_positive(70_002);
-        let state = RoomPlaybackState::new(room_id);
+    fn computed_position_uses_anchor_while_paused() {
+        let mut state = RoomPlaybackState::new(RoomId::expect_positive(70_002));
+        state.position = 120.5;
+        state.speed = 2.0;
+        state.is_playing = false;
+        state.updated_at = Utc::now() - chrono::Duration::seconds(30);
 
-        let json = serde_json::to_string(&state).expect("serialize");
-        let deserialized: RoomPlaybackState = serde_json::from_str(&json).expect("deserialize");
+        assert!((state.computed_position() - 120.5).abs() < f64::EPSILON);
+    }
 
-        assert_eq!(deserialized.room_id, state.room_id);
-        assert!((deserialized.position - state.position).abs() < f64::EPSILON);
-        assert!((deserialized.speed - state.speed).abs() < f64::EPSILON);
-        assert_eq!(deserialized.is_playing, state.is_playing);
-        assert_eq!(deserialized.version, state.version);
+    #[test]
+    fn computed_position_clamps_negative_elapsed_time() {
+        let mut state = RoomPlaybackState::new(RoomId::expect_positive(70_003));
+        state.position = 45.0;
+        state.speed = 1.5;
+        state.is_playing = true;
+        state.updated_at = Utc::now() + chrono::Duration::seconds(30);
+
+        assert!((state.computed_position() - 45.0).abs() < f64::EPSILON);
     }
 }

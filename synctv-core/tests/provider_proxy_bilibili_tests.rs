@@ -2,7 +2,6 @@
 //!
 //! Tests for `BilibiliProvider::resolve_proxy` sub_path parsing and dispatch.
 //!
-//! Run with: cargo nextest run -p synctv-core --test provider_proxy_bilibili_tests
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
@@ -26,7 +25,7 @@ fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderM
 }
 
 fn provider() -> BilibiliProvider {
-    BilibiliProvider::new(fake_provider_instance_manager())
+    BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build")
 }
 
 fn new_store() -> Arc<dyn ProviderStore> {
@@ -83,27 +82,30 @@ fn fake_proxy_services() -> ProxyServices {
     let key_builder = synctv_core::cache::KeyBuilder::new("test");
     let brute_force =
         synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());
-    let user_service = synctv_core::service::UserService::new(
+    let user_service = synctv_core::service::UserService::new_for_tests(
         &pool,
         jwt,
         username_cache,
-        synctv_core::config::PasswordComplexityConfig::default(),
         token_blacklist,
         key_builder,
         brute_force,
     );
     let credential_repo =
         Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-    let room_service = synctv_core::service::RoomService::new(pool, user_service);
+    let room_service = synctv_core::service::RoomService::new_for_tests(pool, user_service)
+        .expect("room service should build");
     ProxyServices {
         room_service: Arc::new(room_service),
         credential_encryption: None,
         credential_repo,
         provider_access_service: None,
-        signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
-            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-        )),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
+        signing_key: Arc::new(
+            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+            )
+            .expect("test proxy signing key should derive"),
+        ),
+        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
     }
 }
 
@@ -230,9 +232,10 @@ async fn test_subtitle_not_found() {
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
     let store = new_store();
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    );
+    )
+    .expect("test proxy signing key should derive");
     let version = "vsigned";
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([(
@@ -328,9 +331,10 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
 #[tokio::test]
 async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
     let store = new_store();
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    );
+    )
+    .expect("test proxy signing key should derive");
     let version = "vmpd";
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([(
@@ -423,9 +427,10 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
 #[tokio::test]
 async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
     let store = new_store();
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    );
+    )
+    .expect("test proxy signing key should derive");
     let version = "vhls";
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([(

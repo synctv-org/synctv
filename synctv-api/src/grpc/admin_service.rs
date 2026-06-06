@@ -31,13 +31,13 @@ use crate::proto::admin::{
     RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
     RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
-    SendTestEmailResponse, UnbanRoomRequest, UnbanRoomResponse, UnbanUserRequest,
-    UnbanUserResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
-    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse, UpdateSettingsRequest, UpdateSettingsResponse,
-    UpdateUserPasswordRequest, UpdateUserPasswordResponse, UpdateUserPreferencesRequest,
-    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserRoleResponse,
-    UpdateUserUsernameRequest, UpdateUserUsernameResponse,
+    SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
+    UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateMemberPermissionsRequest,
+    UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
+    UpdateSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
+    UpdateUserUsernameResponse,
 };
 use crate::proto::admin_service_server::AdminService;
 
@@ -49,17 +49,13 @@ use super::map_api_error;
 fn grpc_request_context<T: std::fmt::Debug>(
     request: &Request<T>,
     config: &Config,
-) -> RequestContext {
-    let ip_address = super::extract_client_ip(request, config).map(|ip| ip.to_string());
-    let user_agent = request
-        .metadata()
-        .get("user-agent")
-        .and_then(|v| v.to_str().ok())
-        .map(std::string::ToString::to_string);
-    RequestContext {
+) -> Result<RequestContext, Status> {
+    let ip_address = super::extract_client_ip(request, config)?.map(|ip| ip.to_string());
+    let user_agent = super::request_user_agent(request)?;
+    Ok(RequestContext {
         ip_address,
         user_agent,
-    }
+    })
 }
 
 /// `AdminService` gRPC implementation.
@@ -81,7 +77,7 @@ impl AdminServiceImpl {
     fn request_metadata(
         &self,
         request: &Request<impl std::fmt::Debug>,
-    ) -> crate::impls::RequestMetadata {
+    ) -> Result<crate::impls::RequestMetadata, Status> {
         super::request_metadata(
             request,
             &self.config,
@@ -109,8 +105,8 @@ impl AdminServiceImpl {
         Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
     {
         async move {
-            let metadata = self.request_metadata(&request);
-            let ctx = grpc_request_context(&request, &self.config);
+            let metadata = self.request_metadata(&request)?;
+            let ctx = grpc_request_context(&request, &self.config)?;
             let api = self.admin_api.clone();
             let executor = api.clone();
             let req = request.into_inner();
@@ -179,6 +175,8 @@ impl AdminServiceImpl {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
+// Business logic stays in `AdminApiImpl` and returns `ApiError`.
 #[allow(clippy::result_large_err)]
 impl AdminService for AdminServiceImpl {
     // System Settings Management
@@ -217,7 +215,7 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<SendTestEmailRequest>,
     ) -> Result<Response<SendTestEmailResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let api = self.admin_api.clone();
         let executor = api.clone();
         let req = request.into_inner();
@@ -302,12 +300,12 @@ impl AdminService for AdminServiceImpl {
         .await
     }
 
-    async fn update_user_password(
+    async fn set_user_password(
         &self,
-        request: Request<UpdateUserPasswordRequest>,
-    ) -> Result<Response<UpdateUserPasswordResponse>, Status> {
+        request: Request<SetUserPasswordRequest>,
+    ) -> Result<Response<SetUserPasswordResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.update_user_password(req, validated.user_id, validated.role, &ctx)
+            api.set_user_password(req, validated.user_id, validated.role, &ctx)
                 .await
         })
         .await

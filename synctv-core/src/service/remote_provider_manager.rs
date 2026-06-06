@@ -178,6 +178,22 @@ pub struct RemoteProviderManager {
     grpc_compression_enabled: bool,
 }
 
+pub struct RemoteProviderManagerOptions {
+    pub address_overrides: HashMap<String, SocketAddr>,
+    pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    pub grpc_compression_enabled: bool,
+}
+
+impl Default for RemoteProviderManagerOptions {
+    fn default() -> Self {
+        Self {
+            address_overrides: HashMap::new(),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
+            grpc_compression_enabled: true,
+        }
+    }
+}
+
 impl std::fmt::Debug for RemoteProviderManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteProviderManager")
@@ -405,8 +421,7 @@ impl RemoteProviderManager {
         Self::new_with_options(
             repository,
             cache_invalidation,
-            HashMap::new(),
-            synctv_common::ssrf::SsrfGuard::strict_policy(),
+            RemoteProviderManagerOptions::default(),
         )
     }
 
@@ -419,8 +434,10 @@ impl RemoteProviderManager {
         Self::new_with_options(
             repository,
             cache_invalidation,
-            address_overrides,
-            synctv_common::ssrf::SsrfGuard::strict_policy(),
+            RemoteProviderManagerOptions {
+                address_overrides,
+                ..RemoteProviderManagerOptions::default()
+            },
         )
     }
 
@@ -434,22 +451,19 @@ impl RemoteProviderManager {
         Self::new_with_options(
             repository,
             cache_invalidation,
-            address_overrides,
-            ssrf_guard,
+            RemoteProviderManagerOptions {
+                address_overrides,
+                ssrf_guard,
+                ..RemoteProviderManagerOptions::default()
+            },
         )
     }
 
     #[must_use]
-    pub fn with_grpc_compression(mut self, enabled: bool) -> Self {
-        self.grpc_compression_enabled = enabled;
-        self
-    }
-
-    fn new_with_options(
+    pub fn new_with_options(
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
-        address_overrides: HashMap<String, SocketAddr>,
-        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+        options: RemoteProviderManagerOptions,
     ) -> Self {
         if cache_invalidation.is_none() {
             tracing::warn!(
@@ -468,9 +482,9 @@ impl RemoteProviderManager {
             cache_invalidation,
             invalidation_cancel: tokio_util::sync::CancellationToken::new(),
             invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
-            address_overrides: Arc::new(address_overrides),
-            ssrf_guard,
-            grpc_compression_enabled: true,
+            address_overrides: Arc::new(options.address_overrides),
+            ssrf_guard: options.ssrf_guard,
+            grpc_compression_enabled: options.grpc_compression_enabled,
         }
     }
 
@@ -611,7 +625,16 @@ impl RemoteProviderManager {
 
         let mut guard = self.invalidation_listener_task.lock().await;
         if let Some(handle) = guard.take() {
-            let _ = handle.await;
+            match handle.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Provider invalidation listener ended with join error during shutdown"
+                    );
+                }
+            }
         }
     }
 
@@ -821,6 +844,13 @@ impl RemoteProviderManager {
             if config.custom_ca.is_some() && !config.tls {
                 return Err(crate::Error::InvalidInput(
                     "custom_ca requires tls=true for remote provider instances".to_string(),
+                ));
+            }
+
+            if config.insecure_tls && config.custom_ca.is_some() {
+                return Err(crate::Error::InvalidInput(
+                    "insecure_tls cannot be combined with custom_ca for remote provider instances"
+                        .to_string(),
                 ));
             }
             validate_auth_secret(Some(Self::required_auth_secret(config)?))
@@ -1060,19 +1090,13 @@ impl RemoteProviderManager {
         #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
         let mut endpoint = endpoint;
 
-        // Configure TLS if enabled
         if config.tls {
             if config.insecure_tls {
-                // Skip certificate verification (UNSAFE, development/testing only)
                 tracing::warn!(
                     "Instance '{}' configured with insecure TLS (skips certificate verification)",
                     config.name
                 );
 
-                // Build a custom connector that skips TLS certificate verification.
-                // tonic's ClientTlsConfig doesn't expose this, so we build a raw
-                // rustls ClientConfig with a no-op verifier and wrap it in a
-                // tower::Service<Uri> that tonic can use.
                 #[cfg(not(any(
                     feature = "tls-aws-lc",
                     feature = "tls-ring",
@@ -1167,9 +1191,6 @@ impl RemoteProviderManager {
     }
 
     /// Connect to a gRPC endpoint with TLS certificate verification disabled.
-    ///
-    /// This builds a custom `tower::Service<Uri>` connector that uses a rustls
-    /// `ClientConfig` with a no-op certificate verifier. Only for dev/testing.
     #[cfg(any(
         feature = "tls-aws-lc",
         feature = "tls-ring",
@@ -1894,6 +1915,23 @@ mod tests {
 
         assert!(
             err.to_string().contains("custom_ca requires tls=true"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_insecure_tls_with_custom_ca() {
+        let mut config = remote_instance("https://provider.example.com:50051");
+        config.tls = true;
+        config.insecure_tls = true;
+        config.custom_ca =
+            Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string());
+
+        let err = RemoteProviderManager::validate_config(&config)
+            .expect_err("custom CA and insecure TLS express conflicting trust policies");
+
+        assert!(
+            err.to_string().contains("insecure_tls cannot be combined"),
             "unexpected error: {err}"
         );
     }

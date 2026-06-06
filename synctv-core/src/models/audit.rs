@@ -10,7 +10,7 @@ pub enum AuditAction {
     UserDeleted,
     UserBanned,
     UserUnbanned,
-    UserPasswordUpdated,
+    UserPasswordResetRequired,
     UserUsernameUpdated,
     UserPreferencesUpdated,
     UserRoleUpdated,
@@ -56,7 +56,7 @@ impl AuditAction {
             Self::UserDeleted => "user_deleted",
             Self::UserBanned => "user_banned",
             Self::UserUnbanned => "user_unbanned",
-            Self::UserPasswordUpdated => "user_password_updated",
+            Self::UserPasswordResetRequired => "user_password_reset_required",
             Self::UserUsernameUpdated => "user_username_updated",
             Self::UserPreferencesUpdated => "user_preferences_updated",
             Self::UserRoleUpdated => "user_role_updated",
@@ -103,7 +103,7 @@ impl AuditAction {
             Self::UserDeleted => 2,
             Self::UserBanned => 3,
             Self::UserUnbanned => 4,
-            Self::UserPasswordUpdated => 5,
+            Self::UserPasswordResetRequired => 5,
             Self::UserUsernameUpdated => 6,
             Self::UserPreferencesUpdated => 7,
             Self::UserRoleUpdated => 8,
@@ -157,7 +157,7 @@ impl TryFrom<i16> for AuditAction {
             2 => Ok(Self::UserDeleted),
             3 => Ok(Self::UserBanned),
             4 => Ok(Self::UserUnbanned),
-            5 => Ok(Self::UserPasswordUpdated),
+            5 => Ok(Self::UserPasswordResetRequired),
             6 => Ok(Self::UserUsernameUpdated),
             7 => Ok(Self::UserPreferencesUpdated),
             8 => Ok(Self::UserRoleUpdated),
@@ -206,7 +206,7 @@ impl FromStr for AuditAction {
             "user_deleted" => Ok(Self::UserDeleted),
             "user_banned" => Ok(Self::UserBanned),
             "user_unbanned" => Ok(Self::UserUnbanned),
-            "user_password_updated" => Ok(Self::UserPasswordUpdated),
+            "user_password_reset_required" => Ok(Self::UserPasswordResetRequired),
             "user_username_updated" => Ok(Self::UserUsernameUpdated),
             "user_preferences_updated" => Ok(Self::UserPreferencesUpdated),
             "user_role_updated" => Ok(Self::UserRoleUpdated),
@@ -346,5 +346,57 @@ impl FromStr for AuditTargetType {
 impl fmt::Display for AuditTargetType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_action_conversions_are_stable() {
+        let action = AuditAction::RoomOwnershipTransferred;
+
+        assert_eq!(action.as_str(), "room_ownership_transferred");
+        assert_eq!(action.to_string(), "room_ownership_transferred");
+        assert_eq!(
+            "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>().unwrap(),
+            action
+        );
+        assert_eq!(AuditAction::try_from(action.as_i16()).unwrap(), action);
+        assert!("unknown_action".parse::<AuditAction>().is_err());
+        assert!(AuditAction::try_from(i16::MAX).is_err());
+    }
+
+    #[test]
+    fn audit_target_type_conversions_are_stable() {
+        let target = AuditTargetType::ProviderInstance;
+
+        assert_eq!(target.as_str(), "provider_instance");
+        assert_eq!(target.to_string(), "provider_instance");
+        assert_eq!(
+            "PROVIDER_INSTANCE".parse::<AuditTargetType>().unwrap(),
+            target
+        );
+        assert_eq!(AuditTargetType::try_from(target.as_i16()).unwrap(), target);
+        assert!("unknown_target".parse::<AuditTargetType>().is_err());
+        assert!(AuditTargetType::try_from(i16::MAX).is_err());
+    }
+
+    #[test]
+    fn audit_enums_serde_roundtrip() {
+        let action_json = serde_json::to_string(&AuditAction::TokenFamilyRevoked).unwrap();
+        assert_eq!(action_json, "\"token_family_revoked\"");
+        assert_eq!(
+            serde_json::from_str::<AuditAction>(&action_json).unwrap(),
+            AuditAction::TokenFamilyRevoked
+        );
+
+        let target_json = serde_json::to_string(&AuditTargetType::ChatMessage).unwrap();
+        assert_eq!(target_json, "\"chat_message\"");
+        assert_eq!(
+            serde_json::from_str::<AuditTargetType>(&target_json).unwrap(),
+            AuditTargetType::ChatMessage
+        );
     }
 }

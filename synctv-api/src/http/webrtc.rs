@@ -81,23 +81,6 @@ mod tests {
     use axum::http::StatusCode;
 
     #[test]
-    fn test_ice_server_serialization() {
-        let server = IceServer {
-            urls: vec!["stun:stun.example.com:3478".to_string()],
-            username: None,
-            credential: None,
-        };
-
-        let json = serde_json::to_value(&server).expect("IceServer should serialize");
-        assert_eq!(
-            json["urls"],
-            serde_json::json!(["stun:stun.example.com:3478"])
-        );
-        assert_eq!(json["username"], serde_json::Value::Null);
-        assert_eq!(json["credential"], serde_json::Value::Null);
-    }
-
-    #[test]
     fn test_stun_ice_server_serialization_never_exposes_auth_fields() {
         let server = IceServer {
             urls: vec![

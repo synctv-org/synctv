@@ -3,7 +3,6 @@
 //! Tests token creation, usage (mark as used), expiry checking, and cleanup.
 //! Requires real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test --test `email_token_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};

@@ -104,9 +104,7 @@ pub fn state_store_from_shared_state_profile(
             ))
         }
         SharedStateMode::SharedBestEffort => Ok(shared_oauth_state_store(
-            profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.best_effort_shared_runtime("single-use OAuth2 state storage")?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_oauth_state_store()),
@@ -285,12 +283,12 @@ impl InMemoryOAuthStateStore {
     /// Create a new in-memory OAuth state store with default capacity (10,000).
     #[must_use]
     pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_CAPACITY)
+        Self::new_with_capacity(DEFAULT_CAPACITY)
     }
 
     /// Create a new in-memory OAuth state store with a custom max capacity.
     #[must_use]
-    pub fn with_capacity(max_capacity: u64) -> Self {
+    pub fn new_with_capacity(max_capacity: u64) -> Self {
         Self {
             entries: moka::sync::Cache::builder()
                 .max_capacity(max_capacity)
@@ -381,6 +379,12 @@ pub struct OAuth2PendingRegistration {
     pub request_id: UserId,
 }
 
+pub struct PreparedOAuth2Authorization {
+    pub auth_url: String,
+    pub state_token: String,
+    oauth_state: OAuth2State,
+}
+
 #[derive(Debug, Clone)]
 pub enum OAuth2LinkResult {
     Linked { user_id: UserId, is_new: bool },
@@ -428,6 +432,12 @@ pub struct OAuth2Service {
     allowed_redirect_domains: Arc<Vec<String>>,
     settings_registry: Option<Arc<SettingsRegistry>>,
     providers_fingerprint: Arc<RwLock<Option<String>>>,
+}
+
+#[derive(Clone, Default)]
+pub struct OAuth2ServiceRuntime {
+    pub allowed_redirect_domains: Vec<String>,
+    pub settings_registry: Option<Arc<SettingsRegistry>>,
 }
 
 impl std::fmt::Debug for OAuth2Service {
@@ -491,6 +501,29 @@ impl OAuth2Service {
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
         cluster_mode: bool,
     ) -> Result<Self> {
+        Self::new_with_runtime(
+            repository,
+            state_store,
+            provider_registry,
+            ssrf_guard,
+            cluster_mode,
+            OAuth2ServiceRuntime::default(),
+        )
+    }
+
+    /// Create a new `OAuth2` service with explicit runtime dependencies.
+    ///
+    /// # Errors
+    /// Returns `Error::Internal` if `cluster_mode` is true but `state_store`
+    /// does not support cross-node single-use consumption.
+    pub fn new_with_runtime(
+        repository: UserOAuthProviderRepository,
+        state_store: Arc<dyn OAuthStateStore>,
+        provider_registry: crate::oauth2::ProviderRegistry,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+        cluster_mode: bool,
+        runtime: OAuth2ServiceRuntime,
+    ) -> Result<Self> {
         // Clustered callback handling requires shared single-use state storage.
         if cluster_mode && !state_store.supports_cross_node_single_use() {
             return Err(Error::Internal(
@@ -513,29 +546,15 @@ impl OAuth2Service {
             state_store,
             provider_registry,
             ssrf_guard,
-            allowed_redirect_domains: Arc::new(Vec::new()),
-            settings_registry: None,
+            allowed_redirect_domains: Arc::new(runtime.allowed_redirect_domains),
+            settings_registry: runtime.settings_registry,
             providers_fingerprint: Arc::new(RwLock::new(None)),
         })
     }
 
     #[must_use]
-    pub fn with_settings_registry(mut self, settings_registry: Arc<SettingsRegistry>) -> Self {
-        self.settings_registry = Some(settings_registry);
-        self
-    }
-
-    #[must_use]
     pub const fn provider_registry(&self) -> &crate::oauth2::ProviderRegistry {
         &self.provider_registry
-    }
-
-    /// Set allowlist of permitted redirect domains
-    ///
-    /// Absolute HTTP/HTTPS redirect URLs are accepted when their host is loopback
-    /// or matches one of these domains.
-    pub fn set_allowed_redirect_domains(&mut self, domains: Vec<String>) {
-        self.allowed_redirect_domains = Arc::new(domains);
     }
 
     #[cfg(test)]
@@ -695,18 +714,7 @@ impl OAuth2Service {
     }
 
     pub async fn signup_policy_for(&self, instance_name: &str) -> Result<OAuth2SignupPolicy> {
-        if self.settings_registry.is_none() {
-            return Ok(OAuth2SignupPolicy {
-                enable_signup: true,
-                signup_need_review: false,
-            });
-        }
-        self.sync_runtime_providers().await?;
-        let providers = self.providers.read().await;
-        Ok(providers
-            .get(instance_name)
-            .map(|entry| entry.signup_policy.clone())
-            .unwrap_or_default())
+        Ok(self.provider_entry(instance_name).await?.signup_policy)
     }
 
     /// Generate authorization URL with PKCE challenge
@@ -756,30 +764,20 @@ impl OAuth2Service {
             .await
     }
 
-    /// Shared implementation for building an `OAuth2` authorization URL.
-    ///
-    /// (TOCTOU fix): The provider `Arc` is cloned while holding the read lock,
-    /// then the lock is released before any async I/O takes place. This prevents a race
-    /// where another thread could call `unlink_provider` between the lookup and the
-    /// `new_auth_url()` call.
-    async fn build_authorization_url(
+    pub async fn prepare_authorization_url_with_control(
         &self,
         instance_name: &str,
         redirect_url: Option<String>,
         bind_user_id: Option<UserId>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(String, String)> {
-        // Validate redirect URL if provided
+    ) -> Result<PreparedOAuth2Authorization> {
         if let Some(ref url) = redirect_url {
             Self::validate_redirect_url_with_allowlist(url, &self.allowed_redirect_domains)?;
         }
 
         let provider = self.provider_entry(instance_name).await?.provider;
 
-        // Generate state token
         let state_token = synctv_common::snanoid!(32);
-
-        // Generate authorization URL with PKCE challenge (lock is NOT held here)
         let auth_redirect_url = redirect_url.as_deref();
         let auth = Self::run_with_control(control, async {
             provider
@@ -799,7 +797,39 @@ impl OAuth2Service {
             nonce: auth.nonce,
         };
 
-        self.store_state_with_control(&state_token, &oauth_state, control)
+        Ok(PreparedOAuth2Authorization {
+            auth_url: auth.auth_url,
+            state_token,
+            oauth_state,
+        })
+    }
+
+    pub async fn store_prepared_authorization_with_control(
+        &self,
+        prepared: &PreparedOAuth2Authorization,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.store_state_with_control(&prepared.state_token, &prepared.oauth_state, control)
+            .await
+    }
+
+    /// Shared implementation for building an `OAuth2` authorization URL.
+    async fn build_authorization_url(
+        &self,
+        instance_name: &str,
+        redirect_url: Option<String>,
+        bind_user_id: Option<UserId>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(String, String)> {
+        let prepared = self
+            .prepare_authorization_url_with_control(
+                instance_name,
+                redirect_url,
+                bind_user_id,
+                control,
+            )
+            .await?;
+        self.store_prepared_authorization_with_control(&prepared, control)
             .await?;
 
         debug!(
@@ -807,7 +837,7 @@ impl OAuth2Service {
             instance_name
         );
 
-        Ok((auth.auth_url, state_token))
+        Ok((prepared.auth_url, prepared.state_token))
     }
 
     /// Validate redirect URL to prevent open redirect vulnerabilities (CWE-601)
@@ -1180,20 +1210,19 @@ impl OAuth2Service {
 
             let mut pending_request_id = None;
             for candidate in &candidates {
-                let username_in_use = sqlx::query_scalar_unchecked!(
-                    r"
+                let username_in_use = sqlx::query_scalar!(
+                    r#"
                     SELECT EXISTS(
                         SELECT 1
                         FROM users
                         WHERE LOWER(username) = LOWER($1)
                           AND deleted_at IS NULL
-                    )
-                    ",
+                    ) AS "exists!"
+                    "#,
                     candidate
                 )
                 .fetch_one(&mut *tx)
-                .await?
-                .unwrap_or(false);
+                .await?;
                 if username_in_use {
                     continue;
                 }
@@ -1317,7 +1346,7 @@ impl OAuth2Service {
                                 return Err(Error::AlreadyExists(
                                     synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
                                         .to_string(),
-                                ))
+                                ));
                             }
                             err => return Err(err),
                         }
@@ -1355,9 +1384,7 @@ impl OAuth2Service {
                     new_user = Some(created_user);
                     break;
                 }
-                Err(Error::AlreadyExists(ref msg))
-                    if msg.contains("username") || msg.contains("Username") =>
-                {
+                Err(error) if UserService::is_username_conflict(&error) => {
                     sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
                         .execute(&mut *tx)
                         .await
@@ -1519,7 +1546,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1569,7 +1596,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1663,22 +1690,35 @@ mod tests {
     }
 
     fn create_test_service_with_cluster_mode(cluster_mode: bool) -> OAuth2Service {
+        create_test_service_with_runtime(cluster_mode, OAuth2ServiceRuntime::default())
+    }
+
+    fn create_test_service_with_runtime(
+        cluster_mode: bool,
+        runtime: OAuth2ServiceRuntime,
+    ) -> OAuth2Service {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = local_oauth_state_store();
-        OAuth2Service::new(
+        OAuth2Service::new_with_runtime(
             repo,
             state_store,
             crate::oauth2::ProviderRegistry::new(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
             cluster_mode,
+            runtime,
         )
         .expect("Failed to create OAuth2 service")
     }
 
     fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {
-        let mut svc = create_test_service();
-        svc.set_allowed_redirect_domains(domains);
-        svc
+        create_test_service_with_runtime(
+            false,
+            OAuth2ServiceRuntime {
+                allowed_redirect_domains: domains,
+                ..OAuth2ServiceRuntime::default()
+            },
+        )
     }
 
     fn create_test_settings_registry(
@@ -2019,6 +2059,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_signup_policy_for_registered_provider() {
+        let service = create_test_service();
+
+        service
+            .register_provider(
+                "github".to_string(),
+                OAuth2Provider::GitHub,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
+
+        let policy = service
+            .signup_policy_for("github")
+            .await
+            .expect("registered provider should have a signup policy");
+        assert_eq!(policy, OAuth2SignupPolicy::default());
+    }
+
+    #[tokio::test]
+    async fn test_signup_policy_for_missing_provider_returns_error() {
+        let service = create_test_service();
+
+        let error = service
+            .signup_policy_for("missing")
+            .await
+            .expect_err("missing provider should fail");
+        assert!(error
+            .to_string()
+            .contains("OAuth2 provider instance not found: missing"));
+    }
+
+    #[tokio::test]
     async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc() {
         let guard = synctv_common::ssrf::SsrfGuard::builder()
             .allow_private_network_targets(true)
@@ -2034,7 +2106,7 @@ mod tests {
 
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        let service = OAuth2Service::new_with_ssrf_guard(
+        let service = OAuth2Service::new_with_runtime(
             repo,
             local_oauth_state_store(),
             crate::oauth2::providers::provider_registry(guard),
@@ -2042,9 +2114,12 @@ mod tests {
                 .allow_private_network_targets(true)
                 .build(),
             false,
+            OAuth2ServiceRuntime {
+                settings_registry: Some(registry),
+                ..OAuth2ServiceRuntime::default()
+            },
         )
-        .expect("OAuth2 service should be created")
-        .with_settings_registry(registry);
+        .expect("OAuth2 service should be created");
 
         let providers = service
             .list_available_instances()
@@ -2486,10 +2561,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_allowed_redirect_domains() {
-        let mut service = create_test_service();
-        service
-            .set_allowed_redirect_domains(vec!["example.com".to_string(), "myapp.io".to_string()]);
+    async fn test_allowed_redirect_domains_are_constructor_configured() {
+        let service = create_test_service_with_domains(vec![
+            "example.com".to_string(),
+            "myapp.io".to_string(),
+        ]);
 
         service
             .register_provider(
@@ -2936,9 +3012,7 @@ mod tests {
         let state = service.verify_state(&state_token).await.unwrap();
         assert_eq!(state.instance_name, "github");
 
-        // In the API layer, if attacker tries to use github's state with google provider,
-        // the provider mismatch check in exchange_authorization_code will catch it.
-        // This test verifies the state contains the correct instance_name.
+        // API handlers compare this instance name against the callback route.
     }
 
     // Cluster mode Redis dependency tests.
@@ -3221,11 +3295,7 @@ mod tests {
         let timeout_future = run_oauth_state_redis_op(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             "store OAuth2 state in Redis",
-            async {
-                std::future::pending::<()>().await;
-                #[allow(unreachable_code)]
-                Ok::<(), redis::RedisError>(())
-            },
+            async { std::future::pending::<std::result::Result<(), redis::RedisError>>().await },
         );
 
         tokio::pin!(timeout_future);

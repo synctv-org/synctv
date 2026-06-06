@@ -35,17 +35,13 @@ impl ProviderCommonGrpcService {
     fn grpc_request_context<T: std::fmt::Debug>(
         request: &Request<T>,
         config: &Config,
-    ) -> RequestContext {
-        let ip_address = crate::grpc::extract_client_ip(request, config).map(|ip| ip.to_string());
-        let user_agent = request
-            .metadata()
-            .get("user-agent")
-            .and_then(|v| v.to_str().ok())
-            .map(std::string::ToString::to_string);
-        RequestContext {
+    ) -> Result<RequestContext, Status> {
+        let ip_address = crate::grpc::extract_client_ip(request, config)?.map(|ip| ip.to_string());
+        let user_agent = crate::grpc::request_user_agent(request)?;
+        Ok(RequestContext {
             ip_address,
             user_agent,
-        }
+        })
     }
 }
 
@@ -59,7 +55,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -83,7 +79,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -107,7 +103,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -129,8 +125,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
-        let ctx = Self::grpc_request_context(&request, &self.config);
+        )?;
+        let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -157,8 +153,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
-        let ctx = Self::grpc_request_context(&request, &self.config);
+        )?;
+        let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -190,8 +186,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
-        let ctx = Self::grpc_request_context(&request, &self.config);
+        )?;
+        let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -218,8 +214,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
-        let ctx = Self::grpc_request_context(&request, &self.config);
+        )?;
+        let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -251,7 +247,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -277,7 +273,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();

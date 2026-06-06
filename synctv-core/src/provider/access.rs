@@ -176,6 +176,38 @@ impl CachedProviderAccessService {
         )
     }
 
+    async fn delete_cache_entry_best_effort(
+        store: &Arc<dyn ProviderStore>,
+        key: &str,
+        reason: &'static str,
+    ) {
+        if let Err(error) = store.delete(key).await {
+            tracing::warn!(
+                cache_key = key,
+                reason,
+                error = %error,
+                "Failed to delete provider access cache entry"
+            );
+        }
+    }
+
+    async fn set_cache_entry_best_effort<T: Serialize + Send + Sync>(
+        store: &Arc<dyn ProviderStore>,
+        key: &str,
+        value: &T,
+        ttl: Duration,
+        reason: &'static str,
+    ) {
+        if let Err(error) = store.set(key, value, ttl).await {
+            tracing::warn!(
+                cache_key = key,
+                reason,
+                error = %error,
+                "Failed to write provider access cache entry"
+            );
+        }
+    }
+
     fn check_active(request_context: Option<&ExecutionControl>) -> Result<(), ProviderError> {
         if let Some(request_context) = request_context {
             request_context
@@ -207,26 +239,26 @@ impl CachedProviderAccessService {
             ))
         })?;
 
-        if let Some(encryption) = &self.credential_encryption {
-            Ok(SensitiveCacheEnvelope {
-                encrypted: true,
-                data: encryption.encrypt_to_value(&value).map_err(|error| {
-                    ProviderError::Internal(format!(
-                        "Failed to encrypt credential cache value: {error}"
-                    ))
-                })?,
-            })
-        } else {
-            Ok(SensitiveCacheEnvelope {
-                encrypted: false,
-                data: value,
-            })
-        }
+        let encryption = self.credential_encryption.as_ref().ok_or_else(|| {
+            ProviderError::Internal(
+                "Credential encryption must be configured before caching provider secrets"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(SensitiveCacheEnvelope {
+            encrypted: true,
+            data: encryption.encrypt_to_value(&value).map_err(|error| {
+                ProviderError::Internal(format!(
+                    "Failed to encrypt credential cache value: {error}"
+                ))
+            })?,
+        })
     }
 
     fn decode_sensitive<T: DeserializeOwned>(
         &self,
-        envelope: SensitiveCacheEnvelope,
+        envelope: &SensitiveCacheEnvelope,
     ) -> Result<T, ProviderError> {
         let value = if envelope.encrypted {
             let encryption = self.credential_encryption.as_ref().ok_or_else(|| {
@@ -241,7 +273,9 @@ impl CachedProviderAccessService {
                 ))
             })?
         } else {
-            envelope.data
+            return Err(ProviderError::Internal(
+                "Credential cache entry is not encrypted".to_string(),
+            ));
         };
 
         serde_json::from_value(value).map_err(|error| {
@@ -259,15 +293,24 @@ impl CachedProviderAccessService {
     ) -> Option<UserProviderCredential> {
         let store = self.store.as_ref()?;
         let key = Self::binding_key(provider, user_id, server_id);
-        let envelope = store
-            .get::<SensitiveCacheEnvelope>(&key)
-            .await
-            .ok()
-            .flatten()?;
-        match self.decode_sensitive::<UserProviderCredential>(envelope) {
+        let envelope = match store.get::<SensitiveCacheEnvelope>(&key).await {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    provider,
+                    user_id = %user_id,
+                    server_id,
+                    error = %error,
+                    "Failed to read provider credential cache entry"
+                );
+                return None;
+            }
+        };
+        match self.decode_sensitive::<UserProviderCredential>(&envelope) {
             Ok(record) if !record.is_expired() => Some(record),
             Ok(_) => {
-                let _ = store.delete(&key).await;
+                Self::delete_cache_entry_best_effort(store, &key, "expired_credential").await;
                 None
             }
             Err(error) => {
@@ -278,7 +321,7 @@ impl CachedProviderAccessService {
                     error = %error,
                     "Discarding unreadable provider credential cache entry"
                 );
-                let _ = store.delete(&key).await;
+                Self::delete_cache_entry_best_effort(store, &key, "unreadable_credential").await;
                 None
             }
         }
@@ -315,23 +358,39 @@ impl CachedProviderAccessService {
 
         if let Some(store) = &self.store {
             let missing_key = Self::missing_key(provider, user_id, server_id);
-            if store
-                .get::<CachedMissing>(&missing_key)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
-            {
-                return Ok(None);
+            match store.get::<CachedMissing>(&missing_key).await {
+                Ok(Some(_)) => return Ok(None),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        provider,
+                        user_id = %user_id,
+                        server_id,
+                        error = %error,
+                        "Failed to read provider credential missing-cache entry"
+                    );
+                }
             }
 
-            let _lock = store
+            let _lock = match store
                 .lock(
                     &Self::binding_lock_key(provider, user_id, server_id),
                     BINDING_LOCK_TTL,
                 )
                 .await
-                .ok();
+            {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    tracing::debug!(
+                        provider,
+                        user_id = %user_id,
+                        server_id,
+                        error = %error,
+                        "Failed to acquire provider credential cache lock"
+                    );
+                    None
+                }
+            };
 
             if let Some(record) = self.cached_record(provider, user_id, server_id).await {
                 return Ok(Some(record));
@@ -343,18 +402,36 @@ impl CachedProviderAccessService {
             match &record {
                 Some(record) if !record.is_expired() => {
                     let envelope = self.encode_sensitive(record)?;
-                    let _ = store
+                    if let Err(error) = store
                         .set(
                             &Self::binding_key(provider, user_id, server_id),
                             &envelope,
                             Self::credential_ttl(record),
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            provider,
+                            user_id = %user_id,
+                            server_id,
+                            error = %error,
+                            "Failed to cache provider credential binding"
+                        );
+                    }
                 }
                 None => {
-                    let _ = store
+                    if let Err(error) = store
                         .set(&missing_key, &CachedMissing {}, MISSING_CACHE_TTL)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            provider,
+                            user_id = %user_id,
+                            server_id,
+                            error = %error,
+                            "Failed to cache missing provider credential binding"
+                        );
+                    }
                 }
                 Some(_) => {}
             }
@@ -423,16 +500,23 @@ impl CachedProviderAccessService {
 
     async fn cached_alist_session(&self, key: &str) -> Option<CachedAlistSession> {
         let store = self.store.as_ref()?;
-        let envelope = store
-            .get::<SensitiveCacheEnvelope>(key)
-            .await
-            .ok()
-            .flatten()?;
-        match self.decode_sensitive::<CachedAlistSession>(envelope) {
+        let envelope = match store.get::<SensitiveCacheEnvelope>(key).await {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    cache_key = key,
+                    error = %error,
+                    "Failed to read Alist session cache entry"
+                );
+                return None;
+            }
+        };
+        match self.decode_sensitive::<CachedAlistSession>(&envelope) {
             Ok(session) => Some(session),
             Err(error) => {
                 tracing::warn!(error = %error, "Discarding unreadable Alist session cache entry");
-                let _ = store.delete(key).await;
+                Self::delete_cache_entry_best_effort(store, key, "unreadable_alist_session").await;
                 None
             }
         }
@@ -445,7 +529,14 @@ impl CachedProviderAccessService {
     ) -> Result<(), ProviderError> {
         if let Some(store) = &self.store {
             let envelope = self.encode_sensitive(session)?;
-            let _ = store.set(key, &envelope, ALIST_SESSION_CACHE_TTL).await;
+            Self::set_cache_entry_best_effort(
+                store,
+                key,
+                &envelope,
+                ALIST_SESSION_CACHE_TTL,
+                "alist_session",
+            )
+            .await;
         }
         Ok(())
     }
@@ -519,7 +610,7 @@ impl ProviderAccessService for CachedProviderAccessService {
         }
 
         let _lock = if let Some(store) = &self.store {
-            store
+            match store
                 .lock(
                     &Self::alist_session_lock_key(
                         user_id,
@@ -530,7 +621,19 @@ impl ProviderAccessService for CachedProviderAccessService {
                     ALIST_SESSION_LOCK_TTL,
                 )
                 .await
-                .ok()
+            {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    tracing::debug!(
+                        user_id = %user_id,
+                        server_id,
+                        provider_instance_name = provider_instance_name.as_deref().unwrap_or(""),
+                        error = %error,
+                        "Failed to acquire Alist session cache lock"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -718,6 +821,10 @@ mod tests {
     use crate::service::RemoteProviderManager;
     use chrono::Utc;
 
+    fn test_encryption() -> CredentialEncryption {
+        CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid")
+    }
+
     fn test_service(store: Arc<dyn ProviderStore>) -> CachedProviderAccessService {
         let credential_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(credential_pool));
@@ -725,9 +832,12 @@ mod tests {
         let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(provider_pool));
         let provider_instance_manager =
             Arc::new(RemoteProviderManager::new(provider_instance_repo));
-        let alist_provider = Arc::new(AlistProvider::new(provider_instance_manager));
+        let alist_provider =
+            Arc::new(AlistProvider::new(provider_instance_manager).expect("provider should build"));
 
-        CachedProviderAccessService::new(credential_repo, alist_provider).with_store(store)
+        CachedProviderAccessService::new(credential_repo, alist_provider)
+            .with_store(store)
+            .with_credential_encryption(Some(test_encryption()))
     }
 
     fn credential_record(
@@ -771,6 +881,32 @@ mod tests {
             )
             .await
             .expect("credential cache write succeeds");
+    }
+
+    #[tokio::test]
+    async fn encode_sensitive_requires_credential_encryption() {
+        let store = Arc::new(InMemoryProviderStore::new(16));
+        let credential_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new(credential_pool));
+        let provider_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(provider_pool));
+        let provider_instance_manager =
+            Arc::new(RemoteProviderManager::new(provider_instance_repo));
+        let alist_provider =
+            Arc::new(AlistProvider::new(provider_instance_manager).expect("provider should build"));
+        let service =
+            CachedProviderAccessService::new(credential_repo, alist_provider).with_store(store);
+
+        let error = service
+            .encode_sensitive(&CachedAlistSession {
+                host: "https://alist.example.test".to_string(),
+                token: "token".to_string(),
+            })
+            .expect_err("sensitive cache writes require encryption");
+
+        assert!(error
+            .to_string()
+            .contains("Credential encryption must be configured"));
     }
 
     #[tokio::test]

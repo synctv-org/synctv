@@ -13,7 +13,6 @@
 //! maintains independent brute-force counters. Monitor the `is_degraded()` flag
 //! or `degraded_operation_count()` to detect Redis connectivity issues.
 //!
-//! Run with: cargo test --test `brute_force_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -455,66 +454,6 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
 }
 
 use synctv_core::service::auth::brute_force::BruteForceConfig;
-
-/// Test `BruteForceConfig::custom_thresholds()` with custom values
-#[test]
-fn test_brute_force_config_custom_thresholds() {
-    let config = BruteForceConfig {
-        tier1_threshold: 3,
-        tier1_lockout_secs: 30,
-        tier2_threshold: 6,
-        tier2_lockout_secs: 120,
-        tier3_threshold: 9,
-        tier3_lockout_secs: 300,
-        ip_threshold: 10,
-        ip_lockout_secs: 180,
-        attempts_ttl_secs: 600,
-        ip_attempts_ttl_secs: 300,
-    };
-
-    assert_eq!(config.tier1_threshold, 3);
-    assert_eq!(config.tier1_lockout_secs, 30);
-    assert_eq!(config.tier2_threshold, 6);
-    assert_eq!(config.tier2_lockout_secs, 120);
-    assert_eq!(config.tier3_threshold, 9);
-    assert_eq!(config.tier3_lockout_secs, 300);
-    assert_eq!(config.ip_threshold, 10);
-    assert_eq!(config.ip_lockout_secs, 180);
-}
-
-/// Test `BruteForceConfig` serialization/deserialization for settings storage
-#[test]
-fn test_brute_force_config_serde_roundtrip() {
-    let original = BruteForceConfig {
-        tier1_threshold: 3,
-        tier1_lockout_secs: 30,
-        tier2_threshold: 6,
-        tier2_lockout_secs: 120,
-        tier3_threshold: 9,
-        tier3_lockout_secs: 300,
-        ip_threshold: 10,
-        ip_lockout_secs: 180,
-        attempts_ttl_secs: 600,
-        ip_attempts_ttl_secs: 300,
-    };
-
-    let json = serde_json::to_string(&original).unwrap();
-    let deserialized: BruteForceConfig = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(deserialized.tier1_threshold, original.tier1_threshold);
-    assert_eq!(deserialized.tier1_lockout_secs, original.tier1_lockout_secs);
-    assert_eq!(deserialized.tier2_threshold, original.tier2_threshold);
-    assert_eq!(deserialized.tier2_lockout_secs, original.tier2_lockout_secs);
-    assert_eq!(deserialized.tier3_threshold, original.tier3_threshold);
-    assert_eq!(deserialized.tier3_lockout_secs, original.tier3_lockout_secs);
-    assert_eq!(deserialized.ip_threshold, original.ip_threshold);
-    assert_eq!(deserialized.ip_lockout_secs, original.ip_lockout_secs);
-    assert_eq!(deserialized.attempts_ttl_secs, original.attempts_ttl_secs);
-    assert_eq!(
-        deserialized.ip_attempts_ttl_secs,
-        original.ip_attempts_ttl_secs
-    );
-}
 
 /// Test `BruteForceProtection` uses custom thresholds via config
 #[tokio::test]

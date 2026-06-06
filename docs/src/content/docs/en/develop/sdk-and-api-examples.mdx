@@ -56,7 +56,7 @@ curl -sS "$BASE_URL/api/auth/opaque/login/start" \
   -d '{"username":"root","credential_request":[/* bytes from your OPAQUE client */]}'
 ```
 
-Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. If the finish response has `mfa.required=true`, complete MFA before treating the user as logged in. `/api/auth/login` is reserved for passwordless email-token login.
+Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. If the finish response has `mfa.required=true`, complete MFA before treating the user as logged in. Passwordless email-token login uses `/api/auth/email/confirm`.
 
   </TabItem>
   <TabItem label="Refresh" icon="random">

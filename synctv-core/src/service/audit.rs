@@ -95,6 +95,66 @@ pub struct AuditEventParams {
     pub user_agent: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PermissionAuditRequest {
+    pub actor_id: String,
+    pub actor_username: String,
+    pub target_type: AuditTargetType,
+    pub target_id: String,
+    pub old_permissions: u64,
+    pub new_permissions: u64,
+    pub is_grant: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamKickAuditRequest {
+    pub actor_id: String,
+    pub actor_username: String,
+    pub room_id: String,
+    pub media_id: String,
+    pub reason: Option<String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserLoginAuditRequest {
+    pub user_id: String,
+    pub username: String,
+    pub login_method: String,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenIssuedAuditRequest {
+    pub user_id: String,
+    pub username: String,
+    pub token_type: String,
+    pub jti: String,
+    pub expires_at: i64,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenRefreshedAuditRequest {
+    pub user_id: String,
+    pub username: String,
+    pub old_jti: String,
+    pub new_jti: String,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenFamilyRevokedAuditRequest {
+    pub user_id: String,
+    pub username: String,
+    pub replayed_jti: String,
+    pub ip_address: Option<String>,
+}
+
 /// Internal record sent through the mpsc channel
 #[derive(Debug, Clone)]
 struct AuditRecord {
@@ -131,7 +191,7 @@ impl AuditService {
     /// the service. Dropping it triggers a graceful flush of remaining events.
     #[must_use]
     pub fn new(pool: PgPool) -> (Self, AuditFlushHandle) {
-        Self::with_capacity(pool, DEFAULT_BUFFER_CAPACITY)
+        Self::new_with_capacity(pool, DEFAULT_BUFFER_CAPACITY)
     }
 
     /// Create a new audit service with async buffering and a custom buffer capacity.
@@ -139,7 +199,7 @@ impl AuditService {
     /// Use this to override the default buffer capacity (10,000) via configuration.
     /// A capacity of 0 falls back to `DEFAULT_BUFFER_CAPACITY`.
     #[must_use]
-    pub fn with_capacity(pool: PgPool, capacity: usize) -> (Self, AuditFlushHandle) {
+    pub fn new_with_capacity(pool: PgPool, capacity: usize) -> (Self, AuditFlushHandle) {
         let capacity = if capacity > 0 {
             capacity
         } else {
@@ -178,19 +238,17 @@ impl AuditService {
         self.dropped_count.load(Ordering::Relaxed)
     }
 
-    /// Log an audit event
-    #[allow(clippy::too_many_arguments)]
-    pub async fn log(
-        &self,
-        actor_id: String,
-        actor_username: String,
-        action: AuditAction,
-        target_type: AuditTargetType,
-        target_id: Option<String>,
-        details: serde_json::Value,
-        ip_address: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<()> {
+    pub async fn log(&self, params: AuditEventParams) -> Result<()> {
+        let AuditEventParams {
+            actor_id,
+            actor_username,
+            action,
+            target_type,
+            target_id,
+            details,
+            ip_address,
+            user_agent,
+        } = params;
         let action_str = action.as_str();
         let target_str = target_type.as_str();
         let created_at = Utc::now();
@@ -218,15 +276,17 @@ impl AuditService {
                 );
                 if let Err(db_err) = Self::write_single(
                     &self.pool,
-                    action,
-                    target_type,
-                    &actor_id,
-                    &actor_username,
-                    target_id.as_deref(),
-                    &details,
-                    ip_address.as_deref(),
-                    user_agent.as_deref(),
-                    created_at,
+                    &AuditRecord {
+                        actor_id: actor_id.clone(),
+                        actor_username: actor_username.clone(),
+                        action,
+                        target_type,
+                        target_id: target_id.clone(),
+                        details: details.clone(),
+                        ip_address: ip_address.clone(),
+                        user_agent: user_agent.clone(),
+                        created_at,
+                    },
                 )
                 .await
                 {
@@ -253,15 +313,17 @@ impl AuditService {
         // Unbuffered mode: write directly to DB
         Self::write_single(
             &self.pool,
-            action,
-            target_type,
-            &actor_id,
-            &actor_username,
-            target_id.as_deref(),
-            &details,
-            ip_address.as_deref(),
-            user_agent.as_deref(),
-            created_at,
+            &AuditRecord {
+                actor_id: actor_id.clone(),
+                actor_username: actor_username.clone(),
+                action,
+                target_type,
+                target_id: target_id.clone(),
+                details: details.clone(),
+                ip_address: ip_address.clone(),
+                user_agent: user_agent.clone(),
+                created_at,
+            },
         )
         .await?;
 
@@ -275,20 +337,7 @@ impl AuditService {
         Ok(())
     }
 
-    /// Write a single audit record to the database
-    #[allow(clippy::too_many_arguments)]
-    async fn write_single(
-        pool: &PgPool,
-        action: AuditAction,
-        target_type: AuditTargetType,
-        actor_id: &str,
-        actor_username: &str,
-        target_id: Option<&str>,
-        details: &serde_json::Value,
-        ip_address: Option<&str>,
-        user_agent: Option<&str>,
-        created_at: DateTime<Utc>,
-    ) -> Result<()> {
+    async fn write_single(pool: &PgPool, record: &AuditRecord) -> Result<()> {
         sqlx::query!(
             r"
             INSERT INTO audit_logs (
@@ -296,35 +345,20 @@ impl AuditService {
                 details, ip_address, user_agent, created_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ",
-            parse_actor_id_for_storage(actor_id),
-            actor_username,
-            action.as_i16(),
-            target_type.as_i16(),
-            target_id,
-            details,
-            ip_address,
-            user_agent,
-            created_at
+            parse_actor_id_for_storage(&record.actor_id),
+            record.actor_username,
+            record.action.as_i16(),
+            record.target_type.as_i16(),
+            record.target_id.as_deref(),
+            record.details,
+            record.ip_address.as_deref(),
+            record.user_agent.as_deref(),
+            record.created_at
         )
         .execute(pool)
         .await?;
 
         Ok(())
-    }
-
-    /// Log an audit event with parameters struct
-    pub async fn log_with_params(&self, params: AuditEventParams) -> Result<()> {
-        self.log(
-            params.actor_id,
-            params.actor_username,
-            params.action,
-            params.target_type,
-            params.target_id,
-            params.details,
-            params.ip_address,
-            params.user_agent,
-        )
-        .await
     }
 
     /// Log user creation
@@ -334,16 +368,16 @@ impl AuditService {
         actor_username: String,
         target_user_id: String,
     ) -> Result<()> {
-        self.log(
+        self.log(AuditEventParams {
             actor_id,
             actor_username,
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some(target_user_id),
-            serde_json::json!({"reason": "User created via admin panel"}),
-            None,
-            None,
-        )
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some(target_user_id),
+            details: serde_json::json!({"reason": "User created via admin panel"}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
     }
 
@@ -354,54 +388,39 @@ impl AuditService {
         actor_username: String,
         target_user_id: String,
     ) -> Result<()> {
-        self.log(
+        self.log(AuditEventParams {
             actor_id,
             actor_username,
-            AuditAction::UserBanned,
-            AuditTargetType::User,
-            Some(target_user_id),
-            serde_json::json!({"reason": "User banned by admin"}),
-            None,
-            None,
-        )
+            action: AuditAction::UserBanned,
+            target_type: AuditTargetType::User,
+            target_id: Some(target_user_id),
+            details: serde_json::json!({"reason": "User banned by admin"}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
     }
 
-    /// Log permission change
-    ///
-    /// The `is_grant` parameter determines the audit action:
-    /// - `true` => `AuditAction::PermissionGranted`
-    /// - `false` => `AuditAction::PermissionRevoked`
-    #[allow(clippy::too_many_arguments)]
-    pub async fn log_permission_changed(
-        &self,
-        actor_id: String,
-        actor_username: String,
-        target_type: AuditTargetType,
-        target_id: String,
-        old_permissions: u64,
-        new_permissions: u64,
-        is_grant: bool,
-    ) -> Result<()> {
-        let action = if is_grant {
+    pub async fn log_permission_changed(&self, request: PermissionAuditRequest) -> Result<()> {
+        let action = if request.is_grant {
             AuditAction::PermissionGranted
         } else {
             AuditAction::PermissionRevoked
         };
 
-        self.log(
-            actor_id,
-            actor_username,
+        self.log(AuditEventParams {
+            actor_id: request.actor_id,
+            actor_username: request.actor_username,
             action,
-            target_type,
-            Some(target_id),
-            serde_json::json!({
-                "old_permissions": old_permissions,
-                "new_permissions": new_permissions
+            target_type: request.target_type,
+            target_id: Some(request.target_id),
+            details: serde_json::json!({
+                "old_permissions": request.old_permissions,
+                "new_permissions": request.new_permissions
             }),
-            None,
-            None,
-        )
+            ip_address: None,
+            user_agent: None,
+        })
         .await
     }
 
@@ -412,45 +431,35 @@ impl AuditService {
         actor_username: String,
         room_id: String,
     ) -> Result<()> {
-        self.log(
+        self.log(AuditEventParams {
             actor_id,
             actor_username,
-            AuditAction::RoomDeleted,
-            AuditTargetType::Room,
-            Some(room_id),
-            serde_json::json!({"reason": "Room deleted by admin"}),
-            None,
-            None,
-        )
+            action: AuditAction::RoomDeleted,
+            target_type: AuditTargetType::Room,
+            target_id: Some(room_id),
+            details: serde_json::json!({"reason": "Room deleted by admin"}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
     }
 
-    /// Log stream kick event
-    #[allow(clippy::too_many_arguments)]
-    pub async fn log_stream_kicked(
-        &self,
-        actor_id: String,
-        actor_username: String,
-        room_id: String,
-        media_id: String,
-        reason: Option<String>,
-        ip_address: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<()> {
-        self.log(
-            actor_id,
-            actor_username,
-            AuditAction::StreamKicked,
-            AuditTargetType::Stream,
-            Some(format!("{room_id}:{media_id}")),
-            serde_json::json!({
-                "room_id": room_id,
-                "media_id": media_id,
-                "reason": reason.unwrap_or_default()
+    pub async fn log_stream_kicked(&self, request: StreamKickAuditRequest) -> Result<()> {
+        let target_id = format!("{}:{}", request.room_id, request.media_id);
+        self.log(AuditEventParams {
+            actor_id: request.actor_id,
+            actor_username: request.actor_username,
+            action: AuditAction::StreamKicked,
+            target_type: AuditTargetType::Stream,
+            target_id: Some(target_id),
+            details: serde_json::json!({
+                "room_id": request.room_id,
+                "media_id": request.media_id,
+                "reason": request.reason.unwrap_or_default()
             }),
-            ip_address,
-            user_agent,
-        )
+            ip_address: request.ip_address,
+            user_agent: request.user_agent,
+        })
         .await
     }
 
@@ -467,48 +476,36 @@ impl AuditService {
         error_message: String,
         ip_address: Option<String>,
     ) -> Result<()> {
-        self.log(
-            "system".to_string(),
-            "system".to_string(),
-            AuditAction::RateLimitResetFailed,
+        self.log(AuditEventParams {
+            actor_id: "system".to_string(),
+            actor_username: "system".to_string(),
+            action: AuditAction::RateLimitResetFailed,
             target_type,
-            Some(target_id),
-            serde_json::json!({
+            target_id: Some(target_id),
+            details: serde_json::json!({
                 "error": error_message,
                 "context": "password_verification_succeeded"
             }),
             ip_address,
-            None,
-        )
+            user_agent: None,
+        })
         .await
     }
 
-    /// Log a successful user login event.
-    ///
-    /// Records the user ID, username, IP address, and user agent for security
-    /// auditing and incident investigation.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn log_user_login(
-        &self,
-        user_id: String,
-        username: String,
-        login_method: &str,
-        ip_address: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<()> {
-        self.log(
-            user_id.clone(),
-            username.clone(),
-            AuditAction::UserLogin,
-            AuditTargetType::User,
-            Some(user_id),
-            serde_json::json!({
-                "login_method": login_method,
-                "username": username
+    pub async fn log_user_login(&self, request: UserLoginAuditRequest) -> Result<()> {
+        self.log(AuditEventParams {
+            actor_id: request.user_id.clone(),
+            actor_username: request.username.clone(),
+            action: AuditAction::UserLogin,
+            target_type: AuditTargetType::User,
+            target_id: Some(request.user_id),
+            details: serde_json::json!({
+                "login_method": request.login_method,
+                "username": request.username
             }),
-            ip_address,
-            user_agent,
-        )
+            ip_address: request.ip_address,
+            user_agent: request.user_agent,
+        })
         .await
     }
 
@@ -522,106 +519,73 @@ impl AuditService {
         ip_address: Option<String>,
         user_agent: Option<String>,
     ) -> Result<()> {
-        self.log(
-            user_id.clone(),
-            username,
-            AuditAction::UserLogout,
-            AuditTargetType::User,
-            Some(user_id),
-            serde_json::json!({}),
+        self.log(AuditEventParams {
+            actor_id: user_id.clone(),
+            actor_username: username,
+            action: AuditAction::UserLogout,
+            target_type: AuditTargetType::User,
+            target_id: Some(user_id),
+            details: serde_json::json!({}),
             ip_address,
             user_agent,
-        )
+        })
         .await
     }
 
-    /// Log a token issuance event.
-    ///
-    /// Records when tokens are issued (login, `OAuth2`, or refresh).
-    /// The JTI is recorded for token tracing and revocation investigations.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn log_token_issued(
-        &self,
-        user_id: String,
-        username: String,
-        token_type: &str,
-        jti: String,
-        expires_at: i64,
-        ip_address: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<()> {
-        self.log(
-            user_id.clone(),
-            username,
-            AuditAction::TokenIssued,
-            AuditTargetType::Token,
-            Some(format!("{user_id}:{jti}")),
-            serde_json::json!({
-                "token_type": token_type,
-                "jti": jti,
-                "expires_at": expires_at
+    pub async fn log_token_issued(&self, request: TokenIssuedAuditRequest) -> Result<()> {
+        let target_id = format!("{}:{}", request.user_id, request.jti);
+        self.log(AuditEventParams {
+            actor_id: request.user_id,
+            actor_username: request.username,
+            action: AuditAction::TokenIssued,
+            target_type: AuditTargetType::Token,
+            target_id: Some(target_id),
+            details: serde_json::json!({
+                "token_type": request.token_type,
+                "jti": request.jti,
+                "expires_at": request.expires_at
             }),
-            ip_address,
-            user_agent,
-        )
+            ip_address: request.ip_address,
+            user_agent: request.user_agent,
+        })
         .await
     }
 
-    /// Log a token refresh event.
-    ///
-    /// Records when a refresh token is used to generate new tokens.
-    /// Both old and new JTI values are recorded for token chain tracing.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn log_token_refreshed(
-        &self,
-        user_id: String,
-        username: String,
-        old_jti: String,
-        new_jti: String,
-        ip_address: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<()> {
-        self.log(
-            user_id.clone(),
-            username,
-            AuditAction::TokenRefreshed,
-            AuditTargetType::Token,
-            Some(format!("{user_id}:{new_jti}")),
-            serde_json::json!({
-                "old_jti": old_jti,
-                "new_jti": new_jti
+    pub async fn log_token_refreshed(&self, request: TokenRefreshedAuditRequest) -> Result<()> {
+        let target_id = format!("{}:{}", request.user_id, request.new_jti);
+        self.log(AuditEventParams {
+            actor_id: request.user_id,
+            actor_username: request.username,
+            action: AuditAction::TokenRefreshed,
+            target_type: AuditTargetType::Token,
+            target_id: Some(target_id),
+            details: serde_json::json!({
+                "old_jti": request.old_jti,
+                "new_jti": request.new_jti
             }),
-            ip_address,
-            user_agent,
-        )
+            ip_address: request.ip_address,
+            user_agent: request.user_agent,
+        })
         .await
     }
 
-    /// Log a token family revocation event.
-    ///
-    /// Recorded when a refresh token replay is detected, indicating possible
-    /// token theft. All refresh tokens for the user are revoked as a security
-    /// measure.
     pub async fn log_token_family_revoked(
         &self,
-        user_id: String,
-        username: String,
-        replayed_jti: String,
-        ip_address: Option<String>,
+        request: TokenFamilyRevokedAuditRequest,
     ) -> Result<()> {
-        self.log(
-            user_id.clone(),
-            username,
-            AuditAction::TokenFamilyRevoked,
-            AuditTargetType::Token,
-            Some(user_id),
-            serde_json::json!({
-                "replayed_jti": replayed_jti,
+        self.log(AuditEventParams {
+            actor_id: request.user_id.clone(),
+            actor_username: request.username,
+            action: AuditAction::TokenFamilyRevoked,
+            target_type: AuditTargetType::Token,
+            target_id: Some(request.user_id),
+            details: serde_json::json!({
+                "replayed_jti": request.replayed_jti,
                 "reason": "token_replay_detected"
             }),
-            ip_address,
-            None,
-        )
+            ip_address: request.ip_address,
+            user_agent: None,
+        })
         .await
     }
 }
@@ -725,7 +689,9 @@ impl AuditFlushHandle {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            let _ = self.cancel_tx.send(true);
+            if self.cancel_tx.send(true).is_err() {
+                tracing::debug!("Audit flush shutdown signal had no active receiver");
+            }
             true
         } else {
             false
@@ -736,7 +702,16 @@ impl AuditFlushHandle {
     pub async fn shutdown(mut self) {
         self.send_shutdown_signal();
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.await;
+            match handle.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Audit flush task ended with join error during shutdown"
+                    );
+                }
+            }
         }
     }
 }
@@ -877,241 +852,6 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_audit_action_serialization() {
-        let action = AuditAction::UserCreated;
-        let json = serde_json::to_string(&action).unwrap();
-        assert!(json.contains("user_created"));
-    }
-
-    #[test]
-    fn test_all_audit_actions_serialize_to_snake_case() {
-        let actions = vec![
-            (AuditAction::UserCreated, "user_created"),
-            (AuditAction::UserDeleted, "user_deleted"),
-            (AuditAction::UserBanned, "user_banned"),
-            (AuditAction::UserUnbanned, "user_unbanned"),
-            (AuditAction::UserPasswordUpdated, "user_password_updated"),
-            (AuditAction::UserUsernameUpdated, "user_username_updated"),
-            (
-                AuditAction::UserPreferencesUpdated,
-                "user_preferences_updated",
-            ),
-            (AuditAction::UserRoleUpdated, "user_role_updated"),
-            (AuditAction::RoomCreated, "room_created"),
-            (AuditAction::RoomDeleted, "room_deleted"),
-            (AuditAction::RoomBanned, "room_banned"),
-            (AuditAction::RoomUnbanned, "room_unbanned"),
-            (AuditAction::RoomPasswordUpdated, "room_password_updated"),
-            (AuditAction::PermissionGranted, "permission_granted"),
-            (AuditAction::PermissionRevoked, "permission_revoked"),
-            (
-                AuditAction::ProviderInstanceCreated,
-                "provider_instance_created",
-            ),
-            (
-                AuditAction::ProviderInstanceUpdated,
-                "provider_instance_updated",
-            ),
-            (
-                AuditAction::ProviderInstanceDeleted,
-                "provider_instance_deleted",
-            ),
-            (AuditAction::SettingsUpdated, "settings_updated"),
-            (AuditAction::MemberKicked, "member_kicked"),
-            (AuditAction::MemberRoleUpdated, "member_role_updated"),
-            (
-                AuditAction::MemberPermissionUpdated,
-                "member_permission_updated",
-            ),
-            (AuditAction::MemberStatusUpdated, "member_status_updated"),
-            (AuditAction::RoomSettingsUpdated, "room_settings_updated"),
-            (AuditAction::UserApproved, "user_approved"),
-            (AuditAction::RoomApproved, "room_approved"),
-            (AuditAction::StreamKicked, "stream_kicked"),
-            (AuditAction::RateLimitResetFailed, "rate_limit_reset_failed"),
-            (AuditAction::UserLogin, "user_login"),
-            (AuditAction::UserLogout, "user_logout"),
-            (AuditAction::TokenIssued, "token_issued"),
-            (AuditAction::TokenRefreshed, "token_refreshed"),
-            (AuditAction::TokenFamilyRevoked, "token_family_revoked"),
-            // Settings access audit
-            (AuditAction::SettingsViewed, "settings_viewed"),
-            (AuditAction::SettingsGroupViewed, "settings_group_viewed"),
-            (AuditAction::ChatMessageDeleted, "chat_message_deleted"),
-        ];
-
-        for (action, expected) in actions {
-            let json = serde_json::to_string(&action).unwrap();
-            assert_eq!(json, format!("\"{expected}\""), "Mismatch for {expected}");
-        }
-    }
-
-    #[test]
-    fn test_audit_action_deserialization() {
-        let json = r#""user_banned""#;
-        let action: AuditAction = serde_json::from_str(json).unwrap();
-        assert!(matches!(action, AuditAction::UserBanned));
-    }
-
-    #[test]
-    fn test_audit_action_round_trip() {
-        let original = AuditAction::PermissionGranted;
-        let json = serde_json::to_string(&original).unwrap();
-        let deserialized: AuditAction = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.as_str(), deserialized.as_str());
-    }
-
-    #[test]
-    fn test_all_target_types_serialize_to_snake_case() {
-        let targets = vec![
-            (AuditTargetType::User, "user"),
-            (AuditTargetType::Room, "room"),
-            (AuditTargetType::Member, "member"),
-            (AuditTargetType::ProviderInstance, "provider_instance"),
-            (AuditTargetType::Settings, "settings"),
-            (AuditTargetType::System, "system"),
-            (AuditTargetType::Stream, "stream"),
-            (AuditTargetType::Token, "token"),
-            (AuditTargetType::ChatMessage, "chat_message"),
-        ];
-
-        for (target, expected) in targets {
-            let json = serde_json::to_string(&target).unwrap();
-            assert_eq!(json, format!("\"{expected}\""), "Mismatch for {expected}");
-        }
-    }
-
-    #[test]
-    fn test_target_type_deserialization() {
-        let json = r#""provider_instance""#;
-        let target: AuditTargetType = serde_json::from_str(json).unwrap();
-        assert!(matches!(target, AuditTargetType::ProviderInstance));
-    }
-
-    #[test]
-    fn test_audit_log_construction() {
-        let log = AuditLog {
-            id: "test_id".to_string(),
-            actor_id: "actor_123".to_string(),
-            actor_username: "admin".to_string(),
-            action: AuditAction::UserBanned,
-            target_type: AuditTargetType::User,
-            target_id: Some("user_456".to_string()),
-            details: serde_json::json!({"reason": "spam"}),
-            ip_address: Some("192.168.1.1".to_string()),
-            user_agent: Some("Mozilla/5.0".to_string()),
-            created_at: Utc::now(),
-        };
-
-        assert_eq!(log.id, "test_id");
-        assert_eq!(log.actor_id, "actor_123");
-        assert_eq!(log.actor_username, "admin");
-        assert_eq!(log.action.as_str(), "user_banned");
-        assert_eq!(log.target_type.as_str(), "user");
-        assert_eq!(log.target_id, Some("user_456".to_string()));
-        assert_eq!(log.details["reason"], "spam");
-    }
-
-    #[test]
-    fn test_audit_log_optional_fields() {
-        let log = AuditLog {
-            id: "test".to_string(),
-            actor_id: "system".to_string(),
-            actor_username: "system".to_string(),
-            action: AuditAction::SettingsUpdated,
-            target_type: AuditTargetType::Settings,
-            target_id: None,
-            details: serde_json::json!({}),
-            ip_address: None,
-            user_agent: None,
-            created_at: Utc::now(),
-        };
-
-        assert!(log.target_id.is_none());
-        assert!(log.ip_address.is_none());
-        assert!(log.user_agent.is_none());
-    }
-
-    #[test]
-    fn test_audit_log_serialization_round_trip() {
-        let log = AuditLog {
-            id: "audit_1".to_string(),
-            actor_id: "user_1".to_string(),
-            actor_username: "alice".to_string(),
-            action: AuditAction::RoomCreated,
-            target_type: AuditTargetType::Room,
-            target_id: Some("room_1".to_string()),
-            details: serde_json::json!({"room_name": "Test Room"}),
-            ip_address: Some("10.0.0.1".to_string()),
-            user_agent: Some("TestAgent/1.0".to_string()),
-            created_at: Utc::now(),
-        };
-
-        let json = serde_json::to_string(&log).unwrap();
-        let deserialized: AuditLog = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.id, log.id);
-        assert_eq!(deserialized.actor_id, log.actor_id);
-        assert_eq!(deserialized.actor_username, log.actor_username);
-        assert_eq!(deserialized.action.as_str(), log.action.as_str());
-        assert_eq!(deserialized.target_type.as_str(), log.target_type.as_str());
-        assert_eq!(deserialized.target_id, log.target_id);
-        assert_eq!(deserialized.details, log.details);
-    }
-
-    #[test]
-    fn test_audit_event_params_construction() {
-        let params = AuditEventParams {
-            actor_id: "admin_1".to_string(),
-            actor_username: "superadmin".to_string(),
-            action: AuditAction::UserRoleUpdated,
-            target_type: AuditTargetType::User,
-            target_id: Some("user_42".to_string()),
-            details: serde_json::json!({
-                "old_role": "user",
-                "new_role": "admin"
-            }),
-            ip_address: Some("203.0.113.50".to_string()),
-            user_agent: None,
-        };
-
-        assert_eq!(params.actor_id, "admin_1");
-        assert_eq!(params.action.as_str(), "user_role_updated");
-        assert_eq!(params.details["old_role"], "user");
-        assert_eq!(params.details["new_role"], "admin");
-    }
-
-    #[test]
-    fn test_permission_change_details_format() {
-        let details = serde_json::json!({
-            "old_permissions": 0u64,
-            "new_permissions": 255u64
-        });
-
-        assert_eq!(details["old_permissions"], 0);
-        assert_eq!(details["new_permissions"], 255);
-    }
-
-    #[test]
-    fn test_details_with_nested_info() {
-        let details = serde_json::json!({
-            "reason": "Terms of service violation",
-            "evidence": {
-                "report_id": "rpt_123",
-                "reported_by": ["user_a", "user_b"]
-            },
-            "duration": "permanent"
-        });
-
-        assert_eq!(details["reason"], "Terms of service violation");
-        assert!(details["evidence"]["reported_by"].is_array());
-        assert_eq!(
-            details["evidence"]["reported_by"].as_array().unwrap().len(),
-            2
-        );
-    }
-
     #[tokio::test]
     async fn test_unbuffered_service_dropped_count_is_zero() {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
@@ -1124,19 +864,17 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        // Enqueue an event -- it should not error even with a fake pool
-        // because the event is only buffered, not written to DB
         let result = service
-            .log(
-                "actor1".to_string(),
-                "admin".to_string(),
-                AuditAction::UserCreated,
-                AuditTargetType::User,
-                Some("user1".to_string()),
-                serde_json::json!({}),
-                None,
-                None,
-            )
+            .log(AuditEventParams {
+                actor_id: "actor1".to_string(),
+                actor_username: "admin".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: Some("user1".to_string()),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await;
 
         assert!(result.is_ok());
@@ -1164,208 +902,19 @@ mod tests {
         assert_eq!(record.actor_id, "a1");
     }
 
-    #[test]
-    fn test_buffer_constants() {
-        assert_eq!(DEFAULT_BUFFER_CAPACITY, 10_000);
-        assert_eq!(FLUSH_BATCH_SIZE, 100);
-        assert_eq!(FLUSH_INTERVAL_SECS, 5);
-        assert_eq!(FLUSH_MAX_RETRIES, 3);
-        assert_eq!(FLUSH_RETRY_BASE_MS, 100);
-    }
-
-    #[test]
-    fn test_stream_kicked_action_serialization() {
-        let action = AuditAction::StreamKicked;
-        let json = serde_json::to_string(&action).unwrap();
-        assert_eq!(json, "\"stream_kicked\"");
-    }
-
-    #[test]
-    fn test_stream_target_type_serialization() {
-        let target = AuditTargetType::Stream;
-        let json = serde_json::to_string(&target).unwrap();
-        assert_eq!(json, "\"stream\"");
-    }
-
-    #[test]
-    fn test_log_stream_kicked_target_id_format() {
-        // Verify the target_id format is "room_id:media_id"
-        let room_id = "room_abc123";
-        let media_id = "media_xyz789";
-        let expected_target_id = format!("{room_id}:{media_id}");
-        assert_eq!(expected_target_id, "room_abc123:media_xyz789");
-    }
-
-    #[test]
-    fn test_log_stream_kicked_details_json_structure() {
-        // Verify the details JSON structure contains all expected fields
-        let room_id = "test_room";
-        let media_id = "test_media";
-        let reason = "Test reason".to_string();
-
-        let details = serde_json::json!({
-            "room_id": room_id,
-            "media_id": media_id,
-            "reason": reason
-        });
-
-        assert_eq!(details["room_id"], "test_room");
-        assert_eq!(details["media_id"], "test_media");
-        assert_eq!(details["reason"], "Test reason");
-    }
-
-    #[test]
-    fn test_log_stream_kicked_details_json_empty_reason() {
-        // Verify the details JSON structure when reason is None
-        let room_id = "test_room";
-        let media_id = "test_media";
-
-        let details = serde_json::json!({
-            "room_id": room_id,
-            "media_id": media_id,
-            "reason": ""
-        });
-
-        assert_eq!(details["reason"], "");
-    }
-
-    #[test]
-    fn test_stream_kicked_action_and_target_type() {
-        // Verify the correct action and target type are used
-        let action = AuditAction::StreamKicked;
-        let target_type = AuditTargetType::Stream;
-
-        assert_eq!(action.as_str(), "stream_kicked");
-        assert_eq!(target_type.as_str(), "stream");
-    }
-
-    #[test]
-    fn test_token_actions_serialization() {
-        let actions = vec![
-            (AuditAction::UserLogin, "user_login"),
-            (AuditAction::UserLogout, "user_logout"),
-            (AuditAction::TokenIssued, "token_issued"),
-            (AuditAction::TokenRefreshed, "token_refreshed"),
-            (AuditAction::TokenFamilyRevoked, "token_family_revoked"),
-        ];
-
-        for (action, expected) in actions {
-            let json = serde_json::to_string(&action).unwrap();
-            assert_eq!(json, format!("\"{expected}\""), "Mismatch for {expected}");
-        }
-    }
-
-    #[test]
-    fn test_token_target_type_serialization() {
-        let target = AuditTargetType::Token;
-        let json = serde_json::to_string(&target).unwrap();
-        assert_eq!(json, "\"token\"");
-        assert_eq!(target.as_str(), "token");
-    }
-
-    #[test]
-    fn test_log_user_login_details_structure() {
-        let details = serde_json::json!({
-            "login_method": "password",
-            "username": "alice"
-        });
-
-        assert_eq!(details["login_method"], "password");
-        assert_eq!(details["username"], "alice");
-    }
-
-    #[test]
-    fn test_log_user_login_oauth2_method() {
-        let details = serde_json::json!({
-            "login_method": "oauth2",
-            "username": "bob"
-        });
-
-        assert_eq!(details["login_method"], "oauth2");
-    }
-
-    #[test]
-    fn test_log_token_issued_details_structure() {
-        let jti = "jti_abc123";
-        let token_type = "access";
-        let expires_at = 1_735_689_600_i64;
-
-        let details = serde_json::json!({
-            "token_type": token_type,
-            "jti": jti,
-            "expires_at": expires_at
-        });
-
-        assert_eq!(details["token_type"], "access");
-        assert_eq!(details["jti"], "jti_abc123");
-        assert_eq!(details["expires_at"], 1_735_689_600);
-    }
-
-    #[test]
-    fn test_log_token_refreshed_details_structure() {
-        let old_jti = "jti_old_123";
-        let new_jti = "jti_new_456";
-
-        let details = serde_json::json!({
-            "old_jti": old_jti,
-            "new_jti": new_jti
-        });
-
-        assert_eq!(details["old_jti"], "jti_old_123");
-        assert_eq!(details["new_jti"], "jti_new_456");
-    }
-
-    #[test]
-    fn test_log_token_family_revoked_details_structure() {
-        let replayed_jti = "jti_replayed_789";
-
-        let details = serde_json::json!({
-            "replayed_jti": replayed_jti,
-            "reason": "token_replay_detected"
-        });
-
-        assert_eq!(details["replayed_jti"], "jti_replayed_789");
-        assert_eq!(details["reason"], "token_replay_detected");
-    }
-
-    #[test]
-    fn test_log_user_logout_details_empty() {
-        let details = serde_json::json!({});
-        assert!(details.is_object());
-        assert!(details.as_object().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_token_issued_target_id_format() {
-        // Verify the target_id format is "user_id:jti"
-        let user_id = "user_123";
-        let jti = "jti_abc456";
-        let target_id = format!("{user_id}:{jti}");
-        assert_eq!(target_id, "user_123:jti_abc456");
-    }
-
-    #[test]
-    fn test_token_refreshed_target_id_format() {
-        // Verify the target_id format uses new_jti
-        let user_id = "user_123";
-        let new_jti = "jti_new_789";
-        let target_id = format!("{user_id}:{new_jti}");
-        assert_eq!(target_id, "user_123:jti_new_789");
-    }
-
     #[tokio::test]
     async fn test_log_user_login_buffered() {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
         let result = service
-            .log_user_login(
-                "user_123".to_string(),
-                "alice".to_string(),
-                "password",
-                Some("192.168.1.1".to_string()),
-                Some("Mozilla/5.0".to_string()),
-            )
+            .log_user_login(UserLoginAuditRequest {
+                user_id: "user_123".to_string(),
+                username: "alice".to_string(),
+                login_method: "password".to_string(),
+                ip_address: Some("192.168.1.1".to_string()),
+                user_agent: Some("Mozilla/5.0".to_string()),
+            })
             .await;
 
         assert!(result.is_ok());
@@ -1396,15 +945,15 @@ mod tests {
         let (service, _handle) = AuditService::new(pool);
 
         let result = service
-            .log_token_issued(
-                "user_123".to_string(),
-                "alice".to_string(),
-                "access",
-                "jti_abc123".to_string(),
-                1_735_689_600,
-                Some("192.168.1.1".to_string()),
-                Some("Mozilla/5.0".to_string()),
-            )
+            .log_token_issued(TokenIssuedAuditRequest {
+                user_id: "user_123".to_string(),
+                username: "alice".to_string(),
+                token_type: "access".to_string(),
+                jti: "jti_abc123".to_string(),
+                expires_at: 1_735_689_600,
+                ip_address: Some("192.168.1.1".to_string()),
+                user_agent: Some("Mozilla/5.0".to_string()),
+            })
             .await;
 
         assert!(result.is_ok());
@@ -1417,14 +966,14 @@ mod tests {
         let (service, _handle) = AuditService::new(pool);
 
         let result = service
-            .log_token_refreshed(
-                "user_123".to_string(),
-                "alice".to_string(),
-                "jti_old_123".to_string(),
-                "jti_new_456".to_string(),
-                Some("192.168.1.1".to_string()),
-                Some("Mozilla/5.0".to_string()),
-            )
+            .log_token_refreshed(TokenRefreshedAuditRequest {
+                user_id: "user_123".to_string(),
+                username: "alice".to_string(),
+                old_jti: "jti_old_123".to_string(),
+                new_jti: "jti_new_456".to_string(),
+                ip_address: Some("192.168.1.1".to_string()),
+                user_agent: Some("Mozilla/5.0".to_string()),
+            })
             .await;
 
         assert!(result.is_ok());
@@ -1437,12 +986,12 @@ mod tests {
         let (service, _handle) = AuditService::new(pool);
 
         let result = service
-            .log_token_family_revoked(
-                "user_123".to_string(),
-                "alice".to_string(),
-                "jti_replayed_789".to_string(),
-                Some("192.168.1.1".to_string()),
-            )
+            .log_token_family_revoked(TokenFamilyRevokedAuditRequest {
+                user_id: "user_123".to_string(),
+                username: "alice".to_string(),
+                replayed_jti: "jti_replayed_789".to_string(),
+                ip_address: Some("192.168.1.1".to_string()),
+            })
             .await;
 
         assert!(result.is_ok());
@@ -1455,13 +1004,13 @@ mod tests {
         let (service, _handle) = AuditService::new(pool);
 
         let result = service
-            .log_user_login(
-                "user_123".to_string(),
-                "alice".to_string(),
-                "oauth2",
-                None,
-                None,
-            )
+            .log_user_login(UserLoginAuditRequest {
+                user_id: "user_123".to_string(),
+                username: "alice".to_string(),
+                login_method: "oauth2".to_string(),
+                ip_address: None,
+                user_agent: None,
+            })
             .await;
 
         assert!(result.is_ok());

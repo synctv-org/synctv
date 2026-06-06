@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT room_id AS \"room_id!: RoomId\",\n                   user_id AS \"user_id!: UserId\",\n                   last_read_message_id,\n                   last_read_message_created_at,\n                   last_read_event_id,\n                   last_read_event_sequence,\n                   updated_at AS \"updated_at!\"\n            FROM chat_read_states\n            WHERE room_id = $1 AND user_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_read_message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_read_message_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_read_event_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_read_event_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "20fa5fd1ce1caa522e707ad02764986be44542c7119821c1620b8ab3bd0a941e"
+}

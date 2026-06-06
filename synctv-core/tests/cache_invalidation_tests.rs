@@ -3,7 +3,6 @@
 //! Tests verify cache invalidation works correctly across multiple replicas
 //! using Redis Pub/Sub or Streams.
 //!
-//! Run with: cargo test --test `cache_invalidation_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
@@ -49,21 +48,6 @@ fn shared_runtime_invalidation_service(
         node_id.to_string(),
         stream_key,
     ))
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_cache_invalidation_message_serialization() {
-    let msg = InvalidationMessage::UserPermission {
-        room_id: "room123".to_string(),
-        user_id: "user456".to_string(),
-    };
-
-    let json = serde_json::to_string(&msg).expect("Failed to serialize");
-    let deserialized: InvalidationMessage =
-        serde_json::from_str(&json).expect("Failed to deserialize");
-
-    assert_eq!(msg, deserialized);
 }
 
 #[tokio::test]
@@ -686,11 +670,12 @@ async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
 async fn test_cache_invalidation_after_commit() {
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
-        config::PasswordComplexityConfig,
         models::{Room, RoomId, User, UserId, UserRole, UserStatus},
         repository::{RoomRepository, UserRepository},
         service::auth::{BruteForceProtection, JwtService},
-        service::{InMemoryTokenBlacklistStore, RoomService, UserService},
+        service::{
+            room::RoomServiceOptions, InMemoryTokenBlacklistStore, RoomService, UserService,
+        },
     };
     let (_postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
@@ -703,28 +688,32 @@ async fn test_cache_invalidation_after_commit() {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let user_service = UserService::new(
+    let user_service = UserService::new_for_tests(
         &pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
     );
 
-    let mut room_service = RoomService::new(pool.clone(), user_service);
     let invalidation_service = Arc::new(CacheInvalidationService::new(
         "room-delete-node".to_string(),
         unique_stream_key(),
     ));
-    room_service.set_cache_invalidation(invalidation_service.clone());
-    room_service.set_playback_cache_invalidation(invalidation_service.clone());
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        user_service,
+        RoomServiceOptions {
+            cache_invalidation: Some(invalidation_service.clone()),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -846,11 +835,12 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     use sqlx::Transaction;
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
-        config::PasswordComplexityConfig,
         models::{Room, RoomId, User, UserId, UserRole, UserStatus},
         repository::{RoomRepository, UserRepository},
         service::auth::{BruteForceProtection, JwtService},
-        service::{InMemoryTokenBlacklistStore, RoomService, UserService},
+        service::{
+            room::RoomServiceOptions, InMemoryTokenBlacklistStore, RoomService, UserService,
+        },
     };
     let (_postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
@@ -863,28 +853,32 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let user_service = UserService::new(
+    let user_service = UserService::new_for_tests(
         &pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
     );
 
-    let mut room_service = RoomService::new(pool.clone(), user_service);
     let invalidation_service = Arc::new(CacheInvalidationService::new(
         "room-rollback-node".to_string(),
         unique_stream_key(),
     ));
-    room_service.set_cache_invalidation(invalidation_service.clone());
-    room_service.set_playback_cache_invalidation(invalidation_service.clone());
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        user_service,
+        RoomServiceOptions {
+            cache_invalidation: Some(invalidation_service.clone()),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());

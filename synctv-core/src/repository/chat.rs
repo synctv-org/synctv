@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
-use sqlx::{Executor, PgPool, Postgres, Row, Transaction};
+use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::{
     models::{
         ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatMessage,
         ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
-        ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser,
-        ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState, EventCursor, NewChatImage,
-        RoomId, SetChatReaction, UserId,
+        ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionSummary,
+        ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
+        EventCursor, NewChatImage, RoomId, SetChatReaction, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -30,22 +30,35 @@ impl ChatRepository {
     }
 
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
-        let inserted = sqlx::query_as_unchecked!(
+        let inserted = sqlx::query_as!(
             ChatMessage,
-            r"
+            r#"
             INSERT INTO chat_messages (
                 room_id, user_id, client_message_id, content, message_type,
                 status, version, reply_to_message_id, reply_to_message_created_at,
                 metadata, created_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING id, room_id, user_id, client_message_id, content, message_type,
-                      status, version, reply_to_message_id, reply_to_message_created_at,
-                      metadata, edited_at, deleted_at, deleted_by, delete_reason, created_at
-            ",
+            RETURNING id AS "id!",
+                      room_id AS "room_id!: RoomId",
+                      user_id AS "user_id?: UserId",
+                      client_message_id,
+                      content AS "content!",
+                      message_type AS "message_type!: ChatMessageType",
+                      status AS "status!: ChatMessageStatus",
+                      version AS "version!",
+                      reply_to_message_id,
+                      reply_to_message_created_at,
+                      metadata AS "metadata!: serde_json::Value",
+                      edited_at,
+                      deleted_at,
+                      deleted_by AS "deleted_by?: UserId",
+                      delete_reason,
+                      created_at AS "created_at!"
+            "#,
             message.room_id.as_i64(),
             message.user_id.map(|id| id.as_i64()),
-            &message.client_message_id,
+            message.client_message_id.as_deref(),
             &message.content,
             i16::from(message.message_type),
             i16::from(message.status),
@@ -69,12 +82,12 @@ impl ChatRepository {
         event_id: &str,
         occurred_at: DateTime<Utc>,
     ) -> Result<IdempotentChatEventInsert> {
+        let sender_id = message.user_id.ok_or_else(|| {
+            Error::InvalidInput("Chat message event insert requires a sender".to_string())
+        })?;
         let mut tx = self.pool.begin().await?;
 
         if let Some(client_message_id) = &message.client_message_id {
-            let user_id = message.user_id.ok_or_else(|| {
-                Error::InvalidInput("Idempotent chat send requires a user".to_string())
-            })?;
             let inserted_idempotency = sqlx::query!(
                 r"
                 INSERT INTO chat_message_idempotency (
@@ -84,7 +97,7 @@ impl ChatRepository {
                 ON CONFLICT (room_id, user_id, client_message_id) DO NOTHING
                 ",
                 message.room_id.as_i64(),
-                user_id.as_i64(),
+                sender_id.as_i64(),
                 client_message_id,
                 request_hash
             )
@@ -96,7 +109,7 @@ impl ChatRepository {
                     .get_idempotent_message_for_update(
                         &mut tx,
                         &message.room_id,
-                        &user_id,
+                        &sender_id,
                         client_message_id,
                     )
                     .await?
@@ -132,9 +145,7 @@ impl ChatRepository {
             event_id: event_id.to_string(),
             sequence: 0,
             room_id: message.room_id,
-            actor_user_id: message.user_id.ok_or_else(|| {
-                Error::InvalidInput("Chat event requires a message sender".to_string())
-            })?,
+            actor_user_id: sender_id,
             kind: ChatEventKind::Created,
             message: ChatMessageWithImages {
                 message: inserted,
@@ -153,7 +164,7 @@ impl ChatRepository {
                 WHERE room_id = $1 AND user_id = $2 AND client_message_id = $3
                 ",
                 message.room_id.as_i64(),
-                message.user_id.expect("checked above").as_i64(),
+                sender_id.as_i64(),
                 client_message_id,
                 logged.event.message.message.id,
                 logged.event.message.message.created_at,
@@ -184,18 +195,32 @@ impl ChatRepository {
         occurred_at: DateTime<Utc>,
     ) -> Result<ChatMessageEventLog> {
         let mut tx = self.pool.begin().await?;
-        let message = sqlx::query_as::<_, ChatMessage>(
-            r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
+        let message = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1 AND id = $2
             FOR UPDATE
-            ",
+            "#,
+            request.room_id.as_i64(),
+            request.message_id
         )
-        .bind(request.room_id.as_i64())
-        .bind(request.message_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
@@ -205,7 +230,7 @@ impl ChatRepository {
         }
 
         if request.enabled {
-            sqlx::query(
+            sqlx::query!(
                 r"
                 INSERT INTO chat_message_reactions (
                     room_id, message_id, message_created_at, user_id, reaction_key
@@ -214,16 +239,16 @@ impl ChatRepository {
                 ON CONFLICT (room_id, message_id, message_created_at, user_id, reaction_key)
                 DO UPDATE SET updated_at = NOW()
                 ",
+                request.room_id.as_i64(),
+                message.id,
+                message.created_at,
+                request.user_id.as_i64(),
+                &request.reaction_key
             )
-            .bind(request.room_id.as_i64())
-            .bind(message.id)
-            .bind(message.created_at)
-            .bind(request.user_id.as_i64())
-            .bind(&request.reaction_key)
             .execute(&mut *tx)
             .await?;
         } else {
-            sqlx::query(
+            sqlx::query!(
                 r"
                 DELETE FROM chat_message_reactions
                 WHERE room_id = $1
@@ -232,12 +257,12 @@ impl ChatRepository {
                   AND user_id = $4
                   AND reaction_key = $5
                 ",
+                request.room_id.as_i64(),
+                message.id,
+                message.created_at,
+                request.user_id.as_i64(),
+                &request.reaction_key
             )
-            .bind(request.room_id.as_i64())
-            .bind(message.id)
-            .bind(message.created_at)
-            .bind(request.user_id.as_i64())
-            .bind(&request.reaction_key)
             .execute(&mut *tx)
             .await?;
         }
@@ -295,32 +320,35 @@ impl ChatRepository {
             return Err(Error::Conflict("Message has been deleted".to_string()));
         }
 
-        let total = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT COUNT(*)::bigint
+        let total = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*)::bigint AS "total!"
             FROM chat_message_reactions
             WHERE room_id = $1
               AND message_id = $2
               AND message_created_at = $3
               AND reaction_key = $4
-            ",
+            "#,
+            room_id.as_i64(),
+            message.id,
+            message.created_at,
+            reaction_key
         )
-        .bind(room_id.as_i64())
-        .bind(message.id)
-        .bind(message.created_at)
-        .bind(reaction_key)
         .fetch_one(&self.pool)
         .await?;
 
-        let fetch_limit = limit.saturating_add(1);
+        let page_limit = usize::try_from(limit)
+            .map_err(|_| Error::Internal("chat reaction user limit exceeds usize::MAX".into()))?;
+        let fetch_limit = limit + 1;
         let cursor_reacted_at = cursor.map(|cursor| cursor.reacted_at);
         let cursor_user_id = cursor.map(|cursor| cursor.user_id.as_i64());
-        let rows = sqlx::query_as::<_, ChatReactionUser>(
-            r"
+        let rows = sqlx::query_as!(
+            ChatReactionUser,
+            r#"
             SELECT
-                user_id,
-                reaction_key,
-                updated_at AS reacted_at
+                user_id AS "user_id!: UserId",
+                reaction_key AS "reaction_key!",
+                updated_at AS "reacted_at!"
             FROM chat_message_reactions
             WHERE room_id = $1
               AND message_id = $2
@@ -332,20 +360,20 @@ impl ChatRepository {
               )
             ORDER BY updated_at DESC, user_id DESC
             LIMIT $7
-            ",
+            "#,
+            room_id.as_i64(),
+            message.id,
+            message.created_at,
+            reaction_key,
+            cursor_reacted_at,
+            cursor_user_id,
+            i64::from(fetch_limit)
         )
-        .bind(room_id.as_i64())
-        .bind(message.id)
-        .bind(message.created_at)
-        .bind(reaction_key)
-        .bind(cursor_reacted_at)
-        .bind(cursor_user_id)
-        .bind(i64::from(fetch_limit))
         .fetch_all(&self.pool)
         .await?;
 
         let mut users = rows;
-        let next_cursor = if users.len() > usize::try_from(limit).unwrap_or(usize::MAX) {
+        let next_cursor = if users.len() > page_limit {
             users.pop();
             users.last().map(|last| ChatReactionUsersCursor {
                 reacted_at: last.reacted_at,
@@ -518,11 +546,15 @@ impl ChatRepository {
             };
 
         let rows = if let Some(sequence) = after_sequence {
-            sqlx::query_as_unchecked!(
+            sqlx::query_as!(
                 ChatEventRow,
-                r"
-                SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                       occurred_at
+                r#"
+                SELECT sequence AS "sequence!",
+                       event_id AS "event_id!",
+                       room_id AS "room_id?",
+                       actor_user_id AS "actor_user_id?",
+                       payload AS "event_payload?: serde_json::Value",
+                       occurred_at AS "occurred_at!"
                 FROM chat_message_events
                 WHERE room_id = $1
                   AND sequence > $2
@@ -534,19 +566,23 @@ impl ChatRepository {
                   )
                 ORDER BY sequence ASC
                 LIMIT $3
-                ",
+                "#,
                 room_id.as_i64(),
                 sequence,
-                limit
+                i64::from(limit)
             )
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as_unchecked!(
+            sqlx::query_as!(
                 ChatEventRow,
-                r"
-                SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                       occurred_at
+                r#"
+                SELECT sequence AS "sequence!",
+                       event_id AS "event_id!",
+                       room_id AS "room_id?",
+                       actor_user_id AS "actor_user_id?",
+                       payload AS "event_payload?: serde_json::Value",
+                       occurred_at AS "occurred_at!"
                 FROM chat_message_events
                 WHERE room_id = $1
                   AND event_type IN (
@@ -557,9 +593,9 @@ impl ChatRepository {
                   )
                 ORDER BY sequence ASC
                 LIMIT $2
-                ",
+                "#,
                 room_id.as_i64(),
-                limit
+                i64::from(limit)
             )
             .fetch_all(&self.pool)
             .await?
@@ -576,11 +612,15 @@ impl ChatRepository {
     ) -> Result<Vec<ChatMessageEventLog>> {
         let limit = limit.clamp(1, 500);
         let after_sequence = after_sequence.max(0);
-        let rows = sqlx::query_as_unchecked!(
+        let rows = sqlx::query_as!(
             ChatEventRow,
-            r"
-            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                   occurred_at
+            r#"
+            SELECT sequence AS "sequence!",
+                   event_id AS "event_id!",
+                   room_id AS "room_id?",
+                   actor_user_id AS "actor_user_id?",
+                   payload AS "event_payload?: serde_json::Value",
+                   occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
               AND sequence > $2
@@ -592,10 +632,10 @@ impl ChatRepository {
               )
             ORDER BY sequence ASC
             LIMIT $3
-            ",
+            "#,
             room_id.as_i64(),
             after_sequence,
-            limit
+            i64::from(limit)
         )
         .fetch_all(&self.pool)
         .await?;
@@ -656,10 +696,7 @@ impl ChatRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(row
-            .min_sequence
-            .zip(row.max_sequence)
-            .map(|(min_sequence, max_sequence)| (min_sequence, max_sequence)))
+        Ok(row.min_sequence.zip(row.max_sequence))
     }
 
     pub async fn latest_event_for_message(
@@ -668,11 +705,15 @@ impl ChatRepository {
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let row = sqlx::query_as_unchecked!(
+        let row = sqlx::query_as!(
             ChatEventRow,
-            r"
-            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                   occurred_at
+            r#"
+            SELECT sequence AS "sequence!",
+                   event_id AS "event_id!",
+                   room_id AS "room_id?",
+                   actor_user_id AS "actor_user_id?",
+                   payload AS "event_payload?: serde_json::Value",
+                   occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
               AND event_type IN (
@@ -685,7 +726,7 @@ impl ChatRepository {
               AND message_created_at = $3
             ORDER BY sequence DESC
             LIMIT 1
-            ",
+            "#,
             room_id.as_i64(),
             message_id,
             message_created_at
@@ -702,11 +743,15 @@ impl ChatRepository {
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let row = sqlx::query_as_unchecked!(
+        let row = sqlx::query_as!(
             ChatEventRow,
-            r"
-            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                   occurred_at
+            r#"
+            SELECT sequence AS "sequence!",
+                   event_id AS "event_id!",
+                   room_id AS "room_id?",
+                   actor_user_id AS "actor_user_id?",
+                   payload AS "event_payload?: serde_json::Value",
+                   occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE event_type = 'chat_message_created'
               AND room_id = $1
@@ -714,7 +759,7 @@ impl ChatRepository {
               AND message_created_at = $3
             ORDER BY sequence ASC
             LIMIT 1
-            ",
+            "#,
             room_id.as_i64(),
             message_id,
             message_created_at
@@ -730,14 +775,19 @@ impl ChatRepository {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<Option<ChatReadState>> {
-        let state = sqlx::query_as_unchecked!(
+        let state = sqlx::query_as!(
             ChatReadState,
-            r"
-            SELECT room_id, user_id, last_read_message_id, last_read_message_created_at,
-                   last_read_event_id, last_read_event_sequence, updated_at
+            r#"
+            SELECT room_id AS "room_id!: RoomId",
+                   user_id AS "user_id!: UserId",
+                   last_read_message_id,
+                   last_read_message_created_at,
+                   last_read_event_id,
+                   last_read_event_sequence,
+                   updated_at AS "updated_at!"
             FROM chat_read_states
             WHERE room_id = $1 AND user_id = $2
-            ",
+            "#,
             room_id.as_i64(),
             user_id.as_i64()
         )
@@ -756,9 +806,9 @@ impl ChatRepository {
         event_id: Option<&str>,
         event_sequence: Option<i64>,
     ) -> Result<ChatReadState> {
-        let state = sqlx::query_as_unchecked!(
-ChatReadState,
-r"
+        let state = sqlx::query_as!(
+            ChatReadState,
+            r#"
             INSERT INTO chat_read_states (
                 room_id, user_id, last_read_message_id, last_read_message_created_at,
                 last_read_event_id, last_read_event_sequence, updated_at
@@ -780,16 +830,21 @@ r"
                         OR chat_read_states.last_read_event_sequence < EXCLUDED.last_read_event_sequence
                     )
                )
-            RETURNING room_id, user_id, last_read_message_id, last_read_message_created_at,
-                      last_read_event_id, last_read_event_sequence, updated_at
-            ",
-room_id.as_i64(),
-user_id.as_i64(),
-message_id,
-message_created_at,
-event_id,
-event_sequence
-)
+            RETURNING room_id AS "room_id!: RoomId",
+                      user_id AS "user_id!: UserId",
+                      last_read_message_id,
+                      last_read_message_created_at,
+                      last_read_event_id,
+                      last_read_event_sequence,
+                      updated_at AS "updated_at!"
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            message_id,
+            message_created_at,
+            event_id,
+            event_sequence
+        )
         .fetch_optional(&self.pool)
         .await?;
 
@@ -812,15 +867,15 @@ event_sequence
                 state.last_read_message_id,
                 state.last_read_message_created_at,
             ) {
-                sqlx::query_scalar_unchecked!(
-                    r"
-                    SELECT COUNT(*)
+                sqlx::query_scalar!(
+                    r#"
+                    SELECT COUNT(*) AS "count!"
                     FROM chat_messages
                     WHERE room_id = $1
                       AND status <> $2
                       AND (user_id IS NULL OR user_id <> $3)
                       AND (created_at, id) > ($4, $5)
-                    ",
+                    "#,
                     room_id.as_i64(),
                     i16::from(ChatMessageStatus::Deleted),
                     user_id.as_i64(),
@@ -829,7 +884,6 @@ event_sequence
                 )
                 .fetch_one(&self.pool)
                 .await?
-                .unwrap_or(0)
             } else if let Some(sequence) = state.last_read_event_sequence {
                 self.count_unread_after_event_sequence(room_id, user_id, sequence)
                     .await?
@@ -849,9 +903,9 @@ event_sequence
         user_id: &UserId,
         sequence: i64,
     ) -> Result<i64> {
-        let count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_message_events e
             JOIN chat_messages m
               ON m.room_id = e.room_id
@@ -862,36 +916,34 @@ event_sequence
               AND e.event_type = 'chat_message_created'
               AND m.status <> $3
               AND (m.user_id IS NULL OR m.user_id <> $4)
-            ",
+            "#,
             room_id.as_i64(),
             sequence,
             i16::from(ChatMessageStatus::Deleted),
             user_id.as_i64()
         )
         .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+        .await?;
 
         Ok(count)
     }
 
     async fn count_unread_without_state(&self, room_id: &RoomId, user_id: &UserId) -> Result<i64> {
-        let count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_messages
             WHERE room_id = $1
               AND status <> $2
               AND (user_id IS NULL OR user_id <> $3)
               AND created_at >= NOW() - INTERVAL '90 days'
-            ",
+            "#,
             room_id.as_i64(),
             i16::from(ChatMessageStatus::Deleted),
             user_id.as_i64()
         )
         .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+        .await?;
 
         Ok(count)
     }
@@ -917,47 +969,73 @@ event_sequence
     ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
         let limit = limit.clamp(1, 100);
         let messages = if let Some(cursor) = cursor {
-            sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-                SELECT id, room_id, user_id, client_message_id, content, message_type,
-                       status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                       deleted_at, deleted_by, delete_reason, created_at
+            sqlx::query_as!(
+                ChatMessage,
+                r#"
+                SELECT id AS "id!",
+                       room_id AS "room_id!: RoomId",
+                       user_id AS "user_id?: UserId",
+                       client_message_id,
+                       content AS "content!",
+                       message_type AS "message_type!: ChatMessageType",
+                       status AS "status!: ChatMessageStatus",
+                       version AS "version!",
+                       reply_to_message_id,
+                       reply_to_message_created_at,
+                       metadata AS "metadata!: serde_json::Value",
+                       edited_at,
+                       deleted_at,
+                       deleted_by AS "deleted_by?: UserId",
+                       delete_reason,
+                       created_at AS "created_at!"
                 FROM chat_messages
                 WHERE room_id = $1
                   AND ($2 OR status <> $3)
                   AND (created_at, id) < ($4, $5)
                 ORDER BY created_at DESC, id DESC
                 LIMIT $6
-                ",
-room_id.as_i64(),
-include_deleted,
-i16::from(ChatMessageStatus::Deleted),
-cursor.created_at,
-cursor.id,
-limit
-)
+                "#,
+                room_id.as_i64(),
+                include_deleted,
+                i16::from(ChatMessageStatus::Deleted),
+                cursor.created_at,
+                cursor.id,
+                i64::from(limit)
+            )
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-                SELECT id, room_id, user_id, client_message_id, content, message_type,
-                       status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                       deleted_at, deleted_by, delete_reason, created_at
+            sqlx::query_as!(
+                ChatMessage,
+                r#"
+                SELECT id AS "id!",
+                       room_id AS "room_id!: RoomId",
+                       user_id AS "user_id?: UserId",
+                       client_message_id,
+                       content AS "content!",
+                       message_type AS "message_type!: ChatMessageType",
+                       status AS "status!: ChatMessageStatus",
+                       version AS "version!",
+                       reply_to_message_id,
+                       reply_to_message_created_at,
+                       metadata AS "metadata!: serde_json::Value",
+                       edited_at,
+                       deleted_at,
+                       deleted_by AS "deleted_by?: UserId",
+                       delete_reason,
+                       created_at AS "created_at!"
                 FROM chat_messages
                 WHERE room_id = $1
                   AND ($2 OR status <> $3)
                   AND created_at >= NOW() - INTERVAL '90 days'
                 ORDER BY created_at DESC, id DESC
                 LIMIT $4
-                ",
-room_id.as_i64(),
-include_deleted,
-i16::from(ChatMessageStatus::Deleted),
-limit
-)
+                "#,
+                room_id.as_i64(),
+                include_deleted,
+                i16::from(ChatMessageStatus::Deleted),
+                i64::from(limit)
+            )
             .fetch_all(&self.pool)
             .await?
         };
@@ -1015,41 +1093,72 @@ limit
         let end_seconds = query.position_seconds + query.after_seconds;
         let media_id = query.media_id.map(|id| id.as_i64().to_string());
         let playlist_id = query.playlist_id.map(|id| id.as_i64().to_string());
-        let position_expr = r"
-            CASE
-                WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
-                THEN (metadata #>> '{playback,position_seconds}')::double precision
-                ELSE NULL
-            END
-        ";
-        let sql = format!(
-            r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
-            FROM chat_messages
-            WHERE room_id = $1
-              AND ($2 OR status <> $3)
-              AND ($4::text IS NULL OR metadata #>> '{{playback,media_id}}' = $4)
-              AND ($5::text IS NULL OR metadata #>> '{{playback,playlist_id}}' = $5)
-              AND ($6::text IS NULL OR metadata #>> '{{playback,target_hash}}' = $6)
-              AND {position_expr} BETWEEN $7 AND $8
-            ORDER BY {position_expr} ASC, created_at ASC, id ASC
+        let target_hex = query.target.as_ref().map(hex::encode);
+        let messages = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            WITH candidates AS (
+                SELECT id,
+                       room_id,
+                       user_id,
+                       client_message_id,
+                       content,
+                       message_type,
+                       status,
+                       version,
+                       reply_to_message_id,
+                       reply_to_message_created_at,
+                       metadata,
+                       edited_at,
+                       deleted_at,
+                       deleted_by,
+                       delete_reason,
+                       created_at,
+                       CASE
+                           WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
+                           THEN (metadata #>> '{playback,position_seconds}')::double precision
+                           ELSE NULL
+                       END AS playback_position
+                FROM chat_messages
+                WHERE room_id = $1
+                  AND ($2 OR status <> $3)
+                  AND ($4::text IS NULL OR metadata #>> '{playback,media_id}' = $4)
+                  AND ($5::text IS NULL OR metadata #>> '{playback,playlist_id}' = $5)
+                  AND ($6::text IS NULL OR metadata #>> '{playback,target_hex}' = $6)
+            )
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
+            FROM candidates
+            WHERE playback_position BETWEEN $7 AND $8
+            ORDER BY playback_position ASC, created_at ASC, id ASC
             LIMIT $9
-            "
-        );
-        let messages = sqlx::query_as::<_, ChatMessage>(&sql)
-            .bind(query.room_id.as_i64())
-            .bind(query.include_deleted)
-            .bind(i16::from(ChatMessageStatus::Deleted))
-            .bind(media_id)
-            .bind(playlist_id)
-            .bind(query.target_hash.as_deref())
-            .bind(start_seconds)
-            .bind(end_seconds)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?;
+            "#,
+            query.room_id.as_i64(),
+            query.include_deleted,
+            i16::from(ChatMessageStatus::Deleted),
+            media_id,
+            playlist_id,
+            target_hex.as_deref(),
+            start_seconds,
+            end_seconds,
+            i64::from(limit)
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         self.attach_images_and_reactions_to_messages(messages, viewer_user_id)
             .await
@@ -1092,50 +1201,76 @@ limit
 
         let before_limit = before_limit.clamp(0, 50);
         let after_limit = after_limit.clamp(0, 50);
-        let mut before = sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
+        let mut before = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1
               AND ($2 OR status <> $3)
               AND (created_at, id) < ($4, $5)
             ORDER BY created_at DESC, id DESC
             LIMIT $6
-            ",
-room_id.as_i64(),
-include_deleted,
-i16::from(ChatMessageStatus::Deleted),
-anchor.created_at,
-anchor.id,
-before_limit
-)
+            "#,
+            room_id.as_i64(),
+            include_deleted,
+            i16::from(ChatMessageStatus::Deleted),
+            anchor.created_at,
+            anchor.id,
+            i64::from(before_limit)
+        )
         .fetch_all(&self.pool)
         .await?;
         before.reverse();
 
-        let after = sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
+        let after = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1
               AND ($2 OR status <> $3)
               AND (created_at, id) > ($4, $5)
             ORDER BY created_at ASC, id ASC
             LIMIT $6
-            ",
-room_id.as_i64(),
-include_deleted,
-i16::from(ChatMessageStatus::Deleted),
-anchor.created_at,
-anchor.id,
-after_limit
-)
+            "#,
+            room_id.as_i64(),
+            include_deleted,
+            i16::from(ChatMessageStatus::Deleted),
+            anchor.created_at,
+            anchor.id,
+            i64::from(after_limit)
+        )
         .fetch_all(&self.pool)
         .await?;
 
@@ -1157,17 +1292,30 @@ after_limit
     }
 
     pub async fn get_by_id(&self, message_id: i64) -> Result<Option<ChatMessage>> {
-        let msg = sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
+        let msg = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
             FROM chat_messages
             WHERE id = $1
-            ",
-message_id
-)
+            "#,
+            message_id
+        )
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1179,18 +1327,31 @@ message_id
         room_id: &RoomId,
         message_id: i64,
     ) -> Result<Option<ChatMessage>> {
-        let msg = sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
+        let msg = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1 AND id = $2
-            ",
-room_id.as_i64(),
-message_id
-)
+            "#,
+            room_id.as_i64(),
+            message_id
+        )
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1582,18 +1743,17 @@ message_id
     }
 
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
-        let count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_messages
             WHERE room_id = $1
               AND created_at >= NOW() - INTERVAL '90 days'
-            ",
+            "#,
             room_id.as_i64()
         )
         .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+        .await?;
 
         Ok(count)
     }
@@ -1683,22 +1843,35 @@ message_id
         tx: &mut Transaction<'_, Postgres>,
         message: &ChatMessage,
     ) -> Result<ChatMessage> {
-        let inserted = sqlx::query_as_unchecked!(
+        let inserted = sqlx::query_as!(
             ChatMessage,
-            r"
+            r#"
             INSERT INTO chat_messages (
                 room_id, user_id, client_message_id, content, message_type,
                 status, version, reply_to_message_id, reply_to_message_created_at,
                 metadata, created_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING id, room_id, user_id, client_message_id, content, message_type,
-                      status, version, reply_to_message_id, reply_to_message_created_at,
-                      metadata, edited_at, deleted_at, deleted_by, delete_reason, created_at
-            ",
+            RETURNING id AS "id!",
+                      room_id AS "room_id!: RoomId",
+                      user_id AS "user_id?: UserId",
+                      client_message_id,
+                      content AS "content!",
+                      message_type AS "message_type!: ChatMessageType",
+                      status AS "status!: ChatMessageStatus",
+                      version AS "version!",
+                      reply_to_message_id,
+                      reply_to_message_created_at,
+                      metadata AS "metadata!: serde_json::Value",
+                      edited_at,
+                      deleted_at,
+                      deleted_by AS "deleted_by?: UserId",
+                      delete_reason,
+                      created_at AS "created_at!"
+            "#,
             message.room_id.as_i64(),
             message.user_id.map(|id| id.as_i64()),
-            &message.client_message_id,
+            message.client_message_id.as_deref(),
             &message.content,
             i16::from(message.message_type),
             i16::from(message.status),
@@ -1722,26 +1895,36 @@ message_id
     ) -> Result<Vec<ChatImage>> {
         let mut inserted = Vec::with_capacity(images.len());
         for image in images {
-            let row = sqlx::query_as_unchecked!(
+            let row = sqlx::query_as!(
                 ChatImage,
-                r"
+                r#"
                 INSERT INTO chat_message_images (
                     id, room_id, message_id, message_created_at, storage_backend,
                     object_key, url, mime_type, size_bytes, width, height, metadata
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                RETURNING id, room_id, message_id, message_created_at,
-                          storage_backend, object_key, url, mime_type, size_bytes,
-                          width, height, metadata, created_at
-                ",
+                RETURNING id AS "id!",
+                          room_id AS "room_id!: RoomId",
+                          message_id AS "message_id!",
+                          message_created_at AS "message_created_at!",
+                          storage_backend AS "storage_backend!",
+                          object_key AS "object_key!",
+                          url,
+                          mime_type,
+                          size_bytes,
+                          width,
+                          height,
+                          metadata AS "metadata!: serde_json::Value",
+                          created_at AS "created_at!"
+                "#,
                 &image.id,
                 message.room_id.as_i64(),
                 message.id,
                 message.created_at,
                 &image.storage_backend,
                 &image.object_key,
-                &image.url,
-                &image.mime_type,
+                image.url.as_deref(),
+                image.mime_type.as_deref(),
                 image.size_bytes,
                 image.width,
                 image.height,
@@ -1846,7 +2029,7 @@ message_id
             WHERE room_id = $1 AND user_id = $2 AND client_message_id = $3
             ",
             request.message.room_id.as_i64(),
-            request.message.user_id.expect("checked above").as_i64(),
+            event.actor_user_id.as_i64(),
             request.client_message_id,
             &logged.event.event_id
         )
@@ -1907,12 +2090,15 @@ message_id
         request_hash: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
         let row = sqlx::query!(
-            r"
-            SELECT operation_kind, request_hash, event_id
+            r#"
+            SELECT
+                operation_kind,
+                request_hash,
+                event_id AS "event_id?: String"
             FROM chat_message_operation_idempotency
             WHERE room_id = $1 AND user_id = $2 AND client_operation_id = $3
             FOR UPDATE
-            ",
+            "#,
             room_id.as_i64(),
             user_id.as_i64(),
             client_operation_id
@@ -1996,19 +2182,32 @@ message_id
         message_id: i64,
         created_at: DateTime<Utc>,
     ) -> Result<Option<ChatMessageWithImages>> {
-        let message = sqlx::query_as_unchecked!(
-ChatMessage,
-r"
-            SELECT id, room_id, user_id, client_message_id, content, message_type,
-                   status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                   deleted_at, deleted_by, delete_reason, created_at
+        let message = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
             FROM chat_messages
             WHERE room_id = $1 AND id = $2 AND created_at = $3
-            ",
-room_id.as_i64(),
-message_id,
-created_at
-)
+            "#,
+            room_id.as_i64(),
+            message_id,
+            created_at
+        )
         .fetch_optional(&mut **tx)
         .await?;
         let Some(message) = message else {
@@ -2031,15 +2230,26 @@ created_at
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Vec<ChatImage>> {
-        let images = sqlx::query_as_unchecked!(
+        let images = sqlx::query_as!(
             ChatImage,
-            r"
-            SELECT id, room_id, message_id, message_created_at, storage_backend,
-                   object_key, url, mime_type, size_bytes, width, height, metadata, created_at
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   message_id AS "message_id!",
+                   message_created_at AS "message_created_at!",
+                   storage_backend AS "storage_backend!",
+                   object_key AS "object_key!",
+                   url,
+                   mime_type,
+                   size_bytes,
+                   width,
+                   height,
+                   metadata AS "metadata!: serde_json::Value",
+                   created_at AS "created_at!"
             FROM chat_message_images
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
-            ",
+            "#,
             message_id,
             message_created_at
         )
@@ -2056,17 +2266,21 @@ created_at
         let payload = serde_json::to_value(event)?;
         let summary = chat_event_summary(event);
         let event_type = chat_event_type(event.kind);
-        let row = sqlx::query_as_unchecked!(
+        let row = sqlx::query_as!(
             ChatEventRow,
-            r"
+            r#"
             INSERT INTO chat_message_events (
                 event_id, room_id, actor_user_id, message_id, message_created_at,
                 event_type, event_version, message_version, payload, summary, occurred_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9, $10)
-            RETURNING sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                      occurred_at
-            ",
+            RETURNING sequence AS "sequence!",
+                      event_id AS "event_id!",
+                      room_id AS "room_id?",
+                      actor_user_id AS "actor_user_id?",
+                      payload AS "event_payload?: serde_json::Value",
+                      occurred_at AS "occurred_at!"
+            "#,
             &event.event_id,
             event.room_id.as_i64(),
             event.actor_user_id.as_i64(),
@@ -2089,11 +2303,15 @@ created_at
         room_id: &RoomId,
         event_id: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let row = sqlx::query_as_unchecked!(
+        let row = sqlx::query_as!(
             ChatEventRow,
-            r"
-            SELECT sequence, event_id, room_id, actor_user_id, payload AS event_payload,
-                   occurred_at
+            r#"
+            SELECT sequence AS "sequence!",
+                   event_id AS "event_id!",
+                   room_id AS "room_id?",
+                   actor_user_id AS "actor_user_id?",
+                   payload AS "event_payload?: serde_json::Value",
+                   occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
               AND event_id = $2
@@ -2103,7 +2321,7 @@ created_at
                   'chat_message_deleted',
                   'chat_message_reactions_changed'
               )
-            ",
+            "#,
             room_id.as_i64(),
             event_id
         )
@@ -2118,15 +2336,26 @@ created_at
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Vec<ChatImage>> {
-        let images = sqlx::query_as_unchecked!(
+        let images = sqlx::query_as!(
             ChatImage,
-            r"
-            SELECT id, room_id, message_id, message_created_at, storage_backend,
-                   object_key, url, mime_type, size_bytes, width, height, metadata, created_at
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   message_id AS "message_id!",
+                   message_created_at AS "message_created_at!",
+                   storage_backend AS "storage_backend!",
+                   object_key AS "object_key!",
+                   url,
+                   mime_type,
+                   size_bytes,
+                   width,
+                   height,
+                   metadata AS "metadata!: serde_json::Value",
+                   created_at AS "created_at!"
             FROM chat_message_images
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
-            ",
+            "#,
             message_id,
             message_created_at
         )
@@ -2143,19 +2372,30 @@ created_at
 
         let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
         let created_ats: Vec<DateTime<Utc>> = messages.iter().map(|m| m.created_at).collect();
-        let images = sqlx::query_as_unchecked!(
-ChatImage,
-r"
-            SELECT a.id, a.room_id, a.message_id, a.message_created_at, a.storage_backend, a.object_key, a.url, a.mime_type, a.size_bytes,
-                   a.width, a.height, a.metadata, a.created_at
+        let images = sqlx::query_as!(
+            ChatImage,
+            r#"
+            SELECT a.id AS "id!",
+                   a.room_id AS "room_id!: RoomId",
+                   a.message_id AS "message_id!",
+                   a.message_created_at AS "message_created_at!",
+                   a.storage_backend AS "storage_backend!",
+                   a.object_key AS "object_key!",
+                   a.url,
+                   a.mime_type,
+                   a.size_bytes,
+                   a.width,
+                   a.height,
+                   a.metadata AS "metadata!: serde_json::Value",
+                   a.created_at AS "created_at!"
             FROM chat_message_images a
             JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)
               ON a.message_id = m.id AND a.message_created_at = m.created_at
             ORDER BY a.message_created_at DESC, a.message_id DESC, a.created_at ASC, a.id ASC
-            ",
-&ids,
-&created_ats
-)
+            "#,
+            &ids,
+            &created_ats
+        )
         .fetch_all(&self.pool)
         .await?;
 
@@ -2224,42 +2464,37 @@ r"
         let created_ats: Vec<DateTime<Utc>> =
             messages.iter().map(|message| message.created_at).collect();
         let viewer_id = viewer_user_id.map(UserId::as_i64);
-        let rows = sqlx::query(
-            r"
+        let rows = sqlx::query!(
+            r#"
             SELECT
-                r.message_id,
-                r.message_created_at,
+                r.message_id AS "message_id!",
+                r.message_created_at AS "message_created_at!",
                 r.reaction_key AS key,
-                COUNT(*)::bigint AS count,
-                COALESCE(BOOL_OR($3::bigint IS NOT NULL AND r.user_id = $3), FALSE) AS reacted_by_me
+                COUNT(*)::bigint AS "count!",
+                COALESCE(BOOL_OR($3::bigint IS NOT NULL AND r.user_id = $3), FALSE) AS "reacted_by_me!"
             FROM chat_message_reactions r
             JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)
               ON r.message_id = m.id AND r.message_created_at = m.created_at
             GROUP BY r.message_id, r.message_created_at, r.reaction_key
-            ORDER BY count DESC, r.reaction_key ASC
-            ",
+            ORDER BY COUNT(*) DESC, r.reaction_key ASC
+            "#,
+            &ids,
+            &created_ats,
+            viewer_id
         )
-        .bind(&ids)
-        .bind(&created_ats)
-        .bind(viewer_id)
         .fetch_all(executor)
         .await?;
 
         let mut grouped =
             std::collections::HashMap::<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>::new();
         for row in rows {
-            let message_id: i64 = row.try_get("message_id")?;
-            let message_created_at: DateTime<Utc> = row.try_get("message_created_at")?;
-            let key: String = row.try_get("key")?;
-            let count: i64 = row.try_get("count")?;
-            let reacted_by_me: bool = row.try_get("reacted_by_me")?;
             grouped
-                .entry((message_id, message_created_at))
+                .entry((row.message_id, row.message_created_at))
                 .or_default()
                 .push(ChatReactionSummary {
-                    key,
-                    count,
-                    reacted_by_me,
+                    key: row.key,
+                    count: row.count,
+                    reacted_by_me: row.reacted_by_me,
                 });
         }
         Ok(grouped)

@@ -12,7 +12,6 @@
 //! 5. Rate limiting works without IP (room-only mode)
 //! 6. Reset failure is logged to audit log
 //!
-//! Run with: cargo test -p synctv-core --test `room_password_rate_limit_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -22,11 +21,11 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
         auth::{BruteForceProtection, JwtService},
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
@@ -35,16 +34,14 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -53,15 +50,17 @@ fn make_user_service(pool: &PgPool) -> UserService {
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    let mut room_service = RoomService::new(pool, user_service);
 
-    // Use lightweight password hasher for fast tests
-
-    // Set up brute-force protection for rate limiting tests
     let brute_force = BruteForceProtection::in_memory("test_room_password".to_string());
-    room_service.set_brute_force_service(brute_force);
-
-    room_service
+    RoomService::new_with_options(
+        pool,
+        user_service,
+        RoomServiceOptions {
+            brute_force_service: Some(Arc::new(brute_force)),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -395,9 +394,16 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = make_user_service(&pool);
-    let mut room_service = RoomService::new(pool.clone(), user_service);
     let brute_force = BruteForceProtection::in_memory("test_fallback_mode".to_string());
-    room_service.set_brute_force_service(brute_force);
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        user_service,
+        RoomServiceOptions {
+            brute_force_service: Some(Arc::new(brute_force)),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
 
     let owner = user_repo
         .create(&make_user("fallback_owner"))

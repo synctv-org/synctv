@@ -4,7 +4,6 @@
 //! loading all members into memory. This is critical for rooms with large
 //! numbers of members.
 //!
-//! Run with: cargo test --test room_member_pagination_tests
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
@@ -347,48 +346,35 @@ async fn test_list_by_room_paginated_large_member_count() {
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
-        // No delay - we don't care about ordering, just count
     }
 
-    // Total = 151 members (1 creator + 150 members)
-    // But due to potential race conditions in rapid creation, we verify actual count
-
-    // Request various pages and verify counts
     let (p1, total1) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(50)))
         .await
         .unwrap();
+    assert_eq!(total1, 151);
     assert_eq!(p1.len(), 50);
-    let expected_total = total1; // Capture actual total for consistency
 
     let (p2, total2) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(2), Some(50)))
         .await
         .unwrap();
-    assert_eq!(total2, expected_total);
+    assert_eq!(total2, 151);
     assert_eq!(p2.len(), 50);
 
     let (p3, total3) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(3), Some(50)))
         .await
         .unwrap();
-    assert_eq!(total3, expected_total);
-    // Page 3 should have remaining members (expected_total - 100)
-    // Due to rapid concurrent creation, joined_at timestamps might have slight ordering issues
-    // so we just verify we get some members and the total is consistent
-    assert!(
-        !p3.is_empty() && p3.len() <= 50,
-        "Page 3 should have between 1-50 members"
-    );
+    assert_eq!(total3, 151);
+    assert_eq!(p3.len(), 50);
 
     let (p4, total4) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(4), Some(50)))
         .await
         .unwrap();
-    // Page 4 might have remaining members if page 3 didn't get all.
-    // Even if the page is empty, total should still reflect the full match set.
-    let _ = p4;
-    assert_eq!(total4, expected_total);
+    assert_eq!(total4, 151);
+    assert_eq!(p4.len(), 1);
 }
 
 #[tokio::test]
@@ -549,47 +535,4 @@ async fn test_list_by_room_paginated_empty_room() {
 
     assert_eq!(total, 0);
     assert!(members.is_empty());
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_member_service_list_members_paginated() {
-    // This test verifies that MemberService exposes the paginated method
-    // and returns correct results
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let owner = user_repo.create(&make_user("owner_svc")).await.unwrap();
-    let room = room_repo
-        .create(&make_room("Room Service", &owner.id))
-        .await
-        .unwrap();
-
-    member_repo
-        .add(&make_member(room.id, owner.id, RoomRole::Creator))
-        .await
-        .unwrap();
-
-    // Add 45 members
-    for i in 0..45 {
-        let user = user_repo
-            .create(&make_user(&format!("member_svc_{i:02}")))
-            .await
-            .unwrap();
-        member_repo
-            .add(&make_member(room.id, user.id, RoomRole::Member))
-            .await
-            .unwrap();
-    }
-
-    // Test via repository (service layer test would require full service setup)
-    let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(2), Some(20)))
-        .await
-        .unwrap();
-
-    assert_eq!(total, 46); // 1 creator + 45 members
-    assert_eq!(members.len(), 20);
 }

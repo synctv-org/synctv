@@ -2,6 +2,7 @@
 
 use crate::impls::ApiError;
 use hex::encode as hex_encode;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
@@ -23,9 +24,10 @@ use synctv_core::service::room::{
 };
 use synctv_core::service::MediaService;
 
-use super::convert::playlist_path_node_to_proto;
+use super::convert::{json_to_vec, try_playlist_path_node_to_proto};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
+use crate::playback_fanout::{PlaybackFanoutService, PreparedPlaybackStateFanout};
 use crate::playlist_fanout::{PlaylistFanoutService, PreparedPlaylistDeletedFanout};
 use crate::realtime_fanout::RealtimeFanoutService;
 
@@ -54,20 +56,159 @@ pub(crate) fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, Api
     Ok(metadata)
 }
 
+pub(crate) struct RequiredStoredFileFields {
+    pub url: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub metadata: Vec<u8>,
+}
+
+pub(crate) fn required_stored_file_fields(
+    file: &NewStoredFile,
+    metadata_field: &'static str,
+) -> Result<RequiredStoredFileFields, ApiError> {
+    let url = required_stored_file_url(file)?;
+    let mime_type = required_stored_file_mime_type(file)?;
+    let size_bytes = required_stored_file_size_bytes(file)?;
+    Ok(RequiredStoredFileFields {
+        url,
+        mime_type,
+        size_bytes,
+        width: file.width.unwrap_or_default(),
+        height: file.height.unwrap_or_default(),
+        metadata: json_to_vec(&file.metadata, metadata_field)?,
+    })
+}
+
+fn required_stored_file_url(file: &NewStoredFile) -> Result<String, ApiError> {
+    let url = file
+        .url
+        .as_deref()
+        .map(str::trim)
+        .ok_or_else(|| ApiError::Internal("stored file url is missing".to_string()))?;
+    if url.is_empty() {
+        return Err(ApiError::Internal("stored file url is empty".to_string()));
+    }
+    Ok(url.to_string())
+}
+
+fn required_stored_file_mime_type(file: &NewStoredFile) -> Result<String, ApiError> {
+    let mime_type = file
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .ok_or_else(|| ApiError::Internal("stored file mime_type is missing".to_string()))?;
+    if mime_type.is_empty() {
+        return Err(ApiError::Internal(
+            "stored file mime_type is empty".to_string(),
+        ));
+    }
+    Ok(mime_type.to_string())
+}
+
+fn required_stored_file_size_bytes(file: &NewStoredFile) -> Result<i64, ApiError> {
+    match file.size_bytes {
+        Some(size_bytes) if size_bytes > 0 => Ok(size_bytes),
+        _ => Err(ApiError::Internal(
+            "stored file size_bytes is missing or invalid".to_string(),
+        )),
+    }
+}
+
+pub(crate) struct UploadSessionFields {
+    pub upload_url: Option<String>,
+    pub upload_method: Option<String>,
+    pub expires_at: Option<i64>,
+    pub ownership_proof_nonce: Option<String>,
+    pub ownership_proof_metadata_key: Option<String>,
+}
+
+pub(crate) fn upload_session_fields(
+    session: &FileUploadSession,
+) -> Result<UploadSessionFields, ApiError> {
+    let (upload_url, upload_method, expires_at) = if session.upload_required {
+        (
+            Some(required_upload_session_string(
+                session.upload_url.as_deref(),
+                "upload_url",
+            )?),
+            Some(required_upload_session_string(
+                session.upload_method.as_deref(),
+                "upload_method",
+            )?),
+            Some(
+                session
+                    .expires_at
+                    .ok_or_else(|| {
+                        ApiError::Internal(
+                            "upload session marked upload_required is missing expires_at"
+                                .to_string(),
+                        )
+                    })?
+                    .timestamp(),
+            ),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    let (ownership_proof_nonce, ownership_proof_metadata_key) = if session.ownership_proof_required
+    {
+        (
+            Some(required_upload_session_string(
+                session.ownership_proof_nonce.as_deref(),
+                "ownership_proof_nonce",
+            )?),
+            Some(required_upload_session_string(
+                session.ownership_proof_metadata_key.as_deref(),
+                "ownership_proof_metadata_key",
+            )?),
+        )
+    } else {
+        (None, None)
+    };
+
+    Ok(UploadSessionFields {
+        upload_url,
+        upload_method,
+        expires_at,
+        ownership_proof_nonce,
+        ownership_proof_metadata_key,
+    })
+}
+
+fn required_upload_session_string(
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<String, ApiError> {
+    let value = value
+        .map(str::trim)
+        .ok_or_else(|| ApiError::Internal(format!("upload session is missing {field}")))?;
+    if value.is_empty() {
+        return Err(ApiError::Internal(format!(
+            "upload session {field} is empty"
+        )));
+    }
+    Ok(value.to_string())
+}
+
 pub(crate) fn stored_file_to_file_cover_proto(
     file: &NewStoredFile,
-) -> crate::proto::client::FileCover {
-    crate::proto::client::FileCover {
+) -> Result<crate::proto::client::FileCover, ApiError> {
+    let fields = required_stored_file_fields(file, "file cover metadata")?;
+    Ok(crate::proto::client::FileCover {
         id: file.id.clone(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
-        url: file.url.clone().unwrap_or_default(),
-        mime_type: file.mime_type.clone().unwrap_or_default(),
-        size_bytes: file.size_bytes.unwrap_or_default(),
-        width: file.width.unwrap_or_default(),
-        height: file.height.unwrap_or_default(),
-        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
-    }
+        url: fields.url,
+        mime_type: fields.mime_type,
+        size_bytes: fields.size_bytes,
+        width: fields.width,
+        height: fields.height,
+        metadata: fields.metadata,
+    })
 }
 
 pub(crate) fn file_cover_proto_to_stored_file(
@@ -88,18 +229,19 @@ pub(crate) fn file_cover_proto_to_stored_file(
 
 pub(crate) fn stored_file_to_video_cover_proto(
     file: &NewStoredFile,
-) -> crate::proto::client::VideoCover {
-    crate::proto::client::VideoCover {
+) -> Result<crate::proto::client::VideoCover, ApiError> {
+    let fields = required_stored_file_fields(file, "video cover metadata")?;
+    Ok(crate::proto::client::VideoCover {
         id: file.id.clone(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
-        url: file.url.clone().unwrap_or_default(),
-        mime_type: file.mime_type.clone().unwrap_or_default(),
-        size_bytes: file.size_bytes.unwrap_or_default(),
-        width: file.width.unwrap_or_default(),
-        height: file.height.unwrap_or_default(),
-        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
-    }
+        url: fields.url,
+        mime_type: fields.mime_type,
+        size_bytes: fields.size_bytes,
+        width: fields.width,
+        height: fields.height,
+        metadata: fields.metadata,
+    })
 }
 
 fn video_cover_proto_to_stored_file(
@@ -120,17 +262,18 @@ fn video_cover_proto_to_stored_file(
 
 fn video_cover_upload_session_to_proto(
     session: FileUploadSession,
-) -> crate::proto::client::VideoCoverUploadSession {
-    crate::proto::client::VideoCoverUploadSession {
-        cover: Some(stored_file_to_video_cover_proto(&session.file)),
+) -> Result<crate::proto::client::VideoCoverUploadSession, ApiError> {
+    let fields = upload_session_fields(&session)?;
+    Ok(crate::proto::client::VideoCoverUploadSession {
+        cover: Some(stored_file_to_video_cover_proto(&session.file)?),
         upload_required: session.upload_required,
-        upload_url: session.upload_url.unwrap_or_default(),
-        upload_method: session.upload_method.unwrap_or_default(),
+        upload_url: fields.upload_url,
+        upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
-        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        expires_at: fields.expires_at,
         max_size_bytes: session.max_size_bytes,
         ownership_proof_required: session.ownership_proof_required,
-        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_nonce: fields.ownership_proof_nonce,
         ownership_proof_ranges: session
             .ownership_proof_ranges
             .into_iter()
@@ -141,23 +284,24 @@ fn video_cover_upload_session_to_proto(
                 },
             )
             .collect(),
-        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
-    }
+        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+    })
 }
 
 pub(crate) fn file_upload_session_to_room_cover_proto(
     session: FileUploadSession,
-) -> crate::proto::client::RoomCoverUploadSession {
-    crate::proto::client::RoomCoverUploadSession {
-        cover: Some(stored_file_to_file_cover_proto(&session.file)),
+) -> Result<crate::proto::client::RoomCoverUploadSession, ApiError> {
+    let fields = upload_session_fields(&session)?;
+    Ok(crate::proto::client::RoomCoverUploadSession {
+        cover: Some(stored_file_to_file_cover_proto(&session.file)?),
         upload_required: session.upload_required,
-        upload_url: session.upload_url.unwrap_or_default(),
-        upload_method: session.upload_method.unwrap_or_default(),
+        upload_url: fields.upload_url,
+        upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
-        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        expires_at: fields.expires_at,
         max_size_bytes: session.max_size_bytes,
         ownership_proof_required: session.ownership_proof_required,
-        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_nonce: fields.ownership_proof_nonce,
         ownership_proof_ranges: session
             .ownership_proof_ranges
             .into_iter()
@@ -166,23 +310,24 @@ pub(crate) fn file_upload_session_to_room_cover_proto(
                 length: range.length,
             })
             .collect(),
-        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
-    }
+        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+    })
 }
 
 pub(crate) fn file_upload_session_to_playlist_cover_proto(
     session: FileUploadSession,
-) -> crate::proto::client::PlaylistCoverUploadSession {
-    crate::proto::client::PlaylistCoverUploadSession {
-        cover: Some(stored_file_to_file_cover_proto(&session.file)),
+) -> Result<crate::proto::client::PlaylistCoverUploadSession, ApiError> {
+    let fields = upload_session_fields(&session)?;
+    Ok(crate::proto::client::PlaylistCoverUploadSession {
+        cover: Some(stored_file_to_file_cover_proto(&session.file)?),
         upload_required: session.upload_required,
-        upload_url: session.upload_url.unwrap_or_default(),
-        upload_method: session.upload_method.unwrap_or_default(),
+        upload_url: fields.upload_url,
+        upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
-        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        expires_at: fields.expires_at,
         max_size_bytes: session.max_size_bytes,
         ownership_proof_required: session.ownership_proof_required,
-        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_nonce: fields.ownership_proof_nonce,
         ownership_proof_ranges: session
             .ownership_proof_ranges
             .into_iter()
@@ -191,8 +336,8 @@ pub(crate) fn file_upload_session_to_playlist_cover_proto(
                 length: range.length,
             })
             .collect(),
-        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
-    }
+        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+    })
 }
 
 pub(crate) fn video_cover_object_to_proto(
@@ -236,16 +381,18 @@ pub enum MoveMediaFanoutStep {
 pub(crate) struct PreparedDeleteEntriesOutboxFanout {
     media_fanout: Arc<dyn MediaFanoutService>,
     playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    playback_fanout: Arc<dyn PlaybackFanoutService>,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     room_id: RoomId,
     user_id: UserId,
     username: String,
-    events: Arc<std::sync::Mutex<Vec<PreparedDeleteEntriesEvent>>>,
+    events: Arc<Mutex<Vec<PreparedDeleteEntriesEvent>>>,
 }
 
 enum PreparedDeleteEntriesEvent {
     MediaRemoved(PreparedMediaRemovedFanout),
     PlaylistDeleted(PreparedPlaylistDeletedFanout),
+    PlaybackReset(PreparedPlaybackStateFanout),
     KickPublisher(synctv_realtime::sync::RealtimeEvent),
 }
 
@@ -254,6 +401,7 @@ impl PreparedDeleteEntriesOutboxFanout {
     pub(crate) fn outbox_factory(&self) -> RealtimeOutboxDeleteEntriesEventFactory {
         let media_fanout = self.media_fanout.clone();
         let playlist_fanout = self.playlist_fanout.clone();
+        let playback_fanout = self.playback_fanout.clone();
         let realtime_fanout = self.realtime_fanout.clone();
         let room_id = self.room_id;
         let user_id = self.user_id;
@@ -261,18 +409,20 @@ impl PreparedDeleteEntriesOutboxFanout {
         let events = self.events.clone();
         Arc::new(move |plan: &DeleteEntriesPlan| {
             let mut prepared_events = Vec::with_capacity(
-                plan.deleted_media_ids.len() * 2 + plan.deleted_playlist_ids.len(),
+                plan.deleted_media_ids.len() * 2
+                    + plan.deleted_playlist_ids.len()
+                    + usize::from(plan.playback_state.is_some()),
             );
             let mut outbox_events: Vec<NewRealtimeOutboxEvent> = Vec::with_capacity(
-                plan.deleted_media_ids.len() * 2 + plan.deleted_playlist_ids.len(),
+                plan.deleted_media_ids.len() * 2
+                    + plan.deleted_playlist_ids.len()
+                    + usize::from(plan.playback_state.is_some()),
             );
 
             for media_id in &plan.deleted_media_ids {
                 let prepared = media_fanout
-                    .prepare_removed_outbox_fanout(&room_id, &user_id, &username, media_id);
-                if let Some(outbox_event) = prepared.cloned_outbox_event() {
-                    outbox_events.push(outbox_event);
-                }
+                    .prepare_removed_outbox_fanout(&room_id, &user_id, &username, media_id)?;
+                outbox_events.push(prepared.cloned_outbox_event());
                 prepared_events.push(PreparedDeleteEntriesEvent::MediaRemoved(prepared));
 
                 let kick_event = synctv_realtime::sync::RealtimeEvent::KickPublisher {
@@ -282,9 +432,11 @@ impl PreparedDeleteEntriesOutboxFanout {
                     reason: "media_deleted".to_string(),
                     timestamp: chrono::Utc::now(),
                 };
-                if let Some(outbox_event) = realtime_fanout.outbox_event(&kick_event) {
-                    outbox_events.push(outbox_event);
-                }
+                outbox_events.push(
+                    realtime_fanout
+                        .outbox_event(&kick_event)
+                        .map_err(synctv_core::Error::Internal)?,
+                );
                 prepared_events.push(PreparedDeleteEntriesEvent::KickPublisher(kick_event));
             }
 
@@ -294,18 +446,20 @@ impl PreparedDeleteEntriesOutboxFanout {
                     &user_id,
                     &username,
                     playlist_id,
-                );
-                if let Some(outbox_event) = prepared.cloned_outbox_event() {
-                    outbox_events.push(outbox_event);
-                }
+                )?;
+                outbox_events.push(prepared.cloned_outbox_event());
                 prepared_events.push(PreparedDeleteEntriesEvent::PlaylistDeleted(prepared));
             }
 
-            *events
-                .lock()
-                .expect("delete entries fanout events mutex should not be poisoned") =
-                prepared_events;
-            outbox_events
+            if let Some(state) = &plan.playback_state {
+                let prepared = playback_fanout.prepare_system_state_changed_outbox_fanout();
+                let factory = prepared.outbox_factory();
+                outbox_events.push(factory(state)?);
+                prepared_events.push(PreparedDeleteEntriesEvent::PlaybackReset(prepared));
+            }
+
+            *events.lock() = prepared_events;
+            Ok(outbox_events)
         })
     }
 
@@ -319,24 +473,23 @@ impl PreparedDeleteEntriesOutboxFanout {
                 deleted_playlist_ids: cleanup.deleted_playlist_ids.clone(),
                 deleted_media_ids: cleanup.deleted_media_ids.clone(),
                 playback_reset: cleanup.playback_reset,
+                playback_state: cleanup.playback_state.clone(),
             };
             factory(&plan)
         })
     }
 
     pub(crate) fn publish_after_outbox_commit(&self) {
-        let events = std::mem::take(
-            &mut *self
-                .events
-                .lock()
-                .expect("delete entries fanout events mutex should not be poisoned"),
-        );
+        let events = std::mem::take(&mut *self.events.lock());
         for event in events {
             match event {
                 PreparedDeleteEntriesEvent::MediaRemoved(event) => {
                     event.publish_after_outbox_commit();
                 }
                 PreparedDeleteEntriesEvent::PlaylistDeleted(event) => {
+                    event.publish_after_outbox_commit();
+                }
+                PreparedDeleteEntriesEvent::PlaybackReset(event) => {
                     event.publish_after_outbox_commit();
                 }
                 PreparedDeleteEntriesEvent::KickPublisher(event) => {
@@ -350,6 +503,7 @@ impl PreparedDeleteEntriesOutboxFanout {
 pub(crate) fn prepare_delete_entries_outbox_fanout(
     media_fanout: Arc<dyn MediaFanoutService>,
     playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    playback_fanout: Arc<dyn PlaybackFanoutService>,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     room_id: RoomId,
     user_id: UserId,
@@ -358,11 +512,12 @@ pub(crate) fn prepare_delete_entries_outbox_fanout(
     PreparedDeleteEntriesOutboxFanout {
         media_fanout,
         playlist_fanout,
+        playback_fanout,
         realtime_fanout,
         room_id,
         user_id,
         username,
-        events: Arc::new(std::sync::Mutex::new(Vec::new())),
+        events: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -375,29 +530,32 @@ const DEFAULT_MEDIA_TITLE: &str = "Unknown";
 
 fn finalize_playlist_items_response_version(
     mut response: crate::proto::client::ListPlaylistItemsResponse,
-) -> crate::proto::client::ListPlaylistItemsResponse {
-    response.version = compute_playlist_items_response_version(&response);
-    response
+) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
+    response.version = compute_playlist_items_response_version(&response)?;
+    Ok(response)
 }
 
-fn hash_proto_message<M: prost::Message>(hasher: &mut Sha256, message: &M) {
+fn usize_to_u64_api(value: usize, field: &'static str) -> Result<u64, ApiError> {
+    u64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u64::MAX")))
+}
+
+fn hash_proto_message<M: prost::Message>(hasher: &mut Sha256, message: &M) -> Result<(), ApiError> {
     let encoded = message.encode_to_vec();
-    hasher.update(
-        u64::try_from(encoded.len())
-            .unwrap_or(u64::MAX)
-            .to_le_bytes(),
-    );
+    hasher.update(usize_to_u64_api(encoded.len(), "encoded proto length")?.to_le_bytes());
     hasher.update(encoded);
+    Ok(())
 }
 
-fn hash_string(hasher: &mut Sha256, value: &str) {
-    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+fn hash_string(hasher: &mut Sha256, value: &str) -> Result<(), ApiError> {
+    hasher.update(usize_to_u64_api(value.len(), "string length")?.to_le_bytes());
     hasher.update(value.as_bytes());
+    Ok(())
 }
 
-fn hash_bytes(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+fn hash_bytes(hasher: &mut Sha256, value: &[u8]) -> Result<(), ApiError> {
+    hasher.update(usize_to_u64_api(value.len(), "byte slice length")?.to_le_bytes());
     hasher.update(value);
+    Ok(())
 }
 
 fn hash_optional_i64(hasher: &mut Sha256, value: Option<i64>) {
@@ -412,7 +570,7 @@ fn hash_optional_i64(hasher: &mut Sha256, value: Option<i64>) {
 
 pub(crate) fn compute_playlist_items_response_version(
     response: &crate::proto::client::ListPlaylistItemsResponse,
-) -> String {
+) -> Result<String, ApiError> {
     let mut hasher = Sha256::new();
     hasher.update(b"playlist-items-snapshot-v1");
     hasher.update(response.total.to_le_bytes());
@@ -420,56 +578,52 @@ pub(crate) fn compute_playlist_items_response_version(
     hasher.update(response.file_count.to_le_bytes());
 
     for playlist in &response.playlists {
-        hash_proto_message(&mut hasher, playlist);
+        hash_proto_message(&mut hasher, playlist)?;
     }
     for media in &response.media {
-        hash_proto_message(&mut hasher, media);
+        hash_proto_message(&mut hasher, media)?;
     }
     for item in &response.dynamic_items {
-        hash_string(&mut hasher, &item.name);
+        hash_string(&mut hasher, &item.name)?;
         hasher.update(item.item_type.to_le_bytes());
-        hash_bytes(&mut hasher, &item.target);
+        hash_bytes(&mut hasher, &item.target)?;
         hash_optional_i64(&mut hasher, item.size);
         match item.thumbnail.as_deref() {
             Some(thumbnail) => {
                 hasher.update([1]);
-                hash_string(&mut hasher, thumbnail);
+                hash_string(&mut hasher, thumbnail)?;
             }
             None => hasher.update([0]),
         }
         hash_optional_i64(&mut hasher, item.modified_at);
     }
     for node in &response.current_path {
-        hash_proto_message(&mut hasher, node);
+        hash_proto_message(&mut hasher, node)?;
     }
 
-    hex_encode(hasher.finalize())
+    Ok(hex_encode(hasher.finalize()))
 }
 
-fn page_i32_to_usize(value: i32) -> usize {
-    usize::try_from(value.max(1)).unwrap_or(usize::MAX)
+fn page_i32_to_usize(value: i32) -> Result<usize, ApiError> {
+    let normalized = if value > 0 { value.cast_unsigned() } else { 1 };
+    usize::try_from(normalized).map_err(|_| ApiError::Internal("page exceeds usize::MAX".into()))
 }
 
-fn i64_to_usize_saturating(value: i64) -> usize {
-    if value.is_negative() {
-        0
-    } else {
-        usize::try_from(value).unwrap_or(usize::MAX)
+fn i64_count_to_usize(value: i64, field: &'static str) -> Result<usize, ApiError> {
+    if value < 0 {
+        return Err(ApiError::Internal(format!(
+            "{field} returned a negative count"
+        )));
     }
+    usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
 }
 
-fn usize_to_i32_saturating(value: usize) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
+fn usize_to_i32_api(value: usize, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
-fn i64_to_i32_saturating(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or_else(|_| {
-        if value.is_negative() {
-            i32::MIN
-        } else {
-            i32::MAX
-        }
-    })
+fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
 pub(crate) async fn build_move_media_fanout_plan(
@@ -524,12 +678,12 @@ pub(crate) async fn build_move_media_fanout_plan(
     Ok(MoveMediaFanoutPlan::PerMedia(steps))
 }
 
-fn usize_to_i64_saturating(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> {
+    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
 }
 
-fn u64_to_i64_saturating(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn u64_to_i64_api(value: u64, field: &'static str) -> Result<i64, ApiError> {
+    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
 }
 
 pub(crate) fn normalize_non_empty_filter(value: &str) -> Option<String> {
@@ -537,48 +691,57 @@ pub(crate) fn normalize_non_empty_filter(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
-fn map_sort_direction(sort_direction: i32) -> CoreSortDirection {
-    match crate::proto::client::SortDirection::try_from(sort_direction) {
-        Ok(crate::proto::client::SortDirection::Desc) => CoreSortDirection::Desc,
-        _ => CoreSortDirection::Asc,
+fn map_sort_direction(sort_direction: i32) -> Result<CoreSortDirection, ApiError> {
+    match crate::proto::client::SortDirection::try_from(sort_direction)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        crate::proto::client::SortDirection::Unspecified
+        | crate::proto::client::SortDirection::Asc => Ok(CoreSortDirection::Asc),
+        crate::proto::client::SortDirection::Desc => Ok(CoreSortDirection::Desc),
     }
 }
 
-fn map_playlist_sort_from_media_sort(sort_by: i32) -> CorePlaylistListSortBy {
+fn map_playlist_sort_from_media_sort(sort_by: i32) -> Result<CorePlaylistListSortBy, ApiError> {
     match crate::proto::client::MediaListSortBy::try_from(sort_by)
-        .unwrap_or(crate::proto::client::MediaListSortBy::Position)
+        .map_err(|_| ApiError::InvalidInput("Unsupported media list sort field".to_string()))?
     {
-        crate::proto::client::MediaListSortBy::Name => CorePlaylistListSortBy::Name,
-        crate::proto::client::MediaListSortBy::AddedAt => CorePlaylistListSortBy::CreatedAt,
-        crate::proto::client::MediaListSortBy::UpdatedAt => CorePlaylistListSortBy::UpdatedAt,
-        _ => CorePlaylistListSortBy::Position,
+        crate::proto::client::MediaListSortBy::Unspecified
+        | crate::proto::client::MediaListSortBy::Position => Ok(CorePlaylistListSortBy::Position),
+        crate::proto::client::MediaListSortBy::Name => Ok(CorePlaylistListSortBy::Name),
+        crate::proto::client::MediaListSortBy::AddedAt => Ok(CorePlaylistListSortBy::CreatedAt),
+        crate::proto::client::MediaListSortBy::UpdatedAt => Ok(CorePlaylistListSortBy::UpdatedAt),
+        crate::proto::client::MediaListSortBy::SourceProvider
+        | crate::proto::client::MediaListSortBy::ProviderInstanceName => {
+            Ok(CorePlaylistListSortBy::Position)
+        }
     }
 }
 
-fn map_media_sort(sort_by: i32) -> CoreMediaListSortBy {
+fn map_media_sort(sort_by: i32) -> Result<CoreMediaListSortBy, ApiError> {
     match crate::proto::client::MediaListSortBy::try_from(sort_by)
-        .unwrap_or(crate::proto::client::MediaListSortBy::Position)
+        .map_err(|_| ApiError::InvalidInput("Unsupported media list sort field".to_string()))?
     {
-        crate::proto::client::MediaListSortBy::Name => CoreMediaListSortBy::Name,
-        crate::proto::client::MediaListSortBy::AddedAt => CoreMediaListSortBy::AddedAt,
-        crate::proto::client::MediaListSortBy::UpdatedAt => CoreMediaListSortBy::UpdatedAt,
+        crate::proto::client::MediaListSortBy::Unspecified
+        | crate::proto::client::MediaListSortBy::Position => Ok(CoreMediaListSortBy::Position),
+        crate::proto::client::MediaListSortBy::Name => Ok(CoreMediaListSortBy::Name),
+        crate::proto::client::MediaListSortBy::AddedAt => Ok(CoreMediaListSortBy::AddedAt),
+        crate::proto::client::MediaListSortBy::UpdatedAt => Ok(CoreMediaListSortBy::UpdatedAt),
         crate::proto::client::MediaListSortBy::SourceProvider => {
-            CoreMediaListSortBy::SourceProvider
+            Ok(CoreMediaListSortBy::SourceProvider)
         }
         crate::proto::client::MediaListSortBy::ProviderInstanceName => {
-            CoreMediaListSortBy::ProviderInstanceName
+            Ok(CoreMediaListSortBy::ProviderInstanceName)
         }
-        _ => CoreMediaListSortBy::Position,
     }
 }
 
-fn map_availability_filter(filter: i32) -> Option<bool> {
+fn map_availability_filter(filter: i32) -> Result<Option<bool>, ApiError> {
     match crate::proto::client::ResourceAvailabilityFilter::try_from(filter)
-        .unwrap_or(crate::proto::client::ResourceAvailabilityFilter::All)
+        .map_err(|_| ApiError::InvalidInput("Unsupported availability filter".to_string()))?
     {
-        crate::proto::client::ResourceAvailabilityFilter::All => None,
-        crate::proto::client::ResourceAvailabilityFilter::Available => Some(true),
-        crate::proto::client::ResourceAvailabilityFilter::Unavailable => Some(false),
+        crate::proto::client::ResourceAvailabilityFilter::All => Ok(None),
+        crate::proto::client::ResourceAvailabilityFilter::Available => Ok(Some(true)),
+        crate::proto::client::ResourceAvailabilityFilter::Unavailable => Ok(Some(false)),
     }
 }
 
@@ -598,9 +761,9 @@ pub(crate) fn validate_dynamic_playlist_query_support(
     }
 
     let sort_by = crate::proto::client::MediaListSortBy::try_from(req.sort_by)
-        .unwrap_or(crate::proto::client::MediaListSortBy::Position);
+        .map_err(|_| ApiError::InvalidInput("Unsupported media list sort field".to_string()))?;
     let sort_direction = crate::proto::client::SortDirection::try_from(req.sort_direction)
-        .unwrap_or(crate::proto::client::SortDirection::Asc);
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?;
     let allows_default_sort = matches!(
         sort_by,
         crate::proto::client::MediaListSortBy::Position
@@ -802,6 +965,14 @@ pub(crate) fn build_edit_media_request(
 }
 
 impl ClientApiImpl {
+    async fn media_actor_username_for_event(&self, user_id: &UserId) -> Result<String, ApiError> {
+        self.user_service
+            .get_user(user_id)
+            .await
+            .map(|user| user.username)
+            .map_err(ApiError::from)
+    }
+
     pub async fn add_media(
         &self,
         user_id: &UserId,
@@ -815,19 +986,21 @@ impl ClientApiImpl {
 
         // Check total playlist size limit before adding
         let existing_count = if let Some(ref playlist_id) = playlist_id {
-            self.room_service
+            let count = self
+                .room_service
                 .media_service()
                 .count_room_playlist_media(&rid, playlist_id)
                 .await
-                .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?
+                .map_err(ApiError::from)?;
+            i64_count_to_usize(count, "playlist media count")?
         } else {
-            self.room_service
+            let count = self
+                .room_service
                 .media_service()
                 .count_room_root_media(&rid)
                 .await
-                .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?
+                .map_err(ApiError::from)?;
+            i64_count_to_usize(count, "room root media count")?
         };
         if existing_count >= Self::MAX_PLAYLIST_SIZE {
             return Err(ApiError::InvalidInput(format!(
@@ -836,12 +1009,7 @@ impl ClientApiImpl {
             )));
         }
 
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = self
             .media_fanout
             .prepare_added_outbox_fanout(rid, uid, username);
@@ -852,7 +1020,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -889,15 +1057,11 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let (service_req, _explicit_media_ids, _explicit_playlist_ids) =
             build_delete_entries_request(req, &self.public_id_codec)?;
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             uid,
@@ -933,8 +1097,11 @@ impl ClientApiImpl {
         }
 
         Ok(crate::proto::client::DeleteEntriesResponse {
-            deleted_playlists: usize_to_i32_saturating(result.deleted_playlists),
-            deleted_media: usize_to_i32_saturating(result.deleted_media),
+            deleted_playlists: usize_to_i32_api(
+                result.deleted_playlists,
+                "deleted playlist count",
+            )?,
+            deleted_media: usize_to_i32_api(result.deleted_media, "deleted media count")?,
         })
     }
 
@@ -949,12 +1116,7 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let service_req = build_edit_media_request(req, &self.public_id_codec)?;
 
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = self
             .media_fanout
             .prepare_updated_outbox_fanout(rid, uid, username);
@@ -965,7 +1127,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -1013,7 +1175,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         Ok(
             crate::proto::client::CreateVideoCoverUploadSessionResponse {
-                session: Some(video_cover_upload_session_to_proto(session)),
+                session: Some(video_cover_upload_session_to_proto(session)?),
             },
         )
     }
@@ -1028,7 +1190,7 @@ impl ClientApiImpl {
             .store_video_cover_upload_object(
                 &req.encoded_object_key,
                 &req.token,
-                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.content_type.as_deref(),
                 req.data,
             )
             .await
@@ -1130,15 +1292,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             uid,
@@ -1175,8 +1333,11 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ClearPlaylistResponse {
             success: true,
-            deleted_count: i64_to_i32_saturating(result.deleted_count),
-            deleted_playlists: usize_to_i32_saturating(result.deleted_playlists),
+            deleted_count: i64_to_i32_api(result.deleted_count, "deleted item count")?,
+            deleted_playlists: usize_to_i32_api(
+                result.deleted_playlists,
+                "deleted playlist count",
+            )?,
         })
     }
 
@@ -1198,19 +1359,21 @@ impl ClientApiImpl {
         let AddMediaBatchBuildResult { items, playlist_id } =
             build_add_media_batch_request(req, &self.public_id_codec)?;
         let existing_count = if let Some(ref playlist_id) = playlist_id {
-            self.room_service
+            let count = self
+                .room_service
                 .media_service()
                 .count_room_playlist_media(&rid, playlist_id)
                 .await
-                .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?
+                .map_err(ApiError::from)?;
+            i64_count_to_usize(count, "playlist media count")?
         } else {
-            self.room_service
+            let count = self
+                .room_service
                 .media_service()
                 .count_room_root_media(&rid)
                 .await
-                .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?
+                .map_err(ApiError::from)?;
+            i64_count_to_usize(count, "room root media count")?
         };
         let new_total = existing_count + items.len();
         if new_total > Self::MAX_PLAYLIST_SIZE {
@@ -1229,12 +1392,7 @@ impl ClientApiImpl {
             )));
         }
 
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = self
             .media_fanout
             .prepare_added_batch_outbox_fanout(rid, uid, username);
@@ -1287,12 +1445,7 @@ impl ClientApiImpl {
             build_move_media_fanout_plan(self.room_service.media_service(), &rid, &service_req)
                 .await?;
 
-        let actor_username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|user| user.username)
-            .unwrap_or_default();
+        let actor_username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = self.media_fanout.prepare_move_outbox_fanout(
             rid,
             uid,
@@ -1322,7 +1475,7 @@ impl ClientApiImpl {
         }
 
         Ok(crate::proto::client::MoveMediaResponse {
-            moved_count: usize_to_i32_saturating(media.len()),
+            moved_count: usize_to_i32_api(media.len(), "moved media count")?,
             media: proto_media,
         })
     }
@@ -1380,62 +1533,65 @@ impl ClientApiImpl {
                     "target must be empty when browsing the room root".to_string(),
                 ));
             }
+            let availability = map_availability_filter(req.availability)?;
+            let playlist_sort_by = map_playlist_sort_from_media_sort(req.sort_by)?;
+            let media_sort_by = map_media_sort(req.sort_by)?;
+            let sort_direction = map_sort_direction(req.sort_direction)?;
             let playlist_query = CorePlaylistListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
                 dynamic_only: None,
-                availability: map_availability_filter(req.availability),
-                sort_by: map_playlist_sort_from_media_sort(req.sort_by),
-                sort_direction: map_sort_direction(req.sort_direction),
+                availability,
+                sort_by: playlist_sort_by,
+                sort_direction,
             };
             let media_query = CoreMediaListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
-                availability: map_availability_filter(req.availability),
-                sort_by: map_media_sort(req.sort_by),
-                sort_direction: map_sort_direction(req.sort_direction),
+                availability,
+                sort_by: media_sort_by,
+                sort_direction,
             };
             let folder_count = self
                 .room_service
                 .count_client_playlists(&rid, None, &playlist_query)
                 .await
                 .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?;
+                .and_then(|count| i64_count_to_usize(count, "root playlist count"))?;
             let file_count = self
                 .room_service
                 .count_client_media(&rid, None, &media_query)
                 .await
                 .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?;
+                .and_then(|count| i64_count_to_usize(count, "root media count"))?;
             let total = folder_count + file_count;
-            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-            let skip = (page_i32_to_usize(req.page) - 1) * page_size;
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+            let skip = page_i32_to_usize(req.page)?
+                .saturating_sub(1)
+                .saturating_mul(page_size);
             let (playlists, media) = if skip < folder_count {
+                let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
+                let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
                 let playlists = self
                     .room_service
                     .list_client_playlists(
                         &rid,
                         None,
                         &playlist_query,
-                        usize_to_i64_saturating(page_size),
-                        usize_to_i64_saturating(skip),
+                        playlist_limit,
+                        playlist_offset,
                     )
                     .await
                     .map_err(ApiError::from)?;
                 let remaining = page_size.saturating_sub(playlists.len());
                 let media = if remaining > 0 {
+                    let media_limit = usize_to_i64_api(remaining, "media page size")?;
                     self.room_service
-                        .list_client_media(
-                            &rid,
-                            None,
-                            &media_query,
-                            usize_to_i64_saturating(remaining),
-                            0,
-                        )
+                        .list_client_media(&rid, None, &media_query, media_limit, 0)
                         .await
                         .map_err(ApiError::from)?
                 } else {
@@ -1444,15 +1600,11 @@ impl ClientApiImpl {
                 (playlists, media)
             } else {
                 let media_skip = skip - folder_count;
+                let media_limit = usize_to_i64_api(page_size, "media page size")?;
+                let media_offset = usize_to_i64_api(media_skip, "media offset")?;
                 let media = self
                     .room_service
-                    .list_client_media(
-                        &rid,
-                        None,
-                        &media_query,
-                        usize_to_i64_saturating(page_size),
-                        usize_to_i64_saturating(media_skip),
-                    )
+                    .list_client_media(&rid, None, &media_query, media_limit, media_offset)
                     .await
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
@@ -1464,11 +1616,13 @@ impl ClientApiImpl {
                 .media_service()
                 .count_playlist_media_batch(&folder_ids)
                 .await
-                .unwrap_or_default();
+                .map_err(ApiError::from)?;
             let mut proto_playlists = Vec::with_capacity(playlists.len());
             for entry in &playlists {
-                let item_count =
-                    i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
+                let item_count = i64_to_i32_api(
+                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                    "playlist item count",
+                )?;
                 proto_playlists.push(
                     self.playlist_to_proto_for_viewer_with_loaded_cover(
                         &entry.playlist,
@@ -1491,18 +1645,18 @@ impl ClientApiImpl {
                 );
             }
 
-            return Ok(finalize_playlist_items_response_version(
+            return finalize_playlist_items_response_version(
                 crate::proto::client::ListPlaylistItemsResponse {
                     playlists: proto_playlists,
                     media: proto_media,
-                    total: usize_to_i32_saturating(total),
-                    folder_count: usize_to_i32_saturating(folder_count),
-                    file_count: usize_to_i32_saturating(file_count),
+                    total: usize_to_i32_api(total, "playlist item total")?,
+                    folder_count: usize_to_i32_api(folder_count, "playlist folder count")?,
+                    file_count: usize_to_i32_api(file_count, "playlist file count")?,
                     dynamic_items: Vec::new(),
                     current_path: Vec::new(),
                     version: String::new(),
                 },
-            ));
+            );
         };
 
         // Get playlist info to determine if static or dynamic
@@ -1521,8 +1675,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let mut current_path: Vec<crate::proto::client::PlaylistBrowsePathNode> = static_path
             .iter()
-            .map(|playlist| playlist_path_node_to_proto(playlist, &self.public_id_codec))
-            .collect();
+            .map(|playlist| try_playlist_path_node_to_proto(playlist, &self.public_id_codec))
+            .collect::<Result<_, _>>()?;
 
         if playlist.is_dynamic() {
             let Some(uid) = actor.user_id() else {
@@ -1535,7 +1689,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             if !validate_dynamic_playlist_query_support(&playlist, &req)? {
-                return Ok(finalize_playlist_items_response_version(
+                return finalize_playlist_items_response_version(
                     crate::proto::client::ListPlaylistItemsResponse {
                         playlists: Vec::new(),
                         media: Vec::new(),
@@ -1546,11 +1700,11 @@ impl ClientApiImpl {
                         current_path,
                         version: String::new(),
                     },
-                ));
+                );
             }
 
-            let page = page_i32_to_usize(req.page);
-            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
+            let page = page_i32_to_usize(req.page)?;
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
             let items = self
                 .room_service
                 .media_service()
@@ -1579,21 +1733,29 @@ impl ClientApiImpl {
                         ItemType::Media => crate::proto::client::ItemType::Media as i32,
                     };
                     let thumbnail = match item.thumbnail {
-                        Some(thumbnail) => Some(
-                            crate::http::providers::emby::sign_emby_thumbnail_url(
-                                &thumbnail,
-                                &self
-                                    .public_id_codec
-                                    .encode_room_id(rid)
-                                    .expect("positive room id must encode as public ID"),
-                                &self
-                                    .public_id_codec
-                                    .encode_user_id(uid)
-                                    .expect("positive user id must encode as public ID"),
-                                self.signing_key.as_deref(),
+                        Some(thumbnail) => {
+                            let public_room_id =
+                                self.public_id_codec.encode_room_id(rid).map_err(|error| {
+                                    ApiError::Internal(format!(
+                                        "Failed to encode room public id: {error}"
+                                    ))
+                                })?;
+                            let public_user_id =
+                                self.public_id_codec.encode_user_id(uid).map_err(|error| {
+                                    ApiError::Internal(format!(
+                                        "Failed to encode user public id: {error}"
+                                    ))
+                                })?;
+                            Some(
+                                crate::http::providers::emby::sign_emby_thumbnail_url(
+                                    &thumbnail,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_deref(),
+                                )
+                                .map_err(ApiError::Internal)?,
                             )
-                            .map_err(ApiError::Internal)?,
-                        ),
+                        }
                         None => None,
                     };
 
@@ -1601,7 +1763,10 @@ impl ClientApiImpl {
                         name: item.name,
                         item_type,
                         target: item.target,
-                        size: item.size.map(u64_to_i64_saturating),
+                        size: item
+                            .size
+                            .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
+                            .transpose()?,
                         thumbnail: Some(thumbnail.unwrap_or_default()),
                         modified_at: Some(item.modified_at.unwrap_or(0)),
                         description: item.description.unwrap_or_default(),
@@ -1633,7 +1798,7 @@ impl ClientApiImpl {
             // so the client knows to use has_more / next-page semantics.
             let total: i32 = -1;
 
-            return Ok(finalize_playlist_items_response_version(
+            return finalize_playlist_items_response_version(
                 crate::proto::client::ListPlaylistItemsResponse {
                     playlists: Vec::new(),
                     media: Vec::new(),
@@ -1644,7 +1809,7 @@ impl ClientApiImpl {
                     current_path,
                     version: String::new(),
                 },
-            ));
+            );
         }
 
         if !req.target.is_empty() {
@@ -1653,62 +1818,65 @@ impl ClientApiImpl {
             ));
         }
 
+        let availability = map_availability_filter(req.availability)?;
+        let playlist_sort_by = map_playlist_sort_from_media_sort(req.sort_by)?;
+        let media_sort_by = map_media_sort(req.sort_by)?;
+        let sort_direction = map_sort_direction(req.sort_direction)?;
         let playlist_query = CorePlaylistListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             dynamic_only: None,
-            availability: map_availability_filter(req.availability),
-            sort_by: map_playlist_sort_from_media_sort(req.sort_by),
-            sort_direction: map_sort_direction(req.sort_direction),
+            availability,
+            sort_by: playlist_sort_by,
+            sort_direction,
         };
         let media_query = CoreMediaListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
-            availability: map_availability_filter(req.availability),
-            sort_by: map_media_sort(req.sort_by),
-            sort_direction: map_sort_direction(req.sort_direction),
+            availability,
+            sort_by: media_sort_by,
+            sort_direction,
         };
         let folder_count = self
             .room_service
             .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
             .await
             .map_err(ApiError::from)
-            .map(i64_to_usize_saturating)?;
+            .and_then(|count| i64_count_to_usize(count, "playlist child playlist count"))?;
         let file_count = self
             .room_service
             .count_client_media(&rid, Some(&playlist_id), &media_query)
             .await
             .map_err(ApiError::from)
-            .map(i64_to_usize_saturating)?;
+            .and_then(|count| i64_count_to_usize(count, "playlist child media count"))?;
         let total = folder_count + file_count;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-        let skip = (page_i32_to_usize(req.page) - 1) * page_size;
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+        let skip = page_i32_to_usize(req.page)?
+            .saturating_sub(1)
+            .saturating_mul(page_size);
         let (playlists, media) = if skip < folder_count {
+            let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
+            let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
             let playlists = self
                 .room_service
                 .list_client_playlists(
                     &rid,
                     Some(&playlist_id),
                     &playlist_query,
-                    usize_to_i64_saturating(page_size),
-                    usize_to_i64_saturating(skip),
+                    playlist_limit,
+                    playlist_offset,
                 )
                 .await
                 .map_err(ApiError::from)?;
             let remaining = page_size.saturating_sub(playlists.len());
             let media = if remaining > 0 {
+                let media_limit = usize_to_i64_api(remaining, "media page size")?;
                 self.room_service
-                    .list_client_media(
-                        &rid,
-                        Some(&playlist_id),
-                        &media_query,
-                        usize_to_i64_saturating(remaining),
-                        0,
-                    )
+                    .list_client_media(&rid, Some(&playlist_id), &media_query, media_limit, 0)
                     .await
                     .map_err(ApiError::from)?
             } else {
@@ -1717,14 +1885,16 @@ impl ClientApiImpl {
             (playlists, media)
         } else {
             let media_skip = skip - folder_count;
+            let media_limit = usize_to_i64_api(page_size, "media page size")?;
+            let media_offset = usize_to_i64_api(media_skip, "media offset")?;
             let media = self
                 .room_service
                 .list_client_media(
                     &rid,
                     Some(&playlist_id),
                     &media_query,
-                    usize_to_i64_saturating(page_size),
-                    usize_to_i64_saturating(media_skip),
+                    media_limit,
+                    media_offset,
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -1737,11 +1907,13 @@ impl ClientApiImpl {
             .media_service()
             .count_playlist_media_batch(&folder_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
         let mut proto_playlists = Vec::with_capacity(playlists.len());
         for entry in &playlists {
-            let item_count =
-                i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
+            let item_count = i64_to_i32_api(
+                counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                "playlist item count",
+            )?;
             proto_playlists.push(
                 self.playlist_to_proto_for_viewer_with_loaded_cover(
                     &entry.playlist,
@@ -1764,18 +1936,16 @@ impl ClientApiImpl {
             );
         }
 
-        Ok(finalize_playlist_items_response_version(
-            crate::proto::client::ListPlaylistItemsResponse {
-                playlists: proto_playlists,
-                media: proto_media,
-                total: usize_to_i32_saturating(total),
-                folder_count: usize_to_i32_saturating(folder_count),
-                file_count: usize_to_i32_saturating(file_count),
-                dynamic_items: Vec::new(),
-                current_path,
-                version: String::new(),
-            },
-        ))
+        finalize_playlist_items_response_version(crate::proto::client::ListPlaylistItemsResponse {
+            playlists: proto_playlists,
+            media: proto_media,
+            total: usize_to_i32_api(total, "playlist item total")?,
+            folder_count: usize_to_i32_api(folder_count, "playlist folder count")?,
+            file_count: usize_to_i32_api(file_count, "playlist file count")?,
+            dynamic_items: Vec::new(),
+            current_path,
+            version: String::new(),
+        })
     }
 
     /// Get a single media record from database
@@ -1850,12 +2020,16 @@ mod tests {
     use super::{
         build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
         build_delete_media_request, build_edit_media_request, build_move_media_request,
-        compute_playlist_items_response_version, validate_dynamic_playlist_query_support,
-        DEFAULT_MEDIA_TITLE,
+        compute_playlist_items_response_version, map_availability_filter, map_media_sort,
+        map_playlist_sort_from_media_sort, map_sort_direction, stored_file_to_file_cover_proto,
+        upload_session_fields, validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
     };
     use chrono::Utc;
     use serde_json::json;
-    use synctv_core::models::{MediaId, Playlist, PlaylistId, RoomId, UserId};
+    use synctv_core::models::{
+        FileOwnershipProofRange, FileUploadSession, MediaId, NewStoredFile, Playlist, PlaylistId,
+        RoomId, UserId,
+    };
 
     fn make_playlist(
         name: &str,
@@ -1881,7 +2055,8 @@ mod tests {
     }
 
     #[test]
-    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes() {
+    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes(
+    ) -> Result<(), crate::impls::ApiError> {
         let make_response = |thumbnail: &str| crate::proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
@@ -1903,20 +2078,21 @@ mod tests {
 
         let original = compute_playlist_items_response_version(&make_response(
             "https://cdn.example.com/thumb-a.jpg",
-        ));
+        ))?;
         let changed = compute_playlist_items_response_version(&make_response(
             "https://cdn.example.com/thumb-b.jpg",
-        ));
+        ))?;
 
         assert_ne!(
             original, changed,
             "thumbnail-only changes must invalidate playlist item snapshots"
         );
+        Ok(())
     }
 
     #[test]
     fn test_build_add_media_request_requires_source_provider() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let err = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: None,
@@ -1935,7 +2111,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_parses_dynamic_payload() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
@@ -1962,7 +2138,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_maps_empty_provider_instance_to_none() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: None,
@@ -1982,7 +2158,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_does_not_infer_title_from_source_config() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: None,
@@ -2001,7 +2177,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_batch_request_rejects_invalid_nested_playlist_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let err = build_add_media_batch_request(
             crate::proto::client::AddMediaBatchRequest {
                 items: vec![crate::proto::client::AddMediaRequest {
@@ -2022,7 +2198,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_batch_request_reuses_single_item_builder_semantics() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let result = build_add_media_batch_request(
             crate::proto::client::AddMediaBatchRequest {
@@ -2051,7 +2227,7 @@ mod tests {
 
     #[test]
     fn test_build_delete_entries_request_rejects_empty_target_set() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let err = build_delete_entries_request(
             crate::proto::client::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
@@ -2067,7 +2243,7 @@ mod tests {
 
     #[test]
     fn test_build_delete_entries_request_parses_ids() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let media_id = MediaId::expect_positive(456);
         let playlist_public_id = codec.encode_playlist_id(playlist_id).unwrap();
@@ -2104,7 +2280,7 @@ mod tests {
 
     #[test]
     fn test_build_delete_media_request_maps_to_delete_entries_request() {
-        let media_id = crate::PublicIdCodec::default_for_tests()
+        let media_id = crate::PublicIdCodec::plain()
             .encode_media_id(MediaId::expect_positive(123))
             .unwrap();
         let request = build_delete_media_request(crate::proto::client::DeleteMediaRequest {
@@ -2120,7 +2296,7 @@ mod tests {
 
     #[test]
     fn test_build_edit_media_request_rejects_invalid_media_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let err = build_edit_media_request(
             crate::proto::client::EditMediaRequest {
                 media_id: "bad-media".to_string(),
@@ -2136,7 +2312,7 @@ mod tests {
 
     #[test]
     fn test_build_edit_media_request_parses_title_and_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let media_id = MediaId::expect_positive(123);
         let request = build_edit_media_request(
             crate::proto::client::EditMediaRequest {
@@ -2150,6 +2326,110 @@ mod tests {
 
         assert_eq!(request.media_id, media_id);
         assert_eq!(request.name.as_deref(), Some("Episode 1"));
+    }
+
+    fn make_stored_file() -> NewStoredFile {
+        NewStoredFile {
+            id: "file-1".to_string(),
+            storage_backend: "database".to_string(),
+            object_key: "objects/file-1".to_string(),
+            url: Some("/objects/file-1".to_string()),
+            mime_type: Some("image/png".to_string()),
+            size_bytes: Some(7),
+            width: Some(16),
+            height: Some(16),
+            metadata: serde_json::Value::Object(Default::default()),
+        }
+    }
+
+    fn make_upload_session() -> FileUploadSession {
+        FileUploadSession {
+            file: make_stored_file(),
+            upload_required: true,
+            ownership_proof_required: false,
+            ownership_proof_nonce: None,
+            ownership_proof_ranges: Vec::new(),
+            ownership_proof_metadata_key: None,
+            upload_url: Some("https://upload.example.test/file-1".to_string()),
+            upload_method: Some("PUT".to_string()),
+            upload_headers: Default::default(),
+            expires_at: Some(Utc::now()),
+            max_size_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn stored_file_proto_conversion_requires_mime_type_and_size() {
+        let file = make_stored_file();
+        let proto = stored_file_to_file_cover_proto(&file).expect("valid file should convert");
+        assert_eq!(proto.mime_type, "image/png");
+        assert_eq!(proto.size_bytes, 7);
+
+        let mut missing_mime = file.clone();
+        missing_mime.mime_type = None;
+        assert!(matches!(
+            stored_file_to_file_cover_proto(&missing_mime),
+            Err(crate::impls::ApiError::Internal(message))
+                if message.contains("mime_type is missing")
+        ));
+
+        let mut missing_size = file;
+        missing_size.size_bytes = None;
+        assert!(matches!(
+            stored_file_to_file_cover_proto(&missing_size),
+            Err(crate::impls::ApiError::Internal(message))
+                if message.contains("size_bytes is missing")
+        ));
+    }
+
+    #[test]
+    fn upload_session_fields_require_upload_metadata_when_upload_required() {
+        let session = make_upload_session();
+        let fields = upload_session_fields(&session).expect("valid upload session should convert");
+        assert_eq!(fields.upload_method.as_deref(), Some("PUT"));
+        assert_eq!(
+            fields.upload_url.as_deref(),
+            Some("https://upload.example.test/file-1")
+        );
+        assert!(fields.expires_at.is_some_and(|expires_at| expires_at > 0));
+
+        let mut missing_url = session;
+        missing_url.upload_url = None;
+        assert!(matches!(
+            upload_session_fields(&missing_url),
+            Err(crate::impls::ApiError::Internal(message)) if message.contains("upload_url")
+        ));
+    }
+
+    #[test]
+    fn upload_session_fields_require_ownership_proof_metadata_when_reused() {
+        let mut session = make_upload_session();
+        session.upload_required = false;
+        session.upload_url = None;
+        session.upload_method = None;
+        session.expires_at = None;
+        session.ownership_proof_required = true;
+        session.ownership_proof_nonce = Some("nonce".to_string());
+        session.ownership_proof_metadata_key = Some("proof".to_string());
+        session.ownership_proof_ranges = vec![FileOwnershipProofRange {
+            offset: 0,
+            length: 16,
+        }];
+
+        let fields = upload_session_fields(&session).expect("valid reuse session should convert");
+        assert!(fields.upload_url.is_none());
+        assert_eq!(fields.ownership_proof_nonce.as_deref(), Some("nonce"));
+        assert_eq!(
+            fields.ownership_proof_metadata_key.as_deref(),
+            Some("proof")
+        );
+
+        session.ownership_proof_nonce = None;
+        assert!(matches!(
+            upload_session_fields(&session),
+            Err(crate::impls::ApiError::Internal(message))
+                if message.contains("ownership_proof_nonce")
+        ));
     }
 
     #[test]
@@ -2177,8 +2457,47 @@ mod tests {
     }
 
     #[test]
+    fn media_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
+        assert_eq!(
+            map_sort_direction(crate::proto::client::SortDirection::Unspecified as i32)
+                .expect("unspecified sort direction should be accepted"),
+            synctv_core::models::SortDirection::Asc
+        );
+        assert_eq!(
+            map_media_sort(crate::proto::client::MediaListSortBy::Unspecified as i32)
+                .expect("unspecified media sort should be accepted"),
+            synctv_core::models::MediaListSortBy::Position
+        );
+        assert_eq!(
+            map_playlist_sort_from_media_sort(
+                crate::proto::client::MediaListSortBy::Unspecified as i32
+            )
+            .expect("unspecified media sort should be accepted for playlist folders"),
+            synctv_core::models::PlaylistListSortBy::Position
+        );
+        assert_eq!(
+            map_availability_filter(crate::proto::client::ResourceAvailabilityFilter::All as i32)
+                .expect("all availability filter should be accepted"),
+            None
+        );
+
+        assert!(matches!(
+            map_sort_direction(99),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("sort direction")
+        ));
+        assert!(matches!(
+            map_media_sort(99),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("media list sort")
+        ));
+        assert!(matches!(
+            map_availability_filter(99),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("availability")
+        ));
+    }
+
+    #[test]
     fn test_build_move_media_request_rejects_invalid_proto_payload() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let err = build_move_media_request(
             crate::proto::client::MoveMediaRequest {
                 media_ids: Vec::new(),
@@ -2200,7 +2519,7 @@ mod tests {
 
     #[test]
     fn test_build_move_media_request_parses_ids() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let media_id = MediaId::expect_positive(123);
         let playlist_id = PlaylistId::expect_positive(456);
         let after_media_id = MediaId::expect_positive(789);

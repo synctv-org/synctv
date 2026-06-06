@@ -4,8 +4,9 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
 use crate::impls::messaging::{
-    GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal,
-    ResourceWatchSession, ResourceWatchSessionConfig, StreamMessage, StreamMessageHandler,
+    GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, RealtimeJoinError,
+    RealtimePrincipal, ResourceWatchSession, ResourceWatchSessionConfig, StreamMessage,
+    StreamMessageHandler, StreamMessageHandlerConfig, StreamMessageHandlerRuntime,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use synctv_core::models::{Room, RoomId};
@@ -24,9 +25,10 @@ use crate::proto::client::{
     ChatReadStateResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
     ClearPlaylistResponse, ClearRoomPasswordRequest, ClientMessage, CloseAccountRequest,
     CloseAccountResponse, ConfirmEmailBindRequest, ConfirmEmailBindResponse,
-    ConfirmEmailLoginRequest, ConfirmPasswordResetResponse, CreateChatImageUploadSessionRequest,
-    CreateChatImageUploadSessionResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
+    ConfirmEmailLoginRequest, ConfirmEmailRegistrationRequest, ConfirmPasswordResetResponse,
+    CreateChatImageUploadSessionRequest, CreateChatImageUploadSessionResponse,
+    CreateGuestTokenRequest, CreateGuestTokenResponse, CreatePlaylistRequest,
+    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
     CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
     CreateVideoCoverUploadSessionRequest, CreateVideoCoverUploadSessionResponse,
     CreateWebSocketTicketRequest, CreateWebSocketTicketResponse, DeleteChatMessageRequest,
@@ -56,11 +58,12 @@ use crate::proto::client::{
     ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
     ListPlaylistsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
     ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MarkChatReadRequest, Media,
-    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
-    PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
-    RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
+    LoginResponse, LoginWithDirectPasswordRequest, LogoutRequest, LogoutResponse,
+    MarkChatReadRequest, Media, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
+    MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
+    RegisterResponse, RegisterWithDirectPasswordRequest, RejectRoomJoinReviewRequest,
+    RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
+    RequestEmailRegistrationRequest, RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
     RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendChatMessageRequest, ServerMessage,
@@ -118,63 +121,54 @@ where
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn map_message_stream_join_error(error: RealtimeJoinError) -> Status {
     error.log_if_internal("grpc_message_stream_pre_join");
     map_api_error(ApiError::from(error))
 }
 
-#[allow(clippy::result_large_err)]
 fn invalid_argument_status(message: impl Into<String>) -> Status {
     map_api_error(ApiError::InvalidInput(message.into()))
 }
 
-#[allow(clippy::result_large_err)]
 fn unauthenticated_status(message: impl Into<String>) -> Status {
     map_api_error(ApiError::Authentication(message.into()))
 }
 
-#[allow(clippy::result_large_err)]
 fn permission_denied_status(message: impl Into<String>) -> Status {
     map_api_error(ApiError::Authorization(message.into()))
 }
 
-#[allow(clippy::result_large_err)]
+#[cfg(test)]
 fn unavailable_status(message: impl Into<String>) -> Status {
     map_api_error(ApiError::ServiceUnavailable(message.into()))
 }
 
-#[allow(clippy::result_large_err)]
-fn validate_realtime_room_access(room: &Room) -> Result<(), Status> {
+fn realtime_room_access_error(room: &Room) -> Option<Status> {
     if room.is_banned {
-        return Err(permission_denied_status("This room has been banned"));
+        return Some(permission_denied_status("This room has been banned"));
     }
 
     if room.status.is_closed() {
-        return Err(permission_denied_status(
+        return Some(permission_denied_status(
             "This room is closed and not accepting new connections",
         ));
     }
 
-    Ok(())
+    None
 }
 
-#[allow(clippy::result_large_err)]
 fn map_message_stream_membership_error(err: synctv_core::Error) -> Status {
     map_api_error(crate::impls::ClientApiImpl::map_room_access_error(err))
 }
 
-#[allow(clippy::result_large_err)]
 fn map_email_flow_error(err: crate::impls::ApiError) -> Status {
     map_api_error(err)
 }
 
-#[allow(clippy::result_large_err)]
 fn map_message_stream_user_lookup_error(err: synctv_core::Error) -> Status {
     map_api_error(ApiError::from(err))
 }
 
-#[allow(clippy::result_large_err)]
 fn map_message_stream_room_lookup_error(err: synctv_core::Error) -> Status {
     map_api_error(ApiError::from(err))
 }
@@ -185,14 +179,12 @@ pub struct ClientServiceConfig {
     pub user_service: CoreUserService,
     pub room_service: CoreRoomService,
     pub chat_service: Arc<synctv_core::service::ChatService>,
-    pub event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub event_service: Arc<dyn RealtimeEventService>,
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
-    pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-    pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub config: Arc<synctv_core::Config>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
@@ -205,7 +197,7 @@ pub struct ClientServiceImpl {
     user_service: Arc<CoreUserService>,
     room_service: Arc<CoreRoomService>,
     chat_service: Arc<synctv_core::service::ChatService>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
+    event_service: Arc<dyn RealtimeEventService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
@@ -224,43 +216,8 @@ impl ClientServiceImpl {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub fn new(
-        user_service: CoreUserService,
-        room_service: CoreRoomService,
-        chat_service: Arc<synctv_core::service::ChatService>,
-        event_service: Option<Arc<dyn RealtimeEventService>>,
-        rate_limiter: Arc<dyn RequestRateLimiterService>,
-        rate_limit_config: RateLimitConfig,
-        content_filter: ContentFilter,
-        connection_service: Arc<dyn RealtimeConnectionService>,
-        email_api: Option<Arc<crate::impls::EmailApiImpl>>,
-        _settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-        _providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
-        config: Arc<synctv_core::Config>,
-        client_api: Arc<crate::impls::ClientApiImpl>,
-    ) -> Self {
-        Self {
-            user_service: Arc::new(user_service),
-            room_service: Arc::new(room_service),
-            chat_service,
-            event_service,
-            rate_limiter,
-            rate_limit_config: Arc::new(rate_limit_config),
-            content_filter: Arc::new(content_filter),
-            connection_service,
-            email_api,
-            client_api,
-            config,
-            notification_service: None,
-            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
-        }
-    }
-
-    /// Create `ClientService` from configuration struct
-    #[must_use]
-    pub fn from_config(config: ClientServiceConfig) -> Self {
+    pub fn new(config: ClientServiceConfig) -> Self {
         Self {
             user_service: Arc::new(config.user_service),
             room_service: Arc::new(config.room_service),
@@ -285,7 +242,10 @@ impl ClientServiceImpl {
             .ok_or_else(Self::email_api_unavailable_error)
     }
 
-    fn request_metadata<T>(&self, request: &Request<T>) -> crate::impls::RequestMetadata {
+    fn request_metadata<T>(
+        &self,
+        request: &Request<T>,
+    ) -> Result<crate::impls::RequestMetadata, Status> {
         super::request_metadata(
             request,
             &self.config,
@@ -293,7 +253,6 @@ impl ClientServiceImpl {
         )
     }
 
-    #[allow(clippy::result_large_err)]
     fn extract_public_room_id_from_metadata(
         &self,
         request: &Request<impl std::fmt::Debug>,
@@ -313,7 +272,6 @@ impl ClientServiceImpl {
         Ok(room_id.to_string())
     }
 
-    #[allow(clippy::result_large_err)]
     fn extract_room_id_from_metadata(
         &self,
         request: &Request<impl std::fmt::Debug>,
@@ -325,24 +283,22 @@ impl ClientServiceImpl {
             .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))
     }
 
-    #[allow(clippy::result_large_err)]
     fn room_request_context(
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<(crate::impls::RequestMetadata, String), Status> {
         Ok((
-            self.request_metadata(request),
+            self.request_metadata(request)?,
             self.extract_public_room_id_from_metadata(request)?,
         ))
     }
 
-    #[allow(clippy::result_large_err)]
     fn internal_room_request_context(
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<(crate::impls::RequestMetadata, RoomId), Status> {
         Ok((
-            self.request_metadata(request),
+            self.request_metadata(request)?,
             self.extract_room_id_from_metadata(request)?,
         ))
     }
@@ -451,7 +407,8 @@ impl ClientServiceImpl {
                             room_guest_version: access.room_guest_version,
                             permissions: access.permissions,
                         };
-                        Ok::<_, crate::impls::ApiError>(RealtimePrincipal::guest(room_id, identity))
+                        RealtimePrincipal::guest(room_id, identity)
+                            .map_err(|error| crate::impls::ApiError::Internal(error.to_string()))
                     },
                 )
                 .await
@@ -493,9 +450,7 @@ impl ClientServiceImpl {
         E: Send + 'static,
         F: Fn(ServerMessage) -> Option<E> + Send + Sync + 'static,
     {
-        let event_service = self.event_service.clone().ok_or_else(|| {
-            unavailable_status("Resource watch requires realtime manager (Redis not configured)")
-        })?;
+        let event_service = self.event_service.clone();
         let principal = self.watch_principal(&metadata, room_id).await?;
 
         let room = self
@@ -503,7 +458,9 @@ impl ClientServiceImpl {
             .get_room(&room_id)
             .await
             .map_err(map_message_stream_room_lookup_error)?;
-        validate_realtime_room_access(&room)?;
+        if let Some(status) = realtime_room_access_error(&room) {
+            return Err(status);
+        }
 
         let (outgoing_tx, outgoing_rx) =
             tokio::sync::mpsc::channel::<ServerMessage>(WATCH_STREAM_BUFFER_SIZE);
@@ -552,13 +509,16 @@ impl ClientServiceImpl {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
+// Keep the large error type at this transport boundary; shared business logic
+// below this layer returns `ApiError`.
 #[allow(clippy::result_large_err)]
 impl AuthService for ClientServiceImpl {
-    async fn register(
+    async fn register_with_direct_password(
         &self,
-        request: Request<RegisterRequest>,
+        request: Request<RegisterWithDirectPasswordRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -569,7 +529,11 @@ impl AuthService for ClientServiceImpl {
                 EndpointRateLimitCategory::Auth,
                 move |request_control| async move {
                     client_api
-                        .register_with_control(req, client_ip, Some(&request_control))
+                        .register_with_direct_password_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
                         .await
                 },
             )
@@ -578,11 +542,11 @@ impl AuthService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn login(
+    async fn login_with_direct_password(
         &self,
-        request: Request<LoginRequest>,
+        request: Request<LoginWithDirectPasswordRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -593,7 +557,71 @@ impl AuthService for ClientServiceImpl {
                 EndpointRateLimitCategory::Auth,
                 move |request_control| async move {
                     client_api
-                        .login_with_control(req, client_ip, Some(&request_control))
+                        .login_with_direct_password_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn request_email_registration(
+        &self,
+        request: Request<RequestEmailRegistrationRequest>,
+    ) -> Result<Response<RequestEmailRegistrationResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = email_api.clone();
+        let executor = self.client_api.clone();
+        let result = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    email_api
+                        .request_email_registration_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_email_flow_error)?;
+
+        Ok(Response::new(RequestEmailRegistrationResponse {
+            message: result.message,
+        }))
+    }
+
+    async fn confirm_email_registration(
+        &self,
+        request: Request<ConfirmEmailRegistrationRequest>,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .confirm_email_registration_with_direct_password_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
                         .await
                 },
             )
@@ -606,7 +634,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<StartOpaqueRegistrationRequest>,
     ) -> Result<Response<StartOpaqueRegistrationResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -634,7 +662,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<FinishOpaqueRegistrationRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -662,7 +690,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<ConfirmEmailLoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -692,7 +720,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<CreateGuestTokenRequest>,
     ) -> Result<Response<CreateGuestTokenResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -715,7 +743,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<StartOpaqueLoginRequest>,
     ) -> Result<Response<StartOpaqueLoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -739,7 +767,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<FinishOpaqueLoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -763,7 +791,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<StartPasskeyRegistrationRequest>,
     ) -> Result<Response<StartPasskeyRegistrationResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -791,7 +819,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<FinishPasskeyRegistrationRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -819,7 +847,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<StartPasskeyLoginRequest>,
     ) -> Result<Response<StartPasskeyLoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -843,7 +871,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<FinishPasskeyLoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -867,7 +895,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RequestEmailLoginRequest>,
     ) -> Result<Response<RequestEmailLoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let email_api = self.email_api().map_err(map_email_flow_error)?;
         let email_api = email_api.clone();
@@ -894,7 +922,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RequestMfaEmailCodeRequest>,
     ) -> Result<Response<RequestMfaEmailCodeResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let email_api = self.email_api().map_err(map_email_flow_error)?;
         let email_api = email_api.clone();
@@ -919,7 +947,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<VerifyMfaEmailCodeRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let email_api = self.email_api().map_err(map_email_flow_error)?;
@@ -938,10 +966,7 @@ impl AuthService for ClientServiceImpl {
                             Some(&request_control),
                         )
                         .await?;
-                    Ok::<_, crate::impls::ApiError>(crate::impls::client::login_outcome_to_proto(
-                        outcome,
-                        &public_id_codec,
-                    ))
+                    crate::impls::client::login_outcome_to_proto(outcome, &public_id_codec)
                 },
             )
             .await
@@ -954,7 +979,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<StartMfaPasskeyRequest>,
     ) -> Result<Response<StartMfaPasskeyResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -975,7 +1000,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<FinishMfaPasskeyRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -999,7 +1024,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RefreshTokenRequest>,
     ) -> Result<Response<RefreshTokenResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1020,13 +1045,14 @@ impl AuthService for ClientServiceImpl {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
 #[allow(clippy::result_large_err)]
 impl UserService for ClientServiceImpl {
     async fn logout(
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let authorization = metadata.authorization.clone();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1064,7 +1090,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<GetProfileRequest>,
     ) -> Result<Response<GetProfileResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response =
@@ -1085,7 +1111,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<SetUsernameRequest>,
     ) -> Result<Response<SetUsernameResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1106,7 +1132,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<CreateUserAvatarUploadSessionRequest>,
     ) -> Result<Response<CreateUserAvatarUploadSessionResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1129,7 +1155,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<UploadUserAvatarObjectRequest>,
     ) -> Result<Response<UploadUserAvatarObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1146,7 +1172,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<GetUserAvatarObjectRequest>,
     ) -> Result<Response<UserAvatarObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1163,7 +1189,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<UpdateUserAvatarRequest>,
     ) -> Result<Response<GetProfileResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1186,7 +1212,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<crate::proto::client::ClearUserAvatarRequest>,
     ) -> Result<Response<GetProfileResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -1206,7 +1232,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<StartEmailBindRequest>,
     ) -> Result<Response<StartEmailBindResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1229,7 +1255,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<ConfirmEmailBindRequest>,
     ) -> Result<Response<ConfirmEmailBindResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1252,7 +1278,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<UnbindEmailRequest>,
     ) -> Result<Response<UnbindEmailResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1273,7 +1299,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<StartSensitiveOperationVerificationRequest>,
     ) -> Result<Response<StartSensitiveOperationVerificationResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1302,7 +1328,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<StartSensitiveOperationPasskeyRequest>,
     ) -> Result<Response<StartSensitiveOperationPasskeyResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1325,7 +1351,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<RequestSensitiveOperationEmailCodeRequest>,
     ) -> Result<Response<RequestSensitiveOperationEmailCodeResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1348,7 +1374,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<FinishSensitiveOperationVerificationRequest>,
     ) -> Result<Response<FinishSensitiveOperationVerificationResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -1377,7 +1403,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<StartOpaquePasswordUpdateRequest>,
     ) -> Result<Response<StartOpaquePasswordUpdateResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1400,7 +1426,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<FinishOpaquePasswordUpdateRequest>,
     ) -> Result<Response<FinishOpaquePasswordUpdateResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1423,7 +1449,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<StartPasskeyBindRequest>,
     ) -> Result<Response<StartPasskeyBindResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1446,7 +1472,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<FinishPasskeyBindRequest>,
     ) -> Result<Response<PasskeyCredentialResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1469,7 +1495,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<ListPasskeysRequest>,
     ) -> Result<Response<ListPasskeysResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -1489,7 +1515,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<DeletePasskeyRequest>,
     ) -> Result<Response<DeletePasskeyResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1510,7 +1536,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<GetUserPreferencesRequest>,
     ) -> Result<Response<GetUserPreferencesResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -1532,7 +1558,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<UpdateUserPreferencesRequest>,
     ) -> Result<Response<UpdateUserPreferencesResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1555,7 +1581,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<CloseAccountRequest>,
     ) -> Result<Response<CloseAccountResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -1575,7 +1601,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<CreateRoomRequest>,
     ) -> Result<Response<CreateRoomResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1596,7 +1622,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<GetRoomRequest>,
     ) -> Result<Response<GetRoomResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let room_id = req.room_id.clone();
         let response = self
@@ -1614,7 +1640,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<JoinRoomRequest>,
     ) -> Result<Response<JoinRoomResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip.map(|ip| ip.to_string());
         let req = request.into_inner();
         let room_id = req.room_id.clone();
@@ -1645,7 +1671,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<StartRoomPasswordLoginRequest>,
     ) -> Result<Response<StartRoomPasswordLoginResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip.map(|ip| ip.to_string());
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -1674,7 +1700,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<FinishRoomPasswordLoginRequest>,
     ) -> Result<Response<JoinRoomResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip.map(|ip| ip.to_string());
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -1703,7 +1729,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<ListMyRoomsRequest>,
     ) -> Result<Response<ListMyRoomsResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -1722,6 +1748,7 @@ impl UserService for ClientServiceImpl {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
 #[allow(clippy::result_large_err)]
 impl RoomService for ClientServiceImpl {
     async fn update_room_settings(
@@ -2202,7 +2229,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<CreateWebSocketTicketRequest>,
     ) -> Result<Response<CreateWebSocketTicketResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let public_room_id = req.room_id.clone();
         let client_api = self.client_api.clone();
@@ -2264,9 +2291,9 @@ impl RoomService for ClientServiceImpl {
                                 room_guest_version: access.room_guest_version,
                                 permissions: access.permissions,
                             };
-                            Ok::<_, crate::impls::ApiError>(RealtimePrincipal::guest(
-                                room_id, identity,
-                            ))
+                            RealtimePrincipal::guest(room_id, identity).map_err(|error| {
+                                crate::impls::ApiError::Internal(error.to_string())
+                            })
                         },
                     )
                     .await
@@ -2319,7 +2346,9 @@ impl RoomService for ClientServiceImpl {
             .get_room(&room_id)
             .await
             .map_err(map_message_stream_room_lookup_error)?;
-        validate_realtime_room_access(&room)?;
+        if let Some(status) = realtime_room_access_error(&room) {
+            return Err(status);
+        }
 
         tracing::info!(
             user_id = %user_id,
@@ -2330,13 +2359,7 @@ impl RoomService for ClientServiceImpl {
         // Connection registration is handled by StreamMessageHandler::run()
         // which generates its own connection_id and manages the full lifecycle.
 
-        // RealtimeManager is required for real-time messaging; in single-node mode
-        // without Redis, streaming is not supported.
-        let event_service = self.event_service.clone().ok_or_else(|| {
-            unavailable_status(
-                "Real-time messaging requires realtime manager (Redis not configured)",
-            )
-        })?;
+        let event_service = self.event_service.clone();
 
         // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
@@ -2345,36 +2368,41 @@ impl RoomService for ClientServiceImpl {
         let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
 
         // Create StreamMessageHandler with all configuration
-        let stream_handler = StreamMessageHandler::new_with_principal(
-            room_id,
-            principal,
-            &self.room_service,
-            self.chat_service.clone(),
-            event_service,
-            self.connection_service.clone(),
-            self.rate_limiter.clone(),
-            self.rate_limit_config.clone(),
-            self.content_filter.clone(),
-            self.client_api.public_id_codec.clone(),
-            Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
-        )
-        .with_playback_snapshot_service(self.client_api.clone())
-        .with_playlist_items_snapshot_service(self.client_api.clone())
-        .with_room_members_snapshot_service(self.client_api.clone())
-        .with_heartbeat_schedule(self.heartbeat_schedule)
-        .with_filter_private_ice_candidates(self.config.webrtc.filter_private_ice_candidates)
-        .with_ws_message_rate_limit(
-            self.config
-                .connection_limits
-                .ws_message_rate_limit_per_second,
+        let stream_handler = StreamMessageHandler::new_with_runtime(
+            StreamMessageHandlerConfig {
+                room_id,
+                principal,
+                connection_id: None,
+                room_service: self.room_service.clone(),
+                chat_service: self.chat_service.clone(),
+                event_service: event_service.clone(),
+                connection_service: self.connection_service.clone(),
+                rate_limiter: self.rate_limiter.clone(),
+                rate_limit_config: self.rate_limit_config.clone(),
+                content_filter: self.content_filter.clone(),
+                public_id_codec: self.client_api.public_id_codec.clone(),
+                sender: Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
+                concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
+            },
+            StreamMessageHandlerRuntime {
+                playback_snapshot_service: Some(self.client_api.clone()),
+                playlist_items_snapshot_service: Some(self.client_api.clone()),
+                room_members_snapshot_service: Some(self.client_api.clone()),
+                room_settings_snapshot_service: None,
+                playback_fanout: self.client_api.playback_fanout.clone(),
+                chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
+                    event_service.clone(),
+                ),
+                notification_service: self.notification_service.clone(),
+                ws_message_rate_limit: Some(
+                    self.config
+                        .connection_limits
+                        .ws_message_rate_limit_per_second,
+                ),
+                heartbeat_schedule: Some(self.heartbeat_schedule),
+                filter_private_ice_candidates: self.config.webrtc.filter_private_ice_candidates,
+            },
         );
-
-        // Wire notification service for direct real-time push (matches HTTP WebSocket behavior)
-        let stream_handler = if let Some(ref notif_svc) = self.notification_service {
-            stream_handler.with_notification_service(Arc::clone(notif_svc))
-        } else {
-            stream_handler
-        };
 
         // Start the shared real-time actor before returning the response stream so
         // admission failures still surface as gRPC status errors.
@@ -2437,7 +2465,8 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchPlaybackStateRequest>,
     ) -> Result<Response<Self::WatchPlaybackStateStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let observe = crate::impls::messaging::watch_playback_state_observe(request.into_inner());
+        let observe = crate::impls::messaging::watch_playback_state_observe(request.into_inner())
+            .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_playback_state_event)
             .await
     }
@@ -2448,7 +2477,8 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<Self::WatchPlaybackSnapshotStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
         let observe =
-            crate::impls::messaging::watch_playback_snapshot_observe(request.into_inner());
+            crate::impls::messaging::watch_playback_snapshot_observe(request.into_inner())
+                .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_playback_snapshot_event)
             .await
     }
@@ -2458,7 +2488,8 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchRoomSettingsRequest>,
     ) -> Result<Response<Self::WatchRoomSettingsStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let observe = crate::impls::messaging::watch_room_settings_observe(request.into_inner());
+        let observe = crate::impls::messaging::watch_room_settings_observe(request.into_inner())
+            .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_room_settings_event)
             .await
     }
@@ -2468,7 +2499,8 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchPlaylistItemsRequest>,
     ) -> Result<Response<Self::WatchPlaylistItemsStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let observe = crate::impls::messaging::watch_playlist_items_observe(request.into_inner());
+        let observe = crate::impls::messaging::watch_playlist_items_observe(request.into_inner())
+            .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_playlist_items_event)
             .await
     }
@@ -2478,7 +2510,8 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchRoomMembersRequest>,
     ) -> Result<Response<Self::WatchRoomMembersStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let observe = crate::impls::messaging::watch_room_members_observe(request.into_inner());
+        let observe = crate::impls::messaging::watch_room_members_observe(request.into_inner())
+            .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_room_members_event)
             .await
     }
@@ -2488,7 +2521,8 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchChatEventsRequest>,
     ) -> Result<Response<Self::WatchChatEventsStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let observe = crate::impls::messaging::watch_chat_events_observe(request.into_inner());
+        let observe = crate::impls::messaging::watch_chat_events_observe(request.into_inner())
+            .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_chat_events_event)
             .await
     }
@@ -2518,7 +2552,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<UploadChatImageObjectRequest>,
     ) -> Result<Response<UploadChatImageObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -2535,7 +2569,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetChatImageObjectRequest>,
     ) -> Result<Response<ChatImageObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -2877,7 +2911,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<crate::proto::client::UploadRoomCoverObjectRequest>,
     ) -> Result<Response<crate::proto::client::UploadRoomCoverObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -2894,7 +2928,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<crate::proto::client::GetRoomCoverObjectRequest>,
     ) -> Result<Response<crate::proto::client::RoomCoverObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -2957,7 +2991,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<UploadVideoCoverObjectRequest>,
     ) -> Result<Response<UploadVideoCoverObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -2974,7 +3008,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetVideoCoverObjectRequest>,
     ) -> Result<Response<VideoCoverObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -3061,7 +3095,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<crate::proto::client::UploadPlaylistCoverObjectRequest>,
     ) -> Result<Response<crate::proto::client::UploadPlaylistCoverObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -3078,7 +3112,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<crate::proto::client::GetPlaylistCoverObjectRequest>,
     ) -> Result<Response<crate::proto::client::PlaylistCoverObjectResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -3685,13 +3719,14 @@ impl StreamMessage for GrpcStreamMessage {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
 #[allow(clippy::result_large_err)]
 impl PublicService for ClientServiceImpl {
     async fn check_room(
         &self,
         request: Request<CheckRoomRequest>,
     ) -> Result<Response<CheckRoomResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -3708,7 +3743,7 @@ impl PublicService for ClientServiceImpl {
         &self,
         request: Request<ListRoomsRequest>,
     ) -> Result<Response<ListRoomsResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -3725,7 +3760,7 @@ impl PublicService for ClientServiceImpl {
         &self,
         request: Request<GetHotRoomsRequest>,
     ) -> Result<Response<GetHotRoomsResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -3742,7 +3777,7 @@ impl PublicService for ClientServiceImpl {
         &self,
         request: Request<GetPublicSettingsRequest>,
     ) -> Result<Response<GetPublicSettingsResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -3758,7 +3793,7 @@ impl PublicService for ClientServiceImpl {
         &self,
         request: Request<GetServerInfoRequest>,
     ) -> Result<Response<GetServerInfoResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -3773,13 +3808,14 @@ impl PublicService for ClientServiceImpl {
 
 // Delegates to shared EmailApiImpl to avoid duplicating logic with HTTP handlers.
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
 #[allow(clippy::result_large_err)]
 impl EmailService for ClientServiceImpl {
     async fn request_password_reset(
         &self,
         request: Request<RequestPasswordResetRequest>,
     ) -> Result<Response<RequestPasswordResetResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let email_api = self.email_api().map_err(map_api_error)?;
         let req = request.into_inner();
         let email_api = email_api.clone();
@@ -3804,7 +3840,7 @@ impl EmailService for ClientServiceImpl {
         &self,
         request: Request<StartOpaquePasswordResetRequest>,
     ) -> Result<Response<StartOpaquePasswordResetResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let email_api = self.email_api().map_err(map_api_error)?;
         let req = request.into_inner();
         let email_api = email_api.clone();
@@ -3832,7 +3868,7 @@ impl EmailService for ClientServiceImpl {
         &self,
         request: Request<FinishOpaquePasswordResetRequest>,
     ) -> Result<Response<ConfirmPasswordResetResponse>, Status> {
-        let metadata = self.request_metadata(&request);
+        let metadata = self.request_metadata(&request)?;
         let email_api = self.email_api().map_err(map_api_error)?;
         let req = request.into_inner();
         let email_api = email_api.clone();
@@ -4195,29 +4231,29 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_realtime_room_access_rejects_banned_room() {
+    fn test_realtime_room_access_error_rejects_banned_room() {
         let mut room = Room::new("test-room".to_string(), UserId::new());
         room.ban();
 
-        let status = validate_realtime_room_access(&room).expect_err("banned room must fail");
+        let status = realtime_room_access_error(&room).expect("banned room must fail");
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
         assert!(status.message().contains("banned"));
     }
 
     #[test]
-    fn test_validate_realtime_room_access_rejects_closed_room() {
+    fn test_realtime_room_access_error_rejects_closed_room() {
         let mut room = Room::new("test-room".to_string(), UserId::new());
         room.status = synctv_core::models::RoomStatus::Closed;
 
-        let status = validate_realtime_room_access(&room).expect_err("closed room must fail");
+        let status = realtime_room_access_error(&room).expect("closed room must fail");
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
         assert!(status.message().contains("not accepting new connections"));
     }
 
     #[test]
-    fn test_validate_realtime_room_access_allows_active_room() {
+    fn test_realtime_room_access_error_allows_active_room() {
         let room = Room::new("test-room".to_string(), UserId::new());
-        assert!(validate_realtime_room_access(&room).is_ok());
+        assert!(realtime_room_access_error(&room).is_none());
     }
 
     #[test]

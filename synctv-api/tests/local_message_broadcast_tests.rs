@@ -1,13 +1,10 @@
-//! Tests for local message broadcasting without RealtimeManager
+//! Tests for single-node realtime message broadcasting.
 //!
 //! These tests verify that:
-//! 1. message_stream works without RealtimeManager (no Redis)
-//! 2. Local messages are correctly broadcast to subscribers
-//! 3. Multiple subscribers all receive messages
-//! 4. Local RealtimeManager is lazily created when needed
-//!
-//! Issue: In non-distributed mode (without Redis), message_stream gRPC endpoint
-//! previously returned an error. Now it creates a local RealtimeManager fallback.
+//! 1. `RealtimeManager` starts without a distributed transport
+//! 2. Local messages are broadcast to subscribers
+//! 3. Multiple subscribers receive the same room event
+//! 4. Connection tracking works in standalone mode
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;

@@ -2,7 +2,7 @@
 //!
 //! Coordinates cleanup of:
 //! - Soft-deleted records (users, rooms) past retention period
-//! - Expired email bind tokens
+//! - Expired email auth and registration tokens
 //! - Expired media provider credentials
 //! - Old notifications
 //! - Old chat messages (per-room cap)
@@ -30,6 +30,8 @@ use crate::{
     InternalExt, Result,
 };
 
+const DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
+
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
@@ -37,7 +39,7 @@ pub struct CleanupConfig {
     pub soft_delete_retention_days: u32,
     /// Days to retain soft-deleted rooms before permanent deletion (0 = never purge)
     pub room_soft_delete_retention_days: u32,
-    /// Days to retain expired email tokens before deletion (0 = never purge)
+    /// Days to retain expired email auth and registration tokens before deletion (0 = never purge)
     pub expired_token_retention_days: u32,
     /// Hours buffer for expired credential cleanup (prevents race conditions)
     pub expired_credential_buffer_hours: u32,
@@ -47,7 +49,7 @@ pub struct CleanupConfig {
     pub notification_max_retention_days: u32,
     /// Maximum chat messages to keep per room (0 = unlimited)
     pub chat_max_messages_per_room: i64,
-    /// Seconds to retain room resource events for watch resume/audit (0 = disabled)
+    /// Seconds to retain room resource events for watch resume and audit diagnostics (0 = disabled)
     pub room_resource_event_retention_seconds: u64,
     /// Days to retain playback progress rows not referenced by current playback (0 = disabled)
     pub playback_progress_retention_days: u32,
@@ -65,7 +67,7 @@ impl Default for CleanupConfig {
             notification_retention_days: 30,
             notification_max_retention_days: 90,
             chat_max_messages_per_room: 0, // unlimited by default
-            room_resource_event_retention_seconds: 3_600,
+            room_resource_event_retention_seconds: DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS,
             playback_progress_retention_days: 15,
             unreferenced_file_retention_seconds: 86_400,
         }
@@ -79,7 +81,7 @@ pub struct CleanupResult {
     pub users_purged: u64,
     /// Number of soft-deleted rooms permanently deleted
     pub rooms_purged: u64,
-    /// Number of expired email tokens deleted
+    /// Number of expired email auth and registration tokens deleted
     pub tokens_deleted: u64,
     /// Number of expired credentials deleted
     pub credentials_deleted: u64,
@@ -97,6 +99,12 @@ pub struct CleanupResult {
     pub unreferenced_files_deleted: u64,
 }
 
+#[derive(Clone, Default)]
+pub struct CleanupServiceOptions {
+    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub file_storage_service: Option<Arc<dyn FileStorageService>>,
+}
+
 /// Data cleanup service
 pub struct CleanupService {
     pool: PgPool,
@@ -108,8 +116,18 @@ pub struct CleanupService {
 }
 
 impl CleanupService {
-    fn u32_to_i32_saturating(value: u32) -> i32 {
-        i32::try_from(value).unwrap_or(i32::MAX)
+    fn u32_to_i32(value: u32, field: &'static str) -> Result<i32> {
+        i32::try_from(value)
+            .map_err(|_| crate::Error::Internal(format!("{field} exceeds i32::MAX")))
+    }
+
+    fn len_to_u64(len: usize, field: &'static str) -> Result<u64> {
+        u64::try_from(len).map_err(|_| crate::Error::Internal(format!("{field} exceeds u64::MAX")))
+    }
+
+    fn retention_seconds_to_i64(value: u64, field: &'static str) -> Result<i64> {
+        i64::try_from(value)
+            .map_err(|_| crate::Error::Internal(format!("{field} exceeds i64::MAX")))
     }
 
     /// Create a new cleanup service with a leader check.
@@ -118,43 +136,40 @@ impl CleanupService {
     /// single-node mode where `AlwaysLeader` is used).
     #[must_use]
     pub fn new(pool: PgPool, config: CleanupConfig, leader_check: Arc<dyn LeaderCheck>) -> Self {
+        Self::new_with_options(pool, config, leader_check, CleanupServiceOptions::default())
+    }
+
+    /// Create a new cleanup service with explicit runtime dependencies.
+    #[must_use]
+    pub fn new_with_options(
+        pool: PgPool,
+        config: CleanupConfig,
+        leader_check: Arc<dyn LeaderCheck>,
+        options: CleanupServiceOptions,
+    ) -> Self {
         Self {
             pool,
             config,
             leader_check,
-            settings_registry: None,
-            file_storage_service: None,
+            settings_registry: options.settings_registry,
+            file_storage_service: options.file_storage_service,
         }
-    }
-
-    /// Set the settings registry for dynamic `chat_max_messages_per_room`.
-    ///
-    /// When set, `chat_max_messages_per_room` is read from the registry at runtime
-    /// on each cleanup cycle, allowing admins to change it without restarting the service.
-    #[must_use]
-    pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
-        self.settings_registry = Some(registry);
-        self
-    }
-
-    /// Set the file storage service used to clean file objects when
-    /// per-room chat message cap cleanup purges file-backed messages.
-    #[must_use]
-    pub fn with_file_storage_service(mut self, service: Arc<dyn FileStorageService>) -> Self {
-        self.file_storage_service = Some(service);
-        self
     }
 
     /// Get the effective `chat_max_messages_per_room` value.
     ///
     /// Reads from `SettingsRegistry` if available, otherwise falls back to config.
-    fn chat_max_messages_per_room(&self) -> i64 {
-        self.settings_registry
-            .as_ref()
-            .and_then(|r| r.max_chat_messages_per_room.get().ok())
-            .map_or(self.config.chat_max_messages_per_room, |value| {
-                i64::try_from(value).unwrap_or(i64::MAX)
-            })
+    fn chat_max_messages_per_room(&self) -> Result<i64> {
+        match self.settings_registry.as_ref() {
+            Some(registry) => registry.max_chat_messages_per_room.get().and_then(|value| {
+                i64::try_from(value).map_err(|_| {
+                    crate::Error::Internal(
+                        "chat_max_messages_per_room exceeds i64::MAX".to_string(),
+                    )
+                })
+            }),
+            None => Ok(self.config.chat_max_messages_per_room),
+        }
     }
 
     /// Run all cleanup tasks once
@@ -173,7 +188,16 @@ impl CleanupService {
         let mut result = CleanupResult::default();
 
         // Read dynamic settings at runtime
-        let chat_max_messages = self.chat_max_messages_per_room();
+        let chat_max_messages = match self.chat_max_messages_per_room() {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Skipping chat message cleanup because max_chat_messages_per_room could not be loaded"
+                );
+                0
+            }
+        };
 
         // 1. Purge soft-deleted rooms first.
         // Soft-deleted users can still be referenced by their owned room rows
@@ -206,16 +230,18 @@ impl CleanupService {
             }
         }
 
-        // 3. Delete expired email tokens
+        // 3. Delete expired email auth and registration tokens
         if self.config.expired_token_retention_days > 0 {
             match self.delete_expired_tokens().await {
                 Ok(count) => {
                     result.tokens_deleted = count;
                     if count > 0 {
-                        info!(count, "Deleted expired email tokens");
+                        info!(count, "Deleted expired email auth and registration tokens");
                     }
                 }
-                Err(e) => warn!(error = %e, "Failed to delete expired email tokens"),
+                Err(e) => {
+                    warn!(error = %e, "Failed to delete expired email auth and registration tokens");
+                }
             }
         }
 
@@ -271,7 +297,7 @@ impl CleanupService {
             }
         }
 
-        // 7. Cleanup expired token blacklist entries (prevents unbounded table growth)
+        // 7. Cleanup expired room resource events (prevents unbounded durable watch/audit log growth)
         if self.config.room_resource_event_retention_seconds > 0 {
             match self.cleanup_room_resource_events().await {
                 Ok(count) => {
@@ -335,7 +361,10 @@ impl CleanupService {
 
     /// Permanently delete users that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_users(&self) -> Result<u64> {
-        let days = Self::u32_to_i32_saturating(self.config.soft_delete_retention_days);
+        let days = Self::u32_to_i32(
+            self.config.soft_delete_retention_days,
+            "soft_delete_retention_days",
+        )?;
         let user_ids = sqlx::query_scalar!(
             r#"
             SELECT id as "id: crate::models::UserId"
@@ -399,7 +428,10 @@ impl CleanupService {
 
     /// Permanently delete rooms that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_rooms(&self) -> Result<u64> {
-        let days = Self::u32_to_i32_saturating(self.config.room_soft_delete_retention_days);
+        let days = Self::u32_to_i32(
+            self.config.room_soft_delete_retention_days,
+            "room_soft_delete_retention_days",
+        )?;
         let room_ids = sqlx::query_scalar!(
             r#"
             SELECT id as "id: crate::models::RoomId"
@@ -433,10 +465,13 @@ impl CleanupService {
         Ok(purged)
     }
 
-    /// Delete email tokens that expired beyond the retention period
+    /// Delete email auth and registration tokens that expired beyond the retention period.
     async fn delete_expired_tokens(&self) -> Result<u64> {
-        let days = Self::u32_to_i32_saturating(self.config.expired_token_retention_days);
-        let result = sqlx::query!(
+        let days = Self::u32_to_i32(
+            self.config.expired_token_retention_days,
+            "expired_token_retention_days",
+        )?;
+        let auth_tokens = sqlx::query!(
             r"
             DELETE FROM auth_email_tokens
             WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
@@ -447,12 +482,26 @@ impl CleanupService {
         .await
         .internal_with_err("Failed to delete expired tokens")?;
 
-        Ok(result.rows_affected())
+        let registration_tokens = sqlx::query!(
+            r"
+            DELETE FROM auth_email_registration_tokens
+            WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+            ",
+            days
+        )
+        .execute(&self.pool)
+        .await
+        .internal_with_err("Failed to delete expired registration tokens")?;
+
+        Ok(auth_tokens.rows_affected() + registration_tokens.rows_affected())
     }
 
     /// Delete expired media provider credentials with buffer to prevent race conditions.
     async fn delete_expired_credentials(&self) -> Result<u64> {
-        let buffer_hours = Self::u32_to_i32_saturating(self.config.expired_credential_buffer_hours);
+        let buffer_hours = Self::u32_to_i32(
+            self.config.expired_credential_buffer_hours,
+            "expired_credential_buffer_hours",
+        )?;
         let result = sqlx::query!(
             r"
             DELETE FROM user_media_provider_credentials
@@ -470,7 +519,10 @@ impl CleanupService {
 
     /// Delete read notifications older than the retention period
     async fn delete_old_notifications(&self) -> Result<u64> {
-        let days = Self::u32_to_i32_saturating(self.config.notification_retention_days);
+        let days = Self::u32_to_i32(
+            self.config.notification_retention_days,
+            "notification_retention_days",
+        )?;
         let result = sqlx::query!(
             r"
             DELETE FROM notifications
@@ -491,7 +543,10 @@ impl CleanupService {
     /// This prevents unbounded growth from unread notifications that are never
     /// acknowledged by users.
     async fn delete_expired_notifications(&self) -> Result<u64> {
-        let days = Self::u32_to_i32_saturating(self.config.notification_max_retention_days);
+        let days = Self::u32_to_i32(
+            self.config.notification_max_retention_days,
+            "notification_max_retention_days",
+        )?;
         let result = sqlx::query!(
             r"
             DELETE FROM notifications
@@ -510,33 +565,37 @@ impl CleanupService {
     ///
     /// Deletes expired token blacklist rows directly in PostgreSQL.
     async fn cleanup_token_blacklist(&self) -> Result<u64> {
-        let deleted_count = sqlx::query_scalar_unchecked!(
-            r"
+        let deleted_count = sqlx::query_scalar!(
+            r#"
             WITH deleted AS (
                 DELETE FROM auth_token_blacklist
                 WHERE expires_at < CURRENT_TIMESTAMP
                 RETURNING 1
             )
-            SELECT COUNT(*)::BIGINT
-            "
+            SELECT COUNT(*)::BIGINT AS "deleted_count!"
+            "#
         )
         .fetch_one(&self.pool)
         .await
-        .internal_with_err("Failed to cleanup token blacklist")?
-        .unwrap_or(0);
+        .internal_with_err("Failed to cleanup token blacklist")?;
         Ok(deleted_count.max(0).cast_unsigned())
     }
 
     async fn cleanup_room_resource_events(&self) -> Result<u64> {
-        let retention_seconds =
-            i64::try_from(self.config.room_resource_event_retention_seconds).unwrap_or(i64::MAX);
+        let retention_seconds = Self::retention_seconds_to_i64(
+            self.config.room_resource_event_retention_seconds,
+            "room_resource_event_retention_seconds",
+        )?;
         RoomResourceEventRepository::new(self.pool.clone())
             .delete_older_than(retention_seconds)
             .await
     }
 
     async fn cleanup_stale_playback_progress(&self) -> Result<u64> {
-        let days = Self::u32_to_i32_saturating(self.config.playback_progress_retention_days);
+        let days = Self::u32_to_i32(
+            self.config.playback_progress_retention_days,
+            "playback_progress_retention_days",
+        )?;
         let result = sqlx::query!(
             r#"
             DELETE FROM room_playback_progress progress
@@ -570,7 +629,7 @@ impl CleanupService {
             .delete_files(FileStorageCleanupOrigin::ReferenceExpired, &references)
             .await
         {
-            Ok(()) => Ok(u64::try_from(references.len()).unwrap_or(u64::MAX)),
+            Ok(()) => Self::len_to_u64(references.len(), "expired file reference count"),
             Err(error) => {
                 repository
                     .enqueue_cleanup_jobs(
@@ -590,8 +649,10 @@ impl CleanupService {
             return Ok(0);
         };
         let repository = FileStorageRepository::new(self.pool.clone());
-        let older_than_seconds =
-            i64::try_from(self.config.unreferenced_file_retention_seconds).unwrap_or(i64::MAX);
+        let older_than_seconds = Self::retention_seconds_to_i64(
+            self.config.unreferenced_file_retention_seconds,
+            "unreferenced_file_retention_seconds",
+        )?;
         let files = repository
             .list_unreferenced_objects(older_than_seconds, 100)
             .await?;
@@ -613,7 +674,7 @@ impl CleanupService {
             .delete_files(FileStorageCleanupOrigin::UnreferencedObject, &references)
             .await
         {
-            Ok(()) => Ok(u64::try_from(references.len()).unwrap_or(u64::MAX)),
+            Ok(()) => Self::len_to_u64(references.len(), "unreferenced file count"),
             Err(error) => {
                 repository
                     .enqueue_cleanup_jobs(
@@ -637,9 +698,9 @@ impl CleanupService {
         }
 
         let images = if let Some(storage) = &self.file_storage_service {
-            let images = sqlx::query_as_unchecked!(
-ChatImage,
-r"
+            let images = sqlx::query_as!(
+                ChatImage,
+                r#"
                 WITH ranked AS (
                     SELECT id, created_at,
                            ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
@@ -650,16 +711,26 @@ r"
                     FROM ranked
                     WHERE rn > $1
                 )
-                SELECT i.id, i.room_id, i.message_id, i.message_created_at, i.storage_backend,
-                       i.object_key, i.url, i.mime_type, i.size_bytes, i.width, i.height,
-                       i.metadata, i.created_at
+                SELECT i.id,
+                       i.room_id AS "room_id: crate::models::RoomId",
+                       i.message_id,
+                       i.message_created_at,
+                       i.storage_backend,
+                       i.object_key,
+                       i.url,
+                       i.mime_type,
+                       i.size_bytes,
+                       i.width,
+                       i.height,
+                       i.metadata,
+                       i.created_at
                 FROM chat_message_images i
                 INNER JOIN candidates c
                     ON c.id = i.message_id AND c.created_at = i.message_created_at
                 ORDER BY i.message_created_at, i.message_id, i.created_at
-                ",
-keep_count
-)
+                "#,
+                keep_count
+            )
             .fetch_all(&self.pool)
             .await
             .internal_with_err("Failed to collect chat image cleanup candidates")?;
@@ -673,7 +744,7 @@ keep_count
         };
 
         let result = sqlx::query!(
-r"
+            r"
             WITH ranked AS (
                     SELECT id,
                            created_at,
@@ -689,8 +760,8 @@ r"
             USING candidates c
             WHERE m.id = c.id AND m.created_at = c.created_at
             ",
-keep_count
-)
+            keep_count
+        )
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to cleanup chat messages")?;
@@ -779,7 +850,16 @@ keep_count
                 }
 
                 // Read dynamic settings at runtime for logging
-                let chat_max_messages = service.chat_max_messages_per_room();
+                let chat_max_messages = match service.chat_max_messages_per_room() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "Skipping periodic data cleanup because max_chat_messages_per_room could not be loaded"
+                        );
+                        continue;
+                    }
+                };
 
                 info!(
                     chat_max_messages,
@@ -822,7 +902,6 @@ keep_count
 mod tests {
     use super::*;
 
-    /// Test that `chat_max_messages_per_room` falls back to config when no registry is set.
     #[tokio::test]
     async fn test_chat_max_messages_fallback_to_config() {
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
@@ -833,46 +912,9 @@ mod tests {
         let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
         let service = CleanupService::new(pool, config, leader);
 
-        // No registry set, should use config value
-        assert_eq!(service.chat_max_messages_per_room(), 500);
+        assert_eq!(service.chat_max_messages_per_room().unwrap(), 500);
     }
 
-    /// Test that `with_settings_registry` builder method works.
-    #[tokio::test]
-    async fn test_with_settings_registry_builder() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
-        let config = CleanupConfig::default();
-        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
-
-        // Create a mock settings service (this won't actually connect)
-        let settings_service = Arc::new(crate::service::SettingsService::new(
-            crate::repository::SettingsRepository::new(pool.clone()),
-            pool.clone(),
-        ));
-        let registry = Arc::new(SettingsRegistry::new(settings_service));
-
-        let service = CleanupService::new(pool, config, leader).with_settings_registry(registry);
-
-        // Service should have registry set (we can't easily test the value read without DB)
-        assert!(service.settings_registry.is_some());
-    }
-
-    /// Service construction should work without an optional settings registry.
-    #[tokio::test]
-    async fn test_cleanup_service_without_registry() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
-        let config = CleanupConfig::default();
-        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
-
-        let service = CleanupService::new(pool, config, leader);
-
-        // Should work fine without registry
-        assert!(service.settings_registry.is_none());
-        // Should use config defaults
-        assert_eq!(service.chat_max_messages_per_room(), 0);
-    }
-
-    /// Dummy leader check that always returns true (for tests).
     struct AlwaysLeader;
     impl LeaderCheck for AlwaysLeader {
         fn is_leader(&self) -> bool {

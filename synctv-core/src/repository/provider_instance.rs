@@ -114,6 +114,8 @@ impl std::fmt::Debug for ProviderInstanceRepository {
 }
 
 impl ProviderInstanceRepository {
+    const INSTANCE_SELECT_COLUMNS: &'static str = "name, endpoint, comment, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled, created_at, updated_at";
+
     fn is_provider_instance_reference_violation(db_err: &dyn sqlx::error::DatabaseError) -> bool {
         db_err.code().as_deref() == Some("23503")
             || db_err
@@ -123,20 +125,39 @@ impl ProviderInstanceRepository {
                 && db_err.message().contains("media_provider_instances")
     }
 
-    fn build_order_by(query: &ProviderInstanceListQuery) -> String {
-        let direction = query.sort_direction.as_sql();
-        match query.sort_by {
-            ProviderInstanceListSortBy::Name => format!("name {direction}, created_at {direction}"),
-            ProviderInstanceListSortBy::Endpoint => {
-                format!("endpoint {direction}, created_at {direction}")
+    fn push_list_order_by(
+        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        query: &ProviderInstanceListQuery,
+    ) {
+        use crate::models::SortDirection;
+
+        let order_by = match (query.sort_by, query.sort_direction) {
+            (ProviderInstanceListSortBy::Name, SortDirection::Asc) => {
+                " ORDER BY name ASC, created_at ASC"
             }
-            ProviderInstanceListSortBy::UpdatedAt => {
-                format!("updated_at {direction}, name {direction}")
+            (ProviderInstanceListSortBy::Name, SortDirection::Desc) => {
+                " ORDER BY name DESC, created_at DESC"
             }
-            ProviderInstanceListSortBy::CreatedAt => {
-                format!("created_at {direction}, name {direction}")
+            (ProviderInstanceListSortBy::Endpoint, SortDirection::Asc) => {
+                " ORDER BY endpoint ASC, created_at ASC"
             }
-        }
+            (ProviderInstanceListSortBy::Endpoint, SortDirection::Desc) => {
+                " ORDER BY endpoint DESC, created_at DESC"
+            }
+            (ProviderInstanceListSortBy::UpdatedAt, SortDirection::Asc) => {
+                " ORDER BY updated_at ASC, name ASC"
+            }
+            (ProviderInstanceListSortBy::UpdatedAt, SortDirection::Desc) => {
+                " ORDER BY updated_at DESC, name DESC"
+            }
+            (ProviderInstanceListSortBy::CreatedAt, SortDirection::Asc) => {
+                " ORDER BY created_at ASC, name ASC"
+            }
+            (ProviderInstanceListSortBy::CreatedAt, SortDirection::Desc) => {
+                " ORDER BY created_at DESC, name DESC"
+            }
+        };
+        builder.push(order_by);
     }
 
     fn push_list_filters(
@@ -206,8 +227,6 @@ impl ProviderInstanceRepository {
         }
     }
 
-    /// Encrypt a string field before storage (if encryption is configured).
-    /// Returns the encrypted string or the original if encryption is not configured.
     fn encrypt_field(&self, plaintext: Option<&str>) -> Result<Option<String>> {
         match (&self.encryption, plaintext) {
             (Some(enc), Some(value)) if !value.is_empty() => {
@@ -215,7 +234,11 @@ impl ProviderInstanceRepository {
                 let encrypted = enc.encrypt(&json_value)?;
                 Ok(Some(encrypted))
             }
-            _ => Ok(plaintext.map(str::to_owned)),
+            (None, Some(value)) if !value.trim().is_empty() => Err(crate::Error::Internal(
+                "Credential encryption must be configured before storing provider instance secrets"
+                    .to_string(),
+            )),
+            _ => Ok(None),
         }
     }
 
@@ -229,7 +252,6 @@ impl ProviderInstanceRepository {
         Ok(())
     }
 
-    /// Decrypt a string field after reading. Only encrypted values (enc: prefix) are supported.
     fn decrypt_field(&self, stored: Option<&str>) -> Result<Option<String>> {
         match (&self.encryption, stored) {
             (Some(enc), Some(value)) if value.starts_with("enc:") => {
@@ -243,7 +265,13 @@ impl ProviderInstanceRepository {
                 "Provider instance contains plaintext sensitive data while credential encryption is enabled"
                     .to_string(),
             )),
-            _ => Ok(stored.map(str::to_owned)),
+            (None, Some(value)) if !value.trim().is_empty() => {
+                Err(crate::Error::Internal(
+                    "Credential encryption must be configured before reading provider instance secrets"
+                        .to_string(),
+                ))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -331,8 +359,8 @@ impl ProviderInstanceRepository {
         &self,
         query: &ProviderInstanceListQuery,
     ) -> Result<(Vec<ProviderInstance>, i64)> {
-        let limit = i64::try_from(query.pagination.limit()).unwrap_or(i64::MAX);
-        let offset = i64::try_from(query.pagination.offset()).unwrap_or(i64::MAX);
+        let limit = query.pagination.limit_i64()?;
+        let offset = query.pagination.offset_i64()?;
 
         let mut count_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT COUNT(*) FROM media_provider_instances",
@@ -343,11 +371,12 @@ impl ProviderInstanceRepository {
             .fetch_one(&self.pool)
             .await?;
 
-        let mut builder =
-            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM media_provider_instances");
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
+        builder.push(Self::INSTANCE_SELECT_COLUMNS);
+        builder.push(" FROM media_provider_instances");
         Self::push_list_filters(&mut builder, query)?;
-        let order_by = Self::build_order_by(query);
-        builder.push(format!(" ORDER BY {order_by} LIMIT "));
+        Self::push_list_order_by(&mut builder, query);
+        builder.push(" LIMIT ");
         builder.push_bind(limit);
         builder.push(" OFFSET ");
         builder.push_bind(offset);
@@ -559,7 +588,6 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    /// Encrypt credential data before storage (if encryption is configured)
     fn encrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
         match &self.encryption {
             Some(enc) => enc.encrypt_to_value(data),
@@ -570,11 +598,13 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    /// Decrypt credential data after reading
     fn decrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
         match &self.encryption {
             Some(enc) => enc.decrypt_value(data),
-            None => Ok(data.clone()),
+            None => Err(crate::Error::Internal(
+                "Credential encryption must be configured before reading provider credentials"
+                    .to_string(),
+            )),
         }
     }
 
@@ -875,10 +905,50 @@ impl UserProviderCredentialRepository {
 mod tests {
     use super::*;
     use crate::credential_encryption::CredentialEncryption;
+    use crate::models::SortDirection;
     use serde_json::json;
 
     // Note: These are unit tests for the repository structure.
     // Integration tests with actual database should be in tests/ directory.
+
+    fn order_by_sql(query: &ProviderInstanceListQuery) -> String {
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+        ProviderInstanceRepository::push_list_order_by(&mut builder, query);
+        builder.sql().to_string()
+    }
+
+    #[test]
+    fn test_provider_instance_list_select_columns_are_explicit() {
+        assert_eq!(
+            ProviderInstanceRepository::INSTANCE_SELECT_COLUMNS,
+            "name, endpoint, comment, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled, created_at, updated_at"
+        );
+    }
+
+    #[test]
+    fn test_provider_instance_list_order_by_uses_static_sort_branches() {
+        let mut query = ProviderInstanceListQuery {
+            sort_by: ProviderInstanceListSortBy::Name,
+            sort_direction: SortDirection::Asc,
+            ..ProviderInstanceListQuery::default()
+        };
+        assert_eq!(order_by_sql(&query), " ORDER BY name ASC, created_at ASC");
+
+        query.sort_by = ProviderInstanceListSortBy::Endpoint;
+        query.sort_direction = SortDirection::Desc;
+        assert_eq!(
+            order_by_sql(&query),
+            " ORDER BY endpoint DESC, created_at DESC"
+        );
+
+        query.sort_by = ProviderInstanceListSortBy::UpdatedAt;
+        query.sort_direction = SortDirection::Asc;
+        assert_eq!(order_by_sql(&query), " ORDER BY updated_at ASC, name ASC");
+
+        query.sort_by = ProviderInstanceListSortBy::CreatedAt;
+        query.sort_direction = SortDirection::Desc;
+        assert_eq!(order_by_sql(&query), " ORDER BY created_at DESC, name DESC");
+    }
 
     #[tokio::test]
     async fn test_provider_instance_repo_rejects_plaintext_sensitive_fields_when_encryption_enabled(
@@ -905,7 +975,7 @@ mod tests {
             .unwrap_err();
         assert!(
             err.to_string()
-                .contains("Plaintext credentials are no longer supported"),
+                .contains("Credential value must be an encrypted string"),
             "unexpected error: {err}"
         );
     }
@@ -939,12 +1009,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_provider_instance_repo_requires_encryption_for_sensitive_reads() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = ProviderInstanceRepository::new(pool);
+
+        let err = repo.decrypt_field(Some("enc:placeholder")).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Credential encryption must be configured"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(repo.decrypt_field(None).unwrap(), None);
+        assert_eq!(repo.decrypt_field(Some("")).unwrap(), None);
+    }
+
+    #[tokio::test]
     async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = UserProviderCredentialRepository::new(pool);
 
         let err = repo
             .encrypt_credential(&json!({"token": "plaintext"}))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Credential encryption must be configured"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_provider_credential_repo_requires_encryption_for_reads() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = UserProviderCredentialRepository::new(pool);
+
+        let err = repo
+            .decrypt_credential(&json!("enc:placeholder"))
             .unwrap_err();
         assert!(
             err.to_string()

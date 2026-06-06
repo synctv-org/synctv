@@ -27,6 +27,11 @@ pub const FILE_UPLOAD_TOKEN_HEADER: &str = "x-synctv-file-upload-token";
 const DATABASE_FILE_READ_TOKEN_VERSION: &str = "v1";
 const MAX_DATABASE_FILE_UPLOAD_SIZE_BYTES: usize = 20 * 1024 * 1024;
 
+fn payload_len_i64(len: usize) -> Result<i64> {
+    i64::try_from(len)
+        .map_err(|_| Error::InvalidInput("file payload size exceeds i64::MAX".to_string()))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FileStorageContext<'a> {
     pub user_id: UserId,
@@ -291,19 +296,20 @@ impl FileStorageService for RoutedFileStorageService {
 
 impl S3CompatibleFileStorageService {
     pub fn new(config: S3FileStorageConfig) -> Result<Self> {
+        Self::new_with_repository(config, None)
+    }
+
+    pub fn new_with_repository(
+        config: S3FileStorageConfig,
+        repository: Option<Arc<FileStorageRepository>>,
+    ) -> Result<Self> {
         validate_s3_file_storage_config(&config)?;
         let operator = s3_operator_from_config(&config)?;
         Ok(Self {
             config,
             operator,
-            repository: None,
+            repository,
         })
-    }
-
-    #[must_use]
-    pub fn with_repository(mut self, repository: Arc<FileStorageRepository>) -> Self {
-        self.repository = Some(repository);
-        self
     }
 
     #[cfg(test)]
@@ -338,6 +344,18 @@ impl S3CompatibleFileStorageService {
                 Error::InvalidInput(format!("file object range is not readable: {error}"))
             })?;
         Ok(bytes.to_vec())
+    }
+
+    async fn delete_invalid_upload_object(&self, object_key: &str, reason: &'static str) {
+        if let Err(error) = self.operator.delete(object_key).await {
+            tracing::warn!(
+                storage_backend = %self.config.storage_backend,
+                object_key,
+                reason,
+                error = %error,
+                "Failed to delete invalid uploaded file object"
+            );
+        }
     }
 }
 
@@ -506,7 +524,7 @@ impl FileStorageService for DatabaseFileStorageService {
         let mut upload_headers = std::collections::BTreeMap::new();
         upload_headers.insert(
             "content-type".to_string(),
-            file.mime_type.clone().unwrap_or_default(),
+            required_file_mime_type(&file)?.to_string(),
         );
         if let Some(token) = file
             .metadata
@@ -563,11 +581,7 @@ impl FileStorageService for DatabaseFileStorageService {
         for file in &files {
             let payload =
                 file_upload_token_payload_from_file(file, context.user_id, context.storage_scope)?;
-            if payload
-                .get("ownership_proof_required")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
+            if optional_payload_bool(&payload, "ownership_proof_required", "file upload token")? {
                 let proof = file
                     .metadata
                     .get(FILE_OWNERSHIP_PROOF_KEY)
@@ -672,7 +686,7 @@ impl FileStorageService for DatabaseFileStorageService {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
         if let Some(content_type) = content_type {
-            if content_type.split(';').next().unwrap_or_default().trim() != mime_type {
+            if upload_media_type(content_type)? != mime_type {
                 return Err(Error::InvalidInput(
                     "file content-type does not match upload session".to_string(),
                 ));
@@ -682,7 +696,7 @@ impl FileStorageService for DatabaseFileStorageService {
             .get("size_bytes")
             .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-        if expected_size != i64::try_from(data.len()).unwrap_or(i64::MAX) {
+        if expected_size != payload_len_i64(data.len())? {
             return Err(Error::InvalidInput(
                 "file payload size does not match upload session".to_string(),
             ));
@@ -890,17 +904,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             None,
         )?;
         validate_stored_files(std::slice::from_ref(&file))?;
-        let upload_headers = presigned
-            .header()
-            .iter()
-            .filter(|(name, _)| name.as_str() != "host")
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_ascii_lowercase(),
-                    value.to_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect();
+        let upload_headers = presigned_upload_headers(presigned.header())?;
         Ok(FileUploadSession {
             file,
             upload_required: true,
@@ -938,11 +942,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .get("checksum_sha256")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_ascii_lowercase);
-            if payload
-                .get("ownership_proof_required")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
+            if optional_payload_bool(&payload, "ownership_proof_required", "file upload token")? {
                 let proof = file
                     .metadata
                     .get(FILE_OWNERSHIP_PROOF_KEY)
@@ -993,15 +993,17 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .get("size_bytes")
                 .and_then(serde_json::Value::as_i64)
                 .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-            if expected_size != i64::try_from(data.len()).unwrap_or(i64::MAX) {
-                let _ = self.operator.delete(&file.object_key).await;
+            if expected_size != payload_len_i64(data.len())? {
+                self.delete_invalid_upload_object(&file.object_key, "size_mismatch")
+                    .await;
                 return Err(Error::InvalidInput(
                     "file payload size does not match upload session".to_string(),
                 ));
             }
             let actual_checksum = hex::encode(Sha256::digest(&data));
             if !constant_time_eq(actual_checksum.as_bytes(), checksum.as_bytes()) {
-                let _ = self.operator.delete(&file.object_key).await;
+                self.delete_invalid_upload_object(&file.object_key, "checksum_mismatch")
+                    .await;
                 return Err(Error::InvalidInput(
                     "file payload checksum does not match upload session".to_string(),
                 ));
@@ -1098,7 +1100,7 @@ fn attach_file_ownership_proof_token(
     size_bytes: i64,
 ) -> Result<(String, Vec<FileOwnershipProofRange>)> {
     let nonce = synctv_common::snanoid!(32);
-    let ranges = file_ownership_proof_ranges(checksum_sha256, &nonce, size_bytes);
+    let ranges = file_ownership_proof_ranges(checksum_sha256, &nonce, size_bytes)?;
     attach_file_upload_token(
         file,
         user_id,
@@ -1206,15 +1208,11 @@ fn validate_file_upload_token(
     now: DateTime<Utc>,
     secret: &str,
 ) -> Result<()> {
-    let mut parts = token.split('.');
-    let version = parts.next().unwrap_or_default();
-    let encoded_payload = parts.next().unwrap_or_default();
-    let signature = parts.next().unwrap_or_default();
-    if version != FILE_UPLOAD_TOKEN_VERSION || parts.next().is_some() {
-        return Err(Error::InvalidInput(
-            "invalid file upload session token".to_string(),
-        ));
-    }
+    let (_version, encoded_payload, signature) = split_versioned_hmac_token(
+        token,
+        FILE_UPLOAD_TOKEN_VERSION,
+        "invalid file upload session token",
+    )?;
     let payload_bytes = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         encoded_payload,
@@ -1292,10 +1290,11 @@ fn file_upload_token_payload_from_file(
         .get(FILE_UPLOAD_TOKEN_KEY)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| Error::InvalidInput("file upload session token is required".to_string()))?;
-    let encoded_payload = token
-        .split('.')
-        .nth(1)
-        .ok_or_else(|| Error::InvalidInput("invalid file upload session token".to_string()))?;
+    let (_version, encoded_payload, _signature) = split_versioned_hmac_token(
+        token,
+        FILE_UPLOAD_TOKEN_VERSION,
+        "invalid file upload session token",
+    )?;
     let payload_bytes = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         encoded_payload,
@@ -1310,11 +1309,11 @@ fn file_upload_token_payload_from_file(
     let checksum_sha256 = payload
         .get("checksum_sha256")
         .and_then(serde_json::Value::as_str);
-    let ownership_proof = if payload
-        .get("ownership_proof_required")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
+    let ownership_proof = if optional_payload_bool(
+        &payload,
+        "ownership_proof_required",
+        "file upload session token",
+    )? {
         let nonce = payload
             .get("ownership_proof_nonce")
             .and_then(serde_json::Value::as_str)
@@ -1335,6 +1334,20 @@ fn file_upload_token_payload_from_file(
             .as_ref()
             .map(|(nonce, ranges)| (*nonce, ranges.as_slice())),
     ))
+}
+
+fn optional_payload_bool(
+    payload: &serde_json::Value,
+    key: &'static str,
+    token_name: &'static str,
+) -> Result<bool> {
+    match payload.get(key) {
+        Some(serde_json::Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(Error::InvalidInput(format!(
+            "invalid {token_name}: {key} must be a boolean"
+        ))),
+        None => Ok(false),
+    }
 }
 
 fn file_upload_token_key(user_id: UserId, storage_scope: &str, secret: &str) -> String {
@@ -1398,17 +1411,36 @@ fn validate_stored_files(files: &[NewStoredFile]) -> Result<()> {
                 "duplicate file object_key in one request".to_string(),
             ));
         }
-        if file.size_bytes.is_some_and(|size| size <= 0)
-            || file.width.is_some_and(|width| width <= 0)
+        required_file_mime_type(file)?;
+        if !matches!(file.size_bytes, Some(size) if size > 0) {
+            return Err(Error::InvalidInput(
+                "file size_bytes is required and must be positive".to_string(),
+            ));
+        }
+        if file.width.is_some_and(|width| width <= 0)
             || file.height.is_some_and(|height| height <= 0)
         {
             return Err(Error::InvalidInput(
-                "file size and dimensions must be positive".to_string(),
+                "file dimensions must be positive".to_string(),
             ));
         }
         validate_file_metadata(&file.metadata)?;
     }
     Ok(())
+}
+
+fn required_file_mime_type(file: &NewStoredFile) -> Result<&str> {
+    let mime_type = file
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .ok_or_else(|| Error::InvalidInput("file mime_type is required".to_string()))?;
+    if mime_type.is_empty() || !mime_type.contains('/') {
+        return Err(Error::InvalidInput(
+            "file mime_type must be a valid media type".to_string(),
+        ));
+    }
+    Ok(mime_type)
 }
 
 pub(crate) fn validate_create_file_upload_session(request: &CreateFileUploadSession) -> Result<()> {
@@ -1544,27 +1576,33 @@ fn file_ownership_proof_ranges(
     checksum_sha256: &str,
     nonce: &str,
     size_bytes: i64,
-) -> Vec<FileOwnershipProofRange> {
+) -> Result<Vec<FileOwnershipProofRange>> {
     if size_bytes <= 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let range_len = FILE_OWNERSHIP_PROOF_RANGE_BYTES
         .min(i32::try_from(size_bytes).unwrap_or(FILE_OWNERSHIP_PROOF_RANGE_BYTES));
     if size_bytes <= i64::from(range_len) {
-        return vec![FileOwnershipProofRange {
+        return Ok(vec![FileOwnershipProofRange {
             offset: 0,
             length: range_len,
-        }];
+        }]);
     }
 
     let seed = Sha256::digest(format!("{checksum_sha256}:{nonce}").as_bytes());
     let max_start = size_bytes - i64::from(range_len);
+    let max_start = u64::try_from(max_start)
+        .map_err(|_| Error::Internal("ownership proof max offset is negative".to_string()))?;
+    let modulo = max_start
+        .checked_add(1)
+        .ok_or_else(|| Error::Internal("ownership proof offset range overflow".to_string()))?;
     let mut ranges = Vec::with_capacity(FILE_OWNERSHIP_PROOF_RANGE_COUNT);
     for index in 0..FILE_OWNERSHIP_PROOF_RANGE_COUNT {
         let start = index * 8;
         let mut bytes = [0_u8; 8];
         bytes.copy_from_slice(&seed[start..start + 8]);
-        let offset = (u64::from_be_bytes(bytes) % (max_start.cast_unsigned() + 1)).cast_signed();
+        let offset = i64::try_from(u64::from_be_bytes(bytes) % modulo)
+            .map_err(|_| Error::Internal("ownership proof offset exceeds i64::MAX".to_string()))?;
         ranges.push(FileOwnershipProofRange {
             offset,
             length: range_len,
@@ -1572,7 +1610,7 @@ fn file_ownership_proof_ranges(
     }
     ranges.sort_by_key(|range| range.offset);
     ranges.dedup_by_key(|range| range.offset);
-    ranges
+    Ok(ranges)
 }
 
 fn ownership_proof_ranges_to_json(ranges: &[FileOwnershipProofRange]) -> serde_json::Value {
@@ -1906,13 +1944,8 @@ fn decode_versioned_hmac_token_payload(
     token: &str,
     expected_version: &str,
 ) -> Result<serde_json::Value> {
-    let mut parts = token.split('.');
-    let version = parts.next().unwrap_or_default();
-    let encoded_payload = parts.next().unwrap_or_default();
-    let _signature = parts.next().unwrap_or_default();
-    if version != expected_version || parts.next().is_some() {
-        return Err(Error::InvalidInput("invalid token".to_string()));
-    }
+    let (_version, encoded_payload, _signature) =
+        split_versioned_hmac_token(token, expected_version, "invalid token")?;
     let payload_bytes = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         encoded_payload,
@@ -1928,13 +1961,8 @@ fn validate_versioned_hmac_token(
     key: &[u8],
     error_message: &str,
 ) -> Result<serde_json::Value> {
-    let mut parts = token.split('.');
-    let version = parts.next().unwrap_or_default();
-    let encoded_payload = parts.next().unwrap_or_default();
-    let signature = parts.next().unwrap_or_default();
-    if version != expected_version || parts.next().is_some() {
-        return Err(Error::InvalidInput(error_message.to_string()));
-    }
+    let (_version, encoded_payload, signature) =
+        split_versioned_hmac_token(token, expected_version, error_message)?;
     let payload_bytes = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         encoded_payload,
@@ -1946,6 +1974,58 @@ fn validate_versioned_hmac_token(
     }
     serde_json::from_slice(&payload_bytes)
         .map_err(|_| Error::InvalidInput(error_message.to_string()))
+}
+
+fn split_versioned_hmac_token<'a>(
+    token: &'a str,
+    expected_version: &str,
+    error_message: &str,
+) -> Result<(&'a str, &'a str, &'a str)> {
+    let mut parts = token.split('.');
+    let Some(version) = parts.next().filter(|part| !part.is_empty()) else {
+        return Err(Error::InvalidInput(error_message.to_string()));
+    };
+    let Some(encoded_payload) = parts.next().filter(|part| !part.is_empty()) else {
+        return Err(Error::InvalidInput(error_message.to_string()));
+    };
+    let Some(signature) = parts.next().filter(|part| !part.is_empty()) else {
+        return Err(Error::InvalidInput(error_message.to_string()));
+    };
+    if version != expected_version || parts.next().is_some() {
+        return Err(Error::InvalidInput(error_message.to_string()));
+    }
+    Ok((version, encoded_payload, signature))
+}
+
+fn presigned_upload_headers(
+    headers: &http::HeaderMap,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    headers
+        .iter()
+        .filter(|(name, _)| name.as_str() != "host")
+        .map(|(name, value)| {
+            let value = value.to_str().map_err(|error| {
+                Error::Internal(format!(
+                    "S3 presigned upload header {} is not valid UTF-8: {error}",
+                    name.as_str()
+                ))
+            })?;
+            Ok((name.as_str().to_ascii_lowercase(), value.to_string()))
+        })
+        .collect()
+}
+
+fn upload_media_type(content_type: &str) -> Result<&str> {
+    let media_type = content_type
+        .split_once(';')
+        .map_or(content_type, |(media_type, _)| media_type)
+        .trim();
+    if media_type.is_empty() {
+        return Err(Error::InvalidInput(
+            "file content-type media type is empty".to_string(),
+        ));
+    }
+    Ok(media_type)
 }
 
 fn s3_operator_from_config(config: &S3FileStorageConfig) -> Result<Operator> {
@@ -1993,6 +2073,125 @@ mod tests {
         repository::FileStorageRepository,
         service::file_upload_policies::{chat_image_upload_policy, user_avatar_upload_policy},
     };
+
+    #[test]
+    fn versioned_hmac_token_split_rejects_malformed_tokens() {
+        assert_eq!(
+            split_versioned_hmac_token("v1.payload.signature", "v1", "invalid").unwrap(),
+            ("v1", "payload", "signature")
+        );
+
+        for token in [
+            "",
+            "v1",
+            "v1.payload",
+            "v1..signature",
+            "v1.payload.",
+            ".payload.signature",
+            "v1.payload.signature.extra",
+            "v2.payload.signature",
+        ] {
+            assert!(
+                matches!(
+                    split_versioned_hmac_token(token, "v1", "invalid"),
+                    Err(Error::InvalidInput(message)) if message == "invalid"
+                ),
+                "token should be rejected: {token:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn presigned_upload_headers_normalizes_and_rejects_invalid_values() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("Content-Type", "image/png".parse().unwrap());
+        headers.insert("host", "storage.example.com".parse().unwrap());
+
+        let upload_headers = presigned_upload_headers(&headers).unwrap();
+        assert_eq!(
+            upload_headers.get("content-type").map(String::as_str),
+            Some("image/png")
+        );
+        assert!(!upload_headers.contains_key("host"));
+
+        let mut invalid_headers = http::HeaderMap::new();
+        invalid_headers.insert(
+            "x-amz-meta-name",
+            http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        );
+
+        assert!(matches!(
+            presigned_upload_headers(&invalid_headers),
+            Err(Error::Internal(message)) if message.contains("x-amz-meta-name")
+        ));
+    }
+
+    #[test]
+    fn upload_media_type_extracts_base_type_and_rejects_empty_values() {
+        assert_eq!(upload_media_type("image/png").unwrap(), "image/png");
+        assert_eq!(
+            upload_media_type(" image/png ; charset=utf-8").unwrap(),
+            "image/png"
+        );
+
+        for value in ["", "   ", "; charset=utf-8"] {
+            assert!(
+                matches!(
+                    upload_media_type(value),
+                    Err(Error::InvalidInput(message)) if message.contains("media type is empty")
+                ),
+                "content-type should be rejected: {value:?}"
+            );
+        }
+    }
+
+    fn valid_new_stored_file() -> NewStoredFile {
+        NewStoredFile {
+            id: "file-1".to_string(),
+            storage_backend: "database".to_string(),
+            object_key: "objects/file-1".to_string(),
+            url: None,
+            mime_type: Some("image/png".to_string()),
+            size_bytes: Some(7),
+            width: Some(16),
+            height: Some(16),
+            metadata: serde_json::Value::Object(Default::default()),
+        }
+    }
+
+    #[test]
+    fn validate_stored_files_requires_mime_type_and_size() {
+        let valid = valid_new_stored_file();
+        validate_stored_files(std::slice::from_ref(&valid)).expect("valid file should pass");
+
+        let mut missing_mime = valid.clone();
+        missing_mime.mime_type = None;
+        assert!(matches!(
+            validate_stored_files(&[missing_mime]),
+            Err(Error::InvalidInput(message)) if message.contains("mime_type is required")
+        ));
+
+        let mut empty_mime = valid.clone();
+        empty_mime.mime_type = Some("   ".to_string());
+        assert!(matches!(
+            validate_stored_files(&[empty_mime]),
+            Err(Error::InvalidInput(message)) if message.contains("valid media type")
+        ));
+
+        let mut bad_mime = valid.clone();
+        bad_mime.mime_type = Some("image".to_string());
+        assert!(matches!(
+            validate_stored_files(&[bad_mime]),
+            Err(Error::InvalidInput(message)) if message.contains("valid media type")
+        ));
+
+        let mut missing_size = valid;
+        missing_size.size_bytes = None;
+        assert!(matches!(
+            validate_stored_files(&[missing_size]),
+            Err(Error::InvalidInput(message)) if message.contains("size_bytes is required")
+        ));
+    }
 
     #[tokio::test]
     async fn routed_database_storage_reads_objects_from_token_backend() {

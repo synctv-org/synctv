@@ -523,9 +523,9 @@ async fn init_shared_redis_server() -> SharedRedisServer {
                     }
                     Err(elapsed) => {
                         panic!(
-                        "Docker container startup timed out after {:?}: {elapsed} (is Docker running?)",
-                        docker_startup_timeout(),
-                    );
+                            "Docker container startup timed out after {:?}: {elapsed} (is Docker running?)",
+                            docker_startup_timeout(),
+                        );
                     }
                 }
             }
@@ -854,7 +854,8 @@ mod tests {
             "test redis should not fail closed on snapshot persistence errors when persistence is disabled: {cmd:?}"
         );
         assert!(
-            cmd.windows(2).any(|pair| pair == ["--maxclients", "100000"]),
+            cmd.windows(2)
+                .any(|pair| pair == ["--maxclients", "100000"]),
             "test redis should expose a very high client limit for nextest-scale concurrency: {cmd:?}"
         );
         assert!(

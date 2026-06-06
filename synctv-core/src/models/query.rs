@@ -25,8 +25,8 @@ impl FromStr for SortDirection {
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "asc" | "ascending" => Ok(Self::Asc),
-            "desc" | "descending" => Ok(Self::Desc),
+            "asc" => Ok(Self::Asc),
+            "desc" => Ok(Self::Desc),
             other => Err(format!("Unknown sort direction: {other}")),
         }
     }
@@ -46,19 +46,13 @@ mod tests {
     use super::SortDirection;
 
     #[test]
-    fn parse_sort_direction_aliases() {
+    fn parse_sort_direction_values() {
         assert_eq!("asc".parse::<SortDirection>().unwrap(), SortDirection::Asc);
-        assert_eq!(
-            "ascending".parse::<SortDirection>().unwrap(),
-            SortDirection::Asc
-        );
         assert_eq!(
             "desc".parse::<SortDirection>().unwrap(),
             SortDirection::Desc
         );
-        assert_eq!(
-            "descending".parse::<SortDirection>().unwrap(),
-            SortDirection::Desc
-        );
+        assert!("ascending".parse::<SortDirection>().is_err());
+        assert!("descending".parse::<SortDirection>().is_err());
     }
 }

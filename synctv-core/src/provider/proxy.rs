@@ -161,12 +161,25 @@ pub struct ProxyRequestContext<'a> {
 /// Providers call this helper at the exact proxy endpoints where Range
 /// semantics are desired. The lower proxy executor does not inspect raw client
 /// headers by itself.
-#[must_use]
-pub fn selected_range_header(ctx: &ProxyRequestContext<'_>) -> Option<String> {
-    ctx.request_headers
+pub fn selected_range_header(
+    ctx: &ProxyRequestContext<'_>,
+) -> Result<Option<String>, ProviderError> {
+    selected_range_header_from_headers(ctx.request_headers)
+}
+
+pub fn selected_range_header_from_headers(
+    headers: &HeaderMap,
+) -> Result<Option<String>, ProviderError> {
+    headers
         .get(http::header::RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(ToString::to_string)
+        .map(|value| {
+            value.to_str().map(ToString::to_string).map_err(|_| {
+                ProviderError::InvalidConfig(
+                    "Invalid Range header: value must be ASCII".to_string(),
+                )
+            })
+        })
+        .transpose()
 }
 
 /// Return the target URL embedded in a signed proxy request.
@@ -208,27 +221,25 @@ pub fn m3u8_segment_proxy_base(ctx: &ProxyRequestContext<'_>, version: &str) -> 
     format!("{}/{version}", ctx.proxy_base)
 }
 
-#[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn action_for_signed_target_url(
+pub(crate) fn action_for_signed_target_url(
     ctx: &ProxyRequestContext<'_>,
     version: &str,
     url: String,
     headers: HashMap<String, String>,
-) -> ProxyAction {
+) -> Result<ProxyAction, ProviderError> {
     if target_url_is_m3u8(&url) {
-        ProxyAction::M3u8Rewrite {
+        Ok(ProxyAction::M3u8Rewrite {
             url,
             headers,
             proxy_base: m3u8_segment_proxy_base(ctx, version),
             proxy_url_claims: ctx.verified_claims.cloned(),
-        }
+        })
     } else {
-        ProxyAction::FetchAndForward {
+        Ok(ProxyAction::FetchAndForward {
             url,
             headers,
-            range_header: selected_range_header(ctx),
-        }
+            range_header: selected_range_header(ctx)?,
+        })
     }
 }
 
@@ -353,6 +364,32 @@ mod tests {
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
+    #[test]
+    fn test_selected_range_header_returns_valid_ascii_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RANGE, "bytes=0-1023".parse().unwrap());
+
+        assert_eq!(
+            selected_range_header_from_headers(&headers).expect("range header should parse"),
+            Some("bytes=0-1023".to_string())
+        );
+    }
+
+    #[test]
+    fn test_selected_range_header_rejects_non_ascii_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::RANGE,
+            http::HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        assert!(matches!(
+            selected_range_header_from_headers(&headers),
+            Err(ProviderError::InvalidConfig(message))
+                if message.contains("Invalid Range header")
+        ));
+    }
+
     #[tokio::test]
     async fn test_lookup_versioned_no_store() {
         let result = lookup_versioned(None, "v1", None).await;
@@ -412,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_proxy_ids_require_public_id_prefixes() {
-        let codec = PublicIdCodec::default_for_tests();
+        let codec = PublicIdCodec::plain();
 
         assert_eq!(
             parse_proxy_room_id(&codec, "room_42", "proxy metadata").unwrap(),

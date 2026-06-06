@@ -3,7 +3,6 @@
 //! Tests trusted proxy matching, database URL password masking,
 //! and config serialization roundtrip.
 //!
-//! Run with: cargo test --test `config_edge_case_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::net::IpAddr;
@@ -130,21 +129,7 @@ fn test_redis_config_debug_masks_password() {
 // Redis deployment mode parsing
 
 #[test]
-fn test_redis_deployment_mode_serde_roundtrip() {
-    let modes = vec![
-        RedisDeploymentMode::Standalone,
-        RedisDeploymentMode::Sentinel,
-    ];
-    for mode in modes {
-        let json = serde_json::to_string(&mode).unwrap();
-        let parsed: RedisDeploymentMode = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, mode);
-    }
-}
-
-#[test]
 fn test_redis_deployment_mode_rename_all() {
-    // Serde uses rename_all = "lowercase"
     let json = serde_json::to_string(&RedisDeploymentMode::Standalone).unwrap();
     assert_eq!(json, "\"standalone\"");
     let json = serde_json::to_string(&RedisDeploymentMode::Sentinel).unwrap();

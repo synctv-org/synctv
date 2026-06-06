@@ -68,15 +68,14 @@ pub fn default_room_cache_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_room_cache_fanout_service;
-    use crate::realtime_fanout::default_realtime_fanout_service;
+    use crate::realtime_fanout::disabled_realtime_fanout_service;
     use crate::test_support::channel_realtime_fanout_service;
     use synctv_core::models::RoomId;
     use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
     #[tokio::test]
     async fn test_room_cache_fanout_is_noop_when_realtime_fanout_is_local() {
-        let service =
-            default_room_cache_fanout_service(default_realtime_fanout_service(None, false));
+        let service = default_room_cache_fanout_service(disabled_realtime_fanout_service());
 
         service.publish_invalidation(&RoomId::expect_positive(109_001));
     }

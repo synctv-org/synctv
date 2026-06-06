@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
 use synctv_core::service::RealtimeOutboxRoomEventFactory;
@@ -12,20 +13,16 @@ use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
 #[derive(Clone)]
 pub struct PreparedRoomCreatedOutboxFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    local_event_service: Option<Arc<dyn RealtimeEventService>>,
+    local_event_service: Arc<dyn RealtimeEventService>,
     events: Arc<Mutex<Vec<RealtimeEvent>>>,
     creator_id: UserId,
 }
 
 impl PreparedRoomCreatedOutboxFanout {
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxRoomEventFactory> {
-        if !self.realtime_fanout.is_distributed_enabled() && self.local_event_service.is_none() {
-            return None;
-        }
-
+    pub fn outbox_factory(&self) -> RealtimeOutboxRoomEventFactory {
         let prepared = self.clone();
-        Some(Arc::new(move |room: &Room| {
+        Arc::new(move |room: &Room| {
             let event = RealtimeEvent::RoomCreated {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room.id,
@@ -33,27 +30,21 @@ impl PreparedRoomCreatedOutboxFanout {
                 creator_id: prepared.creator_id,
                 timestamp: chrono::Utc::now(),
             };
+            prepared.events.lock().push(event.clone());
             prepared
-                .events
-                .lock()
-                .expect("room created outbox fanout events mutex should not be poisoned")
-                .push(event.clone());
-            prepared.realtime_fanout.outbox_event(&event)
-        }))
+                .realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        let events = std::mem::take(
-            &mut *self
-                .events
-                .lock()
-                .expect("room created outbox fanout events mutex should not be poisoned"),
-        );
+        let events = std::mem::take(&mut *self.events.lock());
         for event in events {
             if self.realtime_fanout.is_distributed_enabled() {
                 self.realtime_fanout.publish_after_outbox_commit(event);
-            } else if let Some(event_service) = &self.local_event_service {
-                broadcast_event_locally(event_service.as_ref(), &event);
+            } else {
+                broadcast_event_locally(self.local_event_service.as_ref(), &event);
             }
         }
     }
@@ -62,7 +53,7 @@ impl PreparedRoomCreatedOutboxFanout {
 #[derive(Clone)]
 pub struct PreparedRoomLifecycleOutboxFanout {
     plan: PreparedRealtimeFanoutPlan,
-    local_event_service: Option<Arc<dyn RealtimeEventService>>,
+    local_event_service: Arc<dyn RealtimeEventService>,
     distributed: bool,
     local_standalone_delivery: bool,
 }
@@ -74,7 +65,7 @@ impl PreparedRoomLifecycleOutboxFanout {
     }
 
     #[must_use]
-    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+    pub fn cloned_outbox_event(&self) -> NewRealtimeOutboxEvent {
         self.plan.cloned_outbox_event()
     }
 
@@ -90,9 +81,7 @@ impl PreparedRoomLifecycleOutboxFanout {
         }
 
         if self.local_standalone_delivery {
-            if let Some(event_service) = &self.local_event_service {
-                broadcast_event_locally(event_service.as_ref(), self.plan.event());
-            }
+            broadcast_event_locally(self.local_event_service.as_ref(), self.plan.event());
         }
     }
 }
@@ -107,32 +96,32 @@ pub trait RoomLifecycleFanoutService: Send + Sync {
         &self,
         room_id: &RoomId,
         deleted_by: &UserId,
-    ) -> PreparedRoomLifecycleOutboxFanout;
+    ) -> synctv_core::Result<PreparedRoomLifecycleOutboxFanout>;
 
     fn prepare_room_banned_outbox_fanout(
         &self,
         room_id: &RoomId,
         banned_by: &UserId,
-    ) -> PreparedRoomLifecycleOutboxFanout;
+    ) -> synctv_core::Result<PreparedRoomLifecycleOutboxFanout>;
 
     fn prepare_room_owner_inactive_outbox_fanout(
         &self,
         room_id: &RoomId,
         owner_id: &UserId,
         triggered_by: &UserId,
-    ) -> PreparedRoomLifecycleOutboxFanout;
+    ) -> synctv_core::Result<PreparedRoomLifecycleOutboxFanout>;
 }
 
 pub struct DefaultRoomLifecycleFanoutService {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    local_event_service: Option<Arc<dyn RealtimeEventService>>,
+    local_event_service: Arc<dyn RealtimeEventService>,
 }
 
 impl DefaultRoomLifecycleFanoutService {
     #[must_use]
     pub fn new(
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        local_event_service: Option<Arc<dyn RealtimeEventService>>,
+        local_event_service: Arc<dyn RealtimeEventService>,
     ) -> Self {
         Self {
             realtime_fanout,
@@ -147,10 +136,6 @@ impl std::fmt::Debug for DefaultRoomLifecycleFanoutService {
             .field(
                 "realtime_fanout_distributed",
                 &self.realtime_fanout.is_distributed_enabled(),
-            )
-            .field(
-                "has_local_event_service",
-                &self.local_event_service.is_some(),
             )
             .finish()
     }
@@ -173,36 +158,38 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
         &self,
         room_id: &RoomId,
         deleted_by: &UserId,
-    ) -> PreparedRoomLifecycleOutboxFanout {
+    ) -> synctv_core::Result<PreparedRoomLifecycleOutboxFanout> {
         let event = room_deleted_event(room_id, deleted_by);
-        PreparedRoomLifecycleOutboxFanout {
+        Ok(PreparedRoomLifecycleOutboxFanout {
             distributed: self.realtime_fanout.is_distributed_enabled(),
             plan: PreparedRealtimeFanoutPlan::new(
                 self.realtime_fanout.clone(),
                 event,
                 RealtimeDeliveryRequirement::DistributedIfAvailable,
-            ),
+            )
+            .map_err(synctv_core::Error::Internal)?,
             local_event_service: self.local_event_service.clone(),
             local_standalone_delivery: false,
-        }
+        })
     }
 
     fn prepare_room_banned_outbox_fanout(
         &self,
         room_id: &RoomId,
         banned_by: &UserId,
-    ) -> PreparedRoomLifecycleOutboxFanout {
+    ) -> synctv_core::Result<PreparedRoomLifecycleOutboxFanout> {
         let event = room_banned_event(room_id, banned_by);
-        PreparedRoomLifecycleOutboxFanout {
+        Ok(PreparedRoomLifecycleOutboxFanout {
             distributed: self.realtime_fanout.is_distributed_enabled(),
             plan: PreparedRealtimeFanoutPlan::new(
                 self.realtime_fanout.clone(),
                 event,
                 RealtimeDeliveryRequirement::DistributedIfAvailable,
-            ),
+            )
+            .map_err(synctv_core::Error::Internal)?,
             local_event_service: self.local_event_service.clone(),
             local_standalone_delivery: true,
-        }
+        })
     }
 
     fn prepare_room_owner_inactive_outbox_fanout(
@@ -210,18 +197,19 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
         room_id: &RoomId,
         owner_id: &UserId,
         triggered_by: &UserId,
-    ) -> PreparedRoomLifecycleOutboxFanout {
+    ) -> synctv_core::Result<PreparedRoomLifecycleOutboxFanout> {
         let event = room_owner_inactive_event(room_id, owner_id, triggered_by);
-        PreparedRoomLifecycleOutboxFanout {
+        Ok(PreparedRoomLifecycleOutboxFanout {
             distributed: self.realtime_fanout.is_distributed_enabled(),
             plan: PreparedRealtimeFanoutPlan::new(
                 self.realtime_fanout.clone(),
                 event,
                 RealtimeDeliveryRequirement::DistributedIfAvailable,
-            ),
+            )
+            .map_err(synctv_core::Error::Internal)?,
             local_event_service: self.local_event_service.clone(),
             local_standalone_delivery: true,
-        }
+        })
     }
 }
 
@@ -258,16 +246,9 @@ fn room_owner_inactive_event(
 }
 
 #[must_use]
-pub fn default_room_lifecycle_fanout_service(
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-) -> Arc<dyn RoomLifecycleFanoutService> {
-    default_room_lifecycle_fanout_service_with_realtime(realtime_fanout, None)
-}
-
-#[must_use]
 pub fn default_room_lifecycle_fanout_service_with_realtime(
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    local_event_service: Option<Arc<dyn RealtimeEventService>>,
+    local_event_service: Arc<dyn RealtimeEventService>,
 ) -> Arc<dyn RoomLifecycleFanoutService> {
     Arc::new(DefaultRoomLifecycleFanoutService::new(
         realtime_fanout,
@@ -277,10 +258,8 @@ pub fn default_room_lifecycle_fanout_service_with_realtime(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        default_room_lifecycle_fanout_service, default_room_lifecycle_fanout_service_with_realtime,
-    };
-    use crate::realtime_fanout::default_realtime_fanout_service;
+    use super::default_room_lifecycle_fanout_service_with_realtime;
+    use crate::realtime_fanout::disabled_realtime_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
     use crate::test_support::channel_realtime_fanout_service;
     use async_trait::async_trait;
@@ -380,18 +359,22 @@ mod tests {
         recorder: Arc<RecordingRealtimeEventService>,
     ) -> Arc<dyn super::RoomLifecycleFanoutService> {
         default_room_lifecycle_fanout_service_with_realtime(
-            default_realtime_fanout_service(None, false),
-            Some(recorder),
+            disabled_realtime_fanout_service(),
+            recorder,
         )
     }
 
     #[tokio::test]
     async fn test_room_lifecycle_fanout_publishes_prepared_room_deleted_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_lifecycle_fanout_service(channel_realtime_fanout_service(tx));
+        let service = default_room_lifecycle_fanout_service_with_realtime(
+            channel_realtime_fanout_service(tx),
+            Arc::new(RecordingRealtimeEventService::default()),
+        );
 
         service
             .prepare_room_deleted_outbox_fanout(&room_id(), &user_id())
+            .expect("room deleted fanout should prepare")
             .publish_after_outbox_commit();
 
         let request = rx.recv().await.expect("publish request should be queued");
@@ -411,10 +394,14 @@ mod tests {
     #[tokio::test]
     async fn test_room_lifecycle_fanout_publishes_prepared_room_banned_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_lifecycle_fanout_service(channel_realtime_fanout_service(tx));
+        let service = default_room_lifecycle_fanout_service_with_realtime(
+            channel_realtime_fanout_service(tx),
+            Arc::new(RecordingRealtimeEventService::default()),
+        );
 
         service
             .prepare_room_banned_outbox_fanout(&room_id(), &user_id())
+            .expect("room banned fanout should prepare")
             .publish_after_outbox_commit();
 
         let request = rx.recv().await.expect("publish request should be queued");
@@ -434,9 +421,7 @@ mod tests {
         let recorder = Arc::new(RecordingRealtimeEventService::default());
         let service = standalone_recording_service(recorder.clone());
         let prepared = service.prepare_room_created_outbox_fanout(user_id());
-        let factory = prepared
-            .outbox_factory()
-            .expect("standalone local fanout should still capture the created room event");
+        let factory = prepared.outbox_factory();
         let room = synctv_core::models::Room::new("created room".to_string(), user_id());
 
         let event = factory(&room).expect("local fanout should prepare a durable resource event");
@@ -469,6 +454,7 @@ mod tests {
 
         service
             .prepare_room_banned_outbox_fanout(&room_id(), &user_id())
+            .expect("room banned fanout should prepare")
             .publish_after_outbox_commit();
 
         assert_eq!(recorder.room_events().len(), 1);
@@ -492,6 +478,7 @@ mod tests {
 
         service
             .prepare_room_owner_inactive_outbox_fanout(&room_id(), &owner_id, &user_id())
+            .expect("room owner inactive fanout should prepare")
             .publish_after_outbox_commit();
 
         assert_eq!(recorder.room_events().len(), 1);
@@ -518,6 +505,7 @@ mod tests {
 
         service
             .prepare_room_deleted_outbox_fanout(&room_id(), &user_id())
+            .expect("room deleted fanout should prepare")
             .publish_after_outbox_commit();
 
         assert!(

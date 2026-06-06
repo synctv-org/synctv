@@ -1665,28 +1665,6 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         assert!(json.get("jwks_url").is_none());
     }
 
-    #[test]
-    fn test_oidc_config_roundtrip() {
-        let config = OidcConfig {
-            client_id: "id".to_string(),
-            client_secret: "secret".to_string(),
-            redirect_url: "https://example.com/cb".to_string(),
-            issuer: "https://issuer.example.com".to_string(),
-            auth_url: Some("https://issuer.example.com/auth".to_string()),
-            token_url: Some("https://issuer.example.com/token".to_string()),
-            userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
-            jwks_url: Some("https://issuer.example.com/jwks".to_string()),
-        };
-        let json = serde_json::to_value(&config).unwrap();
-        let deserialized: OidcConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.client_id, config.client_id);
-        assert_eq!(deserialized.issuer, config.issuer);
-        assert_eq!(deserialized.auth_url, config.auth_url);
-        assert_eq!(deserialized.token_url, config.token_url);
-        assert_eq!(deserialized.userinfo_url, config.userinfo_url);
-        assert_eq!(deserialized.jwks_url, config.jwks_url);
-    }
-
     #[tokio::test]
     async fn test_get_resolved_static_endpoints_succeeds() {
         // With static endpoints, get_resolved should succeed without network

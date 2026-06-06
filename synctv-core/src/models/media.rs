@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use super::file_storage::FileReferenceTarget;
@@ -13,17 +14,15 @@ sort_field_enum! {
     #[serde(rename_all = "snake_case")]
     pub enum MediaListSortBy {
         Name => { display: "name", sql: "name" },
-        AddedAt => { display: "added_at", sql: "added_at", aliases: ["addedat"] },
-        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        AddedAt => { display: "added_at", sql: "added_at" },
+        UpdatedAt => { display: "updated_at", sql: "updated_at" },
         SourceProvider => {
             display: "source_provider",
-            sql: "source_provider",
-            aliases: ["sourceprovider"]
+            sql: "source_provider"
         },
         ProviderInstanceName => {
             display: "provider_instance_name",
-            sql: "provider_instance_name",
-            aliases: ["providerinstancename"]
+            sql: "provider_instance_name"
         },
         Position => { display: "position", sql: "position" },
     }
@@ -154,9 +153,11 @@ pub fn provider_type_codes_from_names<'a>(
 #[derive(Debug, Clone)]
 pub struct ProviderTypeName(pub String);
 
-impl From<i16> for ProviderTypeName {
-    fn from(value: i16) -> Self {
-        Self(provider_type_name_from_code(value).unwrap_or_else(|_| value.to_string()))
+impl TryFrom<i16> for ProviderTypeName {
+    type Error = String;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        provider_type_name_from_code(value).map(Self)
     }
 }
 
@@ -256,82 +257,18 @@ pub struct FromProviderParams {
     pub position: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct DirectMultimodeParams {
+    pub playlist_id: Option<PlaylistId>,
+    pub room_id: RoomId,
+    pub creator_id: Option<UserId>,
+    pub name: String,
+    pub playback_infos: HashMap<String, PlaybackInfo>,
+    pub default_mode: String,
+    pub position: f64,
+}
+
 impl Media {
-    /// Create media from provider instance (registry pattern)
-    ///
-    /// This is the preferred way to create media when using the provider registry.
-    /// The `provider_instance_name` is used to look up the provider at playback time.
-    ///
-    /// # Arguments
-    /// * `provider_name` - Provider type name from `provider.name()` (e.g., "bilibili")
-    /// * `provider_instance_name` - Optional instance name for lookup
-    ///   (e.g., "`bilibili_main`"). `None` means use the default local instance
-    ///   for `provider_name`.
-    ///
-    /// # Example
-    /// ```text
-    /// let provider = providers_manager.get_provider("bilibili_main").await?;
-    /// let media = Media::from_provider(..., provider.name(), "bilibili_main", ...);
-    /// ```
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn from_provider(
-        playlist_id: Option<PlaylistId>,
-        room_id: RoomId,
-        creator_id: Option<UserId>,
-        name: String,
-        source_config: JsonValue,
-        provider_name: &str,
-        provider_instance_name: Option<String>,
-        position: f64,
-    ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: MediaId::new(),
-            playlist_id,
-            room_id,
-            creator_id,
-            name,
-            description: String::new(),
-            position,
-            source_provider: provider_name.to_string(),
-            source_config,
-            provider_instance_name: normalize_provider_instance_name_owned(provider_instance_name),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn from_provider_with_description(
-        playlist_id: Option<PlaylistId>,
-        room_id: RoomId,
-        creator_id: Option<UserId>,
-        name: String,
-        description: String,
-        source_config: JsonValue,
-        provider_name: &str,
-        provider_instance_name: Option<String>,
-        position: f64,
-    ) -> Self {
-        let mut media = Self::from_provider(
-            playlist_id,
-            room_id,
-            creator_id,
-            name,
-            source_config,
-            provider_name,
-            provider_instance_name,
-            position,
-        );
-        media.description = description;
-        media
-    }
-
-    /// Create media from provider with parameters struct
     #[must_use]
     pub fn from_provider_with_params(params: FromProviderParams) -> Self {
         let now = Utc::now();
@@ -355,42 +292,35 @@ impl Media {
         }
     }
 
-    /// Create a direct URL media from the primary playback URL.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_direct_multimode(
-        playlist_id: Option<PlaylistId>,
-        room_id: RoomId,
-        creator_id: Option<UserId>,
-        name: String,
-        playback_infos: &std::collections::HashMap<String, PlaybackInfo>,
-        default_mode: &str,
-        _metadata: &std::collections::HashMap<String, JsonValue>,
-        position: f64,
-    ) -> Self {
-        let default_info = playback_infos
-            .get(default_mode)
-            .or_else(|| playback_infos.values().next());
-        let default_url = default_info.and_then(|info| {
-            info.urls
-                .get(info.default_url_index)
-                .or_else(|| info.urls.first())
-        });
+    pub fn from_direct_multimode(params: DirectMultimodeParams) -> crate::Result<Self> {
+        let default_info = params
+            .playback_infos
+            .get(&params.default_mode)
+            .or_else(|| params.playback_infos.values().next());
+        let default_url = default_info
+            .and_then(|info| {
+                info.urls
+                    .get(info.default_url_index)
+                    .or_else(|| info.urls.first())
+            })
+            .ok_or_else(|| {
+                crate::Error::InvalidInput("direct media requires a playback URL".to_string())
+            })?;
 
         let source_config = serde_json::json!({
-            "url": default_url.map(|url| url.url.as_str()).unwrap_or_default(),
-            "headers": default_url.map(|url| &url.headers).cloned().unwrap_or_default(),
+            "url": default_url.url.as_str(),
+            "headers": default_url.headers.clone(),
         });
 
         let now = Utc::now();
-        Self {
+        Ok(Self {
             id: MediaId::new(),
-            playlist_id,
-            room_id,
-            creator_id,
-            name,
+            playlist_id: params.playlist_id,
+            room_id: params.room_id,
+            creator_id: params.creator_id,
+            name: params.name,
             description: String::new(),
-            position,
+            position: params.position,
             source_provider: "direct_url".to_string(),
             source_config,
             provider_instance_name: None,
@@ -398,11 +328,10 @@ impl Media {
             added_at: now,
             updated_at: now,
             version: 0,
-        }
+        })
     }
 
     /// Create a direct URL media with single playback info (convenience method)
-    #[must_use]
     pub fn from_direct_single_mode(
         playlist_id: Option<PlaylistId>,
         room_id: RoomId,
@@ -411,20 +340,19 @@ impl Media {
         mode_name: &str,
         playback_info: PlaybackInfo,
         position: f64,
-    ) -> Self {
-        let mut playback_infos = std::collections::HashMap::new();
+    ) -> crate::Result<Self> {
+        let mut playback_infos = HashMap::new();
         playback_infos.insert(mode_name.to_string(), playback_info);
 
-        Self::from_direct_multimode(
+        Self::from_direct_multimode(DirectMultimodeParams {
             playlist_id,
             room_id,
             creator_id,
             name,
-            &playback_infos,
-            mode_name,
-            &std::collections::HashMap::new(),
+            playback_infos,
+            default_mode: mode_name.to_string(),
             position,
-        )
+        })
     }
 
     #[must_use]
@@ -720,13 +648,10 @@ impl PlaybackResultBuilder {
             return None;
         }
 
-        let default_mode = self.default_mode.or_else(|| {
-            // If no default mode specified, use the first inserted mode.
-            // This is deterministic because IndexMap preserves insertion order.
-            self.playback_infos.keys().next().cloned()
-        })?;
+        let default_mode = self
+            .default_mode
+            .or_else(|| self.playback_infos.keys().next().cloned())?;
 
-        // Verify default_mode exists in playback_infos
         if !self.playback_infos.contains_key(&default_mode) {
             return None;
         }
@@ -901,9 +826,6 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_deterministic_default_mode() {
-        // The builder should always pick the first-inserted mode as default
-        // when no explicit default_mode is set. This must be deterministic
-        // across multiple runs (IndexMap preserves insertion order).
         let playlist_id = PlaylistId::expect_positive(60_001);
         let room_id = RoomId::expect_positive(60_002);
 
@@ -927,7 +849,7 @@ mod tests {
 
             assert_eq!(
                 result.default_mode, "alpha",
-                "Default mode should always be the first inserted mode"
+                "default mode should follow insertion order"
             );
         }
     }
@@ -980,8 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subtitle_url_format_field() {
-        // Test that SubtitleUrl can be created with format field
+    fn subtitle_url_format_is_optional_in_json() {
         let subtitle_url = SubtitleUrl {
             name: "English".to_string(),
             url: "https://example.com/sub.vtt".to_string(),
@@ -989,15 +910,9 @@ mod tests {
             format: "vtt".to_string(),
         };
 
-        assert_eq!(subtitle_url.name, "English");
-        assert_eq!(subtitle_url.url, "https://example.com/sub.vtt");
-        assert_eq!(subtitle_url.format, "vtt");
-
-        // Test serialization includes format
         let json = serde_json::to_string(&subtitle_url).expect("should serialize");
         assert!(json.contains("\"format\":\"vtt\""));
 
-        // Test deserialization with format
         let json_with_format =
             r#"{"name":"Chinese","url":"https://example.com/cn.srt","format":"srt"}"#;
         let deserialized: SubtitleUrl =
@@ -1005,17 +920,24 @@ mod tests {
         assert_eq!(deserialized.name, "Chinese");
         assert_eq!(deserialized.format, "srt");
 
-        // Test deserialization without format (should default to empty string)
         let json_without_format = r#"{"name":"Japanese","url":"https://example.com/jp.ass"}"#;
         let deserialized_default: SubtitleUrl =
             serde_json::from_str(json_without_format).expect("should deserialize");
         assert_eq!(deserialized_default.name, "Japanese");
         assert_eq!(deserialized_default.format, "");
+
+        let empty_format = SubtitleUrl {
+            name: "Test".to_string(),
+            url: "https://example.com/test.vtt".to_string(),
+            headers: std::collections::HashMap::new(),
+            format: String::new(),
+        };
+        let json = serde_json::to_string(&empty_format).expect("should serialize");
+        assert!(!json.contains("\"format\""));
     }
 
     #[test]
-    fn test_playback_info_format_field() {
-        // Test that PlaybackInfo can be created with format field using builder
+    fn playback_info_format_is_optional_in_json() {
         let playback_info = PlaybackInfo::builder()
             .add_url(PlaybackUrl::simple(
                 "1080P".to_string(),
@@ -1023,15 +945,9 @@ mod tests {
             ))
             .format("hls".to_string())
             .build();
-
-        assert_eq!(playback_info.format, "hls");
-        assert_eq!(playback_info.urls.len(), 1);
-
-        // Test serialization includes format
         let json = serde_json::to_string(&playback_info).expect("should serialize");
         assert!(json.contains("\"format\":\"hls\""));
 
-        // Test deserialization with format
         let json_with_format =
             r#"{"urls":[{"name":"720P","url":"https://example.com/video.mp4"}],"format":"mp4"}"#;
         let deserialized: PlaybackInfo =
@@ -1039,48 +955,16 @@ mod tests {
         assert_eq!(deserialized.format, "mp4");
         assert_eq!(deserialized.urls.len(), 1);
 
-        // Test deserialization without format (should default to empty string)
         let json_without_format =
             r#"{"urls":[{"name":"480P","url":"https://example.com/video.webm"}]}"#;
         let deserialized_default: PlaybackInfo =
             serde_json::from_str(json_without_format).expect("should deserialize");
         assert_eq!(deserialized_default.format, "");
-    }
 
-    #[test]
-    fn test_playback_info_single_url_has_empty_format() {
-        // Test that single_url convenience method creates PlaybackInfo with empty format
-        let playback_info = PlaybackInfo::single_url(
-            "https://example.com/video.mp4".to_string(),
-            "Direct".to_string(),
-        );
-
-        assert_eq!(playback_info.format, "");
-        assert_eq!(playback_info.urls.len(), 1);
-    }
-
-    #[test]
-    fn test_subtitle_url_skip_serializing_empty_format() {
-        // Test that empty format is skipped during serialization
-        let subtitle_url = SubtitleUrl {
-            name: "Test".to_string(),
-            url: "https://example.com/test.vtt".to_string(),
-            headers: std::collections::HashMap::new(),
-            format: String::new(),
-        };
-
-        let json = serde_json::to_string(&subtitle_url).expect("should serialize");
-        assert!(!json.contains("\"format\""));
-    }
-
-    #[test]
-    fn test_playback_info_skip_serializing_empty_format() {
-        // Test that empty format is skipped during serialization
         let playback_info = PlaybackInfo::single_url(
             "https://example.com/video.mp4".to_string(),
             "Test".to_string(),
         );
-
         let json = serde_json::to_string(&playback_info).expect("should serialize");
         assert!(!json.contains("\"format\""));
     }

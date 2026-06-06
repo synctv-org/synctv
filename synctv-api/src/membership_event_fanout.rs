@@ -22,8 +22,8 @@ pub trait MembershipEventFanoutService: Send + Sync {
 #[derive(Clone)]
 pub struct PreparedPermissionChangedFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
-    events: Arc<std::sync::Mutex<Vec<RealtimeEvent>>>,
+    event_service: Arc<dyn RealtimeEventService>,
+    events: Arc<parking_lot::Mutex<Vec<RealtimeEvent>>>,
 }
 
 impl PreparedPermissionChangedFanout {
@@ -31,14 +31,14 @@ impl PreparedPermissionChangedFanout {
     #[must_use]
     pub fn new(
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        event_service: Option<Arc<dyn RealtimeEventService>>,
+        event_service: Arc<dyn RealtimeEventService>,
         _target_user_id: UserId,
         _changed_by: UserId,
     ) -> Self {
         Self {
             realtime_fanout,
             event_service,
-            events: Arc::new(std::sync::Mutex::new(Vec::new())),
+            events: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -61,29 +61,21 @@ impl PreparedPermissionChangedFanout {
                 admin_removed_permissions: snapshot.admin_removed_permissions,
                 timestamp: chrono::Utc::now(),
             };
+            prepared.events.lock().push(event.clone());
             prepared
-                .events
-                .lock()
-                .expect("membership fanout event mutex should not be poisoned")
-                .push(event.clone());
-            prepared.realtime_fanout.outbox_event(&event)
+                .realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
         })
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        let events = std::mem::take(
-            &mut *self
-                .events
-                .lock()
-                .expect("membership fanout event mutex should not be poisoned"),
-        );
+        let events = std::mem::take(&mut *self.events.lock());
         for event in events {
             if self.realtime_fanout.is_distributed_enabled() {
                 self.realtime_fanout.publish_after_outbox_commit(event);
-            } else if let (Some(event_service), Some(room_id)) =
-                (&self.event_service, event.room_id())
-            {
-                event_service.broadcast_local(room_id, &event);
+            } else if let Some(room_id) = event.room_id() {
+                self.event_service.broadcast_local(room_id, &event);
             }
         }
     }
@@ -92,7 +84,7 @@ impl PreparedPermissionChangedFanout {
 #[derive(Clone)]
 pub struct PreparedUserLeftFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event: Arc<std::sync::Mutex<Option<RealtimeEvent>>>,
+    event: Arc<parking_lot::Mutex<Option<RealtimeEvent>>>,
 }
 
 impl PreparedUserLeftFanout {
@@ -101,7 +93,7 @@ impl PreparedUserLeftFanout {
     pub fn new(realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
         Self {
             realtime_fanout,
-            event: Arc::new(std::sync::Mutex::new(None)),
+            event: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -116,22 +108,16 @@ impl PreparedUserLeftFanout {
                 username: snapshot.username.clone(),
                 timestamp: chrono::Utc::now(),
             };
-            *prepared
-                .event
-                .lock()
-                .expect("membership fanout event mutex should not be poisoned") =
-                Some(event.clone());
-            prepared.realtime_fanout.outbox_event(&event)
+            *prepared.event.lock() = Some(event.clone());
+            prepared
+                .realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
         })
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        if let Some(event) = self
-            .event
-            .lock()
-            .expect("membership fanout event mutex should not be poisoned")
-            .take()
-        {
+        if let Some(event) = self.event.lock().take() {
             self.realtime_fanout.publish_after_outbox_commit(event);
         }
     }
@@ -139,14 +125,14 @@ impl PreparedUserLeftFanout {
 
 pub struct DefaultMembershipEventFanoutService {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
+    event_service: Arc<dyn RealtimeEventService>,
 }
 
 impl DefaultMembershipEventFanoutService {
     #[must_use]
     pub fn new(
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        event_service: Option<Arc<dyn RealtimeEventService>>,
+        event_service: Arc<dyn RealtimeEventService>,
     ) -> Self {
         Self {
             realtime_fanout,
@@ -188,7 +174,7 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
 #[must_use]
 pub fn default_membership_event_fanout_service(
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
+    event_service: Arc<dyn RealtimeEventService>,
 ) -> Arc<dyn MembershipEventFanoutService> {
     Arc::new(DefaultMembershipEventFanoutService::new(
         realtime_fanout,
@@ -199,7 +185,7 @@ pub fn default_membership_event_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::realtime_fanout::default_realtime_fanout_service;
+    use crate::realtime_fanout::disabled_realtime_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
     use crate::test_support::channel_realtime_fanout_service;
     use async_trait::async_trait;
@@ -306,8 +292,8 @@ mod tests {
     async fn test_permission_changed_self_event_broadcasts_locally_after_commit() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = super::DefaultMembershipEventFanoutService::new(
-            default_realtime_fanout_service(None, false),
-            Some(event_service.clone()),
+            disabled_realtime_fanout_service(),
+            event_service.clone(),
         );
         let user = user_id("self-joiner");
         let prepared = service.prepare_permission_changed_outbox_fanout(user, user);
@@ -329,7 +315,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let prepared = PreparedPermissionChangedFanout::new(
             channel_realtime_fanout_service(tx),
-            None,
+            Arc::new(RecordingRealtimeEventService::default()),
             user_id("target"),
             user_id("actor"),
         );

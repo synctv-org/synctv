@@ -3,7 +3,6 @@
 //! Tests permission boundaries including role hierarchy enforcement,
 //! cross-room permission isolation, and permission escalation prevention.
 //!
-//! Run with: cargo test --test `room_permission_boundary_tests`
 //!
 //! # Test Coverage
 //!
@@ -118,16 +117,18 @@ fn make_member_service(pool: PgPool) -> MemberService {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let permission_service =
-        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
+            .expect("permission service should build");
 
-    let mut member_service = MemberService::new(
+    MemberService::new_with_runtime(
         member_repo,
         room_repo,
+        Some(RoomSettingsRepository::new(pool)),
         permission_service,
+        None,
+        None,
         NotificationService::default(),
-    );
-    member_service.set_room_settings_repo(RoomSettingsRepository::new(pool));
-    member_service
+    )
 }
 
 fn make_user_service(pool: &PgPool) -> UserService {
@@ -136,11 +137,10 @@ fn make_user_service(pool: &PgPool) -> UserService {
         synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        synctv_core::config::PasswordComplexityConfig::default(),
         token_blacklist,
         synctv_core::cache::KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test".to_string()),
@@ -150,7 +150,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 /// Test that Admin cannot delete room (Creator-only operation).
@@ -334,7 +334,8 @@ async fn test_member_cannot_change_settings() {
         None,
         1000,
         300,
-    );
+    )
+    .expect("permission service should build");
 
     let member_perms = permission_service
         .get_user_permissions_eventually_consistent(&room.id, &member_user.id)
@@ -528,7 +529,8 @@ async fn test_creator_role_not_global() {
         None,
         1000,
         300,
-    );
+    )
+    .expect("permission service should build");
 
     let perms_a = permission_service
         .get_user_permissions_eventually_consistent(&room_a.id, &creator_user.id)
@@ -826,7 +828,8 @@ async fn test_revoked_permission_denied() {
         None,
         1000,
         300,
-    );
+    )
+    .expect("permission service should build");
 
     let effective = permission_service
         .get_user_permissions_no_cache(&room.id, &member_user.id)
@@ -870,7 +873,8 @@ async fn test_member_without_chat_cannot_send() {
         None,
         1000,
         300,
-    );
+    )
+    .expect("permission service should build");
 
     let perms = permission_service
         .get_user_permissions_eventually_consistent(&room.id, &muted_user.id)

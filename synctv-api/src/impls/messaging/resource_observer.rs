@@ -12,7 +12,9 @@ use synctv_core::{
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
-use crate::impls::client::convert::{playback_client_profile_from_proto, playback_state_to_proto};
+use crate::impls::client::convert::{
+    playback_client_profile_from_proto, try_playback_state_to_proto,
+};
 use crate::impls::client::RoomActor;
 use crate::impls::messaging::chat_message_event_to_proto;
 use crate::impls::playback_snapshot::PlaybackSnapshotService;
@@ -29,13 +31,15 @@ const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
 pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
 const CHAT_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
+const CHAT_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
 const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
+const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
 
 fn event_cursor_for_chat_event(
     event: &synctv_core::models::ChatMessageEvent,
 ) -> crate::proto::client::EventCursor {
     crate::proto::client::EventCursor {
-        event_id: event.event_id.clone(),
+        event_id: Some(event.event_id.clone()),
         sequence: event.sequence,
     }
 }
@@ -44,7 +48,7 @@ fn proto_event_cursor(
     cursor: synctv_core::models::EventCursor,
 ) -> crate::proto::client::EventCursor {
     crate::proto::client::EventCursor {
-        event_id: cursor.event_id.unwrap_or_default(),
+        event_id: cursor.event_id,
         sequence: cursor.sequence,
     }
 }
@@ -342,31 +346,34 @@ impl PlaybackSnapshotSource {
     fn from_observe(
         observe: &crate::proto::client::ObservePlaybackSnapshot,
         public_id_codec: &crate::PublicIdCodec,
-    ) -> Option<Self> {
-        let media_id = if observe.media_id.trim().is_empty() {
-            None
-        } else {
-            match public_id_codec.decode_media_id(&observe.media_id) {
-                Ok(id) => Some(id),
-                Err(_) => return None,
+    ) -> Result<Self, String> {
+        let media_id = match observe.media_id.as_deref().map(str::trim) {
+            Some(media_id) if !media_id.is_empty() => {
+                match public_id_codec.decode_media_id(media_id) {
+                    Ok(id) => Some(id),
+                    Err(_) => return Err("Invalid playback snapshot media_id".to_string()),
+                }
             }
+            _ => None,
         };
-        let playlist_id = if observe.playlist_id.trim().is_empty() {
-            None
-        } else {
-            match public_id_codec.decode_playlist_id(&observe.playlist_id) {
-                Ok(id) => Some(id),
-                Err(_) => return None,
+        let playlist_id = match observe.playlist_id.as_deref().map(str::trim) {
+            Some(playlist_id) if !playlist_id.is_empty() => {
+                match public_id_codec.decode_playlist_id(playlist_id) {
+                    Ok(id) => Some(id),
+                    Err(_) => return Err("Invalid playback snapshot playlist_id".to_string()),
+                }
             }
+            _ => None,
         };
 
-        Some(Self {
+        Ok(Self {
             media_id,
             playlist_id,
             target: observe.target.clone(),
             playback_client_profile: playback_client_profile_from_proto(
                 observe.playback_client_profile.as_ref(),
-            ),
+            )
+            .map_err(|error| error.to_string())?,
         })
     }
 }
@@ -376,7 +383,7 @@ impl ResourceObservation {
         match &self.resource {
             ObservedResource::PlaybackState => Some(&["playback_state"]),
             ObservedResource::PlaybackSnapshot { .. } => {
-                Some(&["playback_state", "media", "playlist"])
+                Some(&["playback_state", "media", "playlist", "playlist_items"])
             }
             ObservedResource::RoomSettings => Some(&["room_settings", "room"]),
             ObservedResource::PlaylistItems { .. } => {
@@ -436,12 +443,11 @@ pub(super) struct ResourceObserver {
     public_id_codec: Arc<crate::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     pub(super) room_hub: Arc<MediaResourceHub>,
-    playback_snapshot_service: parking_lot::RwLock<Option<Arc<dyn PlaybackSnapshotService>>>,
-    playlist_items_snapshot_service:
-        parking_lot::RwLock<Option<Arc<dyn PlaylistItemsSnapshotService>>>,
-    room_members_snapshot_service: parking_lot::RwLock<Option<Arc<dyn RoomMembersSnapshotService>>>,
-    room_settings_snapshot_service: parking_lot::RwLock<Arc<dyn RoomSettingsSnapshotService>>,
-    room_settings_snapshot_service_id: parking_lot::RwLock<usize>,
+    playback_snapshot_service: Option<Arc<dyn PlaybackSnapshotService>>,
+    playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
+    room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
+    room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
+    room_settings_snapshot_service_id: usize,
     state: tokio::sync::Mutex<ResourceObserverState>,
 }
 
@@ -453,6 +459,9 @@ pub(super) struct ResourceObserverParams {
     pub(super) room_service: Arc<RoomService>,
     pub(super) public_id_codec: Arc<crate::PublicIdCodec>,
     pub(super) sender: Arc<dyn MessageSender>,
+    pub(super) playback_snapshot_service: Option<Arc<dyn PlaybackSnapshotService>>,
+    pub(super) playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
+    pub(super) room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
     pub(super) room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
 }
 
@@ -466,9 +475,13 @@ impl ResourceObserver {
             room_service,
             public_id_codec,
             sender,
+            playback_snapshot_service,
+            playlist_items_snapshot_service,
+            room_members_snapshot_service,
             room_settings_snapshot_service,
         } = params;
-        let room_settings_snapshot_service_id = Arc::as_ptr(&room_service) as usize;
+        let room_settings_snapshot_service_id =
+            Arc::as_ptr(&room_settings_snapshot_service).cast::<()>() as usize;
         let room_hub = media_resource_hub(room_id, &room_service);
         Self {
             room_id,
@@ -479,51 +492,13 @@ impl ResourceObserver {
             public_id_codec,
             sender,
             room_hub,
-            playback_snapshot_service: parking_lot::RwLock::new(None),
-            playlist_items_snapshot_service: parking_lot::RwLock::new(None),
-            room_members_snapshot_service: parking_lot::RwLock::new(None),
-            room_settings_snapshot_service: parking_lot::RwLock::new(
-                room_settings_snapshot_service,
-            ),
-            room_settings_snapshot_service_id: parking_lot::RwLock::new(
-                room_settings_snapshot_service_id,
-            ),
+            playback_snapshot_service,
+            playlist_items_snapshot_service,
+            room_members_snapshot_service,
+            room_settings_snapshot_service,
+            room_settings_snapshot_service_id,
             state: tokio::sync::Mutex::new(ResourceObserverState::default()),
         }
-    }
-
-    pub(super) fn set_playback_snapshot_service(
-        &self,
-        service: Option<Arc<dyn PlaybackSnapshotService>>,
-    ) {
-        *self.playback_snapshot_service.write() = service;
-    }
-
-    pub(super) fn set_connection_id(&mut self, connection_id: String) {
-        self.connection_id = connection_id;
-    }
-
-    pub(super) fn set_playlist_items_snapshot_service(
-        &self,
-        service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
-    ) {
-        *self.playlist_items_snapshot_service.write() = service;
-    }
-
-    pub(super) fn set_room_members_snapshot_service(
-        &self,
-        service: Option<Arc<dyn RoomMembersSnapshotService>>,
-    ) {
-        *self.room_members_snapshot_service.write() = service;
-    }
-
-    pub(super) fn set_room_settings_snapshot_service(
-        &self,
-        service: Arc<dyn RoomSettingsSnapshotService>,
-    ) {
-        *self.room_settings_snapshot_service_id.write() =
-            Arc::as_ptr(&service).cast::<()>() as usize;
-        *self.room_settings_snapshot_service.write() = service;
     }
 
     async fn resource_actor(&self) -> Result<RoomActor, String> {
@@ -560,10 +535,10 @@ impl ResourceObserver {
             .any(|observation| matches!(observation.resource, ObservedResource::ChatEvents))
     }
 
-    fn public_room_id(&self) -> String {
+    fn public_room_id(&self) -> Result<String, String> {
         self.public_id_codec
             .encode_room_id(self.room_id)
-            .expect("positive room ID must encode")
+            .map_err(|error| format!("Failed to encode room public id: {error}"))
     }
 
     fn shared_evaluation_key(
@@ -733,6 +708,15 @@ impl ResourceObserver {
             })
     }
 
+    fn validate_requested_replay_sequence(
+        request: &crate::proto::client::ObserveResource,
+    ) -> Result<(), String> {
+        if Self::requested_replay_sequence(request).is_some_and(|sequence| sequence < 0) {
+            return Err("after_event_sequence must be non-negative".to_string());
+        }
+        Ok(())
+    }
+
     fn apply_event_cursor_to_observation(
         observation: &mut ResourceObservation,
         cursor: &crate::proto::client::EventCursor,
@@ -837,6 +821,14 @@ impl MediaResourceHub {
                 None
             }
         };
+        if event_cursor.is_none() {
+            tracing::warn!(
+                room_id = %self.room_id,
+                event_id = %event.event_id(),
+                event_type = %event.event_type(),
+                "Refreshing live room resources without a durable event cursor"
+            );
+        }
         let outcome = self
             .refresh_for_invalidations_with_key(
                 Some(format!("cluster:{}", event.event_id())),
@@ -860,6 +852,32 @@ impl MediaResourceHub {
     ) -> ResourceRefreshOutcome {
         self.refresh_for_invalidations_with_key(None, invalidations, force, None)
             .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn refresh_for_room_event_with_cursor(
+        self: &Arc<Self>,
+        event: &RealtimeEvent,
+        fatal_connection_id: Option<&str>,
+        cursor: crate::proto::client::EventCursor,
+    ) -> Result<(), String> {
+        let invalidations = resource_invalidations_for_room_event(event);
+        if invalidations.is_empty() {
+            return Ok(());
+        }
+        let outcome = self
+            .refresh_for_invalidations_with_key(
+                Some(format!("cluster:{}", event.event_id())),
+                invalidations,
+                false,
+                Some(cursor),
+            )
+            .await;
+        if let Some(error) = outcome.error_for_connection(fatal_connection_id) {
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 
     async fn refresh_for_invalidations_with_key(
@@ -1133,14 +1151,25 @@ impl MediaResourceHub {
                     ) {
                         continue;
                     }
+                    let event_payload =
+                        match chat_message_event_to_proto(event, &observer.public_id_codec) {
+                            Ok(event) => event,
+                            Err(error) => {
+                                tracing::warn!(
+                                    room_id = %observer.room_id,
+                                    user_id = %observer.user_id,
+                                    observe_id = %updated_observation.observe_id,
+                                    error = %error,
+                                    "Failed to convert chat event for resource observer"
+                                );
+                                chat_outcome.record_send_failure(key.connection_id.clone(), error);
+                                continue;
+                            }
+                        };
                     let changed = crate::proto::client::ResourceChanged {
                         observe_id: updated_observation.observe_id.clone(),
                         payload: Some(crate::proto::client::resource_changed::Payload::ChatEvent(
-                            chat_message_event_to_proto(
-                                event,
-                                &observer.public_id_codec,
-                                observer.room_id,
-                            ),
+                            event_payload,
                         )),
                         event_cursor: Some(cursor),
                     };
@@ -1369,12 +1398,20 @@ impl MediaResourceHub {
                                 .observer
                                 .remove_local_observation(&entry.key.observe_id)
                                 .await;
-                            let _ = entry.observer.send_server_message(
+                            if let Err(send_error) = entry.observer.send_server_message(
                                 ResourceObserver::resource_observe_error_message(
                                     entry.key.observe_id.clone(),
                                     crate::impls::ApiError::Internal(error.clone()),
                                 ),
-                            );
+                            ) {
+                                tracing::warn!(
+                                    room_id = %self.room_id,
+                                    user_id = %entry.observer.user_id,
+                                    observe_id = %entry.key.observe_id,
+                                    error = %send_error,
+                                    "Failed to send ResourceObserveError after refresh failure"
+                                );
+                            }
                             tracing::warn!(
                                 room_id = %self.room_id,
                                 user_id = %entry.observer.user_id,
@@ -1479,12 +1516,14 @@ impl ResourceObserver {
         ))
     }
 
-    fn normalize_delivery_mode(mode: i32) -> ResourceDeliveryMode {
-        match ResourceDeliveryMode::try_from(mode).unwrap_or(ResourceDeliveryMode::Unspecified) {
+    fn normalize_delivery_mode(mode: i32) -> Result<ResourceDeliveryMode, String> {
+        match ResourceDeliveryMode::try_from(mode)
+            .map_err(|_| "Unsupported resource delivery mode".to_string())?
+        {
             ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
-                ResourceDeliveryMode::PushSnapshot
+                Ok(ResourceDeliveryMode::PushSnapshot)
             }
-            ResourceDeliveryMode::NotifyOnly => ResourceDeliveryMode::NotifyOnly,
+            ResourceDeliveryMode::NotifyOnly => Ok(ResourceDeliveryMode::NotifyOnly),
         }
     }
 
@@ -1501,6 +1540,7 @@ impl ResourceObserver {
         if observe_id.len() > 128 {
             return Err("observe_id is too long".to_string());
         }
+        Self::validate_requested_replay_sequence(request)?;
 
         let (resource, last_source) = match request
             .resource
@@ -1510,24 +1550,34 @@ impl ResourceObserver {
             Resource::PlaybackState(_) => (ObservedResource::PlaybackState, None),
             Resource::PlaybackSnapshot(observe) => {
                 let playback_client_profile =
-                    playback_client_profile_from_proto(observe.playback_client_profile.as_ref());
+                    playback_client_profile_from_proto(observe.playback_client_profile.as_ref())
+                        .map_err(|error| error.to_string())?;
                 (
                     ObservedResource::PlaybackSnapshot {
                         playback_client_profile,
                     },
-                    PlaybackSnapshotSource::from_observe(observe, &self.public_id_codec),
+                    Some(PlaybackSnapshotSource::from_observe(
+                        observe,
+                        &self.public_id_codec,
+                    )?),
                 )
             }
             Resource::RoomSettings(_) => (ObservedResource::RoomSettings, None),
             Resource::PlaylistItems(observe) => (
                 ObservedResource::PlaylistItems {
-                    request: observe.request.clone().unwrap_or_default(),
+                    request: observe
+                        .request
+                        .clone()
+                        .ok_or_else(|| "playlist_items request is required".to_string())?,
                 },
                 None,
             ),
             Resource::RoomMembers(observe) => (
                 ObservedResource::RoomMembers {
-                    request: observe.request.clone().unwrap_or_default(),
+                    request: observe
+                        .request
+                        .clone()
+                        .ok_or_else(|| "room_members request is required".to_string())?,
                 },
                 None,
             ),
@@ -1537,7 +1587,7 @@ impl ResourceObserver {
         Ok(ResourceObservation {
             observe_id: observe_id.to_string(),
             last_fingerprint: String::new(),
-            delivery_mode: Self::normalize_delivery_mode(request.delivery_mode),
+            delivery_mode: Self::normalize_delivery_mode(request.delivery_mode)?,
             resource,
             last_source,
             expires_at: None,
@@ -1574,53 +1624,20 @@ impl ResourceObserver {
         }
 
         let start_sequence = Self::observation_start_sequence(&observation, request);
-        let requested_replay_sequence =
-            Self::requested_replay_sequence(request).map(|sequence| sequence.max(0));
         let is_chat_observation = matches!(observation.resource, ObservedResource::ChatEvents);
         let observed_cursor = if is_chat_observation {
             Some(crate::proto::client::EventCursor {
-                event_id: String::new(),
+                event_id: None,
                 sequence: start_sequence,
             })
         } else {
             match observation.room_resource_cursor_types() {
                 Some(resource_types) if !resource_types.is_empty() => {
-                    if requested_replay_sequence.is_some() {
-                        Some(crate::proto::client::EventCursor {
-                            event_id: String::new(),
-                            sequence: start_sequence,
-                        })
-                    } else {
-                        #[cfg(test)]
-                        {
-                            None
-                        }
-                        #[cfg(not(test))]
-                        {
-                            let repository =
-                                RoomResourceEventRepository::new(self.room_service.pool().clone());
-                            match repository
-                                .latest_room_event_cursor_for_resource_types(
-                                    &self.room_id,
-                                    resource_types,
-                                )
-                                .await
-                            {
-                                Ok(cursor) => Some(proto_event_cursor(cursor)),
-                                Err(error) => {
-                                    let observe_id = observation.observe_id;
-                                    self.release_pending_observation_slot(&observe_id).await;
-                                    self.send_server_message(
-                                        Self::resource_observe_error_message(
-                                            observe_id,
-                                            crate::impls::ApiError::Internal(error.to_string()),
-                                        ),
-                                    )?;
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
+                    let _ = resource_types;
+                    Some(crate::proto::client::EventCursor {
+                        event_id: None,
+                        sequence: start_sequence,
+                    })
                 }
                 _ => None,
             }
@@ -1743,8 +1760,8 @@ impl ResourceObserver {
                                             chat_message_event_to_proto(
                                                 event,
                                                 &self.public_id_codec,
-                                                self.room_id,
-                                            ),
+                                            )
+                                            .map_err(|error| error.clone())?,
                                         ),
                                     ),
                                     event_cursor: Some(cursor),
@@ -1756,9 +1773,7 @@ impl ResourceObserver {
                     self.room_hub.register_observation(self, observation).await;
                 }
 
-                if events.len()
-                    < usize::try_from(CHAT_EVENT_REPLAY_BATCH_LIMIT).unwrap_or(usize::MAX)
-                {
+                if events.len() < CHAT_EVENT_REPLAY_BATCH_LIMIT_USIZE {
                     return Ok(());
                 }
             }
@@ -1828,15 +1843,34 @@ impl ResourceObserver {
 
             for logged in &events {
                 after_event_sequence = logged.sequence;
+                let cursor = crate::proto::client::EventCursor {
+                    event_id: Some(logged.event_id.clone()),
+                    sequence: logged.sequence,
+                };
+                let Some(mut observation) = self.local_observation(observe_id).await else {
+                    return Ok(());
+                };
                 let Some(payload) = logged.payload.clone() else {
-                    tracing::warn!(
-                        room_id = %self.room_id,
-                        event_id = %logged.event_id,
-                        sequence = logged.sequence,
-                        event_type = %logged.event_type,
-                        resource_type = %logged.resource_type,
-                        "Room resource replay skipped event without payload"
-                    );
+                    if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
+                        continue;
+                    }
+                    self.send_server_message(ServerMessage {
+                        message: Some(
+                            crate::proto::client::server_message::Message::ResourceChanged(
+                                crate::proto::client::ResourceChanged {
+                                    observe_id: observe_id.to_string(),
+                                    payload: Some(
+                                        crate::proto::client::resource_changed::Payload::ChangedOnly(
+                                            crate::proto::client::ResourceChangedOnly {},
+                                        ),
+                                    ),
+                                    event_cursor: Some(cursor),
+                                },
+                            ),
+                        ),
+                    })?;
+                    self.replace_local_observation(observation.clone()).await;
+                    self.room_hub.register_observation(self, observation).await;
                     continue;
                 };
                 let realtime_event: RealtimeEvent =
@@ -1847,19 +1881,12 @@ impl ResourceObserver {
                         )
                     })?;
                 let invalidations = resource_invalidations_for_room_event(&realtime_event);
-                let Some(mut observation) = self.local_observation(observe_id).await else {
-                    return Ok(());
-                };
                 if !invalidations.iter().any(|invalidation| {
                     Self::observation_invalidated_by_invalidation(&observation, invalidation)
                 }) {
                     continue;
                 }
 
-                let cursor = crate::proto::client::EventCursor {
-                    event_id: logged.event_id.clone(),
-                    sequence: logged.sequence,
-                };
                 if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
                     continue;
                 }
@@ -1880,9 +1907,7 @@ impl ResourceObserver {
                 self.room_hub.register_observation(self, observation).await;
             }
 
-            if events.len()
-                < usize::try_from(ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT).unwrap_or(usize::MAX)
-            {
+            if events.len() < ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT_USIZE {
                 return Ok(());
             }
         }
@@ -1912,10 +1937,16 @@ impl ResourceObserver {
                 _ => None,
             })
             .min()?;
-        let seconds_until_refresh = expires_at.saturating_sub(chrono::Utc::now().timestamp());
+        let now_wall = chrono::Utc::now().timestamp();
+        let now_instant = tokio::time::Instant::now();
+        if expires_at <= now_wall {
+            return Some(now_instant);
+        }
+        let refresh_after = Duration::from_secs((expires_at - now_wall).cast_unsigned());
         Some(
-            tokio::time::Instant::now()
-                + Duration::from_secs(u64::try_from(seconds_until_refresh).unwrap_or_default()),
+            now_instant
+                .checked_add(refresh_after)
+                .unwrap_or(now_instant + Duration::from_hours(8760)),
         )
     }
 
@@ -1933,10 +1964,7 @@ impl ResourceObserver {
         provider: &str,
         server_id: &str,
     ) -> Result<bool, String> {
-        let service = {
-            let service = self.playback_snapshot_service.read();
-            service.clone()
-        };
+        let service = self.playback_snapshot_service.clone();
         let Some(service) = service else {
             return Ok(false);
         };
@@ -2072,14 +2100,23 @@ impl ResourceObserver {
             ResourceInvalidation::PlaybackSnapshot(reason) => match reason {
                 PlaybackSnapshotInvalidation::PlaybackStateChanged
                 | PlaybackSnapshotInvalidation::Cache => true,
-                PlaybackSnapshotInvalidation::MediaUpdated { media_id } => observation
+                PlaybackSnapshotInvalidation::MediaChanged { media_id } => observation
                     .last_source
                     .as_ref()
                     .is_none_or(|source| source.media_id.as_ref() == Some(media_id)),
-                PlaybackSnapshotInvalidation::PlaylistUpdated { playlist_id } => observation
+                PlaybackSnapshotInvalidation::PlaylistChanged { playlist_id } => observation
                     .last_source
                     .as_ref()
                     .is_none_or(|source| source.playlist_id.as_ref() == Some(playlist_id)),
+                PlaybackSnapshotInvalidation::PlaylistItemsChanged { media_ids } => {
+                    observation.last_source.as_ref().is_none_or(|source| {
+                        source
+                            .media_id
+                            .as_ref()
+                            .is_some_and(|media_id| media_ids.contains(media_id))
+                            || source.playlist_id.is_some()
+                    })
+                }
             },
             _ => false,
         }
@@ -2189,7 +2226,7 @@ impl ResourceObserver {
                 }
             }
             ObservedResource::PlaybackSnapshot { .. } => {
-                self.playback_snapshot_service.read().as_ref().map_or(
+                self.playback_snapshot_service.as_ref().map_or(
                     SharedResourceServiceIdentity {
                         id: 0,
                         weak: SharedResourceServiceWeak::AlwaysAlive,
@@ -2201,24 +2238,16 @@ impl ResourceObserver {
                 )
             }
             ObservedResource::RoomSettings => {
-                let id = *self.room_settings_snapshot_service_id.read();
-                if id == Arc::as_ptr(&self.room_service) as usize {
-                    SharedResourceServiceIdentity {
-                        id,
-                        weak: SharedResourceServiceWeak::RoomService(Arc::downgrade(
-                            &self.room_service,
-                        )),
-                    }
-                } else {
-                    let service = self.room_settings_snapshot_service.read();
-                    SharedResourceServiceIdentity {
-                        id,
-                        weak: SharedResourceServiceWeak::RoomSettings(Arc::downgrade(&service)),
-                    }
+                let id = self.room_settings_snapshot_service_id;
+                SharedResourceServiceIdentity {
+                    id,
+                    weak: SharedResourceServiceWeak::RoomSettings(Arc::downgrade(
+                        &self.room_settings_snapshot_service,
+                    )),
                 }
             }
             ObservedResource::PlaylistItems { .. } => {
-                self.playlist_items_snapshot_service.read().as_ref().map_or(
+                self.playlist_items_snapshot_service.as_ref().map_or(
                     SharedResourceServiceIdentity {
                         id: 0,
                         weak: SharedResourceServiceWeak::AlwaysAlive,
@@ -2230,7 +2259,7 @@ impl ResourceObserver {
                 )
             }
             ObservedResource::RoomMembers { .. } => {
-                self.room_members_snapshot_service.read().as_ref().map_or(
+                self.room_members_snapshot_service.as_ref().map_or(
                     SharedResourceServiceIdentity {
                         id: 0,
                         weak: SharedResourceServiceWeak::AlwaysAlive,
@@ -2264,10 +2293,10 @@ impl ResourceObserver {
                         Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
-                        Payload::PlaybackState(playback_state_to_proto(
-                            &state,
-                            &self.public_id_codec,
-                        ))
+                        Payload::PlaybackState(
+                            try_playback_state_to_proto(&state, &self.public_id_codec)
+                                .map_err(|error| error.to_string())?,
+                        )
                     }
                 };
                 (version, None, None, payload)
@@ -2275,11 +2304,10 @@ impl ResourceObserver {
             ObservedResource::PlaybackSnapshot {
                 playback_client_profile,
             } => {
-                let service = {
-                    let service = self.playback_snapshot_service.read();
-                    service.clone()
-                }
-                .ok_or_else(|| "Playback snapshot service is not available".to_string())?;
+                let service = self
+                    .playback_snapshot_service
+                    .clone()
+                    .ok_or_else(|| "Playback snapshot service is not available".to_string())?;
                 let state = self
                     .room_service
                     .get_playback_state(&self.room_id)
@@ -2312,7 +2340,7 @@ impl ResourceObserver {
                 )
             }
             ObservedResource::RoomSettings => {
-                let service = { Arc::clone(&self.room_settings_snapshot_service.read()) };
+                let service = Arc::clone(&self.room_settings_snapshot_service);
                 let snapshot = service
                     .get_room_settings_snapshot(&self.room_id)
                     .await
@@ -2324,7 +2352,7 @@ impl ResourceObserver {
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::RoomSettings(crate::proto::client::RoomSettingsChanged {
-                            room_id: self.public_room_id(),
+                            room_id: self.public_room_id()?,
                             settings: snapshot.settings,
                             version: snapshot.version,
                         })
@@ -2333,11 +2361,12 @@ impl ResourceObserver {
                 (version, None, None, payload)
             }
             ObservedResource::PlaylistItems { request } => {
-                let service = {
-                    let service = self.playlist_items_snapshot_service.read();
-                    service.clone()
-                }
-                .ok_or_else(|| "Playlist items snapshot service is not available".to_string())?;
+                let service = self
+                    .playlist_items_snapshot_service
+                    .clone()
+                    .ok_or_else(|| {
+                        "Playlist items snapshot service is not available".to_string()
+                    })?;
                 let actor = self.resource_actor().await?;
                 let snapshot = service
                     .get_playlist_items_snapshot(&actor, request)
@@ -2354,11 +2383,10 @@ impl ResourceObserver {
                 (snapshot.version.clone(), None, None, payload)
             }
             ObservedResource::RoomMembers { request } => {
-                let service = {
-                    let service = self.room_members_snapshot_service.read();
-                    service.clone()
-                }
-                .ok_or_else(|| "Room members snapshot service is not available".to_string())?;
+                let service = self
+                    .room_members_snapshot_service
+                    .clone()
+                    .ok_or_else(|| "Room members snapshot service is not available".to_string())?;
                 let actor = self.resource_actor().await?;
                 let snapshot = service
                     .get_room_members_snapshot(&actor, request)
@@ -2429,5 +2457,186 @@ impl ResourceObserver {
             changed,
             changed_message,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn playback_snapshot_observation() -> ResourceObservation {
+        ResourceObservation {
+            observe_id: "playback-snapshot".to_string(),
+            last_fingerprint: String::new(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot,
+            resource: ObservedResource::PlaybackSnapshot {
+                playback_client_profile: None,
+            },
+            last_source: None,
+            expires_at: None,
+            last_sent_event_sequence: 0,
+        }
+    }
+
+    #[test]
+    fn playback_snapshot_uses_room_resource_event_cursor_types() {
+        let observation = playback_snapshot_observation();
+
+        assert_eq!(
+            observation.room_resource_cursor_types(),
+            Some(&["playback_state", "media", "playlist", "playlist_items"][..])
+        );
+    }
+
+    #[test]
+    fn playback_snapshot_is_room_resource_cursor_observation() {
+        let observation = playback_snapshot_observation();
+
+        assert!(observation.room_resource_cursor_types().is_some());
+    }
+
+    #[test]
+    fn playback_snapshot_observation_starts_from_requested_replay_sequence() {
+        let observation = playback_snapshot_observation();
+        let request = crate::proto::client::ObserveResource {
+            observe_id: "playback-snapshot".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                crate::proto::client::observe_resource::Resource::PlaybackSnapshot(
+                    crate::proto::client::ObservePlaybackSnapshot {
+                        media_id: None,
+                        playlist_id: None,
+                        target: Vec::new(),
+                        playback_client_profile: None,
+                        after_event_sequence: Some(42),
+                    },
+                ),
+            ),
+        };
+
+        assert_eq!(
+            ResourceObserver::observation_start_sequence(&observation, &request),
+            42
+        );
+    }
+
+    #[test]
+    fn playback_snapshot_replay_cursor_covers_snapshot_invalidating_event_types() {
+        let observation = playback_snapshot_observation();
+        let request = crate::proto::client::ObserveResource {
+            observe_id: "playback-snapshot".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                crate::proto::client::observe_resource::Resource::PlaybackSnapshot(
+                    crate::proto::client::ObservePlaybackSnapshot {
+                        media_id: None,
+                        playlist_id: None,
+                        target: Vec::new(),
+                        playback_client_profile: None,
+                        after_event_sequence: Some(7),
+                    },
+                ),
+            ),
+        };
+
+        assert_eq!(
+            ResourceObserver::requested_replay_sequence(&request),
+            Some(7)
+        );
+        assert_eq!(
+            ResourceObserver::observation_start_sequence(&observation, &request),
+            7
+        );
+        assert_eq!(
+            observation.room_resource_cursor_types(),
+            Some(&["playback_state", "media", "playlist", "playlist_items"][..])
+        );
+    }
+
+    #[test]
+    fn playback_snapshot_observation_uses_latest_room_resource_cursor_for_live_start() {
+        let observation = playback_snapshot_observation();
+        let request = crate::proto::client::ObserveResource {
+            observe_id: "playback-snapshot".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                crate::proto::client::observe_resource::Resource::PlaybackSnapshot(
+                    crate::proto::client::ObservePlaybackSnapshot {
+                        media_id: None,
+                        playlist_id: None,
+                        target: Vec::new(),
+                        playback_client_profile: None,
+                        after_event_sequence: None,
+                    },
+                ),
+            ),
+        };
+
+        assert_eq!(
+            ResourceObserver::observation_start_sequence(&observation, &request),
+            0
+        );
+        assert_eq!(
+            ResourceObserver::requested_replay_sequence(&request),
+            None,
+            "absent playback snapshot cursor starts live and uses the latest durable room cursor"
+        );
+    }
+
+    #[test]
+    fn validate_requested_replay_sequence_rejects_negative_room_resource_cursor() {
+        let request = crate::proto::client::ObserveResource {
+            observe_id: "playback-state".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                crate::proto::client::observe_resource::Resource::PlaybackState(
+                    crate::proto::client::ObservePlaybackState {
+                        after_event_sequence: Some(-1),
+                    },
+                ),
+            ),
+        };
+
+        assert!(matches!(
+            ResourceObserver::validate_requested_replay_sequence(&request),
+            Err(message) if message.contains("after_event_sequence")
+        ));
+    }
+
+    #[test]
+    fn validate_requested_replay_sequence_rejects_negative_chat_cursor() {
+        let request = crate::proto::client::ObserveResource {
+            observe_id: "chat-events".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                crate::proto::client::observe_resource::Resource::ChatEvents(
+                    crate::proto::client::ObserveChatEvents {
+                        after_event_sequence: Some(-1),
+                    },
+                ),
+            ),
+        };
+
+        assert!(matches!(
+            ResourceObserver::validate_requested_replay_sequence(&request),
+            Err(message) if message.contains("after_event_sequence")
+        ));
+    }
+
+    #[test]
+    fn normalize_delivery_mode_rejects_unknown_values() {
+        assert!(matches!(
+            ResourceObserver::normalize_delivery_mode(99),
+            Err(message) if message.contains("delivery mode")
+        ));
+    }
+
+    #[test]
+    fn normalize_delivery_mode_defaults_unspecified_to_push_snapshot() {
+        assert_eq!(
+            ResourceObserver::normalize_delivery_mode(ResourceDeliveryMode::Unspecified as i32)
+                .expect("unspecified delivery mode should be accepted"),
+            ResourceDeliveryMode::PushSnapshot
+        );
     }
 }

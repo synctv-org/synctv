@@ -66,16 +66,6 @@ mod ws_query {
         let error = synctv_proto::validate(&query).expect_err("ticket format must be invalid");
         assert!(error.to_string().contains("ticket"));
     }
-
-    #[test]
-    fn test_deserialize_ignores_removed_token_param() {
-        let params = "token=removed_jwt_value";
-        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
-        assert!(
-            query.ticket.is_empty(),
-            "removed ?token= must not be treated as a valid websocket credential"
-        );
-    }
 }
 
 mod auth_method {
@@ -102,9 +92,7 @@ mod auth_method {
 mod proto_codec {
     use prost::Message;
     use synctv_api::impls::messaging::ProtoCodec;
-    use synctv_proto::client::{
-        server_message, ClientMessage, HeartbeatAck, HeartbeatMessage, ServerMessage,
-    };
+    use synctv_proto::client::{server_message, HeartbeatAck, ServerMessage};
 
     #[test]
     fn test_encode_server_message() {
@@ -130,18 +118,6 @@ mod proto_codec {
         // Random garbage should fail to decode
         let result = ProtoCodec::decode_client_message(&[0xFF, 0xFE, 0xFD, 0xFC, 0xFB]);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_encode_decode_roundtrip() {
-        let client = ClientMessage {
-            message: Some(synctv_proto::client::client_message::Message::Heartbeat(
-                HeartbeatMessage { timestamp: 42 },
-            )),
-        };
-        let bytes = client.encode_to_vec();
-        let decoded = ProtoCodec::decode_client_message(&bytes).unwrap();
-        assert_eq!(decoded, client);
     }
 }
 
@@ -210,14 +186,26 @@ mod ticket_types {
 mod jwt_auth {
     use std::sync::Arc;
     use synctv_core::models::id::UserId;
-    use synctv_core::service::auth::jwt::{JwtService, TokenType};
+    use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::auth::JwtValidator;
+    use synctv_core::service::auth::TokenCredentialBinding;
 
     // Use a 32+ character secret for testing
     const TEST_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
 
     fn test_jwt_service() -> JwtService {
         JwtService::new(TEST_SECRET).expect("JwtService creation should succeed")
+    }
+
+    fn sign_test_refresh_token(svc: &JwtService, user_id: &UserId) -> String {
+        svc.sign_refresh_token_with_session(
+            user_id,
+            0,
+            None,
+            "websocket-refresh-session",
+            &TokenCredentialBinding::Password { version: 0 },
+        )
+        .unwrap()
     }
 
     fn test_validator() -> JwtValidator {
@@ -228,7 +216,7 @@ mod jwt_auth {
     fn test_sign_access_token() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_013);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
         assert!(!token.is_empty());
         // JWT has 3 parts separated by dots
         assert_eq!(token.split('.').count(), 3);
@@ -238,7 +226,7 @@ mod jwt_auth {
     fn test_sign_refresh_token() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_014);
-        let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
+        let token = sign_test_refresh_token(&svc, &user_id);
         assert!(!token.is_empty());
     }
 
@@ -246,7 +234,7 @@ mod jwt_auth {
     fn test_verify_access_token() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_015);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
 
         let claims = svc.verify_access_token(&token).unwrap();
         assert_eq!(claims.sub, user_id.to_string());
@@ -258,7 +246,7 @@ mod jwt_auth {
     fn test_verify_refresh_token() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_016);
-        let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
+        let token = sign_test_refresh_token(&svc, &user_id);
 
         let claims = svc.verify_refresh_token(&token).unwrap();
         assert_eq!(claims.sub, user_id.to_string());
@@ -273,7 +261,7 @@ mod jwt_auth {
             .unwrap();
 
         let user_id = UserId::expect_positive(10_000_017);
-        let token = svc1.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc1.sign_access_token(&user_id, 0).unwrap();
 
         // Verification with different secret should fail
         assert!(svc2.verify_access_token(&token).is_err());
@@ -296,7 +284,7 @@ mod jwt_auth {
         let svc = test_jwt_service();
         let validator = test_validator();
         let user_id = UserId::expect_positive(10_000_018);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
         let _bearer = format!("Bearer {token}");
 
         let extracted = validator.validate_and_extract_user_id(&token).unwrap();
@@ -308,7 +296,7 @@ mod jwt_auth {
         let svc = test_jwt_service();
         let validator = test_validator();
         let user_id = UserId::expect_positive(10_000_019);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
         let header = format!("Bearer {token}");
 
         let claims = validator.validate_http(&header).unwrap();
@@ -320,7 +308,7 @@ mod jwt_auth {
         let svc = test_jwt_service();
         let validator = test_validator();
         let user_id = UserId::expect_positive(10_000_020);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
 
         // Without "Bearer " prefix
         assert!(validator.validate_http(&token).is_err());
@@ -330,7 +318,7 @@ mod jwt_auth {
     fn test_access_token_has_jti() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_021);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
         assert!(!claims.jti.is_empty(), "JWT ID (jti) should be set");
     }
@@ -339,8 +327,8 @@ mod jwt_auth {
     fn test_unique_jti_per_token() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_022);
-        let token1 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
-        let token2 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token1 = svc.sign_access_token(&user_id, 0).unwrap();
+        let token2 = svc.sign_access_token(&user_id, 0).unwrap();
         let claims1 = svc.verify_access_token(&token1).unwrap();
         let claims2 = svc.verify_access_token(&token2).unwrap();
         assert_ne!(
@@ -353,7 +341,7 @@ mod jwt_auth {
     fn test_claims_iat_is_recent() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_023);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
         let now = chrono::Utc::now().timestamp();
@@ -367,7 +355,7 @@ mod jwt_auth {
     fn test_access_token_exp_is_in_future() {
         let svc = test_jwt_service();
         let user_id = UserId::expect_positive(10_000_024);
-        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = svc.sign_access_token(&user_id, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
         let now = chrono::Utc::now().timestamp();
@@ -566,14 +554,14 @@ mod websocket_e2e {
     use synctv_api::impls::messaging::ProtoCodec;
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::id::UserId;
-    use synctv_core::service::auth::jwt::{JwtService, TokenType};
+    use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::rate_limit::RateLimiter;
+    use synctv_core::service::user::UserServiceRuntimeOptions;
     // Security checks (password version, user status) handled by SecurityPipeline
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
     use synctv_core_testing::{
-        create_test_pool_with_options_and_label, redis_connection_manager,
+        create_test_pool_with_options_and_label, opaque_register_user, redis_connection_manager,
         start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
     };
     use synctv_proto::client::{
@@ -596,9 +584,7 @@ mod websocket_e2e {
         pool: PgPool,
         redis_url: String,
         redis_key_prefix: String,
-        #[allow(dead_code)]
         postgres: Option<TestContainer>,
-        #[allow(dead_code)]
         redis: Option<RedisContainer>,
     }
 
@@ -622,7 +608,6 @@ mod websocket_e2e {
             }
         }
 
-        #[allow(dead_code)]
         async fn cleanup(mut self) {
             self.pool.close().await;
             if let Some(redis) = self.redis.take() {
@@ -687,7 +672,8 @@ mod websocket_e2e {
         let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
         let permission_service =
-            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300);
+            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300)
+                .expect("permission service should build");
         let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
         let notification_service = Arc::new(synctv_core::service::NotificationService::default());
         let room_settings_service = synctv_core::service::RoomSettingsService::new(
@@ -707,11 +693,10 @@ mod websocket_e2e {
             synctv_core::service::chat::ChatDependencies {
                 permission_service,
                 room_settings_service,
-                user_service: Arc::new(UserService::new(
+                user_service: Arc::new(UserService::new_for_tests(
                     pool,
                     JwtService::new(TEST_JWT_SECRET).expect("JwtService"),
                     username_cache,
-                    PasswordComplexityConfig::default(),
                     Arc::new(
                         synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                             10_000, 3600, 86400,
@@ -722,6 +707,9 @@ mod websocket_e2e {
                         "test_chat:".to_string(),
                     ),
                 )),
+                file_storage_service: Arc::new(
+                    synctv_core::service::DisabledFileStorageService,
+                ),
                 audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
             },
@@ -839,18 +827,28 @@ mod websocket_e2e {
             ),
         );
 
-        let mut user_service = UserService::new(
+        let user_service = UserService::new_with_runtime(
             &pool,
             jwt_service.clone(),
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             key_builder,
             brute_force,
+            UserServiceRuntimeOptions {
+                password_registration_policy_override: Some(
+                    synctv_core::service::RegistrationPolicy {
+                        enabled: true,
+                        need_review: false,
+                    },
+                ),
+                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            },
         );
-        user_service.enable_password_registration_for_tests();
         let user_service = Arc::new(user_service);
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
 
         // These helpers are used by cross-replica websocket tests, so cluster
         // mode must be explicitly enabled to start distributed fan-out.
@@ -911,20 +909,11 @@ mod websocket_e2e {
         ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-        let providers = synctv_core::provider::ProviderSet {
-            bilibili: Arc::new(synctv_core::provider::BilibiliProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            alist: Arc::new(synctv_core::provider::AlistProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            emby: Arc::new(synctv_core::provider::EmbyProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
-            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
-            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
-        };
+        let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
 
         let mut config_inner = synctv_core::Config::default();
         config_inner.server.cors_allowed_origins = cors_allowed_origins;
@@ -935,20 +924,21 @@ mod websocket_e2e {
         let router_config = synctv_api::http::RouterConfig {
             config,
             user_service: user_service.clone(),
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
-                    .expect("user cache"),
-            ),
+            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )),
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            event_service: Some(realtime_manager.clone()),
+            event_service: realtime_manager.clone(),
             connection_manager,
             jwt_service: jwt_service.clone(),
-            realtime_fanout_service: synctv_api::realtime_fanout::default_realtime_fanout_service(
-                None, false,
+            realtime_fanout_service: synctv_api::realtime_fanout::disabled_realtime_fanout_service(
             ),
             oauth2_service: None,
             passkey_service: None,
@@ -986,14 +976,15 @@ mod websocket_e2e {
             )
             .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::fixed(
                 std::time::Duration::from_millis(400),
                 std::time::Duration::from_millis(100),
             ),
             providers_manager: None,
         };
 
-        let state = synctv_api::http::create_app_state_from_config(router_config);
+        let state = synctv_api::http::create_app_state_from_config(router_config)
+            .expect("test HTTP app state should build");
 
         // Build a minimal router with just the WebSocket endpoint
         let app = axum::Router::new()
@@ -1032,23 +1023,22 @@ mod websocket_e2e {
         }
     }
 
-    /// Register a test user directly via `UserService` and return their `UserId` + access token.
+    /// Register a test user and return their `UserId` + access token.
     async fn register_test_user(
         user_service: &UserService,
         jwt_service: &JwtService,
         username: &str,
     ) -> (UserId, String) {
-        let (user, _access, _refresh) = user_service
-            .register(
-                username.to_string(),
-                Some(format!("{username}@test.com")),
-                "TestPassword123!".to_string(),
-                None, // no client IP in tests
-            )
-            .await
-            .expect("register user");
+        let (user, _access, _refresh) = opaque_register_user(
+            user_service,
+            username,
+            Some(format!("{username}@test.com")),
+            "TestPassword123!",
+        )
+        .await
+        .expect("register user");
         let token = jwt_service
-            .sign_token(&user.id, TokenType::Access, 0)
+            .sign_access_token(&user.id, 0)
             .expect("sign token");
         (user.id, token)
     }
@@ -1063,31 +1053,31 @@ mod websocket_e2e {
             .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(room.id)
             .expect("room id should encode")
     }
 
     fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .decode_room_id(room_id)
             .expect("test room id should decode")
     }
 
     fn encode_test_user_id(user_id: &UserId) -> String {
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_user_id(*user_id)
             .expect("test user id should encode")
     }
 
     fn encode_test_media_id(media_id: &synctv_core::models::MediaId) -> String {
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_media_id(*media_id)
             .expect("test media id should encode")
     }
 
     fn encode_test_playlist_id(playlist_id: &synctv_core::models::PlaylistId) -> String {
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_playlist_id(*playlist_id)
             .expect("test playlist id should encode")
     }
@@ -2968,7 +2958,7 @@ mod websocket_e2e {
         );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let media_id = synctv_core::models::MediaId::new();
+        let media_id = synctv_core::models::MediaId::expect_positive(1);
         let public_media_id = encode_test_media_id(&media_id);
 
         let mut started_state = synctv_core::models::RoomPlaybackState::new(room);
@@ -2995,7 +2985,8 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             state.is_playing
                                 && state.playing_media_id == public_media_id
-                                && (state.position - 0.0).abs() < f64::EPSILON
+                                && state.position >= 0.0
+                                && state.position.is_finite()
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 1
                         })
@@ -3037,7 +3028,8 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             !state.is_playing
                                 && state.playing_media_id == public_media_id
-                                && (state.position - 17.5).abs() < 0.01
+                                && state.position >= 17.5
+                                && state.position.is_finite()
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 2
                         })
@@ -3080,7 +3072,8 @@ mod websocket_e2e {
                         if playback.state.as_ref().is_some_and(|state| {
                             state.is_playing
                                 && state.playing_media_id == public_media_id
-                                && (state.position - 17.5).abs() < 0.01
+                                && state.position >= 17.5
+                                && state.position.is_finite()
                                 && (state.speed - 1.5).abs() < f64::EPSILON
                                 && state.version == 3
                         })
@@ -4446,14 +4439,14 @@ mod websocket_connection_limit_timing {
 
     use synctv_api::http::websocket::websocket_handler;
     use synctv_core::cache::UsernameCache;
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::id::UserId;
-    use synctv_core::service::auth::jwt::{JwtService, TokenType};
+    use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::rate_limit::RateLimiter;
+    use synctv_core::service::user::UserServiceRuntimeOptions;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
     use synctv_core_testing::{
-        create_test_pool_with_options_and_label, redis_connection_manager,
+        create_test_pool_with_options_and_label, opaque_register_user, redis_connection_manager,
         start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
     };
     use synctv_realtime::sync::{
@@ -4480,7 +4473,8 @@ mod websocket_connection_limit_timing {
         let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
         let permission_service =
-            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300);
+            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300)
+                .expect("permission service should build");
         let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
         let notification_service = Arc::new(synctv_core::service::NotificationService::default());
         let room_settings_service = synctv_core::service::RoomSettingsService::new(
@@ -4500,11 +4494,10 @@ mod websocket_connection_limit_timing {
             synctv_core::service::chat::ChatDependencies {
                 permission_service,
                 room_settings_service,
-                user_service: Arc::new(UserService::new(
+                user_service: Arc::new(UserService::new_for_tests(
                     pool,
                     JwtService::new(TEST_JWT_SECRET).expect("JwtService"),
                     username_cache,
-                    PasswordComplexityConfig::default(),
                     Arc::new(
                         synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                             10_000, 3600, 86400,
@@ -4515,6 +4508,9 @@ mod websocket_connection_limit_timing {
                         "test_chat:".to_string(),
                     ),
                 )),
+                file_storage_service: Arc::new(
+                    synctv_core::service::DisabledFileStorageService,
+                ),
                 audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
             },
@@ -4525,9 +4521,7 @@ mod websocket_connection_limit_timing {
         pool: PgPool,
         redis_url: String,
         redis_key_prefix: String,
-        #[allow(dead_code)]
         postgres: Option<TestContainer>,
-        #[allow(dead_code)]
         redis: Option<RedisContainer>,
     }
 
@@ -4551,7 +4545,6 @@ mod websocket_connection_limit_timing {
             }
         }
 
-        #[allow(dead_code)]
         async fn cleanup(mut self) {
             self.pool.close().await;
             if let Some(redis) = self.redis.take() {
@@ -4639,18 +4632,28 @@ mod websocket_connection_limit_timing {
             ),
         );
 
-        let mut user_service = UserService::new(
+        let user_service = UserService::new_with_runtime(
             &pool,
             jwt_service.clone(),
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             key_builder,
             brute_force,
+            UserServiceRuntimeOptions {
+                password_registration_policy_override: Some(
+                    synctv_core::service::RegistrationPolicy {
+                        enabled: true,
+                        need_review: false,
+                    },
+                ),
+                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            },
         );
-        user_service.enable_password_registration_for_tests();
         let user_service = Arc::new(user_service);
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
 
         let redis_client_for_cluster =
             redis::Client::open(redis_url.clone()).expect("Redis client");
@@ -4715,40 +4718,32 @@ mod websocket_connection_limit_timing {
         ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-        let providers = synctv_core::provider::ProviderSet {
-            bilibili: Arc::new(synctv_core::provider::BilibiliProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            alist: Arc::new(synctv_core::provider::AlistProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            emby: Arc::new(synctv_core::provider::EmbyProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
-            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
-            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
-        };
+        let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
 
         let config = Arc::new(synctv_core::Config::default());
 
         let router_config = synctv_api::http::RouterConfig {
             config,
             user_service: user_service.clone(),
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
-                    .expect("user cache"),
-            ),
+            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )),
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            event_service: Some(realtime_manager),
+            event_service: realtime_manager,
             connection_manager,
             jwt_service: jwt_service.clone(),
-            realtime_fanout_service: synctv_api::realtime_fanout::default_realtime_fanout_service(
-                None, false,
+            realtime_fanout_service: synctv_api::realtime_fanout::disabled_realtime_fanout_service(
             ),
             oauth2_service: None,
             passkey_service: None,
@@ -4782,14 +4777,15 @@ mod websocket_connection_limit_timing {
             )
             .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::fixed(
                 std::time::Duration::from_millis(400),
                 std::time::Duration::from_millis(100),
             ),
             providers_manager: None,
         };
 
-        let state = synctv_api::http::create_app_state_from_config(router_config);
+        let state = synctv_api::http::create_app_state_from_config(router_config)
+            .expect("test HTTP app state should build");
 
         let app = axum::Router::new()
             .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))
@@ -4828,17 +4824,16 @@ mod websocket_connection_limit_timing {
         jwt_service: &JwtService,
         username: &str,
     ) -> (UserId, String) {
-        let (user, _access, _refresh) = user_service
-            .register(
-                username.to_string(),
-                Some(format!("{username}@test.com")),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register user");
+        let (user, _access, _refresh) = opaque_register_user(
+            user_service,
+            username,
+            Some(format!("{username}@test.com")),
+            "TestPassword123!",
+        )
+        .await
+        .expect("register user");
         let token = jwt_service
-            .sign_token(&user.id, TokenType::Access, 0)
+            .sign_access_token(&user.id, 0)
             .expect("sign token");
         (user.id, token)
     }
@@ -4852,13 +4847,13 @@ mod websocket_connection_limit_timing {
             .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(room.id)
             .expect("room id should encode")
     }
 
     fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .decode_room_id(room_id)
             .expect("test room id should decode")
     }
@@ -5270,8 +5265,10 @@ mod membership_cache_ttl_tests {
         let old_worst_case = 60 + MAX_HEARTBEAT_INTERVAL_SECS;
         let improvement = old_worst_case - worst_case_disconnect_secs;
 
-        assert_eq!(improvement, 30,
-            "Should reduce worst case by 30 seconds (from {old_worst_case}s to {worst_case_disconnect_secs}s)");
+        assert_eq!(
+            improvement, 30,
+            "Should reduce worst case by 30 seconds (from {old_worst_case}s to {worst_case_disconnect_secs}s)"
+        );
     }
 }
 

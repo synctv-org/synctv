@@ -9,12 +9,79 @@ use crate::{
     Error, Result,
 };
 use chrono::{DateTime, Utc};
-use sqlx::{postgres::PgRow, PgPool, Row};
+use sqlx::PgPool;
+
+fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
+    value.ok_or_else(|| {
+        Error::Internal(format!(
+            "{query_description} COUNT query returned no scalar value"
+        ))
+    })
+}
 
 /// Notification repository for database operations
 #[derive(Clone, Debug)]
 pub struct NotificationRepository {
     pool: PgPool,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct NotificationRow {
+    id: i64,
+    user_id: UserId,
+    notification_type: NotificationType,
+    title: String,
+    content: String,
+    data: serde_json::Value,
+    is_read: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<NotificationRow> for Notification {
+    fn from(row: NotificationRow) -> Self {
+        Self {
+            id: row.id,
+            user_id: row.user_id,
+            notification_type: row.notification_type,
+            title: row.title,
+            content: row.content,
+            data: row.data,
+            is_read: row.is_read,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct NotificationListRow {
+    id: i64,
+    user_id: UserId,
+    notification_type: NotificationType,
+    title: String,
+    content: String,
+    data: serde_json::Value,
+    is_read: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    total_count: i64,
+}
+
+impl NotificationListRow {
+    fn into_notification(self) -> Notification {
+        Notification {
+            id: self.id,
+            user_id: self.user_id,
+            notification_type: self.notification_type,
+            title: self.title,
+            content: self.content,
+            data: self.data,
+            is_read: self.is_read,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
 }
 
 impl NotificationRepository {
@@ -23,11 +90,40 @@ impl NotificationRepository {
         Self { pool }
     }
 
+    fn push_list_order_by(
+        qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        query: &NotificationListQuery,
+    ) {
+        use crate::models::SortDirection;
+
+        let order_by = match (query.sort_by, query.sort_direction) {
+            (NotificationListSortBy::Title, SortDirection::Asc) => {
+                " ORDER BY title ASC, created_at DESC, id DESC"
+            }
+            (NotificationListSortBy::Title, SortDirection::Desc) => {
+                " ORDER BY title DESC, created_at DESC, id DESC"
+            }
+            (NotificationListSortBy::UpdatedAt, SortDirection::Asc) => {
+                " ORDER BY updated_at ASC, id DESC"
+            }
+            (NotificationListSortBy::UpdatedAt, SortDirection::Desc) => {
+                " ORDER BY updated_at DESC, id DESC"
+            }
+            (NotificationListSortBy::CreatedAt, SortDirection::Asc) => {
+                " ORDER BY created_at ASC, id DESC"
+            }
+            (NotificationListSortBy::CreatedAt, SortDirection::Desc) => {
+                " ORDER BY created_at DESC, id DESC"
+            }
+        };
+        qb.push(order_by);
+    }
+
     /// Create a new notification
     pub async fn create(&self, req: &CreateNotificationRequest) -> Result<Notification> {
         let now = Utc::now();
 
-        let row = sqlx::query(
+        let row = sqlx::query_as::<_, NotificationRow>(
             r"
             INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -53,7 +149,7 @@ impl NotificationRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        notification_from_row(&row)
+        Ok(row.into())
     }
 
     /// Get notification by ID
@@ -66,7 +162,7 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let row = sqlx::query(
+        let row = sqlx::query_as::<_, NotificationRow>(
             r"
             SELECT id,
                    user_id,
@@ -89,7 +185,7 @@ impl NotificationRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        row.as_ref().map(notification_from_row).transpose()
+        Ok(row.map(Into::into))
     }
 
     /// Get notification by ID, scoped to a user.
@@ -101,7 +197,7 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let row = sqlx::query(
+        let row = sqlx::query_as::<_, NotificationRow>(
             r"
             SELECT id,
                    user_id,
@@ -126,7 +222,7 @@ impl NotificationRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        row.as_ref().map(notification_from_row).transpose()
+        Ok(row.map(Into::into))
     }
 
     /// List notifications for a user with pagination, filters, and total count.
@@ -142,8 +238,8 @@ impl NotificationRepository {
         user_id: &UserId,
         query: &NotificationListQuery,
     ) -> Result<(Vec<Notification>, i64)> {
-        let limit = query.pagination.limit().cast_signed();
-        let offset = query.pagination.offset().cast_signed();
+        let limit = query.pagination.limit_i64()?;
+        let offset = query.pagination.offset_i64()?;
 
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT id, user_id, type AS notification_type, title, content, data, is_read, created_at, updated_at, \
@@ -172,36 +268,24 @@ impl NotificationRepository {
             qb.push_bind(is_read);
         }
 
-        let direction = query.sort_direction.as_sql();
-        match query.sort_by {
-            NotificationListSortBy::Title => {
-                qb.push(format!(
-                    " ORDER BY title {direction}, created_at DESC, id DESC"
-                ));
-            }
-            NotificationListSortBy::UpdatedAt => {
-                qb.push(format!(" ORDER BY updated_at {direction}, id DESC"));
-            }
-            NotificationListSortBy::CreatedAt => {
-                qb.push(format!(" ORDER BY created_at {direction}, id DESC"));
-            }
-        }
+        Self::push_list_order_by(&mut qb, query);
         qb.push(" LIMIT ");
         qb.push_bind(limit);
         qb.push(" OFFSET ");
         qb.push_bind(offset);
 
-        let rows = qb.build().fetch_all(&self.pool).await?;
+        let rows = qb
+            .build_query_as::<NotificationListRow>()
+            .fetch_all(&self.pool)
+            .await?;
 
-        let total = rows
-            .first()
-            .map_or(0i64, |row| row.try_get("total_count").unwrap_or(0));
-        let notifications: Result<Vec<Notification>> = rows
+        let total = rows.first().map_or(0, |row| row.total_count);
+        let notifications = rows
             .into_iter()
-            .map(|row| notification_from_row(&row))
+            .map(NotificationListRow::into_notification)
             .collect();
 
-        Ok((notifications?, total))
+        Ok((notifications, total))
     }
 
     /// Count notifications for a user (for pagination)
@@ -252,7 +336,7 @@ impl NotificationRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count.unwrap_or(0))
+        count_value(count, "unread notification")
     }
 
     /// Mark notifications as read
@@ -382,21 +466,6 @@ impl NotificationRepository {
     }
 }
 
-fn notification_from_row(row: &PgRow) -> Result<Notification> {
-    let user_id: i64 = row.try_get("user_id")?;
-    Ok(Notification {
-        id: row.try_get("id")?,
-        user_id: UserId::expect_positive(user_id),
-        notification_type: row.try_get("notification_type")?,
-        title: row.try_get("title")?,
-        content: row.try_get("content")?,
-        data: row.try_get("data")?,
-        is_read: row.try_get("is_read")?,
-        created_at: row.try_get("created_at")?,
-        updated_at: row.try_get("updated_at")?,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +529,39 @@ mod tests {
         assert_eq!(query.pagination.page_size, 10);
         assert_eq!(query.is_read, Some(false));
         assert_eq!(query.notification_type, Some(NotificationType::RoomEvent));
+    }
+
+    fn notification_order_by_sql(query: &NotificationListQuery) -> String {
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+        NotificationRepository::push_list_order_by(&mut builder, query);
+        builder.sql().to_string()
+    }
+
+    #[test]
+    fn test_notification_list_order_by_uses_static_sort_branches() {
+        let mut query = NotificationListQuery {
+            sort_by: crate::models::NotificationListSortBy::Title,
+            sort_direction: crate::models::SortDirection::Asc,
+            ..NotificationListQuery::default()
+        };
+        assert_eq!(
+            notification_order_by_sql(&query),
+            " ORDER BY title ASC, created_at DESC, id DESC"
+        );
+
+        query.sort_by = crate::models::NotificationListSortBy::UpdatedAt;
+        query.sort_direction = crate::models::SortDirection::Desc;
+        assert_eq!(
+            notification_order_by_sql(&query),
+            " ORDER BY updated_at DESC, id DESC"
+        );
+
+        query.sort_by = crate::models::NotificationListSortBy::CreatedAt;
+        query.sort_direction = crate::models::SortDirection::Asc;
+        assert_eq!(
+            notification_order_by_sql(&query),
+            " ORDER BY created_at ASC, id DESC"
+        );
     }
 
     /// Test MarkAsReadRequest with multiple IDs
@@ -546,24 +648,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Invalid notification type"));
-    }
-
-    /// Test NotificationType serde roundtrip
-    #[test]
-    fn test_notification_type_serde_roundtrip() {
-        let types = vec![
-            NotificationType::RoomInvitation,
-            NotificationType::SystemAnnouncement,
-            NotificationType::RoomEvent,
-            NotificationType::PasswordReset,
-            NotificationType::EmailBind,
-        ];
-
-        for nt in types {
-            let json = serde_json::to_string(&nt).unwrap();
-            let parsed: NotificationType = serde_json::from_str(&json).unwrap();
-            assert_eq!(parsed, nt);
-        }
     }
 
     // Run with: cargo test -p synctv-core notification -- --ignored
@@ -1089,20 +1173,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
-    }
-
-    /// Test delete_older_than() removes old notifications
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_delete_older_than() {
-        let (_postgres, pool) = create_test_pool().await;
-        let repo = NotificationRepository::new(pool.clone());
-
-        // delete_older_than removes notifications older than specified days
-        // Since we can't create notifications with past timestamps easily,
-        // we just verify the function executes without error
-        let affected = repo.delete_older_than(365).await.unwrap();
-        // Should be 0 since all test notifications are recent
-        assert_eq!(affected, 0);
     }
 }

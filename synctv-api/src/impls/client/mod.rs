@@ -23,6 +23,7 @@ mod playback;
 pub(crate) mod playback_lifecycle;
 pub(crate) mod playlist;
 mod room;
+pub(crate) use room::{chat_reaction_count, chat_reaction_summary_to_proto};
 pub(crate) mod stream;
 mod user;
 mod webrtc;
@@ -50,13 +51,11 @@ use synctv_core::RedisConnectionRuntime;
 
 // Re-export public items from convert module
 pub use convert::{
-    media_to_proto, proto_role_filter_to_room_role, proto_role_to_assignable_room_role,
-    proto_role_to_room_role, proto_role_to_user_role, room_role_to_proto,
+    proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
+    proto_role_to_user_role, room_role_to_proto,
 };
 
-use crate::chat_event_dispatcher::{
-    default_chat_event_dispatcher, noop_chat_event_dispatcher, ChatEventDispatcher,
-};
+use crate::chat_event_dispatcher::{default_chat_event_dispatcher, ChatEventDispatcher};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::{
     ApiError, EndpointRateLimitCategory, EndpointRateLimitScope, RequestContext, RequestExecutor,
@@ -66,15 +65,17 @@ use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{
     default_membership_event_fanout_service, MembershipEventFanoutService,
 };
+use crate::playback_fanout::{default_playback_fanout_service, PlaybackFanoutService};
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
-use crate::realtime_fanout::{default_realtime_fanout_service, RealtimeFanoutService};
+use crate::realtime_fanout::RealtimeFanoutService;
 use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
-    default_room_lifecycle_fanout_service, default_room_lifecycle_fanout_service_with_realtime,
-    RoomLifecycleFanoutService,
+    default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
 };
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::runtime::{
+    LocalNoopRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
+};
 
 /// Configuration for constructing a [`ClientApiImpl`].
 ///
@@ -96,6 +97,44 @@ pub struct ClientApiConfig {
     pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
+}
+
+pub struct ClientApiRuntime {
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
+    pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
+    pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    pub rate_limiter: Option<Arc<dyn synctv_core::service::RequestRateLimiterService>>,
+    pub builtin_stun_url: Option<String>,
+    pub webrtc_status: Option<synctv_core::service::WebRtcRuntimeStatus>,
+    pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
+    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
+    pub signing_key: Option<Arc<synctv_core::proxy_signature::ProxySigningKey>>,
+    pub request_executor: Option<Arc<RequestExecutor>>,
+    pub ws_ticket_service: Option<Arc<dyn synctv_core::service::WebSocketTicketService>>,
+}
+
+impl ClientApiRuntime {
+    #[must_use]
+    pub fn test_disabled() -> Self {
+        let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
+        Self {
+            realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
+                realtime_event_service.clone(),
+            ),
+            chat_event_dispatcher: default_chat_event_dispatcher(realtime_event_service.clone()),
+            realtime_event_service,
+            redis_runtime: None,
+            rate_limiter: None,
+            builtin_stun_url: None,
+            webrtc_status: None,
+            credential_repo: None,
+            provider_access_service: None,
+            signing_key: None,
+            request_executor: None,
+            ws_ticket_service: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -161,11 +200,12 @@ pub struct ClientApiImpl {
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
     pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
     pub media_fanout: Arc<dyn MediaFanoutService>,
+    pub playback_fanout: Arc<dyn PlaybackFanoutService>,
     pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
     pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
     pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
-    pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     /// Redis runtime abstraction derived from the shared connection when available.
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
@@ -256,14 +296,14 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        Ok(convert::room_to_proto_basic_with_cover(
+        convert::try_room_to_proto_basic_with_cover(
             room,
             settings,
             member_count,
             cover.as_ref(),
-            cover_url,
+            cover_url.as_deref(),
             &self.public_id_codec,
-        ))
+        )
     }
 
     pub(crate) async fn room_to_proto_with_availability_and_loaded_cover(
@@ -286,15 +326,15 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        Ok(convert::room_to_proto_with_availability_and_cover(
+        convert::try_room_to_proto_with_availability_and_cover(
             room,
             settings,
             member_count,
             availability,
             cover.as_ref(),
-            cover_url,
+            cover_url.as_deref(),
             &self.public_id_codec,
-        ))
+        )
     }
 
     pub(crate) async fn media_to_proto_for_viewer_with_loaded_cover(
@@ -316,14 +356,14 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        Ok(convert::media_to_proto_for_viewer_with_cover(
+        convert::try_media_to_proto_for_viewer_with_cover(
             media,
             is_available,
             viewer_id,
             cover.as_ref(),
-            cover_url,
+            cover_url.as_deref(),
             &self.public_id_codec,
-        ))
+        )
     }
 
     pub(crate) async fn playlist_to_proto_for_viewer_with_loaded_cover(
@@ -346,15 +386,15 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        Ok(convert::playlist_to_proto_for_viewer_with_cover(
+        convert::try_playlist_to_proto_for_viewer_with_cover(
             playlist,
             item_count,
             is_available,
             viewer_id,
             cover.as_ref(),
-            cover_url,
+            cover_url.as_deref(),
             &self.public_id_codec,
-        ))
+        )
     }
 
     fn parse_room_id(&self, room_id: &str) -> Result<RoomId, ApiError> {
@@ -408,11 +448,11 @@ impl ClientApiImpl {
             .get_room_guest_version(&room_id)
             .await
             .map_err(ApiError::from)?;
-        let validator = GuestTokenValidator::new(Arc::new(self.jwt_service.clone()))
-            .with_blacklist(
-                self.user_service.token_blacklist_store(),
-                self.user_service.key_builder().clone(),
-            );
+        let validator = GuestTokenValidator::new(
+            Arc::new(self.jwt_service.clone()),
+            self.user_service.token_blacklist_store(),
+            self.user_service.key_builder().clone(),
+        );
         let claims = validator
             .validate_with_version_async(guest_token, guest_version)
             .await
@@ -554,96 +594,21 @@ impl ClientApiImpl {
         crate::impls::map_livestream_backend_error(error)
     }
 
-    /// Create a new `ClientApiImpl` from individual parameters.
-    ///
-    /// Prefer [`ClientApiImpl::from_config`] for new code.
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub fn new(
-        user_service: Arc<UserService>,
-        room_service: Arc<RoomService>,
-        connection_service: Arc<dyn RealtimeConnectionService>,
-        config: Arc<synctv_core::Config>,
-        publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
-        jwt_service: synctv_core::service::JwtService,
-        live_streaming_infrastructure: Option<
-            Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
-        >,
-        providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
-        settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-        public_id_codec: Arc<crate::PublicIdCodec>,
-    ) -> Self {
-        let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-            jwt_service.clone(),
-        )));
-        let realtime_fanout = default_realtime_fanout_service(None, false);
-        let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
-        let membership_event_fanout =
-            default_membership_event_fanout_service(realtime_fanout.clone(), None);
-        let media_fanout = default_media_fanout_service(realtime_fanout.clone());
-        let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
-        let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
-        let realtime_lifecycle = default_realtime_lifecycle_service(
-            connection_service.clone(),
-            live_streaming_infrastructure.clone(),
-            realtime_fanout.clone(),
-        );
-        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
-        Self {
-            user_service,
-            room_service,
-            chat_service: None,
-            review_service,
-            connection_service,
-            config,
-            publish_key_service,
-            jwt_service,
-            live_streaming_infrastructure,
-            providers_manager,
-            settings_registry,
-            realtime_fanout,
-            room_settings_fanout,
-            membership_event_fanout,
-            media_fanout,
-            playlist_fanout,
-            room_cache_fanout,
-            realtime_lifecycle,
-            room_lifecycle_fanout,
-            realtime_event_service: None,
-            chat_event_dispatcher: noop_chat_event_dispatcher(),
-            redis_runtime: None,
-            rate_limiter: None,
-            builtin_stun_url: None,
-            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::disabled_by_config(
-                synctv_core::service::WebRtcRuntimeMode::PeerToPeer,
-            ),
-            credential_encryption: None,
-            credential_repo: None,
-            provider_access_service: None,
-            signing_key: None,
-            provider_stores: None,
-            jwt_validator,
-            public_id_codec,
-            request_executor: None,
-            email_api: None,
-            passkey_service: None,
-            ws_ticket_service: None,
-        }
-    }
-
-    /// Create a new `ClientApiImpl` from a config struct.
-    #[must_use]
-    pub fn from_config(config: ClientApiConfig) -> Self {
+    pub fn new_with_runtime(config: ClientApiConfig, runtime: ClientApiRuntime) -> Self {
         let review_service = Arc::new(ReviewService::new(config.user_service.pool().clone()));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),
         )));
-        let realtime_fanout = default_realtime_fanout_service(None, false);
+        let realtime_fanout = runtime.realtime_fanout;
+        let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
-        let membership_event_fanout =
-            default_membership_event_fanout_service(realtime_fanout.clone(), None);
+        let membership_event_fanout = default_membership_event_fanout_service(
+            realtime_fanout.clone(),
+            realtime_event_service.clone(),
+        );
         let media_fanout = default_media_fanout_service(realtime_fanout.clone());
+        let playback_fanout = default_playback_fanout_service(realtime_fanout.clone());
         let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -651,7 +616,11 @@ impl ClientApiImpl {
             config.live_streaming_infrastructure.clone(),
             realtime_fanout.clone(),
         );
-        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            realtime_fanout.clone(),
+            realtime_event_service.clone(),
+        );
+        let chat_event_dispatcher = runtime.chat_event_dispatcher;
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
@@ -668,171 +637,33 @@ impl ClientApiImpl {
             room_settings_fanout,
             membership_event_fanout,
             media_fanout,
+            playback_fanout,
             playlist_fanout,
             room_cache_fanout,
             realtime_lifecycle,
             room_lifecycle_fanout,
-            realtime_event_service: None,
-            chat_event_dispatcher: noop_chat_event_dispatcher(),
-            redis_runtime: None,
-            rate_limiter: None,
-            builtin_stun_url: None,
-            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::disabled_by_config(
-                synctv_core::service::WebRtcRuntimeMode::PeerToPeer,
-            ),
+            realtime_event_service,
+            chat_event_dispatcher,
+            redis_runtime: runtime.redis_runtime,
+            rate_limiter: runtime.rate_limiter,
+            builtin_stun_url: runtime.builtin_stun_url,
+            webrtc_status: runtime.webrtc_status.unwrap_or_else(|| {
+                synctv_core::service::WebRtcRuntimeStatus::disabled_by_config(
+                    synctv_core::service::WebRtcRuntimeMode::PeerToPeer,
+                )
+            }),
             credential_encryption: config.credential_encryption,
-            credential_repo: None,
-            provider_access_service: None,
-            signing_key: None,
+            credential_repo: runtime.credential_repo,
+            provider_access_service: runtime.provider_access_service,
+            signing_key: runtime.signing_key,
             provider_stores: config.provider_stores,
             jwt_validator,
             public_id_codec: config.public_id_codec,
-            request_executor: None,
+            request_executor: runtime.request_executor,
             email_api: config.email_api,
             passkey_service: config.passkey_service,
-            ws_ticket_service: None,
+            ws_ticket_service: runtime.ws_ticket_service,
         }
-    }
-
-    /// Set the realtime fanout service for cross-replica invalidation and events.
-    #[must_use]
-    pub fn with_realtime_fanout_service(
-        mut self,
-        realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    ) -> Self {
-        self.room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
-        self.membership_event_fanout = default_membership_event_fanout_service(
-            realtime_fanout.clone(),
-            self.realtime_event_service.clone(),
-        );
-        self.media_fanout = default_media_fanout_service(realtime_fanout.clone());
-        self.playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
-        self.room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
-        self.realtime_lifecycle = default_realtime_lifecycle_service(
-            self.connection_service.clone(),
-            self.live_streaming_infrastructure.clone(),
-            realtime_fanout.clone(),
-        );
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
-            realtime_fanout.clone(),
-            self.realtime_event_service.clone(),
-        );
-        self.realtime_fanout = realtime_fanout;
-        self
-    }
-
-    #[must_use]
-    pub fn with_chat_service(mut self, chat_service: Option<Arc<ChatService>>) -> Self {
-        self.chat_service = chat_service;
-        self
-    }
-
-    #[must_use]
-    pub fn with_chat_event_dispatcher(mut self, dispatcher: Arc<dyn ChatEventDispatcher>) -> Self {
-        self.chat_event_dispatcher = dispatcher;
-        self
-    }
-
-    #[must_use]
-    pub fn with_email_api(mut self, email_api: Option<Arc<crate::impls::EmailApiImpl>>) -> Self {
-        self.email_api = email_api;
-        self
-    }
-
-    #[must_use]
-    pub fn with_passkey_service(
-        mut self,
-        passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
-    ) -> Self {
-        self.passkey_service = passkey_service;
-        self
-    }
-
-    #[must_use]
-    pub fn with_websocket_ticket_service(
-        mut self,
-        ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
-    ) -> Self {
-        self.ws_ticket_service = Some(ws_ticket_service);
-        self
-    }
-
-    #[must_use]
-    pub fn with_realtime_event_service(
-        mut self,
-        event_service: Arc<dyn RealtimeEventService>,
-    ) -> Self {
-        self.membership_event_fanout = default_membership_event_fanout_service(
-            self.realtime_fanout.clone(),
-            Some(event_service.clone()),
-        );
-        self.room_settings_fanout =
-            default_room_settings_fanout_service(self.realtime_fanout.clone());
-        self.media_fanout = default_media_fanout_service(self.realtime_fanout.clone());
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
-            self.realtime_fanout.clone(),
-            Some(event_service.clone()),
-        );
-        self.chat_event_dispatcher = default_chat_event_dispatcher(event_service.clone());
-        self.realtime_event_service = Some(event_service);
-        self
-    }
-
-    /// Set the shared runtime abstraction for playback caching.
-    #[must_use]
-    pub fn with_shared_runtime(mut self, runtime: Option<Arc<dyn RedisConnectionRuntime>>) -> Self {
-        self.redis_runtime = runtime;
-        self
-    }
-
-    /// Set credential encryption for provider credential resolution
-    #[must_use]
-    pub fn with_credential_encryption(
-        mut self,
-        enc: Option<synctv_core::credential_encryption::CredentialEncryption>,
-    ) -> Self {
-        self.credential_encryption = enc;
-        self
-    }
-
-    /// Set the credential repository for resolving stored provider credentials
-    #[must_use]
-    pub fn with_credential_repo(
-        mut self,
-        repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
-    ) -> Self {
-        self.credential_repo = Some(repo);
-        self
-    }
-
-    /// Set typed provider access service for cached credential/session resolution.
-    #[must_use]
-    pub fn with_provider_access_service(
-        mut self,
-        service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    ) -> Self {
-        self.provider_access_service = Some(service);
-        self
-    }
-
-    /// Set the proxy signing key for generating HMAC-signed proxy URLs
-    #[must_use]
-    pub fn with_signing_key(
-        mut self,
-        key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
-    ) -> Self {
-        self.signing_key = Some(key);
-        self
-    }
-
-    /// Set the per-provider store registry used for signed playback mappings.
-    #[must_use]
-    pub fn with_provider_stores(
-        mut self,
-        stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    ) -> Self {
-        self.provider_stores = Some(stores);
-        self
     }
 
     /// Resolve a fresh Redis `ConnectionManager` clone from the shared `RwLock`.
@@ -842,40 +673,15 @@ impl ClientApiImpl {
     /// even after a Sentinel failover.
     pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
         match &self.redis_runtime {
-            Some(runtime) => Some(runtime.snapshot().await),
+            Some(runtime) => match runtime.snapshot().await {
+                Ok(conn) => Some(conn),
+                Err(error) => {
+                    tracing::warn!(error = %error, "Redis connection snapshot failed");
+                    None
+                }
+            },
             None => None,
         }
-    }
-
-    /// Set the rate limiter for per-endpoint rate limiting (password checks, etc.)
-    #[must_use]
-    pub fn with_rate_limiter<T>(mut self, rate_limiter: T) -> Self
-    where
-        T: synctv_core::service::RequestRateLimiterService + 'static,
-    {
-        self.rate_limiter = Some(Arc::new(rate_limiter));
-        self
-    }
-
-    /// Set the resolved built-in STUN URL for ICE server lists.
-    /// Should be called with the external address from a successfully started `StunServer`.
-    #[must_use]
-    pub fn with_builtin_stun_url(mut self, url: String) -> Self {
-        self.builtin_stun_url = Some(url);
-        self
-    }
-
-    /// Set structured WebRTC/STUN runtime status for diagnostics.
-    #[must_use]
-    pub fn with_webrtc_status(mut self, status: synctv_core::service::WebRtcRuntimeStatus) -> Self {
-        self.webrtc_status = status;
-        self
-    }
-
-    #[must_use]
-    pub fn with_request_executor(mut self, request_executor: Arc<RequestExecutor>) -> Self {
-        self.request_executor = Some(request_executor);
-        self
     }
 
     fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
@@ -1215,61 +1021,65 @@ impl ClientApiImpl {
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
         Box::pin(async move {
-            let authorization = Self::required_authorization(metadata).ok();
-            let token = authorization
-                .map(Self::bearer_token_from_authorization)
-                .transpose()?;
+            let token = match Self::required_authorization(metadata) {
+                Ok(authorization) => Some(Self::bearer_token_from_authorization(authorization)?),
+                Err(error) => match error {
+                    ApiError::Authentication(message)
+                        if message == synctv_common::messages::AUTHENTICATION_REQUIRED =>
+                    {
+                        None
+                    }
+                    other => return Err(other),
+                },
+            };
 
-            if token.as_deref().is_some_and(Self::is_guest_token) {
-                let token = token.expect("guest token checked");
-                let executor = client_api.clone();
-                executor
-                    .execute_public_endpoint(metadata, category, move || {
-                        let client_api = client_api.clone();
-                        async move {
-                            let access = client_api
-                                .validate_guest_room_access(&token, &public_room_id)
-                                .await?;
-                            operation(client_api, RoomActor::Guest(access))
-                                .await
-                                .map_err(Into::into)
-                        }
-                    })
-                    .await
-            } else {
-                let executor = client_api.clone();
-                match token {
-                    Some(token) => {
-                        let executor = executor.request_executor()?;
-                        executor
-                            .execute_authenticated_token_with_control(
-                                metadata,
-                                category,
-                                &token,
-                                move |_, authenticated| {
-                                    let client_api = client_api.clone();
-                                    async move {
-                                        let actor = client_api
-                                            .room_actor_for_user(
-                                                &authenticated.user_id,
-                                                &public_room_id,
-                                            )
-                                            .await?;
-                                        operation(client_api, actor).await.map_err(Into::into)
-                                    }
-                                },
-                            )
-                            .await
-                    }
-                    None => {
-                        executor
-                            .execute_public_endpoint(metadata, category, || async move {
-                                Err::<T, ApiError>(ApiError::Authentication(
-                                    synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
-                                ))
-                            })
-                            .await
-                    }
+            let executor = client_api.clone();
+            match token {
+                Some(token) if Self::is_guest_token(&token) => {
+                    executor
+                        .execute_public_endpoint(metadata, category, move || {
+                            let client_api = client_api.clone();
+                            async move {
+                                let access = client_api
+                                    .validate_guest_room_access(&token, &public_room_id)
+                                    .await?;
+                                operation(client_api, RoomActor::Guest(access))
+                                    .await
+                                    .map_err(Into::into)
+                            }
+                        })
+                        .await
+                }
+                Some(token) => {
+                    let executor = executor.request_executor()?;
+                    executor
+                        .execute_authenticated_token_with_control(
+                            metadata,
+                            category,
+                            &token,
+                            move |_, authenticated| {
+                                let client_api = client_api.clone();
+                                async move {
+                                    let actor = client_api
+                                        .room_actor_for_user(
+                                            &authenticated.user_id,
+                                            &public_room_id,
+                                        )
+                                        .await?;
+                                    operation(client_api, actor).await.map_err(Into::into)
+                                }
+                            },
+                        )
+                        .await
+                }
+                None => {
+                    executor
+                        .execute_public_endpoint(metadata, category, || async move {
+                            Err::<T, ApiError>(ApiError::Authentication(
+                                synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
+                            ))
+                        })
+                        .await
                 }
             }
         })
@@ -1316,72 +1126,71 @@ impl ClientApiImpl {
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
         Box::pin(async move {
-            let authorization = Self::required_authorization(metadata).ok();
-            let token = authorization
-                .map(Self::bearer_token_from_authorization)
-                .transpose()?;
+            let token = match Self::required_authorization(metadata) {
+                Ok(authorization) => Some(Self::bearer_token_from_authorization(authorization)?),
+                Err(error) => match error {
+                    ApiError::Authentication(message)
+                        if message == synctv_common::messages::AUTHENTICATION_REQUIRED =>
+                    {
+                        None
+                    }
+                    other => return Err(other),
+                },
+            };
 
-            if token.as_deref().is_some_and(Self::is_guest_token) {
-                let token = token.expect("guest token checked");
-                let executor = client_api.clone();
-                executor
-                    .execute_public_endpoint_with_control(
-                        metadata,
-                        category,
-                        move |request_control| {
-                            let client_api = client_api.clone();
-                            async move {
-                                let access = client_api
-                                    .validate_guest_room_access(&token, &public_room_id)
-                                    .await?;
-                                operation(client_api, request_control, RoomActor::Guest(access))
-                                    .await
-                                    .map_err(Into::into)
-                            }
-                        },
-                    )
-                    .await
-            } else {
-                let executor = client_api.clone();
-                match token {
-                    Some(token) => {
-                        let executor = executor.request_executor()?;
-                        executor
-                            .execute_authenticated_token_with_control(
-                                metadata,
-                                category,
-                                &token,
-                                move |request_control, authenticated| {
-                                    let client_api = client_api.clone();
-                                    async move {
-                                        let actor = client_api
-                                            .room_actor_for_user(
-                                                &authenticated.user_id,
-                                                &public_room_id,
-                                            )
-                                            .await?;
-                                        operation(client_api, request_control, actor)
-                                            .await
-                                            .map_err(Into::into)
-                                    }
-                                },
-                            )
-                            .await
-                    }
-                    None => {
-                        executor
-                            .execute_public_endpoint_with_control(
-                                metadata,
-                                category,
-                                |_| async move {
-                                    Err::<T, ApiError>(ApiError::Authentication(
-                                        synctv_common::messages::AUTHENTICATION_REQUIRED
-                                            .to_string(),
-                                    ))
-                                },
-                            )
-                            .await
-                    }
+            let executor = client_api.clone();
+            match token {
+                Some(token) if Self::is_guest_token(&token) => {
+                    executor
+                        .execute_public_endpoint_with_control(
+                            metadata,
+                            category,
+                            move |request_control| {
+                                let client_api = client_api.clone();
+                                async move {
+                                    let access = client_api
+                                        .validate_guest_room_access(&token, &public_room_id)
+                                        .await?;
+                                    operation(client_api, request_control, RoomActor::Guest(access))
+                                        .await
+                                        .map_err(Into::into)
+                                }
+                            },
+                        )
+                        .await
+                }
+                Some(token) => {
+                    let executor = executor.request_executor()?;
+                    executor
+                        .execute_authenticated_token_with_control(
+                            metadata,
+                            category,
+                            &token,
+                            move |request_control, authenticated| {
+                                let client_api = client_api.clone();
+                                async move {
+                                    let actor = client_api
+                                        .room_actor_for_user(
+                                            &authenticated.user_id,
+                                            &public_room_id,
+                                        )
+                                        .await?;
+                                    operation(client_api, request_control, actor)
+                                        .await
+                                        .map_err(Into::into)
+                                }
+                            },
+                        )
+                        .await
+                }
+                None => {
+                    executor
+                        .execute_public_endpoint_with_control(metadata, category, |_| async move {
+                            Err::<T, ApiError>(ApiError::Authentication(
+                                synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
+                            ))
+                        })
+                        .await
                 }
             }
         })

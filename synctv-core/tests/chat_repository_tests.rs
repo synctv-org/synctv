@@ -3,7 +3,6 @@
 //! Tests: `list_by_room_cursor` pagination, `get_by_id` without time restriction,
 //! `cleanup_old_messages` `keep_count=0` no-op, `cleanup_all_rooms` `activity_window_minutes=0`.
 //!
-//! Run with: cargo test -p synctv-core --test `chat_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
@@ -136,7 +135,8 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
     let (user, room) = setup_room(&pool, "chat_playback_user", "chat_playback_room").await;
     let media_id = MediaId::expect_positive(300_001);
     let playlist_id = PlaylistId::expect_positive(300_002);
-    let target_hash = "target-hash-1".to_string();
+    let target = b"playback-target-1".to_vec();
+    let target_hex = hex::encode(&target);
 
     for (content, position_seconds, status) in [
         (
@@ -171,7 +171,8 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
             "playback": {
                 "media_id": media_id.as_i64().to_string(),
                 "playlist_id": playlist_id.as_i64().to_string(),
-                "target_hash": target_hash.clone(),
+                "target_hex": target_hex.clone(),
+                "target_hash": "stale-denormalized-hash",
                 "position_seconds": position_seconds
             }
         });
@@ -183,7 +184,7 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
             room_id: room.id,
             media_id: Some(media_id),
             playlist_id: Some(playlist_id),
-            target_hash: Some(target_hash),
+            target: Some(target),
             position_seconds: 11.0,
             before_seconds: 1.0,
             after_seconds: 1.0,
@@ -500,9 +501,6 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_old_messages_partition_pruning_detailed() {
-    // Detailed verification of partition pruning for cleanup_old_messages
-    // This test verifies:
-
     let (_container, pool) = create_test_pool().await;
     let (user, room) = setup_room(&pool, "chat_prune_detail", "chat_prune_detail_room").await;
 
@@ -567,9 +565,6 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_partition_pruning_detailed() {
-    // Detailed verification of partition pruning for cleanup_all_rooms
-    // This test verifies the batch cleanup query has proper partition pruning support
-
     let (_container, pool) = create_test_pool().await;
     let (user, room) = setup_room(&pool, "chat_batch_prune", "chat_batch_prune_room").await;
 

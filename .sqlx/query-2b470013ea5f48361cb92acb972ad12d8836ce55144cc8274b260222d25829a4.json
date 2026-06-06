@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT u.id AS \"id!: UserId\",\n                   u.username AS \"username!\",\n                   u.signup_method AS \"signup_method!: SignupMethod\",\n                   u.role AS \"role!: UserRole\",\n                   u.avatar_file_reference_id,\n                   u.status AS \"status!: UserStatus\",\n                   u.is_banned AS \"is_banned!\",\n                   u.banned_at,\n                   u.banned_by AS \"banned_by?: UserId\",\n                   u.banned_reason,\n                   u.created_at AS \"created_at!\",\n                   u.updated_at AS \"updated_at!\",\n                   u.version AS \"user_version!\",\n                   u.deleted_at,\n                   apc.changed_at,\n                   apc.version AS credential_version,\n                   apc.opaque_record,\n                   apc.opaque_credential_identifier,\n                   apc.opaque_ciphersuite,\n                   apc.opaque_server_setup_version\n            FROM user_account_profiles u\n            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id\n            JOIN auth_email_identities aei ON aei.user_id = u.id\n            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "username!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "signup_method!: SignupMethod",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "role!: UserRole",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "avatar_file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "status!: UserStatus",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_banned!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "banned_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "banned_by?: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "banned_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "user_version!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "changed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "credential_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "opaque_record",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 17,
+        "name": "opaque_credential_identifier",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 18,
+        "name": "opaque_ciphersuite",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 19,
+        "name": "opaque_server_setup_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2b470013ea5f48361cb92acb972ad12d8836ce55144cc8274b260222d25829a4"
+}

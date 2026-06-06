@@ -269,11 +269,10 @@ mod tests {
         );
         let key_builder = crate::cache::KeyBuilder::new("test");
         let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
-        let user_service = crate::service::UserService::new(
+        let user_service = crate::service::UserService::new_for_tests(
             &pool,
             jwt,
             username_cache,
-            crate::config::PasswordComplexityConfig::default(),
             token_blacklist,
             key_builder,
             brute_force,
@@ -281,16 +280,20 @@ mod tests {
         let credential_repo = Arc::new(crate::repository::UserProviderCredentialRepository::new(
             pool.clone(),
         ));
-        let room_service = crate::service::RoomService::new(pool, user_service);
+        let room_service = crate::service::RoomService::new_for_tests(pool, user_service)
+            .expect("room service should build");
         ProxyServices {
             room_service: Arc::new(room_service),
             credential_encryption: None,
             credential_repo,
             provider_access_service: None,
-            signing_key: Arc::new(crate::proxy_signature::ProxySigningKey::derive_from(
-                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-            )),
-            public_id_codec: Arc::new(crate::PublicIdCodec::default_for_tests()),
+            signing_key: Arc::new(
+                crate::proxy_signature::ProxySigningKey::try_derive_from(
+                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+                )
+                .expect("test proxy signing key should derive"),
+            ),
+            public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
         }
     }
 
@@ -392,7 +395,8 @@ mod tests {
         use std::sync::Arc;
 
         let provider = RtmpProvider::new();
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let ctx = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
@@ -435,7 +439,8 @@ mod tests {
 
         let provider = RtmpProvider::new();
         let store = Arc::new(InMemoryProviderStore::new(16));
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
 
         let ctx1 = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))

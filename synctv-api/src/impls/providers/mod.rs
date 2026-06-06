@@ -10,24 +10,21 @@ pub mod rtmp;
 
 use std::sync::Arc;
 
-pub use alist::AlistApiImpl;
+pub use alist::{AlistApiImpl, ProviderApiRuntime};
 pub use bilibili::BilibiliApiImpl;
-pub use common::ProviderCommonApiImpl;
 pub(crate) use common::{
-    get_provider_binds, get_provider_credentials, resolve_bound_instance_name,
+    get_provider_binds, get_provider_credentials, provider_instance_name_for_provider,
+    resolve_bound_instance_name,
 };
+pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
 pub use emby::EmbyApiImpl;
 
 pub(crate) fn publish_provider_credential_changed(
-    event_service: Option<&Arc<dyn crate::runtime::RealtimeEventService>>,
+    event_service: &Arc<dyn crate::runtime::RealtimeEventService>,
     user_id: synctv_core::models::UserId,
     provider: &str,
     server_id: &str,
 ) {
-    let Some(event_service) = event_service else {
-        return;
-    };
-
     let event = synctv_realtime::sync::RealtimeEvent::ProviderCredentialChanged {
         event_id: synctv_common::snanoid!(16),
         user_id,

@@ -4,7 +4,6 @@
 //! These are unit-style tests that don't need a real database for the leader/config
 //! checks (but use testcontainers for `run_all` verification).
 //!
-//! Run with: cargo test -p synctv-core --test `cleanup_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -17,7 +16,7 @@ use synctv_core::models::{
 };
 use synctv_core::repository::{RoomRepository, UserRepository};
 use synctv_core::service::{
-    cleanup::{CleanupConfig, CleanupService},
+    cleanup::{CleanupConfig, CleanupService, CleanupServiceOptions},
     AlwaysLeader, FileStorageCleanupOrigin, FileStorageContext, FileStorageService, LeaderCheck,
 };
 use synctv_core::Error;
@@ -346,7 +345,7 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
     )
     .await;
 
-    let service = CleanupService::new(
+    let service = CleanupService::new_with_options(
         pool.clone(),
         CleanupConfig {
             soft_delete_retention_days: 0,
@@ -361,8 +360,11 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
             unreferenced_file_retention_seconds: 0,
         },
         Arc::new(AlwaysLeader),
-    )
-    .with_file_storage_service(storage.clone());
+        CleanupServiceOptions {
+            file_storage_service: Some(storage.clone()),
+            ..CleanupServiceOptions::default()
+        },
+    );
 
     let result = service.run_all().await;
 

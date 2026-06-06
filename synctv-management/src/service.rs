@@ -42,12 +42,12 @@ use crate::proto::{
     MovePlaylistRequest, PurgeSliceCacheNodeResult, PurgeSliceCacheRequest,
     PurgeSliceCacheResponse, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-    SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo,
-    SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest,
-    StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest,
-    UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest, UpdatePlaylistRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
-    UpdateUserPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
+    SendTestEmailRequest, SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode,
+    SliceCacheConfigInfo, SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest,
+    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
+    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
+    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
+    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
     UpdateUserUsernameRequest, UserRef,
 };
 use synctv_api::grpc_support::map_api_error_ref as map_api_error;
@@ -574,8 +574,13 @@ impl ManagementServiceImpl {
     }
 
     fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
-        let ip_address = synctv_api::grpc_support::extract_client_ip(request, &self.config)
-            .map(|ip| ip.to_string());
+        let ip_address = match synctv_api::grpc_support::extract_client_ip(request, &self.config) {
+            Ok(ip_address) => ip_address.map(|ip| ip.to_string()),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to extract management request client IP");
+                None
+            }
+        };
         let user_agent = request
             .metadata()
             .get("user-agent")
@@ -1208,10 +1213,10 @@ impl ManagementService for ManagementServiceImpl {
             .create_user(
                 admin_proto::CreateUserRequest {
                     username: req.username,
-                    password: req.password,
                     email: req.email,
                     role: map_user_role(req.role)?,
                     status: map_user_status(req.status)?,
+                    password: req.password,
                 },
                 validated.role,
                 &validated.user_id,
@@ -1527,20 +1532,20 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Self::proto_response(response))
     }
 
-    async fn update_user_password(
+    async fn set_user_password(
         &self,
-        request: Request<UpdateUserPasswordRequest>,
-    ) -> Result<Response<admin_proto::UpdateUserPasswordResponse>, Status> {
+        request: Request<SetUserPasswordRequest>,
+    ) -> Result<Response<admin_proto::SetUserPasswordResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let user_id = self.resolve_required_user_ref(req.user, "user").await?;
         let response = self
             .admin_api
-            .update_user_password(
-                admin_proto::UpdateUserPasswordRequest {
+            .set_user_password(
+                admin_proto::SetUserPasswordRequest {
                     user_id,
-                    new_password: req.new_password,
+                    password: req.password,
                     reason: req.reason,
                 },
                 validated.user_id,
@@ -3421,12 +3426,7 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
 
         let request = request.into_inner();
-        let requested_mode = match ProtoShutdownMode::try_from(request.mode)
-            .unwrap_or(ProtoShutdownMode::Unspecified)
-        {
-            ProtoShutdownMode::Force => ShutdownMode::Force,
-            ProtoShutdownMode::Graceful | ProtoShutdownMode::Unspecified => ShutdownMode::Graceful,
-        };
+        let requested_mode = parse_shutdown_mode(request.mode)?;
 
         let subscription = self.lifecycle_controller.subscribe();
         let requested_event = self.lifecycle_controller.request_shutdown(requested_mode);
@@ -3436,6 +3436,18 @@ impl ManagementService for ManagementServiceImpl {
             subscription.receiver,
         );
         Ok(Response::new(Box::pin(events)))
+    }
+}
+
+fn parse_shutdown_mode(mode: i32) -> Result<ShutdownMode, Status> {
+    match ProtoShutdownMode::try_from(mode) {
+        Ok(ProtoShutdownMode::Force) => Ok(ShutdownMode::Force),
+        Ok(ProtoShutdownMode::Graceful | ProtoShutdownMode::Unspecified) => {
+            Ok(ShutdownMode::Graceful)
+        }
+        Err(_) => Err(Status::invalid_argument(format!(
+            "invalid shutdown mode: {mode}"
+        ))),
     }
 }
 
@@ -3512,11 +3524,11 @@ fn stop_server_stream_event(event: &LifecycleEvent) -> (StopServerEvent, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{stop_server_event_stream, ManagementServiceImpl};
+    use super::{parse_shutdown_mode, stop_server_event_stream, ManagementServiceImpl};
     use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
     use crate::proto::{
-        EvictExpiredSliceCacheNodeResult, PurgeSliceCacheNodeResult, SliceCacheNodeFailure,
-        SliceCacheStatsResponse,
+        EvictExpiredSliceCacheNodeResult, PurgeSliceCacheNodeResult,
+        ShutdownMode as ProtoShutdownMode, SliceCacheNodeFailure, SliceCacheStatsResponse,
     };
     use futures::TryStreamExt;
     use tonic::Code;
@@ -3620,6 +3632,30 @@ mod tests {
         assert!(response.stats.is_none());
         assert_eq!(response.nodes.len(), 2);
         assert!(response.failures.is_empty());
+    }
+
+    #[test]
+    fn parse_shutdown_mode_accepts_defined_values() {
+        assert_eq!(
+            parse_shutdown_mode(ProtoShutdownMode::Unspecified as i32).expect("mode should parse"),
+            ShutdownMode::Graceful
+        );
+        assert_eq!(
+            parse_shutdown_mode(ProtoShutdownMode::Graceful as i32).expect("mode should parse"),
+            ShutdownMode::Graceful
+        );
+        assert_eq!(
+            parse_shutdown_mode(ProtoShutdownMode::Force as i32).expect("mode should parse"),
+            ShutdownMode::Force
+        );
+    }
+
+    #[test]
+    fn parse_shutdown_mode_rejects_unknown_value() {
+        let status = parse_shutdown_mode(99).expect_err("unknown mode should fail");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(status.message(), "invalid shutdown mode: 99");
     }
 
     #[tokio::test]

@@ -9,7 +9,6 @@ use synctv_api::impls::{
 };
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         AuditAction, AuditTargetType, PageParams, RoomAdminPermissionBits,
         RoomMemberPermissionBits, RoomPermissionSet, RoomRole, SignupMethod, User, UserId,
@@ -58,11 +57,10 @@ fn make_user(username: &str) -> User {
 }
 
 fn make_user_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> UserService {
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         JwtService::new(TEST_JWT_SECRET).unwrap(),
         username_cache,
-        PasswordComplexityConfig::default(),
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400)),
         KeyBuilder::new("test_chat_permissions"),
         BruteForceProtection::in_memory("test_chat_permissions:user".to_string()),
@@ -84,8 +82,17 @@ fn make_chat_service_with_audit(
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let mut permission_service = PermissionService::new(member_repo, room_repo, None, 1000, 300);
-    permission_service.set_room_settings_repo(room_settings_repo.clone());
+    let permission_service = PermissionService::new_with_runtime(
+        member_repo,
+        room_repo,
+        synctv_core::service::permission::PermissionServiceRuntime {
+            cache_size: 1000,
+            cache_ttl_secs: 300,
+            room_settings_repo: Some(room_settings_repo.clone()),
+            ..synctv_core::service::permission::PermissionServiceRuntime::default()
+        },
+    )
+    .expect("permission service should build");
 
     Arc::new(synctv_core::service::ChatService::new(
         Arc::new(ChatRepository::new(pool.clone())),
@@ -106,6 +113,7 @@ fn make_chat_service_with_audit(
                 None,
             ),
             user_service,
+            file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service,
             notification_service: NotificationService::default(),
         },
@@ -120,19 +128,26 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
 
-    ClientApiImpl::new(
-        user_service,
-        room_service,
-        connection_manager,
-        Arc::new(Config::default()),
-        None,
-        JwtService::new(TEST_JWT_SECRET).unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            user_service,
+            room_service,
+            connection_service: connection_manager,
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new(TEST_JWT_SECRET).unwrap(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            chat_service: Some(chat_service),
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        synctv_api::impls::ClientApiRuntime::test_disabled(),
     )
-    .with_chat_service(Some(chat_service))
 }
 
 fn expect_authorization<T>(result: Result<T, ApiError>) {
@@ -162,7 +177,10 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
     let user_repo = UserRepository::new(pool.clone());
     let username_cache = UsernameCache::local_only("test:chat-perm:".to_string(), 100, 60);
     let user_service = Arc::new(make_user_service(&pool, username_cache));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let chat_service = make_chat_service(&pool, user_service.clone());
     let client_api = make_client_api(user_service, room_service.clone(), chat_service);
 
@@ -279,7 +297,10 @@ async fn test_chat_read_endpoints_require_view_chat_history_permission() {
     let user_repo = UserRepository::new(pool.clone());
     let username_cache = UsernameCache::local_only("test:chat-read-perm:".to_string(), 100, 60);
     let user_service = Arc::new(make_user_service(&pool, username_cache));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let chat_service = make_chat_service(&pool, user_service.clone());
     let client_api = make_client_api(user_service, room_service.clone(), chat_service);
 
@@ -385,7 +406,10 @@ async fn test_chat_delete_endpoint_allows_sender_and_delete_chat_permission() {
     let user_repo = UserRepository::new(pool.clone());
     let username_cache = UsernameCache::local_only("test:chat-delete-perm:".to_string(), 100, 60);
     let user_service = Arc::new(make_user_service(&pool, username_cache));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let chat_service = make_chat_service(&pool, user_service.clone());
     let client_api = make_client_api(user_service, room_service.clone(), chat_service);
 
@@ -522,7 +546,10 @@ async fn test_chat_admin_delete_endpoint_writes_audit_log() {
     let user_repo = UserRepository::new(pool.clone());
     let username_cache = UsernameCache::local_only("test:chat-audit:".to_string(), 100, 60);
     let user_service = Arc::new(make_user_service(&pool, username_cache));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
     let chat_service =
         make_chat_service_with_audit(&pool, user_service.clone(), Some(audit_service));

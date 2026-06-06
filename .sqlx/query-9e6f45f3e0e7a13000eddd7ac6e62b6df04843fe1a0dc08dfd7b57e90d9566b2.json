@@ -1,0 +1,105 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO chat_message_images (\n                    id, room_id, message_id, message_created_at, storage_backend,\n                    object_key, url, mime_type, size_bytes, width, height, metadata\n                )\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n                RETURNING id AS \"id!\",\n                          room_id AS \"room_id!: RoomId\",\n                          message_id AS \"message_id!\",\n                          message_created_at AS \"message_created_at!\",\n                          storage_backend AS \"storage_backend!\",\n                          object_key AS \"object_key!\",\n                          url,\n                          mime_type,\n                          size_bytes,\n                          width,\n                          height,\n                          metadata AS \"metadata!: serde_json::Value\",\n                          created_at AS \"created_at!\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "message_id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "storage_backend!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "object_key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "mime_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "size_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "width",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "height",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "metadata!: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4",
+        "Int4",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "9e6f45f3e0e7a13000eddd7ac6e62b6df04843fe1a0dc08dfd7b57e90d9566b2"
+}

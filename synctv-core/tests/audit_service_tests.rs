@@ -2,12 +2,11 @@
 //!
 //! Tests audit service buffering, unbuffered writes, and query logic.
 //!
-//! Run with: cargo test --test `audit_service_tests`
 //! Run Docker tests: cargo test --test `audit_service_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{AuditAction, AuditTargetType};
-use synctv_core::service::AuditService;
+use synctv_core::service::{AuditEventParams, AuditService, StreamKickAuditRequest};
 use synctv_core_testing::create_test_pool;
 
 // Unbuffered write tests (require Docker)
@@ -21,16 +20,16 @@ async fn test_audit_unbuffered_writes_immediately() {
 
     // Write an audit event
     service
-        .log(
-            "100001".to_string(),
-            "admin".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("target_user_1".to_string()),
-            serde_json::json!({"reason": "test"}),
-            Some("127.0.0.1".to_string()),
-            Some("TestAgent/1.0".to_string()),
-        )
+        .log(AuditEventParams {
+            actor_id: "100001".to_string(),
+            actor_username: "admin".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some("target_user_1".to_string()),
+            details: serde_json::json!({"reason": "test"}),
+            ip_address: Some("127.0.0.1".to_string()),
+            user_agent: Some("TestAgent/1.0".to_string()),
+        })
         .await
         .expect("Unbuffered write should succeed");
 
@@ -52,44 +51,44 @@ async fn test_audit_query_filter_by_action() {
 
     // Write events with different actions
     service
-        .log(
-            "100002".to_string(),
-            "admin".to_string(),
-            AuditAction::UserBanned,
-            AuditTargetType::User,
-            Some("user_1".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100002".to_string(),
+            actor_username: "admin".to_string(),
+            action: AuditAction::UserBanned,
+            target_type: AuditTargetType::User,
+            target_id: Some("user_1".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .unwrap();
 
     service
-        .log(
-            "100002".to_string(),
-            "admin".to_string(),
-            AuditAction::RoomCreated,
-            AuditTargetType::Room,
-            Some("room_1".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100002".to_string(),
+            actor_username: "admin".to_string(),
+            action: AuditAction::RoomCreated,
+            target_type: AuditTargetType::Room,
+            target_id: Some("room_1".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .unwrap();
 
     service
-        .log(
-            "100002".to_string(),
-            "admin".to_string(),
-            AuditAction::UserBanned,
-            AuditTargetType::User,
-            Some("user_2".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100002".to_string(),
+            actor_username: "admin".to_string(),
+            action: AuditAction::UserBanned,
+            target_type: AuditTargetType::User,
+            target_id: Some("user_2".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .unwrap();
 
@@ -116,16 +115,16 @@ async fn test_audit_query_date_range() {
 
     // Write an event
     service
-        .log(
-            "100003".to_string(),
-            "admin".to_string(),
-            AuditAction::SettingsUpdated,
-            AuditTargetType::Settings,
-            None,
-            serde_json::json!({"key": "value"}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100003".to_string(),
+            actor_username: "admin".to_string(),
+            action: AuditAction::SettingsUpdated,
+            target_type: AuditTargetType::Settings,
+            target_id: None,
+            details: serde_json::json!({"key": "value"}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .unwrap();
 
@@ -171,16 +170,16 @@ async fn test_buffered_service_enqueues_without_error() {
 
     // Events should be buffered without error even with a fake pool
     let result = service
-        .log(
-            "actor".to_string(),
-            "admin".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("user1".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "actor".to_string(),
+            actor_username: "admin".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some("user1".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await;
 
     assert!(result.is_ok());
@@ -198,34 +197,35 @@ async fn test_unbuffered_service_dropped_count_zero() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_log_stream_kicked_writes_audit_log() {
+    #[derive(sqlx::FromRow)]
+    struct StreamKickAuditRow {
+        action: i16,
+        target_type: Option<i16>,
+        target_id: Option<String>,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+        details: Option<String>,
+    }
+
     let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
     // Log a stream kick event
     service
-        .log_stream_kicked(
-            "100004".to_string(),
-            "superadmin".to_string(),
-            "room_abc123".to_string(),
-            "media_xyz789".to_string(),
-            Some("Inappropriate content".to_string()),
-            Some("192.168.1.100".to_string()),
-            Some("Mozilla/5.0 AdminPanel/1.0".to_string()),
-        )
+        .log_stream_kicked(StreamKickAuditRequest {
+            actor_id: "100004".to_string(),
+            actor_username: "superadmin".to_string(),
+            room_id: "room_abc123".to_string(),
+            media_id: "media_xyz789".to_string(),
+            reason: Some("Inappropriate content".to_string()),
+            ip_address: Some("192.168.1.100".to_string()),
+            user_agent: Some("Mozilla/5.0 AdminPanel/1.0".to_string()),
+        })
         .await
         .expect("log_stream_kicked should succeed");
 
-    // Verify the audit log was written correctly
-    #[allow(clippy::type_complexity)]
-    let row: (
-        i16,
-        Option<i16>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = sqlx::query_as(
+    let row: StreamKickAuditRow = sqlx::query_as(
         r"
         SELECT action, target_type, target_id, ip_address, user_agent, details::text
         FROM audit_logs
@@ -238,33 +238,35 @@ async fn test_log_stream_kicked_writes_audit_log() {
     .expect("Query should succeed");
 
     assert_eq!(
-        AuditAction::try_from(row.0).unwrap(),
+        AuditAction::try_from(row.action).unwrap(),
         AuditAction::StreamKicked,
         "Action should be stream_kicked"
     );
     assert_eq!(
-        row.1.map(|value| AuditTargetType::try_from(value).unwrap()),
+        row.target_type
+            .map(|value| AuditTargetType::try_from(value).unwrap()),
         Some(AuditTargetType::Stream),
         "Target type should be stream"
     );
     assert_eq!(
-        row.2,
+        row.target_id,
         Some("room_abc123:media_xyz789".to_string()),
         "Target ID should be room_id:media_id"
     );
     assert_eq!(
-        row.3,
+        row.ip_address,
         Some("192.168.1.100".to_string()),
         "IP address should be recorded"
     );
     assert_eq!(
-        row.4,
+        row.user_agent,
         Some("Mozilla/5.0 AdminPanel/1.0".to_string()),
         "User-Agent should be recorded"
     );
 
     // Verify details JSON contains room_id, media_id, and reason
-    let details: serde_json::Value = serde_json::from_str(&row.5.unwrap_or_default()).unwrap();
+    let details: serde_json::Value =
+        serde_json::from_str(&row.details.unwrap_or_default()).unwrap();
     assert_eq!(details["room_id"], "room_abc123");
     assert_eq!(details["media_id"], "media_xyz789");
     assert_eq!(details["reason"], "Inappropriate content");
@@ -279,15 +281,16 @@ async fn test_log_stream_kicked_without_reason() {
 
     // Log a stream kick event without a reason
     service
-        .log_stream_kicked(
-            "100005".to_string(),
-            "moderator".to_string(),
-            "room_def456".to_string(),
-            "media_uvw321".to_string(),
-            None, // No reason provided
+        .log_stream_kicked(StreamKickAuditRequest {
+                    actor_id: "100005".to_string(),
+                    actor_username: "moderator".to_string(),
+                    room_id: "room_def456".to_string(),
+                    media_id: "media_uvw321".to_string(),
+                    reason: None,
+                    ip_address: // No reason provided
             None,
-            None,
-        )
+                    user_agent: None,
+                })
         .await
         .expect("log_stream_kicked should succeed");
 
@@ -329,15 +332,15 @@ async fn test_log_stream_kicked_records_actor_username() {
 
     // Log a stream kick event
     service
-        .log_stream_kicked(
-            "100006".to_string(),
-            "test_admin_user".to_string(),
-            "room_test".to_string(),
-            "media_test".to_string(),
-            Some("Test reason".to_string()),
-            None,
-            None,
-        )
+        .log_stream_kicked(StreamKickAuditRequest {
+            actor_id: "100006".to_string(),
+            actor_username: "test_admin_user".to_string(),
+            room_id: "room_test".to_string(),
+            media_id: "media_test".to_string(),
+            reason: Some("Test reason".to_string()),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("log_stream_kicked should succeed");
 
@@ -365,28 +368,28 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
 
     // Log multiple stream kick events
     service
-        .log_stream_kicked(
-            "100007".to_string(),
-            "admin".to_string(),
-            "room_1".to_string(),
-            "media_1".to_string(),
-            Some("Reason 1".to_string()),
-            None,
-            None,
-        )
+        .log_stream_kicked(StreamKickAuditRequest {
+            actor_id: "100007".to_string(),
+            actor_username: "admin".to_string(),
+            room_id: "room_1".to_string(),
+            media_id: "media_1".to_string(),
+            reason: Some("Reason 1".to_string()),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("First log_stream_kicked should succeed");
 
     service
-        .log_stream_kicked(
-            "100007".to_string(),
-            "admin".to_string(),
-            "room_2".to_string(),
-            "media_2".to_string(),
-            Some("Reason 2".to_string()),
-            None,
-            None,
-        )
+        .log_stream_kicked(StreamKickAuditRequest {
+            actor_id: "100007".to_string(),
+            actor_username: "admin".to_string(),
+            room_id: "room_2".to_string(),
+            media_id: "media_2".to_string(),
+            reason: Some("Reason 2".to_string()),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("Second log_stream_kicked should succeed");
 
@@ -421,7 +424,7 @@ async fn test_buffer_full_increments_dropped_count() {
     // and when the buffer is full, try_send will fail and the fallback sync write
     // also fails (fake pool), so dropped_count should be incremented.
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let (service, _handle) = AuditService::with_capacity(pool, 2);
+    let (service, _handle) = AuditService::new_with_capacity(pool, 2);
 
     // The background task starts consuming from the channel, but because the pool
     // is fake, the flush will fail. We need to fill the channel faster than it drains.
@@ -432,16 +435,16 @@ async fn test_buffer_full_increments_dropped_count() {
     let mut error_count = 0;
     for i in 0..100 {
         let result = service
-            .log(
-                format!("actor_{i}"),
-                "admin".to_string(),
-                AuditAction::UserCreated,
-                AuditTargetType::User,
-                Some(format!("user_{i}")),
-                serde_json::json!({}),
-                None,
-                None,
-            )
+            .log(AuditEventParams {
+                actor_id: format!("actor_{i}"),
+                actor_username: "admin".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: Some(format!("user_{i}")),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await;
 
         // Once buffer is full, the fallback sync write to fake pool will fail,

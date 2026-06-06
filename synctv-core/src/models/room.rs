@@ -182,35 +182,6 @@ pub struct Room {
     pub last_activity_at: DateTime<Utc>,
 }
 
-impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Room {
-    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-        use sqlx::Row;
-
-        let closed_at: Option<DateTime<Utc>> = row.try_get("closed_at")?;
-        let is_banned = row.try_get("is_banned")?;
-
-        Ok(Self {
-            id: row.try_get("id")?,
-            name: row.try_get("name")?,
-            description: row.try_get("description")?,
-            cover_file_reference_id: row.try_get("cover_file_reference_id")?,
-            created_by: row.try_get("created_by")?,
-            status: if closed_at.is_some() {
-                RoomStatus::Closed
-            } else {
-                RoomStatus::Active
-            },
-            is_banned,
-            closed_at,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            deleted_at: row.try_get("deleted_at")?,
-            version: row.try_get("version")?,
-            last_activity_at: row.try_get("last_activity_at")?,
-        })
-    }
-}
-
 impl Room {
     #[must_use]
     pub fn new(name: String, created_by: UserId) -> Self {
@@ -342,13 +313,12 @@ sort_field_enum! {
     #[serde(rename_all = "snake_case")]
     pub enum RoomListSortBy {
         Name => { display: "name", sql: "r.name" },
-        UpdatedAt => { display: "updated_at", sql: "r.updated_at", aliases: ["updatedat"] },
+        UpdatedAt => { display: "updated_at", sql: "r.updated_at" },
         LastActivityAt => {
             display: "last_activity_at",
-            sql: "r.last_activity_at",
-            aliases: ["lastactivityat"]
+            sql: "r.last_activity_at"
         },
-        CreatedAt => { display: "created_at", sql: "r.created_at", aliases: ["createdat"] },
+        CreatedAt => { display: "created_at", sql: "r.created_at" },
     }
     default = CreatedAt;
     error = "Unknown room list sort field";

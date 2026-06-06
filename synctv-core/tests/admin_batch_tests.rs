@@ -2,7 +2,6 @@
 //!
 //! Tests batch delete operations for users.
 //!
-//! Run with: cargo test --package synctv-core `admin_batch`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -10,14 +9,13 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::UserId,
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, UserService,
     },
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, opaque_register_user};
 const BATCH_SIZE_LIMIT: usize = 100;
 
 fn create_jwt_service() -> JwtService {
@@ -32,38 +30,40 @@ fn create_lazy_pool() -> PgPool {
 fn create_user_service(pool: &PgPool) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_config = PasswordComplexityConfig::default();
     let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    UserService::new_with_runtime(
         pool,
         jwt,
         username_cache,
-        password_config,
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    svc.enable_password_registration_for_tests();
-    svc
+        synctv_core::service::user::UserServiceRuntimeOptions {
+            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
+                enabled: true,
+                need_review: false,
+            }),
+            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+        },
+    )
 }
 
 /// Helper to create multiple test users
 async fn create_test_users(service: &UserService, count: usize, prefix: &str) -> Vec<UserId> {
     let mut user_ids = Vec::with_capacity(count);
     for i in 0..count {
-        let (user, _, _) = service
-            .register(
-                format!("{prefix}_{i}"),
-                Some(format!("{i}@test.com")),
-                "Password123".to_string(),
-                None,
-            )
-            .await
-            .expect("Failed to create user");
+        let (user, _, _) = opaque_register_user(
+            service,
+            format!("{prefix}_{i}"),
+            Some(format!("{i}@test.com")),
+            "Password123",
+        )
+        .await
+        .expect("Failed to create user");
         user_ids.push(user.id);
     }
     user_ids

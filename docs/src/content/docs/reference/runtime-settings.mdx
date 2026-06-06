@@ -91,9 +91,9 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `user.enable_password_signup` | bool | `false` | 是否允许密码注册，包括传统密码注册和 OPAQUE 密码注册 |
+| `user.enable_password_signup` | bool | `false` | 是否允许本地密码注册，包括 OPAQUE 注册和直接密码传输注册 |
 | `user.password_signup_need_review` | bool | `false` | 密码注册是否需要审核 |
-| `user.enable_email_signup` | bool | `false` | 是否允许邮件注册。当前邮件登录只服务已有账号，此开关用于后续邮件无密码建号入口 |
+| `user.enable_email_signup` | bool | `false` | 是否允许邮箱注册，注册确认时设置本地密码凭据 |
 | `user.email_signup_need_review` | bool | `false` | 邮件注册是否需要审核 |
 | `user.enable_webauthn_signup` | bool | `false` | 是否允许 WebAuthn/passkey 作为初始账号注册方式；登录后绑定 passkey 不属于注册 |
 | `user.webauthn_signup_need_review` | bool | `false` | WebAuthn 注册是否需要审核。当前审核表不存 WebAuthn 临时凭据，启用后会拒绝新的 WebAuthn 注册 |

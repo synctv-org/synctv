@@ -41,10 +41,88 @@ pub struct OAuth2ApiImpl {
     public_id_codec: Arc<crate::PublicIdCodec>,
 }
 
+struct UnlinkProviderPlan {
+    provider_type: synctv_core::models::OAuth2Provider,
+    provider_instance_name: Option<String>,
+    provider_user_id: Option<String>,
+}
+
 impl OAuth2ApiImpl {
     fn optional_non_empty_trimmed(value: &str) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    fn exchange_code_result_to_proto(
+        result: ExchangeCodeResult,
+    ) -> Result<ExchangeAuthorizationCodeResponse, ApiError> {
+        if result.is_bind {
+            if result.access_token.is_some()
+                || result.refresh_token.is_some()
+                || result.user_info.is_some()
+                || result.registration_review_required
+                || result.registration_review_id.is_some()
+            {
+                return Err(ApiError::Internal(
+                    "OAuth2 bind response contains login or review payload".to_string(),
+                ));
+            }
+            return Ok(ExchangeAuthorizationCodeResponse {
+                access_token: None,
+                refresh_token: None,
+                expires_in: 0,
+                user_info: None,
+                redirect_url: result.redirect_url,
+                is_bind: true,
+                registration_review_required: false,
+                registration_review_id: None,
+            });
+        }
+
+        if result.registration_review_required {
+            let registration_review_id = result.registration_review_id.ok_or_else(|| {
+                ApiError::Internal("OAuth2 review response is missing review id".to_string())
+            })?;
+            if result.access_token.is_some()
+                || result.refresh_token.is_some()
+                || result.user_info.is_some()
+            {
+                return Err(ApiError::Internal(
+                    "OAuth2 review response contains login tokens".to_string(),
+                ));
+            }
+            return Ok(ExchangeAuthorizationCodeResponse {
+                access_token: None,
+                refresh_token: None,
+                expires_in: 0,
+                user_info: None,
+                redirect_url: result.redirect_url,
+                is_bind: false,
+                registration_review_required: true,
+                registration_review_id: Some(registration_review_id),
+            });
+        }
+
+        let access_token = result.access_token.ok_or_else(|| {
+            ApiError::Internal("OAuth2 login response is missing access token".to_string())
+        })?;
+        let refresh_token = result.refresh_token.ok_or_else(|| {
+            ApiError::Internal("OAuth2 login response is missing refresh token".to_string())
+        })?;
+        let user_info = result.user_info.ok_or_else(|| {
+            ApiError::Internal("OAuth2 login response is missing user info".to_string())
+        })?;
+
+        Ok(ExchangeAuthorizationCodeResponse {
+            access_token: Some(access_token),
+            refresh_token: Some(refresh_token),
+            expires_in: result.expires_in,
+            user_info: Some(user_info),
+            redirect_url: result.redirect_url,
+            is_bind: false,
+            registration_review_required: false,
+            registration_review_id: None,
+        })
     }
 
     fn oauth2_identity_unlink_counts(
@@ -90,6 +168,114 @@ impl OAuth2ApiImpl {
                 ))
             })
             .collect()
+    }
+
+    async fn plan_unlink_provider(
+        &self,
+        user_id: &UserId,
+        provider: &str,
+        provider_instance_name: Option<&str>,
+        provider_user_id: Option<&str>,
+    ) -> Result<UnlinkProviderPlan, ApiError> {
+        use synctv_core::models::OAuth2Provider;
+        let provider_type = OAuth2Provider::from_str_name(provider)
+            .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
+        let provider_instance_name = provider_instance_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let provider_user_id = provider_user_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if provider_user_id.is_some() && provider_instance_name.is_none() {
+            return Err(ApiError::InvalidInput(
+                "provider_instance_name is required when provider_user_id is set".to_string(),
+            ));
+        }
+
+        let linked_mappings = self
+            .oauth2_service
+            .get_user_provider_mappings(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let active_provider_keys = self.active_oauth2_provider_keys().await?;
+        let active_linked_mappings =
+            Self::active_oauth2_mappings(&linked_mappings, &active_provider_keys);
+        let active_linked_mappings = active_linked_mappings
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let (target_oauth2_identities, remaining_oauth2_identities) =
+            Self::oauth2_identity_unlink_counts(
+                &active_linked_mappings,
+                &provider_type,
+                provider_instance_name.as_deref(),
+                provider_user_id.as_deref(),
+            );
+
+        if target_oauth2_identities == 0 {
+            return Err(ApiError::NotFound(
+                "No binding found for this provider".to_string(),
+            ));
+        }
+
+        let (_preferences, auth_factors) = self
+            .user_service
+            .get_user_preferences(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let remaining_sign_in_method_count =
+            UserService::sign_in_method_count(&auth_factors, remaining_oauth2_identities);
+        if remaining_sign_in_method_count == 0 {
+            return Err(ApiError::InvalidInput(
+                "Cannot unlink the last sign-in method".to_string(),
+            ));
+        }
+
+        Ok(UnlinkProviderPlan {
+            provider_type,
+            provider_instance_name,
+            provider_user_id,
+        })
+    }
+
+    async fn execute_unlink_provider(
+        &self,
+        user_id: &UserId,
+        plan: UnlinkProviderPlan,
+    ) -> Result<UnlinkResult, ApiError> {
+        let removed = if let Some(provider_user_id) = plan.provider_user_id.as_deref() {
+            let provider_instance_name =
+                plan.provider_instance_name.as_deref().ok_or_else(|| {
+                    ApiError::InvalidInput(
+                        "provider_instance_name is required when provider_user_id is set"
+                            .to_string(),
+                    )
+                })?;
+            self.oauth2_service
+                .unlink_provider(user_id, provider_instance_name, provider_user_id)
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            self.oauth2_service
+                .unlink_provider_all(user_id, &plan.provider_type)
+                .await
+                .map_err(ApiError::from)?
+        };
+
+        if !removed {
+            return Err(ApiError::NotFound(
+                "No binding found for this provider".to_string(),
+            ));
+        }
+
+        Ok(UnlinkResult {
+            success: true,
+            removed_count: 1,
+        })
     }
 
     async fn active_oauth2_provider_keys(&self) -> Result<HashSet<(String, String)>, ApiError> {
@@ -230,23 +416,42 @@ impl OAuth2ApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<GetAuthorizationUrlForBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
+        self.user_service
+            .get_user(user_id)
+            .await
+            .map_err(Self::map_bind_user_lookup_error)
+            .and_then(|user| {
+                if user.is_deleted() || user.status == UserStatus::Banned {
+                    Err(ApiError::Authentication(
+                        "Authentication failed".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            })?;
+        let prepared = self
+            .oauth2_service
+            .prepare_authorization_url_with_control(
+                &req.provider,
+                redirect_url,
+                Some(*user_id),
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
         self.user_service
             .consume_sensitive_operation_verification(user_id, &req.verification_id)
             .await
             .map_err(ApiError::from)?;
-        let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
-        let (authorization_url, state) = self
-            .get_authorization_url_for_bind_with_control(
-                user_id,
-                &req.provider,
-                redirect_url,
-                control,
-            )
-            .await?;
+        self.oauth2_service
+            .store_prepared_authorization_with_control(&prepared, control)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(GetAuthorizationUrlForBindResponse {
-            authorization_url,
-            state,
+            authorization_url: prepared.auth_url,
+            state: prepared.state_token,
         })
     }
 
@@ -421,8 +626,10 @@ impl OAuth2ApiImpl {
             }
         };
 
-        // Get the actual access token duration from the JWT service
-        let expires_in = self.user_service.access_token_duration_seconds();
+        let expires_in = self
+            .user_service
+            .access_token_duration_seconds()
+            .map_err(ApiError::from)?;
 
         match login {
             synctv_core::service::AuthenticatedLogin::Complete {
@@ -438,7 +645,7 @@ impl OAuth2ApiImpl {
                     &user,
                     email.as_deref(),
                     &self.public_id_codec,
-                )),
+                )?),
                 redirect_url: oauth_state.redirect_url,
                 is_bind: false,
                 registration_review_required: false,
@@ -471,16 +678,7 @@ impl OAuth2ApiImpl {
             )
             .await?;
 
-        Ok(ExchangeAuthorizationCodeResponse {
-            access_token: result.access_token.unwrap_or_default(),
-            refresh_token: result.refresh_token.unwrap_or_default(),
-            expires_in: result.expires_in,
-            user_info: result.user_info,
-            redirect_url: result.redirect_url.unwrap_or_default(),
-            is_bind: result.is_bind,
-            registration_review_required: result.registration_review_required,
-            registration_review_id: result.registration_review_id.unwrap_or_default(),
-        })
+        Self::exchange_code_result_to_proto(result)
     }
 
     /// List all available `OAuth2` provider instances
@@ -532,87 +730,10 @@ impl OAuth2ApiImpl {
         provider_instance_name: Option<&str>,
         provider_user_id: Option<&str>,
     ) -> Result<UnlinkResult, ApiError> {
-        use synctv_core::models::OAuth2Provider;
-        let provider_type = OAuth2Provider::from_str_name(provider)
-            .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
-        let provider_instance_name = provider_instance_name
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-
-        if provider_user_id.is_some() && provider_instance_name.is_none() {
-            return Err(ApiError::InvalidInput(
-                "provider_instance_name is required when provider_user_id is set".to_string(),
-            ));
-        }
-
-        let linked_mappings = self
-            .oauth2_service
-            .get_user_provider_mappings(user_id)
-            .await
-            .map_err(ApiError::from)?;
-        let active_provider_keys = self.active_oauth2_provider_keys().await?;
-        let active_linked_mappings =
-            Self::active_oauth2_mappings(&linked_mappings, &active_provider_keys);
-        let active_linked_mappings = active_linked_mappings
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let (target_oauth2_identities, remaining_oauth2_identities) =
-            Self::oauth2_identity_unlink_counts(
-                &active_linked_mappings,
-                &provider_type,
-                provider_instance_name,
-                provider_user_id,
-            );
-
-        if target_oauth2_identities == 0 {
-            return Err(ApiError::NotFound(
-                "No binding found for this provider".to_string(),
-            ));
-        }
-
-        let (_preferences, auth_factors) = self
-            .user_service
-            .get_user_preferences(user_id)
-            .await
-            .map_err(ApiError::from)?;
-        let remaining_sign_in_method_count =
-            UserService::sign_in_method_count(&auth_factors, remaining_oauth2_identities);
-        if remaining_sign_in_method_count == 0 {
-            return Err(ApiError::InvalidInput(
-                "Cannot unlink the last sign-in method".to_string(),
-            ));
-        }
-
-        let removed = if let Some(provider_user_id) = provider_user_id {
-            // Unlink specific binding
-            self.oauth2_service
-                .unlink_provider(
-                    user_id,
-                    provider_instance_name.expect("validated above"),
-                    provider_user_id,
-                )
-                .await
-                .map_err(ApiError::from)?
-        } else {
-            // Unlink all bindings for this provider
-            self.oauth2_service
-                .unlink_provider_all(user_id, &provider_type)
-                .await
-                .map_err(ApiError::from)?
-        };
-
-        if !removed {
-            return Err(ApiError::NotFound(
-                "No binding found for this provider".to_string(),
-            ));
-        }
-
-        Ok(UnlinkResult {
-            success: true,
-            removed_count: 1,
-        })
+        let plan = self
+            .plan_unlink_provider(user_id, provider, provider_instance_name, provider_user_id)
+            .await?;
+        self.execute_unlink_provider(user_id, plan).await
     }
 
     pub async fn unlink_provider_response(
@@ -621,20 +742,21 @@ impl OAuth2ApiImpl {
         req: UnlinkProviderRequest,
     ) -> Result<UnlinkProviderResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.user_service
-            .consume_sensitive_operation_verification(user_id, &req.verification_id)
-            .await
-            .map_err(ApiError::from)?;
         let provider_user_id = Self::optional_non_empty_trimmed(&req.provider_user_id);
         let provider_instance_name = Self::optional_non_empty_trimmed(&req.provider_instance_name);
-        let result = self
-            .unlink_provider(
+        let plan = self
+            .plan_unlink_provider(
                 user_id,
                 &req.provider,
                 provider_instance_name.as_deref(),
                 provider_user_id.as_deref(),
             )
             .await?;
+        self.user_service
+            .consume_sensitive_operation_verification(user_id, &req.verification_id)
+            .await
+            .map_err(ApiError::from)?;
+        let result = self.execute_unlink_provider(user_id, plan).await?;
 
         Ok(UnlinkProviderResponse {
             success: result.success,
@@ -731,7 +853,7 @@ fn user_to_oauth2_user_info(
     user: &User,
     email: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> OAuth2UserInfo {
+) -> Result<OAuth2UserInfo, ApiError> {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 
     let proto_role = match user.role {
@@ -745,17 +867,17 @@ fn user_to_oauth2_user_info(
         UserStatus::Banned => ProtoUserStatus::Banned,
     };
 
-    OAuth2UserInfo {
+    Ok(OAuth2UserInfo {
         user_id: public_id_codec
             .encode_user_id(user.id)
-            .expect("positive user ID must encode"),
+            .map_err(ApiError::InvalidInput)?,
         username: user.username.clone(),
-        email: email.unwrap_or_default().to_string(),
-        avatar: String::new(), // User model doesn't have avatar field currently
+        email: email.map(str::to_string),
+        avatar: None,
         role: proto_role as i32,
         status: proto_status as i32,
         created_at: user.created_at.timestamp(),
-    }
+    })
 }
 
 /// Convert proto `OAuth2ProviderInstance` to `ProviderInfo`
@@ -791,8 +913,104 @@ mod tests {
     use crate::impls::ApiError;
     use synctv_proto::client::{
         ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
-        GetAuthorizationUrlRequest, UnlinkProviderRequest,
+        GetAuthorizationUrlRequest, OAuth2UserInfo, UnlinkProviderRequest,
     };
+
+    fn oauth_user_info() -> OAuth2UserInfo {
+        OAuth2UserInfo {
+            user_id: "user_1".to_string(),
+            username: "alice".to_string(),
+            email: Some("alice@example.test".to_string()),
+            avatar: None,
+            role: synctv_proto::common::UserRole::User as i32,
+            status: synctv_proto::common::UserStatus::Active as i32,
+            created_at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn exchange_code_result_to_proto_returns_login_payload() {
+        let response =
+            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+                access_token: Some("access".to_string()),
+                refresh_token: Some("refresh".to_string()),
+                expires_in: 3600,
+                user_info: Some(oauth_user_info()),
+                redirect_url: Some("https://app.example.test/callback".to_string()),
+                is_bind: false,
+                registration_review_required: false,
+                registration_review_id: None,
+            })
+            .expect("complete login response should convert");
+
+        assert_eq!(response.access_token.as_deref(), Some("access"));
+        assert_eq!(response.refresh_token.as_deref(), Some("refresh"));
+        assert!(response.user_info.is_some());
+        assert_eq!(
+            response.redirect_url.as_deref(),
+            Some("https://app.example.test/callback")
+        );
+    }
+
+    #[test]
+    fn exchange_code_result_to_proto_returns_bind_payload() {
+        let response =
+            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+                access_token: None,
+                refresh_token: None,
+                expires_in: 0,
+                user_info: None,
+                redirect_url: Some("https://app.example.test/bound".to_string()),
+                is_bind: true,
+                registration_review_required: false,
+                registration_review_id: None,
+            })
+            .expect("bind response should convert");
+
+        assert!(response.access_token.is_none());
+        assert!(response.refresh_token.is_none());
+        assert!(response.user_info.is_none());
+        assert!(response.is_bind);
+    }
+
+    #[test]
+    fn exchange_code_result_to_proto_returns_review_payload() {
+        let response =
+            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+                access_token: None,
+                refresh_token: None,
+                expires_in: 0,
+                user_info: None,
+                redirect_url: None,
+                is_bind: false,
+                registration_review_required: true,
+                registration_review_id: Some("review_1".to_string()),
+            })
+            .expect("review response should convert");
+
+        assert!(response.access_token.is_none());
+        assert!(response.refresh_token.is_none());
+        assert!(response.registration_review_required);
+        assert_eq!(response.registration_review_id.as_deref(), Some("review_1"));
+    }
+
+    #[test]
+    fn exchange_code_result_to_proto_rejects_incomplete_login_payload() {
+        let error =
+            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+                access_token: None,
+                refresh_token: Some("refresh".to_string()),
+                expires_in: 3600,
+                user_info: Some(oauth_user_info()),
+                redirect_url: None,
+                is_bind: false,
+                registration_review_required: false,
+                registration_review_id: None,
+            })
+            .expect_err("login response without access token should fail");
+
+        assert!(matches!(error, ApiError::Internal(message) if message.contains("access token")));
+    }
 
     #[test]
     fn test_bind_user_lookup_backend_failure_stays_service_unavailable() {

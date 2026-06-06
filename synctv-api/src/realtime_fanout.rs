@@ -1,7 +1,7 @@
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::sync::Mutex;
 use synctv_core::repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
@@ -11,7 +11,7 @@ use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
 pub trait RealtimeFanoutService: Send + Sync {
     async fn try_publish(&self, request: PublishRequest) -> bool;
 
-    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent>;
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String>;
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent);
 
@@ -44,7 +44,7 @@ pub fn publish_best_effort(
 #[derive(Clone)]
 pub struct PreparedRealtimeFanoutPlan {
     event: RealtimeEvent,
-    outbox_event: Option<NewRealtimeOutboxEvent>,
+    outbox_event: NewRealtimeOutboxEvent,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     delivery_requirement: RealtimeDeliveryRequirement,
 }
@@ -55,14 +55,14 @@ impl PreparedRealtimeFanoutPlan {
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
         event: RealtimeEvent,
         delivery_requirement: RealtimeDeliveryRequirement,
-    ) -> Self {
-        let outbox_event = realtime_fanout.outbox_event(&event);
-        Self {
+    ) -> Result<Self, String> {
+        let outbox_event = realtime_fanout.outbox_event(&event)?;
+        Ok(Self {
             event,
             outbox_event,
             realtime_fanout,
             delivery_requirement,
-        }
+        })
     }
 
     #[must_use]
@@ -76,12 +76,12 @@ impl PreparedRealtimeFanoutPlan {
     }
 
     #[must_use]
-    pub const fn outbox_event(&self) -> Option<&NewRealtimeOutboxEvent> {
-        self.outbox_event.as_ref()
+    pub const fn outbox_event(&self) -> &NewRealtimeOutboxEvent {
+        &self.outbox_event
     }
 
     #[must_use]
-    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+    pub fn cloned_outbox_event(&self) -> NewRealtimeOutboxEvent {
         self.outbox_event.clone()
     }
 
@@ -97,7 +97,7 @@ impl PreparedRealtimeFanoutPlan {
 
 type RealtimeEventBuilder<T> = Arc<dyn Fn(&T) -> RealtimeEvent + Send + Sync>;
 type RealtimeOutboxEventFactory<T> =
-    Arc<dyn Fn(&T) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&T) -> synctv_core::Result<NewRealtimeOutboxEvent> + Send + Sync>;
 
 /// Prepared outbox fanout for repository callbacks that return one saved entity.
 ///
@@ -127,27 +127,21 @@ impl<T: 'static> PreparedOutboxFanout<T> {
     }
 
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxEventFactory<T>> {
+    pub fn outbox_factory(&self) -> RealtimeOutboxEventFactory<T> {
         let realtime_fanout = self.realtime_fanout.clone();
         let event_builder = self.event_builder.clone();
         let event_slot = self.event.clone();
-        Some(Arc::new(move |value: &T| {
+        Arc::new(move |value: &T| {
             let event = event_builder(value);
-            *event_slot
-                .lock()
-                .expect("prepared realtime fanout event mutex should not be poisoned") =
-                Some(event.clone());
-            realtime_fanout.outbox_event(&event)
-        }))
+            *event_slot.lock() = Some(event.clone());
+            realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        if let Some(event) = self
-            .event
-            .lock()
-            .expect("prepared realtime fanout event mutex should not be poisoned")
-            .take()
-        {
+        if let Some(event) = self.event.lock().take() {
             self.realtime_fanout.publish_after_outbox_commit(event);
         }
     }
@@ -162,8 +156,8 @@ impl RealtimeFanoutService for NoopRealtimeFanoutService {
         false
     }
 
-    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        Some(new_durable_event(event))
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+        new_durable_event(event)
     }
 
     fn publish_after_outbox_commit(&self, _event: RealtimeEvent) {}
@@ -198,8 +192,8 @@ impl RealtimeFanoutService for LocalRealtimeFanoutService {
         true
     }
 
-    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        Some(new_durable_event(event))
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+        new_durable_event(event)
     }
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
@@ -218,14 +212,14 @@ impl RealtimeFanoutService for LocalRealtimeFanoutService {
 #[derive(Clone)]
 pub struct OutboxRealtimeFanoutService {
     outbox: Arc<RealtimeOutboxRepository>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
+    event_service: Arc<dyn RealtimeEventService>,
 }
 
 impl OutboxRealtimeFanoutService {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         outbox: Arc<RealtimeOutboxRepository>,
-        event_service: Option<Arc<dyn RealtimeEventService>>,
+        event_service: Arc<dyn RealtimeEventService>,
     ) -> Self {
         Self {
             outbox,
@@ -238,10 +232,23 @@ impl OutboxRealtimeFanoutService {
 impl RealtimeFanoutService for OutboxRealtimeFanoutService {
     async fn try_publish(&self, request: PublishRequest) -> bool {
         let event = request.event;
-        if let Some(event_service) = &self.event_service {
-            broadcast_event_locally(event_service.as_ref(), &event);
-        }
-        match self.outbox.insert(&new_outbox_event(&event)).await {
+        broadcast_event_locally(self.event_service.as_ref(), &event);
+        let outbox_event = match new_outbox_event(&event) {
+            Ok(outbox_event) => outbox_event,
+            Err(error) => {
+                synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
+                    .with_label_values(&["outbox_serialize_failed"])
+                    .inc();
+                tracing::error!(
+                    error = %error,
+                    event_type = %event.event_type(),
+                    event_id = %event.event_id(),
+                    "Failed to serialize realtime event for outbox"
+                );
+                return false;
+            }
+        };
+        match self.outbox.insert(&outbox_event).await {
             Ok(()) => true,
             Err(error) => {
                 synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
@@ -258,14 +265,12 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
         }
     }
 
-    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        Some(new_outbox_event(event))
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+        new_outbox_event(event)
     }
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
-        if let Some(event_service) = &self.event_service {
-            broadcast_event_locally(event_service.as_ref(), &event);
-        }
+        broadcast_event_locally(self.event_service.as_ref(), &event);
     }
 
     fn is_distributed_enabled(&self) -> bool {
@@ -287,8 +292,8 @@ pub(crate) fn broadcast_event_locally(
     }
 }
 
-fn new_outbox_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
-    NewRealtimeOutboxEvent {
+fn new_outbox_event(event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+    Ok(NewRealtimeOutboxEvent {
         id: event.event_id().to_string(),
         enqueue_outbox: true,
         aggregate_type: aggregate_type(event).to_string(),
@@ -296,15 +301,21 @@ fn new_outbox_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
         event_type: event.event_type().to_string(),
         event_version: 1,
         aggregate_version: aggregate_version(event),
-        payload: serde_json::to_value(event).expect("RealtimeEvent serialization should not fail"),
-    }
+        payload: serde_json::to_value(event).map_err(|error| {
+            format!(
+                "Failed to serialize realtime event {} ({}): {error}",
+                event.event_id(),
+                event.event_type()
+            )
+        })?,
+    })
 }
 
-fn new_durable_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
-    NewRealtimeOutboxEvent {
+fn new_durable_event(event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+    Ok(NewRealtimeOutboxEvent {
         enqueue_outbox: false,
-        ..new_outbox_event(event)
-    }
+        ..new_outbox_event(event)?
+    })
 }
 
 #[cfg(test)]
@@ -315,6 +326,7 @@ fn is_admin_channel_event(event: &RealtimeEvent) -> bool {
 fn aggregate_type(event: &RealtimeEvent) -> &'static str {
     match event {
         RealtimeEvent::CacheInvalidate { .. } => "cache",
+        RealtimeEvent::PlaybackStateChanged { .. } => "room_playback_state",
         RealtimeEvent::PlaylistCreated { .. }
         | RealtimeEvent::PlaylistUpdated { .. }
         | RealtimeEvent::PlaylistDeleted { .. }
@@ -346,45 +358,29 @@ fn aggregate_id(event: &RealtimeEvent) -> String {
 fn aggregate_version(event: &RealtimeEvent) -> Option<i64> {
     match event {
         RealtimeEvent::RoomSettingsChanged { version, .. } => Some(*version),
+        RealtimeEvent::PlaybackStateChanged { state, .. } => Some(state.version),
         _ => None,
     }
 }
 
 #[must_use]
-pub fn default_realtime_fanout_service(
-    outbox: Option<Arc<RealtimeOutboxRepository>>,
-    distributed_enabled: bool,
-) -> Arc<dyn RealtimeFanoutService> {
-    default_realtime_fanout_service_with_realtime(outbox, distributed_enabled, None)
-}
-
-#[must_use]
-pub fn default_realtime_fanout_service_with_realtime(
-    outbox: Option<Arc<RealtimeOutboxRepository>>,
-    distributed_enabled: bool,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
-) -> Arc<dyn RealtimeFanoutService> {
-    if distributed_enabled {
-        if let Some(outbox) = outbox {
-            return Arc::new(OutboxRealtimeFanoutService::new(outbox, event_service));
-        }
-    }
-
-    if let Some(event_service) = event_service {
-        return Arc::new(LocalRealtimeFanoutService::new(event_service));
-    }
-
+pub fn disabled_realtime_fanout_service() -> Arc<dyn RealtimeFanoutService> {
     Arc::new(NoopRealtimeFanoutService)
 }
 
-pub fn required_realtime_fanout_service_with_realtime(
+#[must_use]
+pub fn local_realtime_fanout_service(
+    event_service: Arc<dyn RealtimeEventService>,
+) -> Arc<dyn RealtimeFanoutService> {
+    Arc::new(LocalRealtimeFanoutService::new(event_service))
+}
+
+#[must_use]
+pub fn distributed_realtime_fanout_service(
     outbox: Arc<RealtimeOutboxRepository>,
     event_service: Arc<dyn RealtimeEventService>,
 ) -> Arc<dyn RealtimeFanoutService> {
-    Arc::new(OutboxRealtimeFanoutService::new(
-        outbox,
-        Some(event_service),
-    ))
+    Arc::new(OutboxRealtimeFanoutService::new(outbox, event_service))
 }
 
 #[derive(Debug, Clone)]
@@ -399,8 +395,8 @@ impl RealtimeFanoutService for ChannelRealtimeFanoutService {
         self.sender.send(request).await.is_ok()
     }
 
-    fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-        Some(new_durable_event(event))
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+        new_durable_event(event)
     }
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
@@ -425,14 +421,14 @@ pub fn channel_realtime_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::{
-        broadcast_event_locally, default_realtime_fanout_service,
-        default_realtime_fanout_service_with_realtime, is_admin_channel_event, publish_best_effort,
-        PreparedOutboxFanout, PreparedRealtimeFanoutPlan,
+        broadcast_event_locally, disabled_realtime_fanout_service, is_admin_channel_event,
+        local_realtime_fanout_service, publish_best_effort, PreparedOutboxFanout,
+        PreparedRealtimeFanoutPlan,
     };
     use async_trait::async_trait;
     use chrono::Utc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use synctv_core::models::{RoomId, UserId};
+    use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
     use synctv_realtime::sync::{
         BroadcastResult, CacheTarget, ConnectionId, PublishRequest, RealtimeEvent,
     };
@@ -498,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_realtime_fanout_without_outbox_degrades_to_noop() {
-        let service = default_realtime_fanout_service(None, true);
+        let service = disabled_realtime_fanout_service();
 
         assert!(
             !service.is_distributed_enabled(),
@@ -508,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_best_effort_publish_skips_disabled_fanout() {
-        let service = default_realtime_fanout_service(None, false);
+        let service = disabled_realtime_fanout_service();
 
         publish_best_effort(
             service,
@@ -523,8 +519,7 @@ mod tests {
     #[tokio::test]
     async fn test_local_realtime_fanout_broadcasts_committed_room_event() {
         let event_service = std::sync::Arc::new(RecordingRealtimeEventService::default());
-        let service =
-            default_realtime_fanout_service_with_realtime(None, false, Some(event_service.clone()));
+        let service = local_realtime_fanout_service(event_service.clone());
 
         service.publish_after_outbox_commit(RealtimeEvent::RoomSettingsChanged {
             event_id: "local-room-settings".to_string(),
@@ -543,8 +538,7 @@ mod tests {
     #[test]
     fn test_prepared_outbox_fanout_builds_local_event_without_outbox_row() {
         let event_service = std::sync::Arc::new(RecordingRealtimeEventService::default());
-        let service =
-            default_realtime_fanout_service_with_realtime(None, false, Some(event_service.clone()));
+        let service = local_realtime_fanout_service(event_service.clone());
         let prepared = PreparedOutboxFanout::new(service, |room_id: &RoomId| {
             RealtimeEvent::RoomSettingsChanged {
                 event_id: "local-prepared-room-settings".to_string(),
@@ -556,9 +550,7 @@ mod tests {
                 timestamp: Utc::now(),
             }
         });
-        let factory = prepared
-            .outbox_factory()
-            .expect("local fanout still needs a callback to capture the committed event");
+        let factory = prepared.outbox_factory();
 
         let event = factory(&RoomId::expect_positive(10_000_161))
             .expect("local fanout should prepare a durable resource event");
@@ -620,19 +612,54 @@ mod tests {
             timestamp: Utc::now(),
         };
         let plan = PreparedRealtimeFanoutPlan::new(
-            default_realtime_fanout_service(None, true),
+            disabled_realtime_fanout_service(),
             event,
             RealtimeDeliveryRequirement::DistributedIfAvailable,
-        );
+        )
+        .expect("prepared fanout plan should build");
 
-        let event = plan
-            .outbox_event()
-            .expect("noop fanout should prepare a durable resource event");
+        let event = plan.outbox_event();
         assert!(!event.enqueue_outbox);
         assert_eq!(
             plan.delivery_requirement(),
             RealtimeDeliveryRequirement::DistributedIfAvailable
         );
         assert_eq!(plan.event().event_id(), "prepared-plan-room-deleted");
+    }
+
+    #[test]
+    fn test_playback_state_outbox_uses_playback_aggregate_metadata() {
+        let room_id = RoomId::expect_positive(10_000_162);
+        let state = RoomPlaybackState {
+            room_id,
+            playing_media_id: Some(MediaId::expect_positive(10_000_163)),
+            playing_playlist_id: None,
+            target: Vec::new(),
+            current_progress_id: None,
+            is_playing: true,
+            position: 12.5,
+            speed: 1.0,
+            version: 7,
+            updated_at: Utc::now(),
+        };
+        let plan = PreparedRealtimeFanoutPlan::new(
+            disabled_realtime_fanout_service(),
+            RealtimeEvent::PlaybackStateChanged {
+                event_id: "playback-state-outbox-metadata".to_string(),
+                room_id,
+                user_id: UserId::expect_positive(10_000_164),
+                username: "tester".to_string(),
+                state,
+                timestamp: Utc::now(),
+            },
+            RealtimeDeliveryRequirement::DistributedIfAvailable,
+        )
+        .expect("prepared playback state fanout plan should build");
+
+        let event = plan.outbox_event();
+        assert_eq!(event.aggregate_type, "room_playback_state");
+        assert_eq!(event.aggregate_id, room_id.to_string());
+        assert_eq!(event.event_type, "playback_state_changed");
+        assert_eq!(event.aggregate_version, Some(7));
     }
 }

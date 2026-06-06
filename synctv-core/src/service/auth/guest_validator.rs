@@ -26,31 +26,23 @@ use super::jwt::{GuestClaims, JwtService};
 #[derive(Clone)]
 pub struct GuestTokenValidator {
     jwt_service: Arc<JwtService>,
-    token_blacklist: Option<Arc<dyn TokenBlacklistStore>>,
-    key_builder: Option<KeyBuilder>,
+    token_blacklist: Arc<dyn TokenBlacklistStore>,
+    key_builder: KeyBuilder,
 }
 
 impl GuestTokenValidator {
     /// Create a new guest token validator
     #[must_use]
-    pub const fn new(jwt_service: Arc<JwtService>) -> Self {
-        Self {
-            jwt_service,
-            token_blacklist: None,
-            key_builder: None,
-        }
-    }
-
-    /// Attach a [`TokenBlacklistStore`] and [`KeyBuilder`] for blacklist checking
-    #[must_use]
-    pub fn with_blacklist(
-        mut self,
-        store: Arc<dyn TokenBlacklistStore>,
+    pub fn new(
+        jwt_service: Arc<JwtService>,
+        token_blacklist: Arc<dyn TokenBlacklistStore>,
         key_builder: KeyBuilder,
     ) -> Self {
-        self.token_blacklist = Some(store);
-        self.key_builder = Some(key_builder);
-        self
+        Self {
+            jwt_service,
+            token_blacklist,
+            key_builder,
+        }
     }
 
     /// Validate a guest token (sync version - JWT only, no blacklist check)
@@ -72,7 +64,7 @@ impl GuestTokenValidator {
     /// Performs the following checks in order:
     /// 1. JWT signature verification and expiration check
     /// 2. Token type verification (must be "guest")
-    /// 3. JTI blacklist check (if blacklist is configured)
+    /// 3. JTI blacklist check
     ///
     /// # Arguments
     /// * `token` - The guest JWT token string
@@ -83,26 +75,23 @@ impl GuestTokenValidator {
         // Step 1: Verify JWT signature and expiration
         let claims = self.jwt_service.verify_guest_token(token)?;
 
-        // Step 2: Check JTI blacklist (if configured)
-        if let (Some(store), Some(kb)) = (&self.token_blacklist, &self.key_builder) {
-            let key = kb.guest_token_blacklist(&claims.jti);
-            match store.is_blacklisted_checked(&key).await {
-                Ok(true) => {
-                    return Err(Error::Authentication(
-                        "Guest token has been revoked".to_string(),
-                    ));
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::error!(
-                        jti = %claims.jti,
-                        error = %e,
-                        "Guest token blacklist check failed due to storage error (fail-closed)"
-                    );
-                    return Err(Error::ServiceUnavailable(
-                        "Authentication service temporarily unavailable".to_string(),
-                    ));
-                }
+        let key = self.key_builder.guest_token_blacklist(&claims.jti);
+        match self.token_blacklist.is_blacklisted_checked(&key).await {
+            Ok(true) => {
+                return Err(Error::Authentication(
+                    "Guest token has been revoked".to_string(),
+                ));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(
+                    jti = %claims.jti,
+                    error = %e,
+                    "Guest token blacklist check failed due to storage error"
+                );
+                return Err(Error::ServiceUnavailable(
+                    "Authentication service temporarily unavailable".to_string(),
+                ));
             }
         }
 
@@ -143,7 +132,7 @@ impl GuestTokenValidator {
     ///
     /// Performs all validation checks:
     /// 1. JWT signature verification and expiration check
-    /// 2. JTI blacklist check (if blacklist is configured)
+    /// 2. JTI blacklist check
     /// 3. Room version check
     ///
     /// # Arguments
@@ -178,32 +167,16 @@ impl GuestTokenValidator {
     /// * `ttl_secs` - Time-to-live in seconds (should match or exceed token's remaining lifetime)
     ///
     /// # Returns
-    /// `Ok(())` on success, or an error if the blacklist store is not configured
-    /// or the write fails.
+    /// `Ok(())` on success, or an error if the write fails.
     pub async fn blacklist_token(&self, jti: &str, ttl_secs: u64) -> Result<()> {
-        match (&self.token_blacklist, &self.key_builder) {
-            (Some(store), Some(kb)) => {
-                let key = kb.guest_token_blacklist(jti);
-                store.blacklist(&key, ttl_secs).await
-            }
-            _ => Err(Error::Internal(
-                "Guest token blacklist store not configured".to_string(),
-            )),
-        }
-    }
-
-    /// Check if the blacklist store is configured
-    #[must_use]
-    pub fn has_blacklist(&self) -> bool {
-        self.token_blacklist.is_some() && self.key_builder.is_some()
+        let key = self.key_builder.guest_token_blacklist(jti);
+        self.token_blacklist.blacklist(&key, ttl_secs).await
     }
 }
 
 impl std::fmt::Debug for GuestTokenValidator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GuestTokenValidator")
-            .field("has_blacklist", &self.has_blacklist())
-            .finish()
+        f.debug_struct("GuestTokenValidator").finish()
     }
 }
 
@@ -211,17 +184,12 @@ impl std::fmt::Debug for GuestTokenValidator {
 mod tests {
     use super::*;
     use crate::models::{RoomId, UserId};
-    use crate::service::auth::jwt::TokenType;
     use crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 
     struct FailingBlacklistStore;
 
     #[async_trait::async_trait]
     impl crate::service::TokenBlacklistStore for FailingBlacklistStore {
-        async fn is_blacklisted(&self, _key: &str) -> bool {
-            false
-        }
-
         async fn is_blacklisted_checked(&self, _key: &str) -> Result<bool> {
             Err(Error::Internal("blacklist backend unavailable".to_string()))
         }
@@ -234,8 +202,8 @@ mod tests {
             Ok(false)
         }
 
-        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-            None
+        async fn get_family_revoked_at_checked(&self, _key: &str) -> Result<Option<i64>> {
+            Ok(None)
         }
 
         async fn set_family_revoked(
@@ -259,23 +227,19 @@ mod tests {
         let jwt = create_test_jwt_service();
         let blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
         let kb = KeyBuilder::new("test");
-        GuestTokenValidator::new(jwt).with_blacklist(blacklist, kb)
-    }
-
-    fn create_test_validator_without_blacklist() -> GuestTokenValidator {
-        GuestTokenValidator::new(create_test_jwt_service())
+        GuestTokenValidator::new(jwt, blacklist, kb)
     }
 
     fn create_test_validator_with_failing_blacklist() -> GuestTokenValidator {
         let jwt = create_test_jwt_service();
         let blacklist = Arc::new(FailingBlacklistStore);
         let kb = KeyBuilder::new("test");
-        GuestTokenValidator::new(jwt).with_blacklist(blacklist, kb)
+        GuestTokenValidator::new(jwt, blacklist, kb)
     }
 
     #[tokio::test]
     async fn test_validate_valid_guest_token() {
-        let validator = create_test_validator_without_blacklist();
+        let validator = create_test_validator_with_blacklist();
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
@@ -288,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_token_with_version_check() {
-        let validator = create_test_validator_without_blacklist();
+        let validator = create_test_validator_with_blacklist();
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
@@ -315,11 +279,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_non_guest_token_fails() {
-        let validator = create_test_validator_without_blacklist();
+        let validator = create_test_validator_with_blacklist();
         let jwt = create_test_jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
         let result = validator.validate_async(&access_token).await;
 
         assert!(result.is_err());
@@ -364,27 +328,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_blacklist_without_store_fails() {
-        let validator = create_test_validator_without_blacklist();
-
-        let result = validator.blacklist_token("some_jti", 3600).await;
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_has_blacklist() {
-        let with_blacklist = create_test_validator_with_blacklist();
-        assert!(with_blacklist.has_blacklist());
-
-        let without_blacklist = create_test_validator_without_blacklist();
-        assert!(!without_blacklist.has_blacklist());
-    }
-
     #[test]
     fn test_sync_validate_valid_guest_token() {
-        let validator = create_test_validator_without_blacklist();
+        let validator = create_test_validator_with_blacklist();
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
@@ -397,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_sync_validate_with_version() {
-        let validator = create_test_validator_without_blacklist();
+        let validator = create_test_validator_with_blacklist();
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 

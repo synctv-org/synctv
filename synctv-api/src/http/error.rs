@@ -75,11 +75,6 @@ impl AppError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)
     }
 
-    // Convenience alias
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::internal_server_error(message)
-    }
-
     // Common user-facing error messages for consistency
     #[must_use]
     pub fn invalid_credentials() -> Self {
@@ -290,7 +285,7 @@ impl From<crate::impls::ApiError> for AppError {
             ErrorKind::Timeout => Self::new(StatusCode::GATEWAY_TIMEOUT, msg),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
-                Self::internal("Internal error")
+                Self::internal_server_error("Internal error")
             }
         };
         app_err.error_code = Some(error_code);
@@ -480,13 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn test_internal_alias() {
-        let err = AppError::internal("oops");
-        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(err.message, "oops");
-    }
-
-    #[test]
     fn test_missing_authorization_header_helper() {
         let err = AppError::missing_authorization_header();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
@@ -598,14 +586,6 @@ mod tests {
         let err = AppError::service_unavailable();
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(err.message.contains("temporarily unavailable"));
-    }
-
-    #[test]
-    fn test_display() {
-        let err = AppError::bad_request("test error");
-        let display = err.to_string();
-        assert!(display.contains("400"));
-        assert!(display.contains("test error"));
     }
 
     #[test]

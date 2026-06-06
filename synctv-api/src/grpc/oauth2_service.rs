@@ -87,7 +87,7 @@ impl OAuth2Service for OAuth2GrpcService {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
@@ -126,7 +126,7 @@ impl OAuth2Service for OAuth2GrpcService {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
@@ -173,8 +173,8 @@ impl OAuth2Service for OAuth2GrpcService {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
-        let client_ip = super::extract_client_ip(&request, &self.config);
+        )?;
+        let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
@@ -218,7 +218,7 @@ impl OAuth2Service for OAuth2GrpcService {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let oauth2_api = Arc::clone(&self.oauth2_api);
         let response = self
             .request_executor
@@ -245,7 +245,7 @@ impl OAuth2Service for OAuth2GrpcService {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
@@ -281,7 +281,7 @@ impl OAuth2Service for OAuth2GrpcService {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
 
         let response = self
             .request_executor

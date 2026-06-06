@@ -261,6 +261,31 @@ pub enum LeadershipEvent {
     Vacancy,
 }
 
+fn publish_leadership_event(
+    event_tx: &broadcast::Sender<LeadershipEvent>,
+    identity: &str,
+    event: LeadershipEvent,
+) {
+    match event_tx.send(event) {
+        Ok(receiver_count) => {
+            debug!(
+                identity = %identity,
+                ?event,
+                receiver_count,
+                "Published leadership event"
+            );
+        }
+        Err(error) => {
+            warn!(
+                identity = %identity,
+                ?event,
+                error = %error,
+                "Failed to publish leadership event"
+            );
+        }
+    }
+}
+
 /// Trait for types that participate in leader election.
 ///
 /// Provides a default [`leader_guard`](Self::leader_guard) implementation
@@ -550,7 +575,7 @@ impl LeaderElector {
         is_sentinel: bool,
     ) -> Self {
         let config = LeaderElectorConfig::default();
-        Self::with_config(redis_conn, identity, &config, key_prefix, is_sentinel)
+        Self::new_with_config(redis_conn, identity, &config, key_prefix, is_sentinel)
     }
 
     /// Create a new leader elector with custom configuration.
@@ -563,7 +588,7 @@ impl LeaderElector {
     /// distributed lock vulnerability during Sentinel failover. For production
     /// deployments with Redis Sentinel, consider using K8s Lease-based leader
     /// election instead (requires `k8s` feature).
-    pub fn with_config(
+    pub fn new_with_config(
         redis_conn: redis::aio::ConnectionManager,
         identity: String,
         config: &LeaderElectorConfig,
@@ -571,7 +596,7 @@ impl LeaderElector {
         is_sentinel: bool,
     ) -> Self {
         let redis_runtime = synctv_core::direct_runtime(redis_conn);
-        Self::with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
+        Self::new_with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
     }
 
     pub fn from_runtime(
@@ -581,10 +606,10 @@ impl LeaderElector {
         is_sentinel: bool,
     ) -> Self {
         let config = LeaderElectorConfig::default();
-        Self::with_runtime_config(redis_runtime, identity, &config, key_prefix, is_sentinel)
+        Self::new_with_runtime_config(redis_runtime, identity, &config, key_prefix, is_sentinel)
     }
 
-    pub fn with_shared(
+    pub fn new_with_shared_runtime(
         redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         identity: String,
         config: &LeaderElectorConfig,
@@ -592,10 +617,10 @@ impl LeaderElector {
         is_sentinel: bool,
     ) -> Self {
         let redis_runtime = synctv_core::shared_runtime(redis_conn);
-        Self::with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
+        Self::new_with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
     }
 
-    pub fn with_runtime_config(
+    pub fn new_with_runtime_config(
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         identity: String,
         config: &LeaderElectorConfig,
@@ -671,7 +696,7 @@ impl LeaderElector {
                 redis::ErrorKind::Io,
                 "Redis timeout: acquire leader time connection",
             ))
-        })?;
+        })??;
         // TIME returns: [seconds, microseconds]
         let time_result: (u64, u64) = tokio::time::timeout(
             self.redis_runtime.operation_timeout(),
@@ -865,10 +890,17 @@ impl LeaderElector {
         // period entirely once Redis recovers, while local time preserves the
         // intended grace period duration (minor clock skew is acceptable).
         let redis_ts = self.get_redis_time().await.unwrap_or_else(|_| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
+            match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                Ok(duration) => duration.as_secs(),
+                Err(error) => {
+                    warn!(
+                        identity = %self.identity,
+                        error = %error,
+                        "System clock is before UNIX_EPOCH while recording leadership loss"
+                    );
+                    0
+                }
+            }
         });
         *self.leadership_lost_at_redis_ts.lock().await = Some(redis_ts);
 
@@ -1062,7 +1094,7 @@ impl LeaderElector {
                 "Leader vacancy detected: no node has held leadership for {} consecutive election cycles",
                 failures
             );
-            let _ = self.event_tx.send(LeadershipEvent::Vacancy);
+            publish_leadership_event(&self.event_tx, &self.identity, LeadershipEvent::Vacancy);
         } else if failures > LEADER_VACANCY_THRESHOLD
             && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD)
         {
@@ -1129,11 +1161,15 @@ impl LeaderElector {
         if was_leader && !leader {
             info!(identity = %self.identity, "Lost leadership");
             // Notify observers of leadership loss
-            let _ = self.event_tx.send(LeadershipEvent::Lost);
+            publish_leadership_event(&self.event_tx, &self.identity, LeadershipEvent::Lost);
         } else if !was_leader && leader {
             // Notify observers of leadership gain (epoch provided by caller)
             if let Some(epoch) = gained_epoch {
-                let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });
+                publish_leadership_event(
+                    &self.event_tx,
+                    &self.identity,
+                    LeadershipEvent::Gained { epoch },
+                );
             }
         }
     }
@@ -1246,7 +1282,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }

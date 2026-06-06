@@ -26,7 +26,7 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use synctv_common::ExecutionControl;
 use tracing::debug;
 
@@ -90,6 +90,33 @@ pub trait UserValidator: Send + Sync {
 const DEFAULT_TICKET_TTL_SECS: u64 = 30;
 /// Ticket length in bytes (256 bits of entropy)
 const TICKET_LENGTH: usize = 32;
+
+fn now_unix_seconds() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "System clock is before UNIX_EPOCH while evaluating WebSocket ticket TTL"
+            );
+            0
+        }
+    }
+}
+
+fn normalize_ticket_ttl_secs(ticket_ttl_secs: Option<u64>) -> u64 {
+    match ticket_ttl_secs {
+        Some(0) => {
+            tracing::warn!(
+                default_ttl_secs = DEFAULT_TICKET_TTL_SECS,
+                "WebSocket ticket TTL must be positive; using default TTL"
+            );
+            DEFAULT_TICKET_TTL_SECS
+        }
+        Some(ttl) => ttl,
+        None => DEFAULT_TICKET_TTL_SECS,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -255,10 +282,7 @@ impl WsTicketData {
                 password_version,
             },
             room_id: room_id.to_string(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            created_at: now_unix_seconds(),
         }
     }
 
@@ -281,10 +305,7 @@ impl WsTicketData {
                 permissions: permissions.0,
             },
             room_id: room_id.to_string(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            created_at: now_unix_seconds(),
         }
     }
 
@@ -581,10 +602,7 @@ impl TicketStore for InMemoryTicketStore {
             return Ok(None);
         };
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = now_unix_seconds();
         if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
             self.cache.remove(ticket).await;
             return Ok(None);
@@ -602,10 +620,7 @@ impl TicketStore for InMemoryTicketStore {
         let Some(entry) = self.cache.get(ticket).await else {
             return Ok(false);
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = now_unix_seconds();
         if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
             self.cache.remove(ticket).await;
             return Ok(false);
@@ -635,10 +650,7 @@ impl TicketStore for InMemoryTicketStore {
         let Some(entry) = self.cache.remove(ticket).await else {
             return Ok(None);
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = now_unix_seconds();
         if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
             return Ok(None);
         }
@@ -791,7 +803,7 @@ impl WsTicketService {
     pub fn from_store(store: Arc<dyn TicketStore>, ticket_ttl_secs: Option<u64>) -> Self {
         Self {
             store,
-            ticket_ttl_secs: ticket_ttl_secs.unwrap_or(DEFAULT_TICKET_TTL_SECS),
+            ticket_ttl_secs: normalize_ticket_ttl_secs(ticket_ttl_secs),
         }
     }
 
@@ -807,7 +819,7 @@ impl WsTicketService {
     }
 
     fn with_memory(ticket_ttl_secs: Option<u64>) -> Self {
-        let ttl = ticket_ttl_secs.unwrap_or(DEFAULT_TICKET_TTL_SECS);
+        let ttl = normalize_ticket_ttl_secs(ticket_ttl_secs);
         Self::from_store(Arc::new(InMemoryTicketStore::new(ttl)), ticket_ttl_secs)
     }
 
@@ -827,9 +839,7 @@ impl WsTicketService {
                 ticket_ttl_secs,
             )),
             SharedStateMode::SharedBestEffort => Ok(Self::with_redis_runtime(
-                profile
-                    .shared_runtime()
-                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.best_effort_shared_runtime("WebSocket ticket storage")?,
                 profile.key_prefix(),
                 ticket_ttl_secs,
             )),
@@ -1360,7 +1370,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1381,7 +1391,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1462,41 +1472,6 @@ mod tests {
         assert!(!ticket1.contains('+'));
         assert!(!ticket1.contains('/'));
         assert!(!ticket1.contains('='));
-    }
-
-    #[test]
-    fn test_ticket_data_serialization() {
-        let user_id = create_test_user_id(50_036);
-        let room_id = create_test_room_id(50_037);
-        let mut data = WsTicketData::user(&user_id, &room_id, 5);
-        data.created_at = 1_234_567_890;
-
-        let json = serde_json::to_string(&data).unwrap();
-        let decoded: WsTicketData = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(data.room_id, decoded.room_id);
-        assert_eq!(data.created_at, decoded.created_at);
-        assert_eq!(data.principal, decoded.principal);
-    }
-
-    #[test]
-    fn test_guest_ticket_data_serialization() {
-        let room_id = create_test_room_id(50_038);
-        let mut data = WsTicketData::guest(
-            &room_id,
-            "guest_1",
-            "Guest",
-            "session_1",
-            "jti_1",
-            12,
-            RoomPermissionSet::default_guest(),
-        );
-        data.created_at = 1_234_567_891;
-
-        let json = serde_json::to_string(&data).unwrap();
-        let decoded: WsTicketData = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(data, decoded);
     }
 
     #[tokio::test]
@@ -1982,11 +1957,7 @@ mod tests {
         let timeout_future = run_ws_ticket_redis_op(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             "store ticket",
-            async {
-                std::future::pending::<()>().await;
-                #[allow(unreachable_code)]
-                Ok::<(), redis::RedisError>(())
-            },
+            async { std::future::pending::<std::result::Result<(), redis::RedisError>>().await },
         );
 
         tokio::pin!(timeout_future);

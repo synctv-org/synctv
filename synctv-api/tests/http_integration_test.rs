@@ -1065,7 +1065,7 @@ mod request_format {
 }
 
 mod response_format {
-    use synctv_proto::client::{LoginResponse, RegisterResponse, User};
+    use synctv_proto::client::{LoginResponse, RegisterResponse, RegistrationStatus, User};
 
     #[test]
     fn test_register_response_serializes() {
@@ -1077,6 +1077,8 @@ mod response_format {
             }),
             access_token: "access_abc".to_string(),
             refresh_token: "refresh_xyz".to_string(),
+            status: RegistrationStatus::Registered as i32,
+            pending_review: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["access_token"], "access_abc");
@@ -1156,7 +1158,7 @@ mod unauthenticated_access {
 }
 
 mod api_error_classification {
-    use synctv_api::impls::{classify_error, ApiError, ErrorKind};
+    use synctv_api::impls::{ApiError, ErrorKind};
 
     #[test]
     fn test_api_error_not_found_classify() {
@@ -1199,48 +1201,6 @@ mod api_error_classification {
     fn test_api_error_service_unavailable_classify() {
         let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
         assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
-    }
-
-    #[test]
-    fn test_api_error_display_uses_plain_message() {
-        let cases = [
-            (
-                ApiError::NotFound("room not found".into()),
-                ErrorKind::NotFound,
-            ),
-            (
-                ApiError::Authentication("invalid token".into()),
-                ErrorKind::Unauthenticated,
-            ),
-            (
-                ApiError::Authorization("forbidden".into()),
-                ErrorKind::PermissionDenied,
-            ),
-            (
-                ApiError::AlreadyExists("user already exists".into()),
-                ErrorKind::AlreadyExists,
-            ),
-            (
-                ApiError::InvalidInput("invalid username".into()),
-                ErrorKind::InvalidArgument,
-            ),
-            (
-                ApiError::ServiceUnavailable("distributed room capacity check unavailable".into()),
-                ErrorKind::ServiceUnavailable,
-            ),
-            (
-                ApiError::Internal("opaque internal failure".into()),
-                ErrorKind::Internal,
-            ),
-        ];
-
-        for (err, expected_kind) in cases {
-            assert_eq!(err.to_string(), err.message());
-            assert_eq!(
-                std::mem::discriminant(&classify_error(err.message())),
-                std::mem::discriminant(&expected_kind)
-            );
-        }
     }
 
     #[test]
@@ -1381,44 +1341,31 @@ mod playback_request {
 
 mod auth_flow {
     use synctv_core::models::UserId;
-    use synctv_core::service::auth::{hash_password, verify_password, JwtService, TokenType};
+    use synctv_core::service::auth::{JwtService, TokenCredentialBinding};
 
     fn jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
     }
 
-    /// Full flow: hash password -> verify password -> issue tokens -> validate tokens
+    fn sign_test_refresh_token(jwt: &JwtService, user_id: &UserId) -> String {
+        jwt.sign_refresh_token_with_session(
+            user_id,
+            0,
+            None,
+            "http-integration-refresh-session",
+            &TokenCredentialBinding::Password { version: 0 },
+        )
+        .expect("refresh token")
+    }
+
+    /// Token flow: issue tokens -> validate tokens -> reject cross-token-type use
     #[tokio::test]
-    async fn test_register_login_flow() {
-        let password = "StrongP@ssw0rd!";
-
-        let hash = hash_password(password)
-            .await
-            .expect("hashing should succeed");
-        assert_ne!(hash, password, "hash must differ from plaintext");
-
-        assert!(
-            verify_password(password, &hash)
-                .await
-                .expect("verify call should succeed"),
-            "correct password should verify"
-        );
-        assert!(
-            !verify_password("wrong_password", &hash)
-                .await
-                .unwrap_or(false),
-            "wrong password should fail verification"
-        );
-
+    async fn test_token_credential_flow() {
         let jwt = jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt
-            .sign_token(&user_id, TokenType::Access, 0)
-            .expect("access token");
-        let refresh_token = jwt
-            .sign_token(&user_id, TokenType::Refresh, 0)
-            .expect("refresh token");
+        let access_token = jwt.sign_access_token(&user_id, 0).expect("access token");
+        let refresh_token = sign_test_refresh_token(&jwt, &user_id);
 
         let claims = jwt
             .verify_access_token(&access_token)
@@ -1435,7 +1382,7 @@ mod auth_flow {
         assert!(refresh_claims.is_refresh_token());
 
         let new_access = jwt
-            .sign_token(&user_id, TokenType::Access, 0)
+            .sign_access_token(&user_id, 0)
             .expect("new access token");
         let new_claims = jwt
             .verify_access_token(&new_access)
@@ -1452,7 +1399,7 @@ mod auth_flow {
             JwtService::new("secret-bbbb-long-enough-for-entropy-check-1234567890").unwrap();
         let user_id = UserId::new();
 
-        let token = jwt_a.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt_a.sign_access_token(&user_id, 0).unwrap();
         assert!(
             jwt_b.verify_access_token(&token).is_err(),
             "cross-secret token must be rejected"

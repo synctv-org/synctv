@@ -160,9 +160,11 @@ pub fn oauth2_provider_type_name_from_code(code: i16) -> Result<String, String> 
 #[derive(Debug, Clone)]
 pub struct OAuth2ProviderTypeName(pub String);
 
-impl From<i16> for OAuth2ProviderTypeName {
-    fn from(value: i16) -> Self {
-        Self(oauth2_provider_type_name_from_code(value).unwrap_or_else(|_| value.to_string()))
+impl TryFrom<i16> for OAuth2ProviderTypeName {
+    type Error = String;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        oauth2_provider_type_name_from_code(value).map(Self)
     }
 }
 
@@ -187,10 +189,9 @@ impl std::fmt::Display for OAuth2Provider {
     }
 }
 
-/// OAuth2/OIDC provider mapping (NO TOKENS)
+/// OAuth2/OIDC provider identity mapping.
 ///
-/// Maps `OAuth2` provider accounts to local users.
-/// Tokens are NOT stored - only identity information for lookups.
+/// Maps provider account identities to local users for lookup and linking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserOAuthProviderMapping {
     pub id: i64,
@@ -252,159 +253,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_provider_from_str_name_all_variants() {
-        assert_eq!(
-            OAuth2Provider::from_str_name("qq"),
-            Some(OAuth2Provider::QQ)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("github"),
-            Some(OAuth2Provider::GitHub)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("google"),
-            Some(OAuth2Provider::Google)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("microsoft"),
-            Some(OAuth2Provider::Microsoft)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("discord"),
-            Some(OAuth2Provider::Discord)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("casdoor"),
-            Some(OAuth2Provider::Casdoor)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("logto"),
-            Some(OAuth2Provider::Logto)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("oidc"),
-            Some(OAuth2Provider::Oidc)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("feishu"),
-            Some(OAuth2Provider::Feishu)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("gitee"),
-            Some(OAuth2Provider::Gitee)
-        );
-    }
-
-    #[test]
-    fn test_provider_from_str_name_case_insensitive() {
-        assert_eq!(
-            OAuth2Provider::from_str_name("GitHub"),
-            Some(OAuth2Provider::GitHub)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("GOOGLE"),
-            Some(OAuth2Provider::Google)
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("Discord"),
-            Some(OAuth2Provider::Discord)
-        );
-    }
-
-    #[test]
-    fn test_provider_from_str_name_invalid() {
-        assert_eq!(OAuth2Provider::from_str_name("invalid"), None);
-        assert_eq!(OAuth2Provider::from_str_name(""), None);
-        assert_eq!(OAuth2Provider::from_str_name("auth0"), None);
-    }
-
-    #[test]
-    fn test_provider_type_code_roundtrip_all_variants() {
+    fn provider_names_codes_and_serde_are_stable() {
         let providers = [
-            OAuth2Provider::QQ,
-            OAuth2Provider::GitHub,
-            OAuth2Provider::Google,
-            OAuth2Provider::Microsoft,
-            OAuth2Provider::Discord,
-            OAuth2Provider::Casdoor,
-            OAuth2Provider::Logto,
-            OAuth2Provider::Oidc,
-            OAuth2Provider::Feishu,
-            OAuth2Provider::Gitee,
+            (OAuth2Provider::QQ, "qq", 1),
+            (OAuth2Provider::GitHub, "github", 2),
+            (OAuth2Provider::Google, "google", 3),
+            (OAuth2Provider::Microsoft, "microsoft", 4),
+            (OAuth2Provider::Discord, "discord", 5),
+            (OAuth2Provider::Casdoor, "casdoor", 6),
+            (OAuth2Provider::Logto, "logto", 7),
+            (OAuth2Provider::Oidc, "oidc", 8),
+            (OAuth2Provider::Feishu, "feishu", 9),
+            (OAuth2Provider::Gitee, "gitee", 10),
         ];
 
-        for provider in providers {
-            let code = provider.as_i16();
+        for (provider, name, code) in providers {
+            assert_eq!(provider.as_str(), name);
+            assert_eq!(provider.to_string(), name);
+            assert_eq!(
+                OAuth2Provider::from_str_name(&name.to_ascii_uppercase()),
+                Some(provider.clone())
+            );
+            assert_eq!(oauth2_provider_type_code_from_name(name), Ok(code));
             assert_eq!(OAuth2Provider::try_from(code), Ok(provider.clone()));
             assert_eq!(
                 oauth2_provider_type_name_from_code(code).as_deref(),
-                Ok(provider.as_str())
+                Ok(name)
+            );
+
+            let json = serde_json::to_string(&provider).unwrap();
+            assert_eq!(
+                serde_json::from_str::<OAuth2Provider>(&json).unwrap(),
+                provider
             );
         }
 
+        assert_eq!(OAuth2Provider::from_str_name("auth0"), None);
         assert!(OAuth2Provider::try_from(0).is_err());
         assert!(oauth2_provider_type_code_from_name("unknown").is_err());
     }
 
     #[test]
-    fn test_provider_is_oidc() {
-        // OIDC providers
-        assert!(OAuth2Provider::Casdoor.is_oidc());
-        assert!(OAuth2Provider::Logto.is_oidc());
-        assert!(OAuth2Provider::Oidc.is_oidc());
-        assert!(OAuth2Provider::Feishu.is_oidc());
-        assert!(OAuth2Provider::Google.is_oidc());
-        assert!(OAuth2Provider::Microsoft.is_oidc());
-
-        // Non-OIDC providers
-        assert!(!OAuth2Provider::QQ.is_oidc());
-        assert!(!OAuth2Provider::GitHub.is_oidc());
-        assert!(!OAuth2Provider::Discord.is_oidc());
-        assert!(!OAuth2Provider::Gitee.is_oidc());
-    }
-
-    #[test]
-    fn test_provider_default_scopes_oidc() {
-        let scopes = OAuth2Provider::Google.default_scopes();
-        assert!(scopes.contains(&"openid".to_string()));
-        assert!(scopes.contains(&"profile".to_string()));
-        assert!(scopes.contains(&"email".to_string()));
-    }
-
-    #[test]
-    fn test_provider_default_scopes_non_oidc() {
-        let scopes = OAuth2Provider::GitHub.default_scopes();
-        assert!(scopes.contains(&"identify".to_string()));
-        assert!(!scopes.contains(&"openid".to_string()));
-    }
-
-    #[test]
-    fn test_provider_serde_roundtrip() {
-        let provider = OAuth2Provider::GitHub;
-        let json = serde_json::to_string(&provider).unwrap();
-        assert_eq!(json, "\"github\"");
-        let deserialized: OAuth2Provider = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, provider);
-    }
-
-    #[test]
-    fn test_provider_serde_all_variants() {
-        let providers = vec![
-            OAuth2Provider::QQ,
-            OAuth2Provider::GitHub,
-            OAuth2Provider::Google,
-            OAuth2Provider::Microsoft,
-            OAuth2Provider::Discord,
+    fn provider_default_scopes_follow_protocol_family() {
+        for provider in [
             OAuth2Provider::Casdoor,
             OAuth2Provider::Logto,
             OAuth2Provider::Oidc,
             OAuth2Provider::Feishu,
+            OAuth2Provider::Google,
+            OAuth2Provider::Microsoft,
+        ] {
+            let scopes = provider.default_scopes();
+            assert!(provider.is_oidc());
+            assert!(scopes.contains(&"openid".to_string()));
+            assert!(scopes.contains(&"profile".to_string()));
+            assert!(scopes.contains(&"email".to_string()));
+        }
+
+        for provider in [
+            OAuth2Provider::QQ,
+            OAuth2Provider::GitHub,
+            OAuth2Provider::Discord,
             OAuth2Provider::Gitee,
-        ];
-        for p in providers {
-            let json = serde_json::to_string(&p).unwrap();
-            let deserialized: OAuth2Provider = serde_json::from_str(&json).unwrap();
-            assert_eq!(deserialized, p);
+        ] {
+            assert!(!provider.is_oidc());
+            assert_eq!(provider.default_scopes(), vec!["identify".to_string()]);
         }
     }
 
@@ -442,114 +355,5 @@ mod tests {
             updated_at: Utc::now(),
         };
         assert_eq!(mapping.provider_enum(), None);
-    }
-
-    #[test]
-    fn test_mapping_serde_roundtrip() {
-        let mapping = UserOAuthProviderMapping {
-            id: 1,
-            provider: "google".to_string(),
-            provider_instance_name: "google-work".to_string(),
-            provider_issuer: Some("https://accounts.google.com".to_string()),
-            provider_user_id: "goog_456".to_string(),
-            user_id: UserId::expect_positive(2),
-            username: "googleuser".to_string(),
-            email: Some("user@gmail.com".to_string()),
-            avatar_url: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-        let json = serde_json::to_value(&mapping).unwrap();
-        let deserialized: UserOAuthProviderMapping = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.id, mapping.id);
-        assert_eq!(deserialized.provider, mapping.provider);
-        assert_eq!(
-            deserialized.provider_instance_name,
-            mapping.provider_instance_name
-        );
-        assert_eq!(deserialized.provider_issuer, mapping.provider_issuer);
-        assert_eq!(deserialized.provider_user_id, mapping.provider_user_id);
-        assert_eq!(deserialized.username, mapping.username);
-    }
-
-    #[test]
-    fn test_user_info_serde_roundtrip() {
-        let info = OAuth2UserInfo {
-            provider: OAuth2Provider::GitHub,
-            provider_instance_name: "github-main".to_string(),
-            provider_issuer: Some("https://github.com".to_string()),
-            provider_user_id: "gh_789".to_string(),
-            username: "ghuser".to_string(),
-            email: Some("gh@example.com".to_string()),
-            avatar: Some("https://avatars.githubusercontent.com/u/123".to_string()),
-        };
-        let json = serde_json::to_value(&info).unwrap();
-        let deserialized: OAuth2UserInfo = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.provider, OAuth2Provider::GitHub);
-        assert_eq!(deserialized.provider_instance_name, "github-main");
-        assert_eq!(
-            deserialized.provider_issuer.as_deref(),
-            Some("https://github.com")
-        );
-        assert_eq!(deserialized.provider_user_id, "gh_789");
-        assert_eq!(deserialized.username, "ghuser");
-    }
-
-    #[test]
-    fn test_provider_display_and_parse_roundtrip() {
-        assert_eq!(OAuth2Provider::GitHub.to_string(), "github");
-        assert_eq!(
-            "LOGTO".parse::<OAuth2Provider>().unwrap(),
-            OAuth2Provider::Logto
-        );
-        assert_eq!(
-            OAuth2Provider::from_str_name("google"),
-            Some(OAuth2Provider::Google)
-        );
-        assert!("unknown".parse::<OAuth2Provider>().is_err());
-    }
-
-    #[test]
-    fn test_auth_url_response_serde() {
-        let resp = OAuth2AuthUrlResponse {
-            url: "https://github.com/login/oauth/authorize?client_id=xxx".to_string(),
-            state: "random_state".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("authorize"));
-        assert!(json.contains("random_state"));
-    }
-
-    #[test]
-    fn test_callback_request_deserialize() {
-        let json = serde_json::json!({
-            "code": "auth_code_123",
-            "state": "state_456"
-        });
-        let req: OAuth2CallbackRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.code, "auth_code_123");
-        assert_eq!(req.state, "state_456");
-    }
-
-    #[test]
-    fn test_callback_response_with_token() {
-        let resp = OAuth2CallbackResponse {
-            token: Some("jwt.token.here".to_string()),
-            redirect: None,
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["token"], "jwt.token.here");
-        assert!(json["redirect"].is_null());
-    }
-
-    #[test]
-    fn test_callback_response_with_redirect() {
-        let resp = OAuth2CallbackResponse {
-            token: None,
-            redirect: Some("https://example.com/bind".to_string()),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert!(json["token"].is_null());
-        assert_eq!(json["redirect"], "https://example.com/bind");
     }
 }

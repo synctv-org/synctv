@@ -3,10 +3,9 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use synctv_api::impls::{AdminApiImpl, ApiError, ClientApiImpl};
+use synctv_api::impls::{AdminApiConfig, AdminApiImpl, ApiError, ClientApiImpl};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         room_settings::RequireApproval, ReviewRequestId, ReviewStatus, RoomSettings, SignupMethod,
         User, UserId, UserRole, UserStatus,
@@ -14,6 +13,7 @@ use synctv_core::{
     repository::{ProviderInstanceRepository, SettingsRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
+        room::RoomServiceOptions,
         AuditService, EmailConfig, EmailConfigProvider, EmailService, InMemoryTokenBlacklistStore,
         PublishKeyService, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
         UserService,
@@ -55,11 +55,10 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        PasswordComplexityConfig::default(),
         token_blacklist,
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test:user".to_string()),
@@ -67,7 +66,7 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
 }
 
 fn public_id_codec() -> synctv_api::PublicIdCodec {
-    synctv_api::PublicIdCodec::default_for_tests()
+    synctv_api::PublicIdCodec::plain()
 }
 
 fn review_request_public_id(id: i64) -> String {
@@ -83,23 +82,30 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
 
-    ClientApiImpl::new(
-        user_service,
-        room_service,
-        connection_manager,
-        Arc::new(Config::default()),
-        None,
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(public_id_codec()),
+    ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            user_service,
+            room_service,
+            connection_service: connection_manager,
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(public_id_codec()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        synctv_api::impls::ClientApiRuntime::test_disabled(),
     )
 }
 
 async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
     let user_service = Arc::new(make_user_service(&pool));
-    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
@@ -109,7 +115,15 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         .await
         .expect("settings initialized");
     let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-    room_service.set_settings_registry(settings_registry.clone());
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        (*user_service).clone(),
+        RoomServiceOptions {
+            settings_registry: Some(settings_registry.clone()),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
     let email_service =
         Arc::new(EmailService::new(Arc::new(DisabledEmailConfigProvider)).expect("email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
@@ -117,24 +131,30 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
     )));
-    let publish_key_service = Arc::new(PublishKeyService::new(
-        JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").unwrap(),
-        24,
-    ));
+    let publish_key_service = Arc::new(
+        PublishKeyService::new(
+            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").unwrap(),
+            24,
+        )
+        .expect("publish key service should build"),
+    );
 
-    AdminApiImpl::new(
-        Arc::new(room_service),
-        user_service,
-        settings_service,
-        Some(settings_registry),
-        email_service,
-        connection_manager,
-        provider_instance_manager,
-        None,
-        Some(publish_key_service),
-        Arc::new(Config::default()),
-        Arc::new(AuditService::new_unbuffered(pool)),
-        Arc::new(public_id_codec()),
+    AdminApiImpl::new_with_runtime(
+        AdminApiConfig {
+            room_service: Arc::new(room_service),
+            user_service,
+            settings_service,
+            settings_registry: Some(settings_registry),
+            email_service,
+            connection_service: connection_manager,
+            provider_instance_manager,
+            live_streaming_infrastructure: None,
+            publish_key_service: Some(publish_key_service),
+            config: Arc::new(Config::default()),
+            audit_service: Arc::new(AuditService::new_unbuffered(pool)),
+            public_id_codec: Arc::new(public_id_codec()),
+        },
+        synctv_api::impls::AdminApiRuntime::test_disabled(),
     )
 }
 
@@ -145,7 +165,10 @@ async fn test_client_member_approval_api_contracts() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo
@@ -436,7 +459,10 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo
@@ -640,7 +666,10 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo
@@ -729,7 +758,10 @@ async fn test_add_member_resolves_existing_room_join_review() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo

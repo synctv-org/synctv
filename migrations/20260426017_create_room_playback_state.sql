@@ -11,8 +11,11 @@ CREATE TABLE IF NOT EXISTS room_playback_progress (
     version BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT room_playback_progress_position_non_negative
         CHECK ("position" >= 0),
-    CONSTRAINT room_playback_progress_has_one_source
-        CHECK ((media_id IS NOT NULL)::int + (playlist_id IS NOT NULL)::int = 1),
+    CONSTRAINT room_playback_progress_has_supported_source
+        CHECK (
+            (media_id IS NOT NULL AND playlist_id IS NULL AND target = ''::bytea)
+            OR (media_id IS NULL AND playlist_id IS NOT NULL AND octet_length(target) > 0)
+        ),
     CONSTRAINT room_playback_progress_target_hash_sha256
         CHECK (target_hash ~ '^[0-9a-f]{64}$'),
     CONSTRAINT room_playback_progress_media_same_room_fk

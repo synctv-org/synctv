@@ -1,16 +1,30 @@
 //! Authentication flow integration tests //!
 //! Tests the complete authentication flow: register → login
 //!
-//! Run with: cargo test --test `auth_flow_integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use sqlx::Row;
 use synctv_core::{
     models::{OpaquePasswordRecord, SignupMethod, User, UserId, UserRole, UserStatus},
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
-    service::auth::{OpaquePasswordService, TokenType},
+    service::auth::{OpaquePasswordService, TokenCredentialBinding},
 };
 use synctv_core_testing::{create_test_jwt_service, create_test_pool};
+
+fn sign_test_refresh_token(
+    jwt_service: &synctv_core::service::auth::jwt::JwtService,
+    user_id: &UserId,
+) -> String {
+    jwt_service
+        .sign_refresh_token_with_session(
+            user_id,
+            0,
+            None,
+            "auth-flow-refresh-session",
+            &TokenCredentialBinding::Password { version: 0 },
+        )
+        .expect("Failed to sign refresh token")
+}
 
 fn test_opaque_password_service() -> OpaquePasswordService {
     OpaquePasswordService::derive_from_secret(b"auth-flow-integration-tests")
@@ -121,11 +135,9 @@ async fn test_complete_registration_flow() {
     // Generate tokens
     let jwt_service = create_test_jwt_service();
     let access_token = jwt_service
-        .sign_token(&fetched_user.id, TokenType::Access, 0)
+        .sign_access_token(&fetched_user.id, 0)
         .expect("Failed to sign access token");
-    let refresh_token = jwt_service
-        .sign_token(&fetched_user.id, TokenType::Refresh, 0)
-        .expect("Failed to sign refresh token");
+    let refresh_token = sign_test_refresh_token(&jwt_service, &fetched_user.id);
 
     // Verify tokens
     let access_claims = jwt_service
@@ -226,11 +238,9 @@ async fn test_token_refresh_flow() {
     let user_id = UserId::new();
 
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
+        .sign_access_token(&user_id, 0)
         .expect("Failed to sign access token");
-    let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh, 0)
-        .expect("Failed to sign refresh token");
+    let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
     // In real scenario, we would wait or use expired token
 
@@ -239,7 +249,7 @@ async fn test_token_refresh_flow() {
         .expect("Failed to verify refresh token");
 
     let new_access_token = jwt_service
-        .sign_token(&refresh_claims.user_id().unwrap(), TokenType::Access, 0)
+        .sign_access_token(&refresh_claims.user_id().unwrap(), 0)
         .expect("Failed to sign new access token");
 
     let new_claims = jwt_service
@@ -281,7 +291,7 @@ async fn test_password_credential_update_replaces_opaque_record() {
 
     // Generate token
     let old_token = jwt_service
-        .sign_token(&created_user.id, TokenType::Access, 0)
+        .sign_access_token(&created_user.id, 0)
         .expect("Failed to sign token");
 
     let _old_token_claims = jwt_service
@@ -387,7 +397,7 @@ async fn test_concurrent_login_attempts() {
                 .expect("User not found");
 
             let token = jwt
-                .sign_token(&user.id, TokenType::Access, 0)
+                .sign_access_token(&user.id, 0)
                 .expect("Failed to sign token");
 
             jwt.verify_access_token(&token)

@@ -25,12 +25,38 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
 
     CONSTRAINT user_registration_requests_email_not_empty
         CHECK (email IS NULL OR length(trim(email)) > 0),
+    CONSTRAINT user_registration_requests_opaque_material_group_complete
+        CHECK (
+            (
+                opaque_record IS NULL
+                AND opaque_credential_identifier IS NULL
+                AND opaque_ciphersuite IS NULL
+                AND opaque_server_setup_version IS NULL
+            )
+            OR (
+                opaque_record IS NOT NULL
+                AND opaque_credential_identifier IS NOT NULL
+                AND opaque_ciphersuite IS NOT NULL
+                AND opaque_server_setup_version IS NOT NULL
+            )
+        ),
+    CONSTRAINT user_registration_requests_opaque_record_not_empty
+        CHECK (opaque_record IS NULL OR length(opaque_record) > 0),
+    CONSTRAINT user_registration_requests_opaque_identifier_not_empty
+        CHECK (opaque_credential_identifier IS NULL OR length(opaque_credential_identifier) > 0),
+    CONSTRAINT user_registration_requests_opaque_ciphersuite_not_empty
+        CHECK (opaque_ciphersuite IS NULL OR length(trim(opaque_ciphersuite)) > 0),
+    CONSTRAINT user_registration_requests_opaque_setup_version_positive
+        CHECK (
+            opaque_server_setup_version IS NULL
+            OR opaque_server_setup_version > 0
+        ),
     CONSTRAINT user_registration_requests_webauthn_name_not_empty
         CHECK (
             webauthn_credential_name IS NULL
             OR length(trim(webauthn_credential_name)) > 0
         ),
-    CONSTRAINT user_registration_requests_webauthn_material_complete
+    CONSTRAINT user_registration_requests_webauthn_material_group_complete
         CHECK (
             (
                 webauthn_credential_id IS NULL
@@ -38,10 +64,49 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
                 AND webauthn_credential_name IS NULL
             )
             OR (
-                signup_method = 5
-                AND webauthn_credential_id IS NOT NULL
+                webauthn_credential_id IS NOT NULL
                 AND webauthn_passkey IS NOT NULL
             )
+        ),
+    CONSTRAINT user_registration_requests_oauth2_material_group_complete
+        CHECK (
+            (
+                oauth2_provider_type IS NULL
+                AND oauth2_provider_instance_name IS NULL
+                AND oauth2_provider_user_id IS NULL
+            )
+            OR (
+                oauth2_provider_type IS NOT NULL
+                AND oauth2_provider_instance_name IS NOT NULL
+                AND oauth2_provider_user_id IS NOT NULL
+            )
+        ),
+    CONSTRAINT user_registration_requests_oauth2_instance_not_empty
+        CHECK (
+            oauth2_provider_instance_name IS NULL
+            OR length(trim(oauth2_provider_instance_name)) > 0
+        ),
+    CONSTRAINT user_registration_requests_oauth2_user_id_not_empty
+        CHECK (
+            oauth2_provider_user_id IS NULL
+            OR length(trim(oauth2_provider_user_id)) > 0
+        ),
+    CONSTRAINT user_registration_requests_auth_material_present
+        CHECK (
+            opaque_record IS NOT NULL
+            OR oauth2_provider_user_id IS NOT NULL
+            OR webauthn_credential_id IS NOT NULL
+        ),
+    CONSTRAINT user_registration_requests_auth_material_exclusive
+        CHECK (
+            ((opaque_record IS NOT NULL)::int
+             + (oauth2_provider_user_id IS NOT NULL)::int
+             + (webauthn_credential_id IS NOT NULL)::int) = 1
+        ),
+    CONSTRAINT user_registration_requests_rejection_reason_not_empty
+        CHECK (
+            rejection_reason IS NULL
+            OR length(trim(rejection_reason)) > 0
         )
 );
 
@@ -71,7 +136,6 @@ CREATE INDEX IF NOT EXISTS idx_user_registration_requests_pending_oauth2_type
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_pending_webauthn_credential
     ON user_registration_requests(webauthn_credential_id)
     WHERE reviewed_at IS NULL
-      AND status = 1
       AND webauthn_credential_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_user_registration_requests_reviewed_by

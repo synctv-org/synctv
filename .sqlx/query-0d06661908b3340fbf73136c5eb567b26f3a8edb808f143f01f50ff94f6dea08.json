@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO settings (key, group_name, value, version)\n            VALUES ($1, $2, $3, 0)\n            ON CONFLICT (key) DO UPDATE\n            SET updated_at = settings.updated_at\n            RETURNING key AS \"key!\",\n                      group_name AS \"group_name!\",\n                      value AS \"value!\",\n                      version AS \"version!\",\n                      created_at AS \"created_at!\",\n                      updated_at AS \"updated_at!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "group_name!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "value!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "version!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0d06661908b3340fbf73136c5eb567b26f3a8edb808f143f01f50ff94f6dea08"
+}

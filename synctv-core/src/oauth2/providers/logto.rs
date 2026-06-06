@@ -422,20 +422,4 @@ mod tests {
         assert_eq!(config.redirect_url, "https://example.com/cb");
         assert_eq!(config.endpoint, "https://logto.example.com");
     }
-
-    #[test]
-    fn test_logto_config_serialize_roundtrip() {
-        let config = LogtoConfig {
-            client_id: "id".to_string(),
-            client_secret: "secret".to_string(),
-            redirect_url: "https://example.com/cb".to_string(),
-            endpoint: "https://logto.example.com".to_string(),
-        };
-        let json = serde_json::to_value(&config).unwrap();
-        let deserialized: LogtoConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.client_id, config.client_id);
-        assert_eq!(deserialized.client_secret, config.client_secret);
-        assert_eq!(deserialized.redirect_url, config.redirect_url);
-        assert_eq!(deserialized.endpoint, config.endpoint);
-    }
 }

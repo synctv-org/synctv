@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{broadcast, watch};
@@ -129,11 +129,7 @@ impl ManagementLifecycleController {
 
     #[must_use]
     pub fn current_shutdown_mode(&self) -> Option<ShutdownMode> {
-        *self
-            .inner
-            .current_shutdown_mode
-            .read()
-            .expect("shutdown mode rwlock poisoned")
+        *read_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode")
     }
 
     #[must_use]
@@ -227,19 +223,12 @@ impl ManagementLifecycleController {
 
     #[must_use]
     pub fn latest_event(&self) -> LifecycleEvent {
-        self.inner
-            .latest_event
-            .read()
-            .expect("lifecycle latest event rwlock poisoned")
-            .clone()
+        read_lifecycle_lock(&self.inner.latest_event, "latest_event").clone()
     }
 
     fn merge_shutdown_mode(&self, requested_mode: ShutdownMode) -> ShutdownMode {
-        let current_mode = *self
-            .inner
-            .current_shutdown_mode
-            .read()
-            .expect("shutdown mode rwlock poisoned");
+        let current_mode =
+            *read_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode");
         let effective_mode = match (current_mode, requested_mode) {
             (Some(ShutdownMode::Force), _)
             | (Some(ShutdownMode::Graceful), ShutdownMode::Force) => ShutdownMode::Force,
@@ -247,11 +236,8 @@ impl ManagementLifecycleController {
             (None, mode) => mode,
         };
         if current_mode != Some(effective_mode) {
-            *self
-                .inner
-                .current_shutdown_mode
-                .write()
-                .expect("shutdown mode rwlock poisoned") = Some(effective_mode);
+            *write_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode") =
+                Some(effective_mode);
             let _ = self.inner.shutdown_tx.send(Some(effective_mode));
         }
         effective_mode
@@ -273,13 +259,35 @@ impl ManagementLifecycleController {
             terminal,
             unix_millis: unix_millis_now(),
         };
-        *self
-            .inner
-            .latest_event
-            .write()
-            .expect("lifecycle latest event rwlock poisoned") = event.clone();
+        *write_lifecycle_lock(&self.inner.latest_event, "latest_event") = event.clone();
         let _ = self.inner.event_tx.send(event.clone());
         event
+    }
+}
+
+fn read_lifecycle_lock<'a, T>(lock: &'a RwLock<T>, name: &'static str) -> RwLockReadGuard<'a, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::error!(
+                lock = name,
+                "management lifecycle lock was poisoned; recovering stored state"
+            );
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn write_lifecycle_lock<'a, T>(lock: &'a RwLock<T>, name: &'static str) -> RwLockWriteGuard<'a, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::error!(
+                lock = name,
+                "management lifecycle lock was poisoned; recovering stored state"
+            );
+            poisoned.into_inner()
+        }
     }
 }
 

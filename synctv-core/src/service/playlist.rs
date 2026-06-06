@@ -17,7 +17,7 @@ use crate::{
     provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     repository::PlaylistRepository,
-    repository::{UserProviderCredentialRepository, UserRepository},
+    repository::UserProviderCredentialRepository,
     service::{
         file_storage::FileStorageContext, optimistic_retry, permission::PermissionService,
         playlist_cover_upload_policy,
@@ -30,40 +30,7 @@ use crate::{
 use serde_json::Value as JsonValue;
 
 pub type RealtimeOutboxPlaylistEventFactory =
-    Arc<dyn Fn(&Playlist) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
-
-/// Trait for broadcasting playlist changes to realtime replicas.
-///
-/// This abstracts over realtime delivery so that `synctv-core` does not depend
-/// on `synctv-realtime`. The implementation lives in the API/wiring layer.
-pub trait PlaylistBroadcaster: Send + Sync {
-    /// Broadcast that a playlist was created.
-    fn broadcast_playlist_created(
-        &self,
-        room_id: &RoomId,
-        playlist: &Playlist,
-        user_id: &UserId,
-        username: &str,
-    );
-
-    /// Broadcast that a playlist was updated.
-    fn broadcast_playlist_updated(
-        &self,
-        room_id: &RoomId,
-        playlist: &Playlist,
-        user_id: &UserId,
-        username: &str,
-    );
-
-    /// Broadcast that a playlist was deleted.
-    fn broadcast_playlist_deleted(
-        &self,
-        room_id: &RoomId,
-        playlist_id: &PlaylistId,
-        user_id: &UserId,
-        username: &str,
-    );
-}
+    Arc<dyn Fn(&Playlist) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 
 fn normalize_dynamic_playlist_fields(
     source_provider: Option<String>,
@@ -158,12 +125,12 @@ pub struct PlaylistService {
     playlist_repo: PlaylistRepository,
     permission_service: PermissionService,
     providers_manager: Arc<ProvidersManager>,
+    /// Credential encryption used by credential-backed providers.
     credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
+    /// Repository used by credential-backed providers.
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
-    /// Optional realtime broadcaster for cross-replica playlist sync
-    realtime_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
 }
 
 const PLAYLIST_COVER_REFERENCE_KIND: &str = "playlist_cover";
@@ -193,16 +160,6 @@ impl std::fmt::Debug for PlaylistService {
 }
 
 impl PlaylistService {
-    async fn resolve_actor_username(&self, user_id: &UserId) -> String {
-        UserRepository::new(self.playlist_repo.pool().clone())
-            .get_by_id(user_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|user| user.username)
-            .unwrap_or_default()
-    }
-
     fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
         if provider_requires_credential_repo(provider_name) && self.credential_repo.is_none() {
             return Err(Error::ServiceUnavailable(format!(
@@ -228,7 +185,6 @@ impl PlaylistService {
             credential_repo: None,
             realtime_outbox: None,
             file_storage_service: None,
-            realtime_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -241,41 +197,45 @@ impl PlaylistService {
         credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
+        Self::new_with_runtime(
+            playlist_repo,
+            permission_service,
+            providers_manager,
+            credential_encryption,
+            credential_repo,
+            None,
+            None,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_runtime(
+        playlist_repo: PlaylistRepository,
+        permission_service: PermissionService,
+        providers_manager: Arc<ProvidersManager>,
+        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
+        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+        realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+        file_storage_service: Option<Arc<dyn FileStorageService>>,
+    ) -> Self {
+        assert!(
+            credential_repo.is_none() || credential_encryption.is_some(),
+            "provider credential repository wiring requires credential encryption"
+        );
         Self {
             playlist_repo,
             permission_service,
             providers_manager,
             credential_encryption,
             credential_repo,
-            realtime_outbox: None,
-            file_storage_service: None,
-            realtime_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
+            realtime_outbox,
+            file_storage_service,
         }
-    }
-
-    #[must_use]
-    pub fn with_file_storage_service(mut self, service: Arc<dyn FileStorageService>) -> Self {
-        self.file_storage_service = Some(service);
-        self
     }
 
     #[must_use]
     pub fn file_storage_service(&self) -> Option<&Arc<dyn FileStorageService>> {
         self.file_storage_service.as_ref()
-    }
-
-    pub fn set_realtime_outbox(&mut self, realtime_outbox: Option<Arc<RealtimeOutboxRepository>>) {
-        self.realtime_outbox = realtime_outbox;
-    }
-
-    /// Set the realtime broadcaster for cross-replica playlist sync
-    pub fn set_realtime_broadcaster(&self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
-        *self.realtime_broadcaster.write() = Some(broadcaster);
-    }
-
-    #[doc(hidden)]
-    pub fn has_realtime_broadcaster(&self) -> bool {
-        self.realtime_broadcaster.read().is_some()
     }
 
     /// Get a reference to the providers manager.
@@ -512,7 +472,8 @@ impl PlaylistService {
             .await?;
         if let Some(event) = outbox_event_factory
             .as_ref()
-            .and_then(|factory| factory(&created_playlist))
+            .map(|factory| factory(&created_playlist))
+            .transpose()?
         {
             if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut *tx).await?;
@@ -527,22 +488,6 @@ impl PlaylistService {
             is_dynamic = created_playlist.is_dynamic(),
             "Playlist created"
         );
-        let actor_username = self.resolve_actor_username(&user_id).await;
-
-        // The API-level outbox fanout publishes the committed event locally
-        // after the transaction. Core broadcasts only legacy direct callers
-        // that do not provide an outbox factory.
-        if outbox_event_factory.is_none() {
-            if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
-                broadcaster.broadcast_playlist_created(
-                    &room_id,
-                    &created_playlist,
-                    &user_id,
-                    &actor_username,
-                );
-            }
-        }
-
         Ok(created_playlist)
     }
 
@@ -747,7 +692,8 @@ impl PlaylistService {
                     Ok(updated_playlist) => {
                         if let Some(event) = outbox_event_factory
                             .as_ref()
-                            .and_then(|factory| factory(&updated_playlist))
+                            .map(|factory| factory(&updated_playlist))
+                            .transpose()?
                         {
                             if let Some(outbox) = &self.realtime_outbox {
                                 outbox.insert_with_executor(&event, &mut *tx).await?;
@@ -771,18 +717,6 @@ impl PlaylistService {
             playlist_id = %playlist_id,
             "Playlist updated"
         );
-        let actor_username = self.resolve_actor_username(&user_id).await;
-        if outbox_event_factory.is_none() {
-            if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
-                broadcaster.broadcast_playlist_updated(
-                    &room_id,
-                    &updated_playlist,
-                    &user_id,
-                    &actor_username,
-                );
-            }
-        }
-
         Ok(updated_playlist)
     }
 
@@ -1070,63 +1004,15 @@ impl PlaylistService {
 
         if let Some(event) = outbox_event_factory
             .as_ref()
-            .and_then(|factory| factory(&moved))
+            .map(|factory| factory(&moved))
+            .transpose()?
         {
             if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut *tx).await?;
             }
         }
         tx.commit().await?;
-        let actor_username = self.resolve_actor_username(&user_id).await;
-        if outbox_event_factory.is_none() {
-            if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
-                broadcaster.broadcast_playlist_updated(&room_id, &moved, &user_id, &actor_username);
-            }
-        }
         Ok(moved)
-    }
-
-    /// Management-only playlist deletion that bypasses room membership permission checks.
-    ///
-    /// Member-facing deletion must go through `RoomService::delete_entries` so
-    /// permission checks can account for the full playlist subtree and all media
-    /// resources deleted by cascade.
-    pub async fn admin_delete_playlist(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        playlist_id: PlaylistId,
-    ) -> Result<()> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, &playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-        debug_assert_eq!(playlist.room_id, room_id);
-
-        // Delete (will cascade to children and media)
-        self.playlist_repo
-            .delete_in_room(&room_id, &playlist_id)
-            .await?;
-
-        tracing::info!(
-            room_id = %room_id,
-            playlist_id = %playlist_id,
-            "Playlist deleted"
-        );
-        let actor_username = self.resolve_actor_username(&actor_user_id).await;
-
-        // Broadcast to realtime replicas.
-        if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
-            broadcaster.broadcast_playlist_deleted(
-                &room_id,
-                &playlist_id,
-                &actor_user_id,
-                &actor_username,
-            );
-        }
-
-        Ok(())
     }
 
     /// Get playlist path (breadcrumbs) using recursive CTE (single query)
@@ -1171,6 +1057,11 @@ mod tests {
     use serde_json::Value;
     use sqlx::PgPool;
     use std::sync::Arc;
+
+    fn test_credential_encryption() -> crate::credential_encryption::CredentialEncryption {
+        crate::credential_encryption::CredentialEncryption::new(&[0x42; 32])
+            .expect("test encryption key should be valid")
+    }
 
     struct CredentialOwnerCheckProvider;
 
@@ -1602,6 +1493,7 @@ mod tests {
             PermissionService::DEFAULT_CACHE_SIZE,
             PermissionService::DEFAULT_CACHE_TTL_SECS,
         )
+        .expect("permission service should build")
     }
 
     async fn test_playlist_service_with_builtin_providers() -> PlaylistService {
@@ -1611,20 +1503,27 @@ mod tests {
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new(crate::service::ProvidersManager::new(
-            provider_instance_manager,
-        ));
+        let providers_manager = Arc::new(
+            crate::service::ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build"),
+        );
         providers_manager
             .create_builtin_defaults()
             .await
             .expect("builtin providers should initialize");
 
+        let credential_encryption = test_credential_encryption();
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+            pool.clone(),
+            credential_encryption.clone(),
+        ));
+
         PlaylistService::new_with_provider_credentials(
             PlaylistRepository::new(pool.clone()),
             test_permission_service(&pool),
             providers_manager,
-            None,
-            Some(Arc::new(UserProviderCredentialRepository::new(pool))),
+            Some(credential_encryption),
+            Some(credential_repo),
         )
     }
 
@@ -1636,7 +1535,8 @@ mod tests {
             None,
         ));
         let mut providers_manager =
-            crate::service::ProvidersManager::new(provider_instance_manager);
+            crate::service::ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build");
         providers_manager.register_factory(
             "credential_check",
             Box::new(|_instance_id, _config, _instance_manager| {
@@ -1664,9 +1564,10 @@ mod tests {
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new(crate::service::ProvidersManager::new(
-            provider_instance_manager,
-        ));
+        let providers_manager = Arc::new(
+            crate::service::ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build"),
+        );
         providers_manager
             .create_builtin_defaults()
             .await
@@ -1842,35 +1743,5 @@ mod tests {
         let mut playlists: Vec<i32> = vec![3, 1, 4, 1, 5, 9, 2, 6];
         playlists.sort_unstable();
         assert_eq!(playlists, vec![1, 1, 2, 3, 4, 5, 6, 9]);
-    }
-
-    #[test]
-    fn test_set_playlist_retry_constants() {
-        assert_eq!(optimistic_retry::DEFAULT_MAX_RETRIES, 3);
-        assert_eq!(optimistic_retry::DEFAULT_BACKOFF_BASE_MS, 5);
-    }
-
-    #[test]
-    fn test_set_playlist_backoff_increases_exponentially() {
-        // Verify exponential backoff calculation:
-        // attempt 0: base * 1 = 5ms
-        // attempt 1: base * 2 = 10ms
-        // attempt 2: base * 4 = 20ms
-        let delays: Vec<u64> = (0..3)
-            .map(|a| optimistic_retry::DEFAULT_BACKOFF_BASE_MS * (1 << a))
-            .collect();
-        assert_eq!(delays, vec![5, 10, 20]);
-    }
-
-    #[test]
-    fn test_set_playlist_retry_succeeds_within_max_attempts() {
-        // With MAX_RETRIES = 3, we have 3 attempts total
-        // If conflicts happen on attempts 0 and 1, attempt 2 should succeed
-        let conflicts = 2;
-        let attempts_needed = conflicts + 1; // 3 attempts
-        assert!(
-            attempts_needed <= 3,
-            "Need {attempts_needed} attempts but MAX_RETRIES is 3"
-        );
     }
 }

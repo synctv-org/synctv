@@ -121,4 +121,40 @@ impl SharedStateProfile {
             ))
         })
     }
+
+    pub fn best_effort_shared_runtime(
+        &self,
+        capability_description: &str,
+    ) -> Result<Arc<dyn RedisConnectionRuntime>> {
+        self.shared_runtime.clone().ok_or_else(|| {
+            Error::ServiceUnavailable(format!(
+                "shared best-effort mode requires configured {capability_description}"
+            ))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_effort_shared_runtime_rejects_inconsistent_profile_without_panic() {
+        let profile = SharedStateProfile::new(SharedStateMode::SharedBestEffort, None, "test:");
+
+        let Err(error) = profile.best_effort_shared_runtime("single-use test state") else {
+            panic!("inconsistent best-effort profile should return an error");
+        };
+
+        assert!(
+            matches!(error, Error::ServiceUnavailable(_)),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("shared best-effort mode requires configured single-use test state"),
+            "unexpected error: {error}"
+        );
+    }
 }

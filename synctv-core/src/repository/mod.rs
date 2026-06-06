@@ -2,6 +2,7 @@ pub mod audit;
 pub mod ban;
 pub mod chat;
 pub mod email_bind;
+pub mod email_registration_token;
 pub mod email_token;
 pub mod file_storage;
 pub mod media;
@@ -37,6 +38,7 @@ pub use chat::{
     EditChatMessageEventRequest,
 };
 pub use email_bind::EmailBindRepository;
+pub use email_registration_token::{EmailRegistrationToken, EmailRegistrationTokenRepository};
 pub use email_token::EmailTokenRepository;
 pub use file_storage::FileStorageRepository;
 pub use media::MediaRepository;

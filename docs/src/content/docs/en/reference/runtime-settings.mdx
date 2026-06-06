@@ -91,9 +91,9 @@ See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/) for perm
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `user.enable_password_signup` | bool | `false` | Allow password signup, including legacy password and OPAQUE password registration |
+| `user.enable_password_signup` | bool | `false` | Allow local password signup, including OPAQUE registration and direct password transport registration |
 | `user.password_signup_need_review` | bool | `false` | Require review for password signup |
-| `user.enable_email_signup` | bool | `false` | Allow email signup. Current email login only serves existing accounts; this switch is reserved for a future passwordless email account-creation endpoint |
+| `user.enable_email_signup` | bool | `false` | Allow email registration where confirmation sets local password credentials |
 | `user.email_signup_need_review` | bool | `false` | Require review for email signup |
 | `user.enable_webauthn_signup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
 | `user.webauthn_signup_need_review` | bool | `false` | Require review for WebAuthn signup. The current review table does not store temporary WebAuthn credentials, so enabling this rejects new WebAuthn registrations |

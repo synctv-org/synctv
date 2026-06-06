@@ -476,7 +476,10 @@ mod concurrency_tests {
         let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
 
         // snapshot should return a working clone
-        let mut snapshot = runtime.snapshot().await;
+        let mut snapshot = runtime
+            .snapshot()
+            .await
+            .expect("snapshot should return a Redis connection");
         let pong: String = redis::cmd("PING").query_async(&mut snapshot).await.unwrap();
         assert_eq!(pong, "PONG");
     }

@@ -366,7 +366,7 @@ fn map_grpc_status(context: &str, status: &Status) -> synctv_media_providers::Pr
 /// use synctv_core::provider::provider_client::ProviderClientManager;
 /// use std::sync::Arc;
 ///
-/// let manager = ProviderClientManager::new();
+/// let manager = ProviderClientManager::new()?;
 ///
 /// // Get local Alist client
 /// let alist_client = manager.local_alist_client();
@@ -399,21 +399,18 @@ impl std::fmt::Debug for ProviderClientManager {
     }
 }
 
-impl Default for ProviderClientManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ProviderClientManager {
     /// Create a new `ProviderClientManager` with default local clients.
-    #[must_use]
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, synctv_media_providers::ProviderClientError> {
         let provider_client = synctv_media_providers::build_provider_http_client(
             synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-        .expect("default provider HTTP client should build");
-        Self::new_with_provider_http_client(provider_client)
+        )?;
+        Ok(Self::new_with_provider_http_client(provider_client))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        Self::new().expect("default provider HTTP client should build")
     }
 
     /// Create a new `ProviderClientManager` with a shared local provider HTTP client.
@@ -1112,7 +1109,7 @@ mod tests {
     /// Test that `resolve_alist_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_alist_client_returns_local_when_no_channel() {
-        let manager = ProviderClientManager::new();
+        let manager = ProviderClientManager::new_for_tests();
         let local_client = manager.local_alist_client();
         let resolved_client = manager.resolve_alist_client(None);
 
@@ -1122,7 +1119,7 @@ mod tests {
     /// Test that `resolve_bilibili_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_bilibili_client_returns_local_when_no_channel() {
-        let manager = ProviderClientManager::new();
+        let manager = ProviderClientManager::new_for_tests();
         let local_client = manager.local_bilibili_client();
         let resolved_client = manager.resolve_bilibili_client(None);
 
@@ -1132,7 +1129,7 @@ mod tests {
     /// Test that `resolve_emby_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_emby_client_returns_local_when_no_channel() {
-        let manager = ProviderClientManager::new();
+        let manager = ProviderClientManager::new_for_tests();
         let local_client = manager.local_emby_client();
         let resolved_client = manager.resolve_emby_client(None);
 

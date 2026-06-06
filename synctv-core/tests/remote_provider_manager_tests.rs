@@ -3,7 +3,6 @@
 //! Tests: channel creation, cache TTL, Redis invalidation, health checks,
 //!        TLS configuration, fallback behavior.
 //!
-//! Run with: cargo test -p synctv-core --test `remote_provider_manager_tests`
 //!
 //! NOTE: These tests require Docker for testcontainers (`PostgreSQL` + Redis).
 #![allow(clippy::unwrap_used)]
@@ -41,10 +40,8 @@ use tonic_health::ServingStatus;
 struct TestInfra {
     pool: PgPool,
     redis_client: redis::Client,
-    #[allow(dead_code)]
-    postgres: synctv_core_testing::TestContainer,
-    #[allow(dead_code)]
-    redis: synctv_core_testing::RedisContainer,
+    _postgres: synctv_core_testing::TestContainer,
+    _redis: synctv_core_testing::RedisContainer,
 }
 
 impl TestInfra {
@@ -61,8 +58,8 @@ impl TestInfra {
         Self {
             pool,
             redis_client,
-            postgres,
-            redis,
+            _postgres: postgres,
+            _redis: redis,
         }
     }
 
@@ -813,75 +810,6 @@ async fn scenario_channel_creation_from_db_config() {
     let fetched = repo.get_by_name("test-instance-1").await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(fetched.unwrap().name, "test-instance-1");
-
-    health_handle.abort();
-    let _ = health_handle.await;
-}
-
-// ─── Test 2: Channel cache hit (cached channel returned) ─────────────────────
-
-async fn scenario_channel_cache_hit() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let (health_addr, health_handle) =
-        spawn_authenticated_provider_server("remote-provider-test-secret").await;
-    let host = "cache-hit.test.localhost";
-
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_address_overrides(
-        Arc::new(repo),
-        None,
-        make_test_address_overrides(host, health_addr.port()),
-    );
-
-    let instance = make_reachable_remote_instance("test-instance-2", host, health_addr.port());
-    manager.add(instance.clone()).await.unwrap();
-
-    // First get - cache miss, attempts DB lookup
-    let _ = manager.get("test-instance-2").await;
-
-    // Second get - should hit cache (though still returns None since no server)
-    let _ = manager.get("test-instance-2").await;
-
-    // Verify DB was only queried once (cache working)
-    // This is implicit - if cache wasn't working, we'd see multiple DB queries
-    // in logs. For now, we just verify no panics occur.
-
-    health_handle.abort();
-    let _ = health_handle.await;
-}
-
-// ─── Test 3: Channel cache TTL expiration ───────────────────────────────────
-
-async fn scenario_channel_cache_ttl_expiration() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let (health_addr, health_handle) =
-        spawn_authenticated_provider_server("remote-provider-test-secret").await;
-    let host = "cache-ttl.test.localhost";
-
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_address_overrides(
-        Arc::new(repo),
-        None,
-        make_test_address_overrides(host, health_addr.port()),
-    );
-
-    let instance = make_reachable_remote_instance("test-instance-3", host, health_addr.port());
-    manager.add(instance.clone()).await.unwrap();
-
-    // First get - populates cache
-    let _ = manager.get("test-instance-3").await;
-
-    // without modifying the manager or using a custom build)
-    // For now, we just verify the cache is being used
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Get again - should still be in cache (300s TTL)
-    let _ = manager.get("test-instance-3").await;
-
-    // Note: Testing actual TTL expiration would require:
-    // This is left as an exercise for future enhancement
 
     health_handle.abort();
     let _ = health_handle.await;
@@ -3252,20 +3180,6 @@ fn install_rustls_provider_once_with_selected_backend() {}
 async fn test_channel_creation_from_db_config() {
     install_rustls_provider_once();
     scenario_channel_creation_from_db_config().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_channel_cache_hit() {
-    install_rustls_provider_once();
-    scenario_channel_cache_hit().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_channel_cache_ttl_expiration() {
-    install_rustls_provider_once();
-    scenario_channel_cache_ttl_expiration().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

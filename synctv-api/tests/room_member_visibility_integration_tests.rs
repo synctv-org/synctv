@@ -5,7 +5,6 @@ use std::sync::Arc;
 use chrono::Utc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         room_settings::RequireApproval, RoomMemberPermissionBits, RoomRole, RoomSettings,
         SignupMethod, User, UserId, UserRole, UserStatus,
@@ -43,11 +42,10 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        PasswordComplexityConfig::default(),
         token_blacklist,
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test:user".to_string()),
@@ -61,17 +59,25 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
 
-    synctv_api::impls::ClientApiImpl::new(
-        user_service,
-        room_service,
-        connection_manager,
-        Arc::new(Config::default()),
-        None,
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    synctv_api::impls::ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            user_service,
+            room_service,
+            connection_service: connection_manager,
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        synctv_api::impls::ClientApiRuntime::test_disabled(),
     )
 }
 
@@ -82,17 +88,25 @@ fn make_client_api_with_connections(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
 
-    let client_api = synctv_api::impls::ClientApiImpl::new(
-        user_service,
-        room_service,
-        connection_manager.clone(),
-        Arc::new(Config::default()),
-        None,
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    let client_api = synctv_api::impls::ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            user_service,
+            room_service,
+            connection_service: connection_manager.clone(),
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        synctv_api::impls::ClientApiRuntime::test_disabled(),
     );
 
     (client_api, connection_manager)
@@ -105,7 +119,10 @@ async fn test_get_room_members_requires_view_member_list_permission() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo
@@ -144,7 +161,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let err = client_api
         .get_room_members(
@@ -175,7 +192,10 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo
@@ -217,7 +237,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
         .get_room_members(
@@ -296,7 +316,10 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let owner = user_repo
@@ -337,7 +360,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         sort_direction: 0,
     };
 
-    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let first = client_api
         .get_room_members(&owner.id, &room_id, request.clone())
@@ -371,7 +394,10 @@ async fn test_get_room_members_marks_realtime_connections_online() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let (client_api, connection_manager) =
         make_client_api_with_connections(user_service, room_service.clone());
 
@@ -417,7 +443,7 @@ async fn test_get_room_members_marks_realtime_connections_online() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let online_user_id = public_id_codec.encode_user_id(online_user.id).unwrap();
     let offline_user_id = public_id_codec.encode_user_id(offline_user.id).unwrap();

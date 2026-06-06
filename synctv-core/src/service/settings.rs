@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -17,13 +17,10 @@ use crate::cache::{
     CacheDomain, CacheL2Backend, ConsistencyCoordinator, FenceReadResult, NoopCacheL2,
     RuntimeSettingKey, RuntimeSettingsCache, VersionFenceStore,
 };
-use crate::models::settings::{get_default_settings, SettingsGroup};
+use crate::models::settings::SettingsGroup;
 use crate::repository::SettingsRepository;
 use crate::service::settings_vars::{Setting, SettingProvider};
 use crate::{Error, InternalExt};
-
-/// Change listener callback type
-pub type SettingsChangeListener = Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>;
 
 /// Type alias for the shared setting providers map
 pub(crate) type SettingProviders =
@@ -68,14 +65,11 @@ pub struct SettingsService {
     pool: PgPool,
     // Lock-free cache using DashMap for concurrent reads.
     cache: Arc<DashMap<String, SettingsGroup>>,
-    // Change listeners
-    listeners: Arc<RwLock<Vec<SettingsChangeListener>>>,
     // Broadcast channel for notifying SettingsStorage of remote reload events.
     // Payload is the setting key that was reloaded along with its new value.
     reload_sender: broadcast::Sender<(String, Option<String>)>,
     // Shared reference to registered setting providers for validation.
-    // Set by `SettingsStorage` after construction via `set_providers()`.
-    setting_providers: Arc<parking_lot::RwLock<Option<SettingProviders>>>,
+    setting_providers: SettingProviders,
     batch_validators: Arc<parking_lot::RwLock<Vec<SettingsBatchValidator>>>,
     consistency: ConsistencyCoordinator,
     runtime_cache: RuntimeSettingsCache,
@@ -102,6 +96,14 @@ impl Default for SettingsServiceRuntime {
             cache_l2_ttl_secs: 300,
         }
     }
+}
+
+fn normalize_cache_capacity(capacity: u64) -> u64 {
+    capacity.max(1)
+}
+
+fn normalize_cache_ttl(ttl_seconds: u64) -> u64 {
+    ttl_seconds.max(1)
 }
 
 impl std::fmt::Debug for SettingsService {
@@ -131,31 +133,25 @@ impl SettingsService {
             .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
         let runtime_cache = RuntimeSettingsCache::new(
             runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
-            runtime.cache_max_capacity,
-            runtime.cache_ttl_secs,
-            runtime.cache_l2_ttl_secs,
+            normalize_cache_capacity(runtime.cache_max_capacity),
+            normalize_cache_ttl(runtime.cache_ttl_secs),
+            normalize_cache_ttl(runtime.cache_l2_ttl_secs),
             runtime.cache_key_prefix,
-        )
-        .expect("failed to create runtime settings cache");
+        );
         Self {
             repository,
             pool,
             cache: Arc::new(DashMap::new()),
-            listeners: Arc::new(RwLock::new(Vec::new())),
             reload_sender,
-            setting_providers: Arc::new(parking_lot::RwLock::new(None)),
+            setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
             batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
             consistency: ConsistencyCoordinator::new(version_fence),
             runtime_cache,
         }
     }
 
-    /// Set the shared setting providers map.
-    ///
-    /// Called by `SettingsStorage` after construction so that `update()` can
-    /// validate values before persisting them to the database.
-    pub(crate) fn set_providers(&self, providers: SettingProviders) {
-        *self.setting_providers.write() = Some(providers);
+    pub(crate) fn providers(&self) -> SettingProviders {
+        Arc::clone(&self.setting_providers)
     }
 
     pub(crate) fn add_batch_validator<F>(&self, validator: F)
@@ -170,38 +166,30 @@ impl SettingsService {
     /// Returns `Ok(())` only if a provider is registered for the key and the
     /// provider accepts the value.
     pub fn validate_setting(&self, key: &str, value: &str) -> Result<(), Error> {
-        let providers_lock = self.setting_providers.read();
-        if let Some(providers) = providers_lock.as_ref() {
-            let providers_read = providers.read();
-            if let Some(provider) = providers_read.get(key) {
-                if !provider.user_writable() {
-                    return Err(Error::InvalidInput(format!(
-                        "Setting '{key}' is managed by the server runtime and cannot be updated"
-                    )));
-                }
-                provider.is_valid_raw(value)?;
-                return Ok(());
+        let providers = self.setting_providers.read();
+        if let Some(provider) = providers.get(key) {
+            if !provider.user_writable() {
+                return Err(Error::InvalidInput(format!(
+                    "Setting '{key}' is managed by the server runtime and cannot be updated"
+                )));
             }
-            return Err(Error::InvalidInput(format!("Unknown setting key: {key}")));
+            provider.is_valid_raw(value)?;
+            return Ok(());
         }
-        Err(Error::Internal(
-            "Settings providers are not initialized; refusing to validate update".to_string(),
-        ))
+        Err(Error::InvalidInput(format!("Unknown setting key: {key}")))
     }
 
     fn registered_default_snapshot(&self) -> Result<BTreeMap<String, String>, Error> {
-        let providers_lock = self.setting_providers.read();
-        let Some(providers) = providers_lock.as_ref() else {
-            return Err(Error::Internal(
-                "Settings providers are not initialized; refusing to validate update".to_string(),
-            ));
-        };
-
-        let defaults = providers
+        let defaults = self
+            .setting_providers
             .read()
             .values()
-            .map(|provider| (provider.key().to_string(), provider.default_raw()))
-            .collect();
+            .map(|provider| {
+                provider
+                    .default_raw()
+                    .map(|raw| (provider.key().to_string(), raw))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         Ok(defaults)
     }
 
@@ -438,17 +426,6 @@ impl SettingsService {
             .reload_sender
             .send((key.to_string(), Some(setting.value.clone())));
 
-        // Notify local listeners
-        let json_value: serde_json::Value = value.parse().unwrap_or_else(|e| {
-            warn!(
-                key = key,
-                error = %e,
-                "Setting value is not valid JSON, wrapping as string"
-            );
-            serde_json::json!(value)
-        });
-        self.notify_listeners(key, &json_value).await;
-
         info!("Updated setting '{}'", setting.key);
         Ok(setting)
     }
@@ -456,8 +433,8 @@ impl SettingsService {
     /// Atomically update multiple settings in a single database transaction.
     ///
     /// All updates are committed together or rolled back if any write fails, so the
-    /// settings table is never left in a partially-updated state. Cache and local
-    /// listeners are updated only after the transaction commits successfully.
+    /// settings table is never left in a partially-updated state. Cache and reload
+    /// subscribers are updated only after the transaction commits successfully.
     ///
     /// Validates each value against its registered provider before writing.
     ///
@@ -594,7 +571,7 @@ impl SettingsService {
             .await;
         }
 
-        // Update cache and notify listeners only after the transaction committed.
+        // Update cache and notify reload subscribers only after the transaction committed.
         for setting in &updated {
             self.store_cache_entry(setting.clone()).await;
 
@@ -604,25 +581,10 @@ impl SettingsService {
                 .reload_sender
                 .send((setting.key.clone(), Some(setting.value.clone())));
 
-            let json_value: serde_json::Value = setting.value.parse().unwrap_or_else(|e| {
-                warn!(
-                    key = %setting.key,
-                    error = %e,
-                    "Setting value is not valid JSON, wrapping as string (batch)"
-                );
-                serde_json::json!(&setting.value)
-            });
-            self.notify_listeners(&setting.key, &json_value).await;
             info!("Updated setting '{}' (batch)", setting.key);
         }
 
         Ok(updated)
-    }
-
-    /// Get a specific setting value by key (e.g., "`user.enable_password_signup`")
-    pub async fn get_value(&self, key: &str) -> Option<String> {
-        let setting = self.get(key).await.ok()?;
-        Some(setting.value)
     }
 
     pub(crate) async fn upsert_internal_if_missing(
@@ -631,15 +593,20 @@ impl SettingsService {
         value: String,
     ) -> Result<SettingsGroup, Error> {
         let group_name = group_name_from_setting_key(key);
-        let setting = sqlx::query_as_unchecked!(
+        let setting = sqlx::query_as!(
             SettingsGroup,
-            r"
+            r#"
             INSERT INTO settings (key, group_name, value, version)
             VALUES ($1, $2, $3, 0)
             ON CONFLICT (key) DO UPDATE
             SET updated_at = settings.updated_at
-            RETURNING key, group_name, value, version, created_at, updated_at
-            ",
+            RETURNING key AS "key!",
+                      group_name AS "group_name!",
+                      value AS "value!",
+                      version AS "version!",
+                      created_at AS "created_at!",
+                      updated_at AS "updated_at!"
+            "#,
             key,
             group_name,
             value
@@ -656,34 +623,6 @@ impl SettingsService {
             .send((setting.key.clone(), Some(setting.value.clone())));
 
         Ok(setting)
-    }
-
-    /// Register a change listener
-    pub async fn register_listener(&self, listener: SettingsChangeListener) {
-        let mut listeners = self.listeners.write().await;
-        listeners.push(listener);
-        debug!(
-            "Registered settings change listener, total: {}",
-            listeners.len()
-        );
-    }
-
-    /// Notify all listeners of a settings change
-    async fn notify_listeners(&self, group: &str, settings_json: &serde_json::Value) {
-        let listeners = self.listeners.read().await;
-        if listeners.is_empty() {
-            return;
-        }
-
-        debug!(
-            "Notifying {} listeners of settings change in group '{}'",
-            listeners.len(),
-            group
-        );
-
-        for listener in listeners.iter() {
-            listener(group, settings_json);
-        }
     }
 
     /// Start `PostgreSQL` LISTEN task for hot reload
@@ -824,17 +763,6 @@ impl SettingsService {
                     .reload_sender
                     .send((key.to_string(), Some(setting.value.clone())));
 
-                // Notify local listeners
-                let json_value: serde_json::Value = setting.value.parse().unwrap_or_else(|e| {
-                    warn!(
-                        key = key,
-                        error = %e,
-                        "Setting value is not valid JSON, wrapping as string (reload)"
-                    );
-                    serde_json::json!(setting.value)
-                });
-                self.notify_listeners(key, &json_value).await;
-
                 info!("Setting '{}' reloaded from database", key);
                 Ok(())
             }
@@ -854,11 +782,20 @@ impl SettingsService {
                     );
                 }
 
-                // Notify SettingsStorage subscribers about removal
-                let _ = self.reload_sender.send((key.to_string(), None));
-
-                // Notify listeners about removal
-                self.notify_listeners(key, &serde_json::json!(null)).await;
+                match self.reload_sender.send((key.to_string(), None)) {
+                    Ok(subscriber_count) => tracing::debug!(
+                        key,
+                        subscriber_count,
+                        "Runtime setting removal notified SettingsStorage subscribers"
+                    ),
+                    Err(error) => {
+                        tracing::debug!(
+                            key,
+                            error = %error,
+                            "Runtime setting removal had no SettingsStorage subscribers"
+                        );
+                    }
+                }
 
                 Ok(())
             }
@@ -935,12 +872,6 @@ fn group_name_from_setting_key(key: &str) -> String {
         .map_or_else(|| key.to_string(), |(group_name, _)| group_name.to_string())
 }
 
-/// Helper to get default settings for a group
-#[must_use]
-pub fn get_default_settings_json(group: &str) -> Option<serde_json::Value> {
-    get_default_settings(group)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,124 +886,6 @@ mod tests {
     fn test_unknown_group_returns_none() {
         assert!(get_default_settings("nonexistent").is_none());
         assert!(get_default_settings("").is_none());
-        assert!(get_default_settings_json("foobar").is_none());
-    }
-
-    #[test]
-    fn test_settings_group_new() {
-        let group = SettingsGroup::new(
-            "server".to_string(),
-            r#"{"allow_room_creation": true}"#.to_string(),
-        );
-
-        assert_eq!(group.group_name, "server");
-        assert_eq!(group.key, "server.default");
-        assert_eq!(group.value, r#"{"allow_room_creation": true}"#);
-    }
-
-    #[test]
-    fn test_settings_group_parse_json() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            serde_json::json!({"key": "value", "count": 42}).to_string(),
-        );
-
-        let parsed = group.parse_json().unwrap();
-        assert_eq!(parsed["key"], "value");
-        assert_eq!(parsed["count"], 42);
-    }
-
-    #[test]
-    fn test_settings_group_parse_json_invalid() {
-        let group = SettingsGroup::new("test".to_string(), "not valid json {{{".to_string());
-
-        assert!(group.parse_json().is_err());
-    }
-
-    #[test]
-    fn test_settings_group_as_object() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            serde_json::json!({"a": 1, "b": "two"}).to_string(),
-        );
-
-        let obj = group.as_object().unwrap();
-        assert_eq!(obj.len(), 2);
-        assert!(obj.contains_key("a"));
-        assert!(obj.contains_key("b"));
-    }
-
-    #[test]
-    fn test_settings_group_as_object_not_object() {
-        let group =
-            SettingsGroup::new("test".to_string(), serde_json::json!([1, 2, 3]).to_string());
-
-        assert!(group.as_object().is_err());
-    }
-
-    #[test]
-    fn test_settings_group_as_object_string_value() {
-        let group = SettingsGroup::new("test".to_string(), r#""just a string""#.to_string());
-
-        assert!(group.as_object().is_err());
-    }
-
-    #[test]
-    fn test_settings_group_serialization() {
-        let group = SettingsGroup::new(
-            "server".to_string(),
-            serde_json::json!({"test": true}).to_string(),
-        );
-
-        let json = serde_json::to_string(&group).unwrap();
-        let deserialized: SettingsGroup = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.group_name, group.group_name);
-        assert_eq!(deserialized.key, group.key);
-        assert_eq!(deserialized.value, group.value);
-    }
-
-    #[test]
-    fn test_settings_boolean_values() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            serde_json::json!({"enabled": true}).to_string(),
-        );
-
-        let parsed = group.parse_json().unwrap();
-        assert_eq!(parsed["enabled"].as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_settings_numeric_values() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            serde_json::json!({"port": 8080, "timeout": 30.5}).to_string(),
-        );
-
-        let parsed = group.parse_json().unwrap();
-        assert_eq!(parsed["port"].as_i64(), Some(8080));
-        assert_eq!(parsed["timeout"].as_f64(), Some(30.5));
-    }
-
-    #[test]
-    fn test_settings_nested_values() {
-        let group = SettingsGroup::new(
-            "server".to_string(),
-            serde_json::json!({
-                "database": {
-                    "host": "localhost",
-                    "port": 5432,
-                    "pool": {"max": 10, "min": 2}
-                }
-            })
-            .to_string(),
-        );
-
-        let parsed = group.parse_json().unwrap();
-        assert_eq!(parsed["database"]["host"], "localhost");
-        assert_eq!(parsed["database"]["port"], 5432);
-        assert_eq!(parsed["database"]["pool"]["max"], 10);
     }
 
     /// A mock `SettingProvider` that rejects any value not equal to "valid".
@@ -1084,8 +897,8 @@ mod tests {
             "test.mock"
         }
 
-        fn default_raw(&self) -> String {
-            "valid".to_string()
+        fn default_raw(&self) -> crate::Result<String> {
+            Ok("valid".to_string())
         }
 
         fn get_raw(&self) -> Option<String> {
@@ -1189,29 +1002,18 @@ mod tests {
         }
     }
 
-    /// Helper to build a `SettingsService` with a mock provider registered.
-    /// Uses a fake pool URL that is never actually connected (no DB needed).
     fn service_with_mock_provider(key: &str) -> SettingsService {
-        // We cannot easily construct a PgPool without a running DB, but
-        // validate_setting is purely in-memory. We can build the providers
-        // map directly.
-        let providers: SettingProviders =
-            Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
-        providers.write().insert(
-            key.to_string(),
-            Arc::new(MockProvider) as Arc<dyn crate::service::settings_vars::SettingProvider>,
-        );
-
-        // Build a minimal SettingsService (pool will never be used).
-        // Safety: we use the lazy pool option from sqlx which won't connect
-        // until a query is executed.
         let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
         let pool = pool_opts
             .connect_lazy("postgres://fake:fake@localhost/fake")
             .unwrap();
         let repo = crate::repository::SettingsRepository::new(pool.clone());
         let service = SettingsService::new(repo, pool);
-        service.set_providers(providers);
+        let providers = service.providers();
+        providers.write().insert(
+            key.to_string(),
+            Arc::new(MockProvider) as Arc<dyn crate::service::settings_vars::SettingProvider>,
+        );
         service
     }
 

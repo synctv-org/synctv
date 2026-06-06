@@ -34,13 +34,13 @@ const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SEC
 const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 8;
 const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
-const DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 64;
+const DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 32;
 const MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 2;
 const SHARED_ADMIN_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_ADMIN_POOL_MAX_CONNECTIONS";
-const DEFAULT_TEMPLATE_CLONE_PARALLELISM: usize = 4;
+const DEFAULT_TEMPLATE_CLONE_PARALLELISM: usize = 2;
 const MIN_TEMPLATE_CLONE_PARALLELISM: usize = 1;
 const TEMPLATE_CLONE_PARALLELISM_ENV: &str = "SYNCTV_TEST_PG_TEMPLATE_CLONE_PARALLELISM";
-const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 32;
+const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 8;
 const MIN_TEST_POOL_MAX_CONNECTIONS: u32 = 1;
 const TEST_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_POOL_MAX_CONNECTIONS";
 const ADMIN_DATABASE: &str = "postgres";
@@ -1115,8 +1115,9 @@ mod tests {
 
     #[test]
     fn pool_defaults_match_high_concurrency_nextest_profile() {
-        assert_eq!(shared_admin_pool_max_connections_from(None), 64);
-        assert_eq!(default_test_pool_max_connections_from(None), 32);
+        assert_eq!(shared_admin_pool_max_connections_from(None), 32);
+        assert_eq!(default_test_pool_max_connections_from(None), 8);
+        assert_eq!(template_clone_parallelism_from(None), 2);
     }
 
     #[test]

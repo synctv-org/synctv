@@ -10,6 +10,7 @@ static MEDIA_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static PLAYLIST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static REVIEW_REQUEST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static BAN_RECORD_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static EMAIL_REGISTRATION_TOKEN_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 
 /// Generate a process-local positive numeric ID for tests and in-memory values.
 ///
@@ -179,6 +180,11 @@ numeric_id_type!(
     REVIEW_REQUEST_ID_COUNTER
 );
 numeric_id_type!(BanRecordId, "BanRecordId", BAN_RECORD_ID_COUNTER);
+numeric_id_type!(
+    EmailRegistrationTokenId,
+    "EmailRegistrationTokenId",
+    EMAIL_REGISTRATION_TOKEN_ID_COUNTER
+);
 
 #[cfg(test)]
 mod tests {

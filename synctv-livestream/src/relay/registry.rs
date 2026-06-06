@@ -271,7 +271,7 @@ static CLEANUP_NODE_PUBLISHER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(||
 
 #[async_trait]
 pub trait RegistryConnectionRuntime: Send + Sync {
-    async fn snapshot(&self) -> RedisConnectionManager;
+    async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager>;
 }
 
 struct DirectRegistryConnectionRuntime {
@@ -286,8 +286,8 @@ impl DirectRegistryConnectionRuntime {
 
 #[async_trait]
 impl RegistryConnectionRuntime for DirectRegistryConnectionRuntime {
-    async fn snapshot(&self) -> RedisConnectionManager {
-        self.redis.clone()
+    async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
+        Ok(self.redis.clone())
     }
 }
 
@@ -303,8 +303,8 @@ impl SharedRegistryConnectionRuntime {
 
 #[async_trait]
 impl RegistryConnectionRuntime for SharedRegistryConnectionRuntime {
-    async fn snapshot(&self) -> RedisConnectionManager {
-        self.redis.read().await.clone()
+    async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
+        Ok(self.redis.read().await.clone())
     }
 }
 
@@ -439,8 +439,8 @@ impl StreamRegistry {
         }
     }
 
-    async fn conn(&self) -> RedisConnectionManager {
-        self.redis.snapshot().await
+    async fn conn(&self) -> Result<RedisConnectionManager> {
+        self.redis.snapshot().await.map_err(Into::into)
     }
 
     fn prefixed(&self, key: &str) -> String {
@@ -484,7 +484,7 @@ impl StreamRegistry {
     }
 
     async fn remove_reverse_index_member(&self, set_key: &str, member: &str) -> Result<()> {
-        let mut conn = self.conn().await;
+        let mut conn = self.conn().await?;
         let _: () = redis::cmd("SREM")
             .arg(set_key)
             .arg(member)
@@ -496,7 +496,7 @@ impl StreamRegistry {
 
     async fn load_index_members(&self, set_key: &str) -> Result<Vec<String>> {
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
             let members: Vec<String> = redis::cmd("SMEMBERS")
                 .arg(set_key)
                 .query_async(&mut conn)
@@ -513,7 +513,7 @@ impl StreamRegistry {
         }
 
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
             let mut pipeline = redis::pipe();
             for member in members {
                 pipeline.cmd("SREM").arg(set_key).arg(member);
@@ -551,7 +551,7 @@ impl StreamRegistry {
 
         for chunk in parsed_members.chunks(ACTIVE_PUBLISHER_FETCH_BATCH_SIZE) {
             let publisher_jsons: Vec<Option<String>> = with_redis_timeout(|| async {
-                let mut conn = self.conn().await;
+                let mut conn = self.conn().await?;
                 let mut pipeline = redis::pipe();
                 for (_, room_id, media_id) in chunk {
                     pipeline
@@ -659,7 +659,7 @@ impl StreamRegistry {
 
         let key = self.publisher_key(room_id, media_id);
         let epoch_key = self.epoch_key(room_id, media_id);
-        let mut conn = self.conn().await;
+        let mut conn = self.conn().await?;
 
         // Create PublisherInfo template (epoch will be filled by Lua script)
         let info = PublisherInfo {
@@ -781,7 +781,7 @@ impl StreamRegistry {
             expected_epoch.map_or(-1_i64, |epoch| i64::try_from(epoch).unwrap_or(i64::MAX));
 
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
 
             let status: i64 = REFRESH_PUBLISHER_TTL_SCRIPT
                 .key(&key)
@@ -844,7 +844,7 @@ impl StreamRegistry {
         };
 
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
 
             let result: Vec<redis::Value> = UNREGISTER_PUBLISHER_SCRIPT
                 .key(&key)
@@ -973,7 +973,7 @@ impl StreamRegistry {
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
             let info_json: Option<String> = redis::cmd("HGET")
                 .arg(&key)
                 .arg("publisher")
@@ -1007,7 +1007,7 @@ impl StreamRegistry {
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
             let exists: bool = redis::cmd("HEXISTS")
                 .arg(&key)
                 .arg("publisher")
@@ -1062,7 +1062,7 @@ impl StreamRegistry {
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
+            let mut conn = self.conn().await?;
 
             // Get current publisher info
             let info_json: Option<String> = redis::cmd("HGET")
@@ -1150,7 +1150,7 @@ impl StreamRegistry {
             }
 
             let publisher_jsons: Vec<Option<String>> = with_redis_timeout(|| async {
-                let mut conn = self.conn().await;
+                let mut conn = self.conn().await?;
                 let mut pipeline = redis::pipe();
                 for (_, _, _, publisher_key) in &entries {
                     pipeline.cmd("HGET").arg(publisher_key).arg("publisher");
@@ -1191,7 +1191,7 @@ impl StreamRegistry {
                 }
 
                 let cleanup_result: Result<Vec<redis::Value>> = with_redis_timeout(|| async {
-                    let mut conn = self.conn().await;
+                    let mut conn = self.conn().await?;
                     let result: Vec<redis::Value> = CLEANUP_NODE_PUBLISHER_SCRIPT
                         .key(&publisher_key)
                         .arg(node_id)

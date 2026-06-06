@@ -374,7 +374,10 @@ fn encode_xor_mapped_address(transaction_id: [u8; 12], mapped_addr: SocketAddr) 
 
 fn build_binding_success_response(transaction_id: [u8; 12], mapped_addr: SocketAddr) -> Vec<u8> {
     let attr_value = encode_xor_mapped_address(transaction_id, mapped_addr);
-    let attr_len = u16::try_from(attr_value.len()).expect("xor mapped address length fits in u16");
+    let attr_len = match mapped_addr {
+        SocketAddr::V4(_) => 8_u16,
+        SocketAddr::V6(_) => 20_u16,
+    };
     let mut response = Vec::with_capacity(STUN_HEADER_LEN + 4 + attr_value.len());
 
     response.extend_from_slice(&STUN_BINDING_SUCCESS_RESPONSE.to_be_bytes());

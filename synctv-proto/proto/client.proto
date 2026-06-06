@@ -10,13 +10,19 @@ import "proto/common.proto";
 // Routes: /api/auth/*
 //
 service AuthService {
-  // Public client local password registration/login uses OPAQUE.
-  // Passwordless email login is confirmed through its dedicated request.
-  rpc Register(RegisterRequest) returns (RegisterResponse);
-  rpc Login(LoginRequest) returns (LoginResponse);
+  // Public account password registration/login supports two transports:
+  // OPAQUE challenge-response and direct password over TLS. Direct password
+  // transport is kept for constrained clients; the server converts it into the
+  // same OPAQUE credential record used by the OPAQUE transport.
+  // Email registration is a request/confirm flow that also stores an OPAQUE
+  // credential record after confirmation.
   rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
   rpc ConfirmEmailLogin(ConfirmEmailLoginRequest) returns (LoginResponse);
   rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
+  rpc RegisterWithDirectPassword(RegisterWithDirectPasswordRequest) returns (RegisterResponse);
+  rpc LoginWithDirectPassword(LoginWithDirectPasswordRequest) returns (LoginResponse);
+  rpc RequestEmailRegistration(RequestEmailRegistrationRequest) returns (RequestEmailRegistrationResponse);
+  rpc ConfirmEmailRegistration(ConfirmEmailRegistrationRequest) returns (RegisterResponse);
   rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
   rpc FinishOpaqueRegistration(FinishOpaqueRegistrationRequest) returns (RegisterResponse);
   rpc StartOpaqueLogin(StartOpaqueLoginRequest) returns (StartOpaqueLoginResponse);
@@ -322,21 +328,29 @@ message RegisterResponse {
   User user = 1;
   string access_token = 2;
   string refresh_token = 3;
+  RegistrationStatus status = 4;
+  PendingRegistrationReview pending_review = 5;
 }
 
-message RegisterRequest {
-  string username = 1 [(buf.validate.field).string = {
+enum RegistrationStatus {
+  REGISTRATION_STATUS_UNSPECIFIED = 0;
+  REGISTRATION_STATUS_REGISTERED = 1;
+  REGISTRATION_STATUS_PENDING_REVIEW = 2;
+}
+
+message PendingRegistrationReview {
+  string review_request_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string username = 2 [(buf.validate.field).string = {
     min_len: 3
     max_len: 50
-    pattern: "^[\\p{L}\\p{N}_-]+$"
   }];
-  optional string email = 2 [(buf.validate.field).string = {
+  optional string email = 3 [(buf.validate.field).string = {
     max_len: 254
     email: true
-  }];
-  string password = 3 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 1024
   }];
 }
 
@@ -377,8 +391,69 @@ message FinishOpaqueRegistrationRequest {
   }];
 }
 
-// Confirm a passwordless email login token. Password login uses
-// StartOpaqueLogin / FinishOpaqueLogin.
+message RegisterWithDirectPasswordRequest {
+  // Register with direct password transport over TLS.
+  // The server converts the submitted password into an OPAQUE credential record.
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  optional string email = 2 [(buf.validate.field).string = {
+    max_len: 254
+    email: true
+  }];
+  string password = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
+}
+
+message LoginWithDirectPasswordRequest {
+  // Login with direct password transport over TLS.
+  // Verification uses the stored OPAQUE credential record.
+  oneof identifier {
+    option (buf.validate.oneof).required = true;
+    string username = 1 [(buf.validate.field).string = {max_len: 50}];
+    string email = 2 [(buf.validate.field).string = {max_len: 254}];
+  }
+  string password = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
+}
+
+message RequestEmailRegistrationRequest {
+  // Start email-verified registration. Confirmation supplies the password and
+  // creates the same OPAQUE credential record as password registration.
+  string username = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    pattern: "^[\\p{L}\\p{N}_-]+$"
+  }];
+  string email = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 254
+    email: true
+  }];
+}
+
+message RequestEmailRegistrationResponse {
+  string message = 1;
+}
+
+message ConfirmEmailRegistrationRequest {
+  string email_token = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  string password = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
+}
+
+// Confirm a passwordless email login token.
 message ConfirmEmailLoginRequest {
   string email = 3 [(buf.validate.field).string = {
     min_len: 1
@@ -395,18 +470,6 @@ message LoginResponse {
   string access_token = 2;
   string refresh_token = 3;
   MfaChallenge mfa = 4;
-}
-
-message LoginRequest {
-  oneof identifier {
-    option (buf.validate.oneof).required = true;
-    string username = 1 [(buf.validate.field).string = {max_len: 50}];
-    string email = 2 [(buf.validate.field).string = {max_len: 254}];
-  }
-  string password = 3 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 1024
-  }];
 }
 
 enum MfaMethod {
@@ -501,9 +564,9 @@ message FinishSensitiveOperationVerificationResponse {
   SensitiveOperationVerificationChallenge challenge = 2;
 }
 
-// Start a real OPAQUE password login. The server receives only the OPAQUE
-// credential request, never the plaintext password. Provide exactly one login
-// identifier: `username` or `email`.
+// Start an OPAQUE password login. Public clients should prefer this flow because
+// the server receives an OPAQUE credential request instead of the plaintext
+// password. Provide exactly one login identifier: `username` or `email`.
 message StartOpaqueLoginRequest {
   oneof identifier {
     option (buf.validate.oneof).required = true;
@@ -1273,8 +1336,8 @@ message RoomJoinReview {
   synctv.common.ReviewStatus status = 6;
   int64 requested_at = 7;
   int64 reviewed_at = 8;
-  string reviewed_by = 9;
-  string rejection_reason = 10;
+  optional string reviewed_by = 9;
+  optional string rejection_reason = 10;
 }
 
 message ListRoomJoinReviewsRequest {
@@ -2119,8 +2182,8 @@ message ObservePlaybackState {
 message ObservePlaybackSnapshot {
   // Player-ready aggregate for the current playback source.
   // Client-side cached playback source identity.
-  string media_id = 1;
-  string playlist_id = 2;
+  optional string media_id = 1;
+  optional string playlist_id = 2;
   bytes target = 3;
   PlaybackClientProfile playback_client_profile = 4;
   // Unset starts from the current snapshot and live changes.
@@ -2148,40 +2211,36 @@ message ObserveChatEvents {
   // Replays events with a durable per-room chat event sequence greater than this value.
   // Unset starts from live chat events; 0 replays retained chat events from the empty watermark.
   // Use GetChatHistory for message backfill.
-  optional int64 after_event_sequence = 2;
-}
-
-message WatchOptions {
-  ResourceDeliveryMode delivery_mode = 1;
+  optional int64 after_event_sequence = 1;
 }
 
 message WatchPlaybackStateRequest {
-  WatchOptions options = 1;
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObservePlaybackState playback_state = 2;
 }
 
 message WatchPlaybackSnapshotRequest {
-  WatchOptions options = 1;
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObservePlaybackSnapshot playback_snapshot = 2;
 }
 
 message WatchRoomSettingsRequest {
-  WatchOptions options = 1;
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObserveRoomSettings room_settings = 2;
 }
 
 message WatchPlaylistItemsRequest {
-  WatchOptions options = 1;
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObservePlaylistItems playlist_items = 2;
 }
 
 message WatchRoomMembersRequest {
-  WatchOptions options = 1;
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObserveRoomMembers room_members = 2;
 }
 
 message WatchChatEventsRequest {
-  WatchOptions options = 1;
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObserveChatEvents chat_events = 2;
 }
 
@@ -2411,15 +2470,15 @@ message CreateChatImageUploadSessionRequest {
 message ChatImageUploadSession {
   ChatImage image = 1;
   bool upload_required = 2;
-  string upload_url = 3;
-  string upload_method = 4;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
   map<string, string> upload_headers = 5;
-  int64 expires_at = 6;
+  optional int64 expires_at = 6;
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
-  string ownership_proof_nonce = 9;
+  optional string ownership_proof_nonce = 9;
   repeated ChatImageOwnershipProofRange ownership_proof_ranges = 10;
-  string ownership_proof_metadata_key = 11;
+  optional string ownership_proof_metadata_key = 11;
 }
 
 message ChatImageOwnershipProofRange {
@@ -2435,7 +2494,7 @@ message UploadChatImageObjectRequest {
   string room_id = 1;
   string encoded_object_key = 2;
   string token = 3;
-  string content_type = 4;
+  optional string content_type = 4;
   bytes data = 5;
 }
 
@@ -2482,15 +2541,15 @@ message CreateUserAvatarUploadSessionRequest {
 message UserAvatarUploadSession {
   UserAvatar avatar = 1;
   bool upload_required = 2;
-  string upload_url = 3;
-  string upload_method = 4;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
   map<string, string> upload_headers = 5;
-  int64 expires_at = 6;
+  optional int64 expires_at = 6;
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
-  string ownership_proof_nonce = 9;
+  optional string ownership_proof_nonce = 9;
   repeated UserAvatarOwnershipProofRange ownership_proof_ranges = 10;
-  string ownership_proof_metadata_key = 11;
+  optional string ownership_proof_metadata_key = 11;
 }
 
 message UserAvatarOwnershipProofRange {
@@ -2505,7 +2564,7 @@ message CreateUserAvatarUploadSessionResponse {
 message UploadUserAvatarObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
-  string content_type = 3;
+  optional string content_type = 3;
   bytes data = 4;
 }
 
@@ -2570,15 +2629,15 @@ message CreateVideoCoverUploadSessionRequest {
 message VideoCoverUploadSession {
   VideoCover cover = 1;
   bool upload_required = 2;
-  string upload_url = 3;
-  string upload_method = 4;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
   map<string, string> upload_headers = 5;
-  int64 expires_at = 6;
+  optional int64 expires_at = 6;
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
-  string ownership_proof_nonce = 9;
+  optional string ownership_proof_nonce = 9;
   repeated VideoCoverOwnershipProofRange ownership_proof_ranges = 10;
-  string ownership_proof_metadata_key = 11;
+  optional string ownership_proof_metadata_key = 11;
 }
 
 message VideoCoverOwnershipProofRange {
@@ -2593,7 +2652,7 @@ message CreateVideoCoverUploadSessionResponse {
 message UploadVideoCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
-  string content_type = 3;
+  optional string content_type = 3;
   bytes data = 4;
 }
 
@@ -2638,15 +2697,15 @@ message CreateRoomCoverUploadSessionRequest {
 message RoomCoverUploadSession {
   FileCover cover = 1;
   bool upload_required = 2;
-  string upload_url = 3;
-  string upload_method = 4;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
   map<string, string> upload_headers = 5;
-  int64 expires_at = 6;
+  optional int64 expires_at = 6;
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
-  string ownership_proof_nonce = 9;
+  optional string ownership_proof_nonce = 9;
   repeated FileOwnershipProofRange ownership_proof_ranges = 10;
-  string ownership_proof_metadata_key = 11;
+  optional string ownership_proof_metadata_key = 11;
 }
 
 message CreateRoomCoverUploadSessionResponse {
@@ -2656,7 +2715,7 @@ message CreateRoomCoverUploadSessionResponse {
 message UploadRoomCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
-  string content_type = 3;
+  optional string content_type = 3;
   bytes data = 4;
 }
 
@@ -2700,15 +2759,15 @@ message CreatePlaylistCoverUploadSessionRequest {
 message PlaylistCoverUploadSession {
   FileCover cover = 1;
   bool upload_required = 2;
-  string upload_url = 3;
-  string upload_method = 4;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
   map<string, string> upload_headers = 5;
-  int64 expires_at = 6;
+  optional int64 expires_at = 6;
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
-  string ownership_proof_nonce = 9;
+  optional string ownership_proof_nonce = 9;
   repeated FileOwnershipProofRange ownership_proof_ranges = 10;
-  string ownership_proof_metadata_key = 11;
+  optional string ownership_proof_metadata_key = 11;
 }
 
 message CreatePlaylistCoverUploadSessionResponse {
@@ -2718,7 +2777,7 @@ message CreatePlaylistCoverUploadSessionResponse {
 message UploadPlaylistCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
-  string content_type = 3;
+  optional string content_type = 3;
   bytes data = 4;
 }
 
@@ -2910,7 +2969,7 @@ message GetChatHistoryResponse {
 }
 
 message EventCursor {
-  string event_id = 1;
+  optional string event_id = 1;
   int64 sequence = 2;
 }
 

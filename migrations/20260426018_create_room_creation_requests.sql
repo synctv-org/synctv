@@ -28,6 +28,28 @@ CREATE TABLE IF NOT EXISTS room_creation_requests (
                 AND opaque_password_ciphersuite IS NOT NULL
                 AND opaque_password_server_setup_version IS NOT NULL
             )
+        ),
+    CONSTRAINT room_creation_requests_opaque_password_record_not_empty
+        CHECK (opaque_password_record IS NULL OR length(opaque_password_record) > 0),
+    CONSTRAINT room_creation_requests_opaque_password_identifier_not_empty
+        CHECK (
+            opaque_password_credential_identifier IS NULL
+            OR length(opaque_password_credential_identifier) > 0
+        ),
+    CONSTRAINT room_creation_requests_opaque_password_ciphersuite_not_empty
+        CHECK (
+            opaque_password_ciphersuite IS NULL
+            OR length(trim(opaque_password_ciphersuite)) > 0
+        ),
+    CONSTRAINT room_creation_requests_opaque_password_setup_version_positive
+        CHECK (
+            opaque_password_server_setup_version IS NULL
+            OR opaque_password_server_setup_version > 0
+        ),
+    CONSTRAINT room_creation_requests_rejection_reason_not_empty
+        CHECK (
+            rejection_reason IS NULL
+            OR length(trim(rejection_reason)) > 0
         )
 );
 

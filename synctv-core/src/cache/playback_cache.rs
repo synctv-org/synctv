@@ -54,7 +54,7 @@ impl PlaybackStateCache {
         l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
-    ) -> Result<Self> {
+    ) -> Self {
         let inner = TieredCache::new(
             l2,
             l1_max_capacity,
@@ -62,8 +62,8 @@ impl PlaybackStateCache {
             l2_ttl_seconds,
             key_prefix,
             "playback".to_string(),
-        )?;
-        Ok(Self { inner })
+        );
+        Self { inner }
     }
 
     /// Get playback state from cache
@@ -190,8 +190,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room1");
         let state = create_test_state("room1");
@@ -217,8 +216,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room1");
         let mut state1 = create_test_state("room1");
@@ -259,8 +257,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let room_id = create_test_room_id("room1");
         let mut state1 = create_test_state("room1");

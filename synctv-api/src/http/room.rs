@@ -26,11 +26,11 @@ use tokio_stream::{Stream, StreamExt};
 
 use super::validation::ProtoQuery;
 use super::websocket::RealtimeTransportFormat;
-use super::{middleware::RequestMetadata, AppError, AppResult, AppState};
+use super::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
-use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
+use crate::impls::{ApiError, EndpointRateLimitCategory, EndpointRateLimitScope};
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, ChatMessageEventResponse,
     ChatReadStateResponse, CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse,
@@ -59,17 +59,17 @@ use crate::proto::client::{
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdatePlaybackRequest, UpdatePlaylistCoverRequest,
-    UpdatePlaylistResponse, UpdateRoomCoverRequest, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse, UpdateVideoCoverRequest, WatchChatEventsRequest, WatchOptions,
-    WatchPlaybackSnapshotRequest, WatchPlaybackStateRequest, WatchPlaylistItemsRequest,
-    WatchRoomMembersRequest, WatchRoomSettingsRequest,
+    UpdatePlaylistResponse, UpdateRoomCoverRequest, UpdateRoomSettingsResponse,
+    UpdateVideoCoverRequest, WatchChatEventsRequest, WatchPlaybackSnapshotRequest,
+    WatchPlaybackStateRequest, WatchPlaylistItemsRequest, WatchRoomMembersRequest,
+    WatchRoomSettingsRequest,
 };
 
 pub type StartRoomPasswordRegistrationBody = StartRoomPasswordRegistrationRequest;
 pub type FinishRoomPasswordRegistrationBody = FinishRoomPasswordRegistrationRequest;
 pub type StartRoomPasswordLoginBody = StartRoomPasswordLoginRequest;
 pub type FinishRoomPasswordLoginBody = FinishRoomPasswordLoginRequest;
-pub type UpdateRoomSettingsBody = UpdateRoomSettingsRequest;
+pub type UpdateRoomSettingsBody = synctv_proto::http_serde::ClientUpdateRoomSettingsRequestDef;
 pub type TransferRoomOwnershipBody = TransferRoomOwnershipRequest;
 pub type StartPlaybackBody = StartPlaybackRequest;
 pub type StopPlaybackBody = StopPlaybackRequest;
@@ -106,6 +106,7 @@ pub struct ChatImageObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatImageObjectQuery {
     pub token: String,
 }
@@ -116,6 +117,7 @@ pub struct VideoCoverObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VideoCoverObjectQuery {
     pub token: String,
 }
@@ -126,6 +128,7 @@ pub struct RoomCoverObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomCoverObjectQuery {
     pub token: String,
 }
@@ -136,6 +139,7 @@ pub struct PlaylistCoverObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlaylistCoverObjectQuery {
     pub token: String,
 }
@@ -186,6 +190,7 @@ pub type UpdatePlaylistBody = crate::proto::client::UpdatePlaylistRequest;
 pub type MovePlaylistBody = crate::proto::client::MovePlaylistRequest;
 
 #[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetPlaybackQuery {
@@ -199,6 +204,7 @@ pub struct GetPlaybackQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchQuery {
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
@@ -206,6 +212,7 @@ pub struct WatchQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchPlaybackSnapshotQuery {
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
@@ -298,27 +305,34 @@ fn parse_watch_delivery_mode(value: Option<&str>) -> AppResult<i32> {
     }
 }
 
-fn watch_options(delivery_mode: Option<&str>) -> AppResult<WatchOptions> {
-    Ok(WatchOptions {
-        delivery_mode: parse_watch_delivery_mode(delivery_mode)?,
-    })
-}
-
 fn watch_after_event_sequence(
     headers: &HeaderMap,
     query_sequence: Option<i64>,
 ) -> AppResult<Option<i64>> {
-    match headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(value) => value
+    fn validate_sequence(sequence: i64) -> AppResult<i64> {
+        if sequence < 0 {
+            return Err(super::AppError::bad_request(
+                "Invalid event sequence; expected a non-negative integer",
+            ));
+        }
+        Ok(sequence)
+    }
+
+    let Some(header_value) = headers.get("last-event-id") else {
+        return query_sequence.map(validate_sequence).transpose();
+    };
+    let header_value = header_value
+        .to_str()
+        .map_err(|_| super::AppError::bad_request("Invalid Last-Event-ID event sequence"))?
+        .trim();
+
+    if header_value.is_empty() {
+        query_sequence.map(validate_sequence).transpose()
+    } else {
+        let sequence = header_value
             .parse::<i64>()
-            .map(Some)
-            .map_err(|_| super::AppError::bad_request("Invalid Last-Event-ID event sequence")),
-        None => Ok(query_sequence),
+            .map_err(|_| super::AppError::bad_request("Invalid Last-Event-ID event sequence"))?;
+        validate_sequence(sequence).map(Some)
     }
 }
 
@@ -535,10 +549,7 @@ async fn open_resource_watch_sse(
     observe: crate::proto::client::ObserveResource,
     format: RealtimeTransportFormat,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
-    let event_service = state
-        .event_service
-        .clone()
-        .ok_or_else(super::AppError::service_unavailable)?;
+    let event_service = state.event_service.clone();
     let room_id = state
         .shared_api_runtime
         .public_id_codec
@@ -573,6 +584,7 @@ async fn open_resource_watch_sse(
                             permissions: access.permissions,
                         };
                         crate::impls::messaging::RealtimePrincipal::guest(room_id, identity)
+                            .map_err(|error| crate::impls::ApiError::Internal(error.to_string()))?
                     }
                 })
             },
@@ -1463,12 +1475,13 @@ pub async fn watch_playback_state(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchPlaybackStateRequest {
-        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         playback_state: Some(crate::proto::client::ObservePlaybackState {
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_playback_state_observe(request);
+    let observe = crate::impls::messaging::watch_playback_state_observe(request)
+        .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
@@ -1484,16 +1497,17 @@ pub async fn watch_playback_snapshot(
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackSnapshotRequest {
-        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         playback_snapshot: Some(crate::proto::client::ObservePlaybackSnapshot {
-            media_id: query.media_id.unwrap_or_default(),
-            playlist_id: query.playlist_id.unwrap_or_default(),
+            media_id: query.media_id,
+            playlist_id: query.playlist_id,
             target: query.target,
             playback_client_profile,
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_playback_snapshot_observe(request);
+    let observe = crate::impls::messaging::watch_playback_snapshot_observe(request)
+        .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
@@ -1508,12 +1522,13 @@ pub async fn watch_room_settings(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchRoomSettingsRequest {
-        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         room_settings: Some(crate::proto::client::ObserveRoomSettings {
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_room_settings_observe(request);
+    let observe = crate::impls::messaging::watch_room_settings_observe(request)
+        .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
@@ -1529,13 +1544,14 @@ pub async fn watch_playlist_items(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchPlaylistItemsRequest {
-        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         playlist_items: Some(crate::proto::client::ObservePlaylistItems {
             request: Some(request),
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_playlist_items_observe(request);
+    let observe = crate::impls::messaging::watch_playlist_items_observe(request)
+        .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
@@ -1551,13 +1567,14 @@ pub async fn watch_room_members(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchRoomMembersRequest {
-        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         room_members: Some(crate::proto::client::ObserveRoomMembers {
             request: Some(request),
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_room_members_observe(request);
+    let observe = crate::impls::messaging::watch_room_members_observe(request)
+        .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
@@ -1596,12 +1613,13 @@ pub async fn watch_chat_events(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchChatEventsRequest {
-        options: Some(watch_options(query.delivery_mode.as_deref())?),
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         chat_events: Some(crate::proto::client::ObserveChatEvents {
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_chat_events_observe(request);
+    let observe = crate::impls::messaging::watch_chat_events_observe(request)
+        .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
@@ -2495,7 +2513,7 @@ pub async fn list_or_get_rooms(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = UpdateRoomSettingsRequest,
+        request_body = synctv_proto::http_serde::ClientUpdateRoomSettingsRequestDef,
         responses(
             (status = 200, description = "Room settings updated", body = UpdateRoomSettingsResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -2513,6 +2531,7 @@ pub async fn update_room_settings(
     Json(req): Json<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
     let room_id = extract_room_id(path);
+    let req = crate::proto::client::UpdateRoomSettingsRequest::from(req);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -2952,13 +2971,12 @@ pub async fn upload_chat_image_object(
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    let upload_token = headers
-        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
+    let upload_token = super::required_header_str(
+        &headers,
+        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        "Missing file upload token",
+    )?;
+    let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
     let encoded_object_key = path.encoded_object_key;
     let upload_token = upload_token.to_string();
     let content_type = content_type.map(str::to_string);
@@ -3033,17 +3051,16 @@ pub async fn upload_video_cover_object(
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    let upload_token = headers
-        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
+    let upload_token = super::required_header_str(
+        &headers,
+        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        "Missing file upload token",
+    )?;
+    let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
     let req = crate::proto::client::UploadVideoCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
-        content_type: content_type.unwrap_or_default().to_string(),
+        content_type: content_type.map(str::to_string),
         data: body.to_vec(),
     };
     execute_public_endpoint(
@@ -3092,17 +3109,16 @@ pub async fn upload_room_cover_object(
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    let upload_token = headers
-        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
+    let upload_token = super::required_header_str(
+        &headers,
+        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        "Missing file upload token",
+    )?;
+    let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
     let req = crate::proto::client::UploadRoomCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
-        content_type: content_type.unwrap_or_default().to_string(),
+        content_type: content_type.map(str::to_string),
         data: body.to_vec(),
     };
     execute_public_endpoint(
@@ -3151,17 +3167,16 @@ pub async fn upload_playlist_cover_object(
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    let upload_token = headers
-        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| AppError::bad_request("Missing file upload token"))?;
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
+    let upload_token = super::required_header_str(
+        &headers,
+        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        "Missing file upload token",
+    )?;
+    let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
     let req = crate::proto::client::UploadPlaylistCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
-        content_type: content_type.unwrap_or_default().to_string(),
+        content_type: content_type.map(str::to_string),
         data: body.to_vec(),
     };
     execute_public_endpoint(
@@ -3633,7 +3648,7 @@ pub async fn update_playlist(
             ("room_id" = String, Path, description = "Room ID"),
             ("playlist_id" = String, Path, description = "Playlist ID")
         ),
-        request_body = crate::proto::client::MovePlaylistRequest,
+        request_body = synctv_proto::http_serde::MovePlaylistRequestDef,
         responses(
             (status = 200, description = "Playlist moved", body = MovePlaylistResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -3648,12 +3663,14 @@ pub async fn move_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    Json(mut req): Json<crate::proto::client::MovePlaylistRequest>,
+    Json(req): Json<synctv_proto::http_serde::MovePlaylistRequestDef>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
     } = path;
+    let mut req =
+        crate::proto::client::MovePlaylistRequest::try_from(req).map_err(ApiError::InvalidInput)?;
     req.playlist_id = playlist_id;
     let response = execute_user_endpoint(
         &state,
@@ -3806,15 +3823,18 @@ mod tests {
 
     use super::{
         build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
-        sse_event_from_server_message, sse_event_id_from_resource_changed, AddMediaBatchBody,
-        CancelOnDropStream, CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery,
-        UpdatePlaybackRequest,
+        sse_event_from_server_message, sse_event_id_from_resource_changed,
+        watch_after_event_sequence, AddMediaBatchBody, CancelOnDropStream, ChatImageObjectQuery,
+        CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, PlaylistCoverObjectQuery,
+        RoomCoverObjectQuery, UpdatePlaybackRequest, VideoCoverObjectQuery,
+        WatchPlaybackSnapshotQuery, WatchQuery,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
         GetChatMessageRequest, GetHotRoomsRequest, GetRoomMembersRequest, ListPlaylistItemsRequest,
         ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest,
     };
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
     #[test]
     fn test_update_playback_deserialize_playing_update() {
@@ -3865,6 +3885,67 @@ mod tests {
         assert_eq!(req.position, Some(42.5));
         assert_eq!(req.speed, Some(1.25));
         assert_eq!(req.version, Some(9));
+    }
+
+    #[test]
+    fn test_watch_after_event_sequence_prefers_last_event_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", HeaderValue::from_static("42"));
+
+        let sequence = watch_after_event_sequence(&headers, Some(7))
+            .expect("valid Last-Event-ID should parse");
+
+        assert_eq!(sequence, Some(42));
+    }
+
+    #[test]
+    fn test_watch_after_event_sequence_rejects_invalid_last_event_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", HeaderValue::from_static("event-42"));
+
+        let error = watch_after_event_sequence(&headers, Some(7))
+            .expect_err("invalid Last-Event-ID should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("Last-Event-ID"));
+    }
+
+    #[test]
+    fn test_watch_after_event_sequence_rejects_negative_last_event_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", HeaderValue::from_static("-1"));
+
+        let error = watch_after_event_sequence(&headers, Some(7))
+            .expect_err("negative Last-Event-ID should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("event sequence"));
+    }
+
+    #[test]
+    fn test_watch_after_event_sequence_rejects_negative_query_sequence() {
+        let headers = HeaderMap::new();
+
+        let error = watch_after_event_sequence(&headers, Some(-1))
+            .expect_err("negative query event sequence should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("event sequence"));
+    }
+
+    #[test]
+    fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "last-event-id",
+            HeaderValue::from_bytes(&[0xff]).expect("header bytes should build"),
+        );
+
+        let error = watch_after_event_sequence(&headers, Some(7))
+            .expect_err("non-UTF-8 Last-Event-ID should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("Last-Event-ID"));
     }
 
     #[test]
@@ -3919,6 +4000,35 @@ mod tests {
             .expect("empty query should be valid");
 
         assert!(request.playback_client_profile.is_none());
+    }
+
+    #[test]
+    fn test_handwritten_room_queries_reject_unknown_fields() {
+        assert!(serde_urlencoded::from_str::<GetPlaybackQuery>(
+            "delivery_preference=direct&extra=true"
+        )
+        .is_err());
+        assert!(serde_urlencoded::from_str::<WatchQuery>(
+            "format=json&after_event_sequence=12&extra=true"
+        )
+        .is_err());
+        assert!(serde_urlencoded::from_str::<WatchPlaybackSnapshotQuery>(
+            "format=json&media_id=media_1&extra=true"
+        )
+        .is_err());
+        assert!(
+            serde_urlencoded::from_str::<ChatImageObjectQuery>("token=token&extra=true").is_err()
+        );
+        assert!(
+            serde_urlencoded::from_str::<VideoCoverObjectQuery>("token=token&extra=true").is_err()
+        );
+        assert!(
+            serde_urlencoded::from_str::<RoomCoverObjectQuery>("token=token&extra=true").is_err()
+        );
+        assert!(
+            serde_urlencoded::from_str::<PlaylistCoverObjectQuery>("token=token&extra=true")
+                .is_err()
+        );
     }
 
     #[test]

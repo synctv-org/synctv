@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use opaque_ke::argon2::Argon2;
+use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
@@ -26,7 +26,7 @@ struct SyncTvOpaqueCipherSuite;
 impl CipherSuite for SyncTvOpaqueCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
     type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, Sha512>;
-    type Ksf = Argon2<'static>;
+    type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
 pub struct OpaqueRegistrationStart {
@@ -41,7 +41,7 @@ pub struct OpaqueLoginStart {
 #[derive(Clone)]
 pub struct OpaquePasswordService {
     server_setup: ServerSetup<SyncTvOpaqueCipherSuite>,
-    dummy_record: Arc<OpaquePasswordRecord>,
+    dummy_record: Arc<Result<OpaquePasswordRecord>>,
 }
 
 impl OpaquePasswordService {
@@ -110,8 +110,7 @@ impl OpaquePasswordService {
             &server_setup,
             b"synctv:dummy-opaque-password-record",
             "synctv-dummy-opaque-password",
-        )
-        .expect("dummy OPAQUE password record must be constructible");
+        );
         Self {
             server_setup,
             dummy_record: Arc::new(dummy_record),
@@ -120,6 +119,10 @@ impl OpaquePasswordService {
 
     #[must_use]
     pub fn new_ephemeral_for_process() -> Self {
+        tracing::warn!(
+            "using an ephemeral OPAQUE server setup; password credentials created with this setup \
+             will be invalid after process restart"
+        );
         let mut rng = OsRng;
         Self::new(ServerSetup::new(&mut rng))
     }
@@ -293,7 +296,10 @@ impl OpaquePasswordService {
     }
 
     pub fn verify_dummy_password(&self, password: &str) -> Result<bool> {
-        self.verify_password(&self.dummy_record, password)
+        let dummy_record = self.dummy_record.as_ref().as_ref().map_err(|error| {
+            Error::Internal(format!("Dummy OPAQUE password record unavailable: {error}"))
+        })?;
+        self.verify_password(dummy_record, password)
     }
 }
 

@@ -81,6 +81,14 @@ pub struct RealtimeConfig {
     pub parent_cancel_token: Option<CancellationToken>,
 }
 
+#[derive(Clone, Default)]
+pub struct RealtimeManagerRuntime {
+    /// Optional connection runtime for coordinated shutdown.
+    pub connection_runtime: Option<Arc<dyn ConnectionRuntime>>,
+    /// Optional leader runtime for resigning leadership on epoch mismatch.
+    pub leader_runtime: Option<Arc<dyn synctv_cluster::leader::LeaderRuntime>>,
+}
+
 impl std::fmt::Debug for RealtimeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RealtimeConfig")
@@ -207,6 +215,29 @@ struct HeartbeatState {
     api_address: String,
 }
 
+fn publish_admin_event(admin_event_tx: &broadcast::Sender<RealtimeEvent>, event: RealtimeEvent) {
+    let event_type = event.event_type();
+    let room_id = event.room_id().map(ToString::to_string);
+    match admin_event_tx.send(event) {
+        Ok(receiver_count) => {
+            debug!(
+                event_type = %event_type,
+                room_id = room_id.as_deref().unwrap_or("n/a"),
+                receiver_count,
+                "Published realtime admin event"
+            );
+        }
+        Err(error) => {
+            warn!(
+                event_type = %event_type,
+                room_id = room_id.as_deref().unwrap_or("n/a"),
+                error = %error,
+                "Failed to publish realtime admin event"
+            );
+        }
+    }
+}
+
 async fn await_shutdown_handle(
     name: &'static str,
     mut handle: tokio::task::JoinHandle<()>,
@@ -236,6 +267,13 @@ impl RealtimeManager {
     /// # Arguments
     /// * `config` - Realtime configuration
     pub async fn new(config: RealtimeConfig) -> RealtimeResult<Self> {
+        Self::new_with_runtime(config, RealtimeManagerRuntime::default()).await
+    }
+
+    pub async fn new_with_runtime(
+        config: RealtimeConfig,
+        runtime: RealtimeManagerRuntime,
+    ) -> RealtimeResult<Self> {
         let deduplicator = Arc::new(MessageDeduplicator::new(config.dedup_window));
         let manager_cancel_token = config.parent_cancel_token.as_ref().map_or_else(
             CancellationToken::new,
@@ -299,7 +337,15 @@ impl RealtimeManager {
                         () = cancel_critical.cancelled() => {
                             // Drain remaining critical events before exiting
                             while let Ok(req) = critical_rx.try_recv() {
-                                let _ = normal_tx.send(req).await;
+                                let event_type = req.event.event_type();
+                                if let Err(error) = normal_tx.send(req).await {
+                                    error!(
+                                        event_type = %event_type,
+                                        error = %error,
+                                        "Critical event publish channel closed while draining"
+                                    );
+                                    return;
+                                }
                             }
                             return;
                         }
@@ -362,13 +408,13 @@ impl RealtimeManager {
             }),
             #[cfg(test)]
             heartbeat_shutdown_timeout: Duration::from_secs(10),
-            connection_manager: None,
+            connection_manager: runtime.connection_runtime,
             heartbeat_failure_count: Arc::new(AtomicU64::new(0)),
             epoch_mismatch_count: Arc::new(AtomicU64::new(0)),
             is_quarantined: Arc::new(AtomicBool::new(false)),
             shutdown_started: Arc::new(AtomicBool::new(false)),
             redis_publish_accepting: Arc::new(AtomicBool::new(true)),
-            leader_elector: None,
+            leader_elector: runtime.leader_runtime,
         })
     }
 
@@ -394,22 +440,6 @@ impl RealtimeManager {
     #[must_use]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
-    }
-
-    /// Set the connection manager for coordinated shutdown.
-    ///
-    /// When set, `shutdown()` will also cancel the ConnectionManager's TTL
-    /// refresh task, ensuring background tasks don't outlive the cluster.
-    pub fn set_connection_manager(&mut self, cm: Arc<dyn ConnectionRuntime>) {
-        self.connection_manager = Some(cm);
-    }
-
-    /// Set the leader elector for resigning leadership on epoch mismatch.
-    ///
-    /// When epoch mismatch is detected, this node will resign leadership if
-    /// it's currently the leader to prevent split-brain scenarios.
-    pub fn set_leader_elector(&mut self, elector: Arc<dyn synctv_cluster::leader::LeaderRuntime>) {
-        self.leader_elector = Some(elector);
     }
 
     /// Check if this node is quarantined due to epoch mismatch.
@@ -602,9 +632,17 @@ impl RealtimeManager {
             | RealtimeEvent::KickUserFromRoom { .. }
             | RealtimeEvent::RoomDeleted { .. }
             | RealtimeEvent::RoomBanned { .. }
-            | RealtimeEvent::RoomOwnerInactive { .. }) => {
-                self.lifecycle_event_tx.send(event).unwrap_or_default()
-            }
+            | RealtimeEvent::RoomOwnerInactive { .. }) => match self.lifecycle_event_tx.send(event)
+            {
+                Ok(sent) => sent,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "Failed to deliver outbox local lifecycle side-effect event"
+                    );
+                    0
+                }
+            },
             event => {
                 debug!(
                     event_type = %event.event_type(),
@@ -666,7 +704,7 @@ impl RealtimeManager {
             }
         }
         if event.delivers_to_admin_channel() {
-            let _ = self.admin_event_tx.send(event);
+            publish_admin_event(&self.admin_event_tx, event);
         }
 
         local_sent
@@ -1106,7 +1144,7 @@ impl RealtimeManager {
 
         // Admin-routed events reach app-level handlers and user-targeted WebSocket handlers.
         if event.delivers_to_admin_channel() {
-            let _ = self.admin_event_tx.send(event.clone());
+            publish_admin_event(&self.admin_event_tx, event.clone());
         }
 
         let redis_sent = self.enqueue_redis_publish(event, is_critical);
@@ -1428,8 +1466,8 @@ mod tests {
             &self,
             _cleanup_interval: Duration,
             _cancel_token: CancellationToken,
-        ) -> tokio::task::JoinHandle<()> {
-            tokio::spawn(async {})
+        ) -> Option<tokio::task::JoinHandle<()>> {
+            Some(tokio::spawn(async {}))
         }
 
         async fn shutdown(&self) {}
@@ -2315,9 +2353,15 @@ mod tests {
             parent_cancel_token: None,
         };
 
-        let mut manager = RealtimeManager::new(config)
-            .await
-            .expect("RealtimeManager::new should succeed");
+        let manager = RealtimeManager::new_with_runtime(
+            config,
+            RealtimeManagerRuntime {
+                connection_runtime: None,
+                leader_runtime: Some(Arc::new(synctv_core::service::AlwaysLeader)),
+            },
+        )
+        .await
+        .expect("RealtimeManager::new should succeed");
 
         // Verify initial state: not quarantined
         assert!(
@@ -2331,10 +2375,6 @@ mod tests {
             "Metrics should show non-quarantined state"
         );
 
-        manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
-
-        // Verify the elector was set (we can't directly check, but we can verify
-        // the manager is still functional)
         let room_id = RoomId::expect_positive(10_000_100);
         let user_id = UserId::expect_positive(10_000_101);
         let (_rx, conn_id) = manager
@@ -2448,7 +2488,7 @@ mod tests {
             parent_cancel_token: None,
         };
 
-        let mut manager = RealtimeManager::new(config)
+        let manager = RealtimeManager::new(config.clone())
             .await
             .expect("RealtimeManager::new should succeed");
 
@@ -2462,10 +2502,17 @@ mod tests {
             "fresh manager should not report an injected leader elector"
         );
 
-        let cm = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-        manager.set_connection_manager(cm);
-        manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
-
+        let manager = RealtimeManager::new_with_runtime(
+            config,
+            RealtimeManagerRuntime {
+                connection_runtime: Some(Arc::new(ConnectionManager::new(
+                    ConnectionLimits::default(),
+                ))),
+                leader_runtime: Some(Arc::new(synctv_core::service::AlwaysLeader)),
+            },
+        )
+        .await
+        .expect("RealtimeManager::new_with_runtime should succeed");
         let metrics = manager.metrics();
         assert!(
             metrics.has_connection_manager,
@@ -2793,13 +2840,18 @@ mod tests {
             parent_cancel_token: None,
         };
 
-        let mut manager = RealtimeManager::new(config)
-            .await
-            .expect("RealtimeManager::new should succeed");
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        manager.set_connection_manager(connection_manager.clone());
+        let manager = RealtimeManager::new_with_runtime(
+            config,
+            RealtimeManagerRuntime {
+                connection_runtime: Some(connection_manager.clone()),
+                leader_runtime: None,
+            },
+        )
+        .await
+        .expect("RealtimeManager::new_with_runtime should succeed");
 
         drop(manager);
         tokio::task::yield_now().await;

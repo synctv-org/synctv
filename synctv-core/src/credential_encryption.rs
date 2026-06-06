@@ -103,16 +103,10 @@ impl CredentialEncryption {
         Ok(format!("{ENCRYPTED_PREFIX}{encoded}"))
     }
 
-    /// Decrypt credential data
-    ///
-    /// Only accepts encrypted format: "enc:<base64(version + nonce + ciphertext)>"
-    /// Plaintext credentials are no longer supported.
     pub fn decrypt(&self, stored: &str) -> Result<serde_json::Value> {
         let encoded = stored.strip_prefix(ENCRYPTED_PREFIX).ok_or_else(|| {
             Error::Internal(
-                "Credential data is not encrypted (missing 'enc:' prefix). \
-                 Plaintext credentials are no longer supported."
-                    .to_string(),
+                "Credential data must be an encrypted string with 'enc:' prefix.".to_string(),
             )
         })?;
 
@@ -127,7 +121,6 @@ impl CredentialEncryption {
 
         let version = combined[0];
         if version != KEY_VERSION {
-            // Future: select decryption key based on version byte
             return Err(Error::Internal(format!(
                 "Unsupported credential encryption version: {version} (expected {KEY_VERSION})"
             )));
@@ -146,16 +139,11 @@ impl CredentialEncryption {
             .internal_with_err("Decrypted credential is not valid JSON")
     }
 
-    /// Decrypt a JSON Value that must be an encrypted string
-    ///
-    /// The value must be a string starting with "enc:". Plaintext JSON
-    /// objects/arrays are no longer supported.
     pub fn decrypt_value(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
         match value {
             serde_json::Value::String(s) => self.decrypt(s),
             other => Err(Error::Internal(format!(
-                "Expected encrypted string value (enc:...), got {other}. \
-                 Plaintext credentials are no longer supported."
+                "Credential value must be an encrypted string with 'enc:' prefix, got {other}."
             ))),
         }
     }
@@ -164,12 +152,6 @@ impl CredentialEncryption {
     pub fn encrypt_to_value(&self, plaintext: &serde_json::Value) -> Result<serde_json::Value> {
         let encrypted = self.encrypt(plaintext)?;
         Ok(serde_json::Value::String(encrypted))
-    }
-
-    /// Check if a stored value is already encrypted
-    #[must_use]
-    pub fn is_encrypted(value: &serde_json::Value) -> bool {
-        matches!(value, serde_json::Value::String(s) if s.starts_with(ENCRYPTED_PREFIX))
     }
 }
 
@@ -219,7 +201,9 @@ mod tests {
         let original = json!({"api_key": "secret123"});
 
         let encrypted_value = enc.encrypt_to_value(&original).unwrap();
-        assert!(CredentialEncryption::is_encrypted(&encrypted_value));
+        assert!(encrypted_value
+            .as_str()
+            .is_some_and(|s| s.starts_with("enc:")));
 
         let decrypted = enc.decrypt_value(&encrypted_value).unwrap();
         assert_eq!(original, decrypted);
@@ -230,18 +214,8 @@ mod tests {
         let enc = CredentialEncryption::new(&test_key()).unwrap();
         let plaintext = json!({"cookies": {"SESSDATA": "test"}});
 
-        // Plaintext JSON objects should be rejected
         let result = enc.decrypt_value(&plaintext);
         assert!(result.is_err(), "Plaintext JSON values should be rejected");
-    }
-
-    #[test]
-    fn test_is_encrypted() {
-        assert!(CredentialEncryption::is_encrypted(&json!("enc:AAAA")));
-        assert!(!CredentialEncryption::is_encrypted(&json!("not encrypted")));
-        assert!(!CredentialEncryption::is_encrypted(
-            &json!({"key": "value"})
-        ));
     }
 
     #[test]

@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT sequence AS \"sequence!\",\n                   event_id AS \"event_id!\",\n                   room_id AS \"room_id?\",\n                   actor_user_id AS \"actor_user_id?\",\n                   payload AS \"event_payload?: serde_json::Value\",\n                   occurred_at AS \"occurred_at!\"\n            FROM chat_message_events\n            WHERE room_id = $1\n              AND event_type IN (\n                  'chat_message_created',\n                  'chat_message_edited',\n                  'chat_message_deleted',\n                  'chat_message_reactions_changed'\n              )\n              AND message_id = $2\n              AND message_created_at = $3\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_user_id?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "event_payload?: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "occurred_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "23bcb61ce5d560698c5149b38c931091e3d38c9ef803a78bff448fd1a2e65c5a"
+}

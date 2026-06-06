@@ -6,7 +6,6 @@
 //!
 //! Uses a mock L2 backend with artificial delay to simulate the race condition.
 //!
-//! Run with: cargo test --test `tiered_cache_epoch_tests`
 #![allow(clippy::unwrap_used)]
 
 use async_trait::async_trait;
@@ -178,8 +177,7 @@ async fn test_epoch_prevents_stale_l1_write() {
         300,
         "test:epoch:".to_string(),
         "test_epoch".to_string(),
-    )
-    .unwrap();
+    );
 
     let key = TestId("k1".to_string());
 
@@ -224,8 +222,7 @@ async fn test_l2_versioned_write_does_not_downgrade_newer_l1() {
         300,
         "test:versioned:".to_string(),
         "test_versioned".to_string(),
-    )
-    .unwrap();
+    );
     let key = TestId("k1".to_string());
 
     cache

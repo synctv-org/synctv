@@ -6,7 +6,6 @@
 //! - Settings update concurrency with optimistic lock
 //! - Optimistic lock conflict retry scenarios
 //!
-//! Run with: cargo test -p synctv-core --test `admin_concurrency_tests` -- --nocapture
 //! Docker tests: cargo test -p synctv-core --test `admin_concurrency_tests` -- --ignored --nocapture
 #![allow(clippy::unwrap_used)]
 
@@ -15,19 +14,12 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         AddMemberOptions, Room, RoomId, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole,
         UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{
-        auth::{BruteForceProtection, JwtService},
-        member::MemberService,
-        permission::PermissionService,
-        InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
-    },
+    service::{member::MemberService, permission::PermissionService, NotificationService},
     Error,
 };
 use synctv_core_testing::create_test_pool;
@@ -71,34 +63,6 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         version: 0,
         last_activity_at: now,
     }
-}
-
-#[allow(dead_code)]
-fn make_user_service(pool: &PgPool) -> UserService {
-    let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
-    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    let key_builder = KeyBuilder::new("test");
-    let brute_force = BruteForceProtection::in_memory("test".to_string());
-
-    UserService::new(
-        pool,
-        jwt_service,
-        username_cache,
-        password_complexity,
-        token_blacklist,
-        key_builder,
-        brute_force,
-    )
-}
-
-#[allow(dead_code)]
-fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(&pool);
-
-    RoomService::new(pool, user_service)
 }
 
 async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
@@ -616,14 +580,17 @@ async fn test_concurrent_room_ban_with_members_joining() {
         None,
         1000,
         300,
-    );
-    let mut member_service = MemberService::new(
+    )
+    .expect("permission service should build");
+    let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo_for_service.clone(),
+        Some(room_settings_repo),
         permission_service.clone(),
+        None,
+        None,
         NotificationService::default(),
     );
-    member_service.set_room_settings_repo(room_settings_repo);
 
     let room_id = room.id;
 

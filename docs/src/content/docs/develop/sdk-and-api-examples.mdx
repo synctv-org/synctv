@@ -56,7 +56,7 @@ curl -sS "$BASE_URL/api/auth/opaque/login/start" \
   -d '{"username":"root","credential_request":[/* OPAQUE 客户端生成的字节 */]}'
 ```
 
-继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。如果 finish 响应里 `mfa.required=true`，继续完成 MFA；不要把这次响应当作最终登录。`/api/auth/login` 只用于无密码邮箱 token 登录。
+继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。如果 finish 响应里 `mfa.required=true`，继续完成 MFA。无密码邮箱 token 登录使用 `/api/auth/email/confirm`。
 
   </TabItem>
   <TabItem label="刷新 token" icon="random">

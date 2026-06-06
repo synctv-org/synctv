@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id!\",\n                   room_id AS \"room_id!: RoomId\",\n                   user_id AS \"user_id?: UserId\",\n                   client_message_id,\n                   content AS \"content!\",\n                   message_type AS \"message_type!: ChatMessageType\",\n                   status AS \"status!: ChatMessageStatus\",\n                   version AS \"version!\",\n                   reply_to_message_id,\n                   reply_to_message_created_at,\n                   metadata AS \"metadata!: serde_json::Value\",\n                   edited_at,\n                   deleted_at,\n                   deleted_by AS \"deleted_by?: UserId\",\n                   delete_reason,\n                   created_at AS \"created_at!\"\n            FROM chat_messages\n            WHERE room_id = $1 AND id = $2 AND created_at = $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id?: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "client_message_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "content!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "message_type!: ChatMessageType",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 6,
+        "name": "status!: ChatMessageStatus",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 7,
+        "name": "version!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "reply_to_message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "reply_to_message_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "metadata!: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 11,
+        "name": "edited_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "deleted_by?: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "delete_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "d6d73d08bf21189ab7d19867700c730a340887b2b8f31c9256c6a6bf0aa12b37"
+}

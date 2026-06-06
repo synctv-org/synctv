@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgRow, PgPool, Row};
+use sqlx::PgPool;
 
 use crate::{
     repository::room_resource_event::{NewRoomResourceEvent, RoomResourceEventScope},
@@ -92,6 +92,49 @@ pub struct RealtimeOutboxEvent {
     pub created_at: DateTime<Utc>,
     pub dispatched_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RealtimeOutboxEventRow {
+    id: String,
+    aggregate_type: String,
+    aggregate_id: String,
+    event_type: String,
+    event_version: i64,
+    aggregate_version: Option<i64>,
+    payload: Value,
+    status: i16,
+    attempts: i32,
+    next_retry_at: DateTime<Utc>,
+    locked_by: Option<String>,
+    locked_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    dispatched_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
+}
+
+impl TryFrom<RealtimeOutboxEventRow> for RealtimeOutboxEvent {
+    type Error = Error;
+
+    fn try_from(row: RealtimeOutboxEventRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            aggregate_type: row.aggregate_type,
+            aggregate_id: row.aggregate_id,
+            event_type: row.event_type,
+            event_version: row.event_version,
+            aggregate_version: row.aggregate_version,
+            payload: row.payload,
+            status: RealtimeOutboxStatus::try_from(row.status).map_err(Error::Internal)?,
+            attempts: row.attempts,
+            next_retry_at: row.next_retry_at,
+            locked_by: row.locked_by,
+            locked_at: row.locked_at,
+            created_at: row.created_at,
+            dispatched_at: row.dispatched_at,
+            last_error: row.last_error,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -220,7 +263,7 @@ impl RealtimeOutboxRepository {
         worker_id: &str,
         limit: i64,
     ) -> Result<Vec<RealtimeOutboxEvent>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, RealtimeOutboxEventRow>(
             r"
             WITH picked AS (
                 SELECT id
@@ -262,13 +305,11 @@ impl RealtimeOutboxRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| realtime_outbox_event_from_row(&row))
-            .collect()
+        rows.into_iter().map(TryInto::try_into).collect()
     }
 
     pub async fn mark_sent(&self, id: &str) -> Result<()> {
-        sqlx::query!(
+        let result = sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = $2,
@@ -283,6 +324,7 @@ impl RealtimeOutboxRepository {
         )
         .execute(&self.pool)
         .await?;
+        ensure_outbox_row_updated(result.rows_affected(), id, "mark_sent")?;
         Ok(())
     }
 
@@ -295,7 +337,7 @@ impl RealtimeOutboxRepository {
             RealtimeOutboxStatus::Pending
         };
 
-        sqlx::query!(
+        let result = sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = $2,
@@ -314,6 +356,7 @@ impl RealtimeOutboxRepository {
         )
         .execute(&self.pool)
         .await?;
+        ensure_outbox_row_updated(result.rows_affected(), id, "mark_failed")?;
         Ok(())
     }
 
@@ -356,6 +399,16 @@ impl RealtimeOutboxRepository {
     }
 }
 
+fn ensure_outbox_row_updated(rows_affected: u64, id: &str, operation: &str) -> Result<()> {
+    if rows_affected == 1 {
+        return Ok(());
+    }
+
+    Err(Error::Internal(format!(
+        "Realtime outbox {operation} updated {rows_affected} rows for id {id}"
+    )))
+}
+
 fn room_resource_event_from_outbox_event(
     event: &NewRealtimeOutboxEvent,
 ) -> Result<Option<NewRoomResourceEvent>> {
@@ -368,16 +421,6 @@ fn room_resource_event_from_outbox_event(
 
     let actor_user_id = actor_user_id(event);
     let resource = match event.event_type.as_str() {
-        "chat_message"
-        | "chat_message_event"
-        | "webrtc_signaling"
-        | "webrtc_join"
-        | "webrtc_leave"
-        | "system_notification"
-        | "kick_user"
-        | "user_notification"
-        | "provider_credential_changed"
-        | "cache_invalidate" => return Ok(None),
         "playback_state_changed" => {
             let state = event.payload.get("state").unwrap_or(&Value::Null);
             (
@@ -788,25 +831,4 @@ fn opt<T: Into<Value>>(value: Option<T>) -> Value {
 fn retry_delay_seconds(attempts: i32) -> i64 {
     let capped = attempts.clamp(1, 8);
     i64::from(2_i32.pow(capped.cast_unsigned())).min(300)
-}
-
-fn realtime_outbox_event_from_row(row: &PgRow) -> Result<RealtimeOutboxEvent> {
-    let status_code: i16 = row.try_get("status")?;
-    Ok(RealtimeOutboxEvent {
-        id: row.try_get("id")?,
-        aggregate_type: row.try_get("aggregate_type")?,
-        aggregate_id: row.try_get("aggregate_id")?,
-        event_type: row.try_get("event_type")?,
-        event_version: row.try_get("event_version")?,
-        aggregate_version: row.try_get("aggregate_version")?,
-        payload: row.try_get("payload")?,
-        status: RealtimeOutboxStatus::try_from(status_code).map_err(Error::Internal)?,
-        attempts: row.try_get("attempts")?,
-        next_retry_at: row.try_get("next_retry_at")?,
-        locked_by: row.try_get("locked_by")?,
-        locked_at: row.try_get("locked_at")?,
-        created_at: row.try_get("created_at")?,
-        dispatched_at: row.try_get("dispatched_at")?,
-        last_error: row.try_get("last_error")?,
-    })
 }

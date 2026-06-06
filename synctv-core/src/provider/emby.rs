@@ -23,12 +23,35 @@ use urlencoding;
 
 const EMBY_TICKS_PER_SECOND: u128 = 10_000_000;
 
-fn seconds_to_emby_ticks(position: f64) -> i64 {
+fn seconds_to_emby_ticks(position: f64) -> Result<i64, ProviderError> {
     let Ok(duration) = Duration::try_from_secs_f64(position.max(0.0)) else {
-        return 0;
+        return Err(ProviderError::InvalidConfig(format!(
+            "Invalid Emby playback position: {position}"
+        )));
     };
     let ticks = duration.as_nanos() / (1_000_000_000 / EMBY_TICKS_PER_SECOND);
-    i64::try_from(ticks).unwrap_or(i64::MAX)
+    i64::try_from(ticks).map_err(|_| {
+        ProviderError::InvalidConfig(format!(
+            "Emby playback position {position} exceeds i64 tick range"
+        ))
+    })
+}
+
+fn usize_to_u64(value: usize, field: &str) -> Result<u64, ProviderError> {
+    u64::try_from(value)
+        .map_err(|_| ProviderError::InvalidConfig(format!("{field} exceeds u64::MAX")))
+}
+
+fn dynamic_list_start_index(page: usize, page_size: usize) -> Result<u64, ProviderError> {
+    let zero_based_page = page
+        .checked_sub(1)
+        .ok_or_else(|| ProviderError::InvalidConfig("Emby page must be at least 1".to_string()))?;
+    let start_index = zero_based_page.checked_mul(page_size).ok_or_else(|| {
+        ProviderError::InvalidConfig(format!(
+            "Emby pagination start overflows for page {page} and page size {page_size}"
+        ))
+    })?;
+    usize_to_u64(start_index, "Emby pagination start")
 }
 
 /// Build an absolute Emby/Jellyfin URL from a configured server URL and an API path.
@@ -268,12 +291,13 @@ impl EmbyProvider {
     pub const NAME: &'static str = "emby";
 
     /// Create a new `EmbyProvider` with `RemoteProviderManager`
-    #[must_use]
-    pub fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
-        Self {
+    pub fn new(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self {
             provider_instance_manager,
-            client_manager: Arc::new(ProviderClientManager::new()),
-        }
+            client_manager: Arc::new(ProviderClientManager::new()?),
+        })
     }
 
     #[must_use]
@@ -736,8 +760,6 @@ impl TryFrom<&Value> for EmbySourceConfig {
     }
 }
 
-// Note: Default implementation removed as it requires RemoteProviderManager
-
 #[async_trait]
 impl MediaProvider for EmbyProvider {
     #[cfg(test)]
@@ -970,7 +992,7 @@ impl MediaProvider for EmbyProvider {
             .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
-        let position_ticks = seconds_to_emby_ticks(position);
+        let position_ticks = seconds_to_emby_ticks(position)?;
 
         let item_id = config.item_id.clone();
 
@@ -1040,7 +1062,7 @@ impl MediaProvider for EmbyProvider {
             .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
-        let position_ticks = seconds_to_emby_ticks(position);
+        let position_ticks = seconds_to_emby_ticks(position)?;
 
         let item_id = config.item_id.clone();
         let req = synctv_media_providers::grpc::emby::ReportPlaybackProgressReq {
@@ -1103,9 +1125,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                     .playback_infos
                     .get(&versioned.result.default_mode)
                     .map_or_else(HashMap::new, |info| info.headers.clone());
-                return Ok(super::proxy::action_for_signed_target_url(
-                    ctx, version, url, headers,
-                ));
+                return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
             }
 
             let Some(rest) = maybe_rest else {
@@ -1168,7 +1188,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: url.clone(),
                     headers: playback_info.headers.clone(),
-                    range_header: super::proxy::selected_range_header(ctx),
+                    range_header: super::proxy::selected_range_header(ctx)?,
                 });
             }
 
@@ -1184,7 +1204,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                     return Ok(super::proxy::ProxyAction::FetchAndForward {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        range_header: super::proxy::selected_range_header(ctx),
+                        range_header: super::proxy::selected_range_header(ctx)?,
                     });
                 }
                 "m3u8" => {
@@ -1233,9 +1253,8 @@ impl DynamicFolder for EmbyProvider {
             host: resolved.host.clone(),
             token: resolved.token.clone(),
             path: target_item_id,
-            start_index: u64::try_from(page.saturating_sub(1).saturating_mul(page_size))
-                .unwrap_or(u64::MAX),
-            limit: u64::try_from(page_size).unwrap_or(u64::MAX),
+            start_index: dynamic_list_start_index(page, page_size)?,
+            limit: usize_to_u64(page_size, "Emby page size")?,
             search_term: query.search.unwrap_or_default(),
             user_id: resolved.user_id.clone(),
         };
@@ -1246,16 +1265,21 @@ impl DynamicFolder for EmbyProvider {
             .into_iter()
             .filter_map(|item| {
                 let item_type = Self::item_type_from_listing(&item)?;
-                let credential_owner_id = ctx.credential_owner_id()?;
+                Some((item, item_type))
+            })
+            .map(|(item, item_type)| {
+                let credential_owner_id = ctx
+                    .credential_owner_id()
+                    .ok_or(ProviderError::CredentialRequired)?;
                 let thumbnail_url = Self::build_thumbnail_url(
                     &base_config.server_id,
                     &credential_owner_id.to_string(),
                     &item.id,
                 );
 
-                Some(DirectoryItem {
+                Ok(DirectoryItem {
                     name: item.name,
-                    target: Self::encode_target(&item.id).ok()?,
+                    target: Self::encode_target(&item.id)?,
                     item_type,
                     size: None,
                     thumbnail: Some(thumbnail_url),
@@ -1263,7 +1287,7 @@ impl DynamicFolder for EmbyProvider {
                     modified_at: None,
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ProviderError>>()?;
 
         Ok(items)
     }
@@ -1712,7 +1736,7 @@ mod tests {
     }
 
     fn provider_with_mock_emby_client() -> EmbyProvider {
-        let default_clients = ProviderClientManager::new();
+        let default_clients = ProviderClientManager::new_for_tests();
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             default_clients.local_alist_client(),
             default_clients.local_bilibili_client(),
@@ -1778,7 +1802,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_credential_dependencies_use_creator_credential() {
-        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let provider =
+            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1804,7 +1829,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let provider =
+            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -1824,7 +1850,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_emby_config_rejects_provider_instance_name() {
-        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let provider =
+            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let config = json!({
             "item_id": "item-456",
             "provider_instance_name": "remote-emby-1",
@@ -2058,7 +2085,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_playback_lifecycle_session_id_uses_provider_metadata() {
-        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let provider =
+            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let result = PlaybackResult {
             playback_infos: HashMap::new(),
             default_mode: "direct".to_string(),

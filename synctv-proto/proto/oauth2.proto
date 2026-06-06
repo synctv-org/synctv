@@ -159,10 +159,10 @@ message ExchangeAuthorizationCodeRequest {
 message ExchangeAuthorizationCodeResponse {
   // JWT access token (if login flow)
   // Empty if this is a bind flow
-  string access_token = 1;
+  optional string access_token = 1;
 
   // JWT refresh token (if login flow and refresh tokens are enabled)
-  string refresh_token = 2;
+  optional string refresh_token = 2;
 
   // Token expiration time in seconds
   int64 expires_in = 3;
@@ -172,7 +172,7 @@ message ExchangeAuthorizationCodeResponse {
 
   // Redirect URL from the original request (if provided)
   // Frontend can use this to redirect user after successful authentication
-  string redirect_url = 5;
+  optional string redirect_url = 5;
 
   // Whether this was a bind operation (true) or login operation (false)
   bool is_bind = 6;
@@ -181,7 +181,7 @@ message ExchangeAuthorizationCodeResponse {
   bool registration_review_required = 7;
 
   // Public review request ID when registration_review_required is true.
-  string registration_review_id = 8;
+  optional string registration_review_id = 8;
 }
 
 // ==================== List Available Providers ====================
@@ -299,11 +299,11 @@ message OAuth2UserInfo {
   // Username
   string username = 2;
 
-  // Email (optional)
-  string email = 3;
+  // Email, when the provider or account record exposes one.
+  optional string email = 3;
 
-  // Avatar URL (optional)
-  string avatar = 4;
+  // Avatar URL, when available.
+  optional string avatar = 4;
 
   // User role
   synctv.common.UserRole role = 5;

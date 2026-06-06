@@ -98,8 +98,8 @@ sort_field_enum! {
     pub enum ProviderInstanceListSortBy {
         Name => { display: "name", sql: "name" },
         Endpoint => { display: "endpoint", sql: "endpoint" },
-        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
-        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
+        UpdatedAt => { display: "updated_at", sql: "updated_at" },
+        CreatedAt => { display: "created_at", sql: "created_at" },
     }
     default = CreatedAt;
     error = "Unknown provider instance list sort field";
@@ -159,7 +159,7 @@ pub struct ProviderInstance {
     /// Enable TLS for gRPC connection
     pub tls: bool,
 
-    /// Skip TLS certificate verification (UNSAFE, dev/test only)
+    /// Skip TLS certificate verification for explicitly trusted private endpoints.
     pub insecure_tls: bool,
 
     /// Supported media provider type names (e.g., `["bilibili", "alist", "emby"]`).

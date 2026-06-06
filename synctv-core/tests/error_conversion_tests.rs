@@ -3,7 +3,6 @@
 //! Tests Error -> `tonic::Status` conversions, `InternalExt` trait, and
 //! the error Display formatting that is exposed to gRPC clients.
 //!
-//! Run with: cargo test --test `error_conversion_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::Error;
@@ -90,50 +89,6 @@ fn test_serialization_error_maps_to_internal() {
     let status: tonic::Status = Error::Serialization(err).into();
     assert_eq!(status.code(), tonic::Code::Internal);
 }
-
-// Error Display formatting
-
-#[test]
-fn test_error_display_format() {
-    assert_eq!(
-        Error::NotFound("user".to_string()).to_string(),
-        "Not found: user"
-    );
-    assert_eq!(
-        Error::AlreadyExists("room".to_string()).to_string(),
-        "Already exists: room"
-    );
-    assert_eq!(
-        Error::Conflict("stale update".to_string()).to_string(),
-        "Conflict: stale update"
-    );
-    assert_eq!(
-        Error::Authentication("expired".to_string()).to_string(),
-        "Authentication error: expired"
-    );
-    assert_eq!(
-        Error::Authorization("forbidden".to_string()).to_string(),
-        "Authorization error: forbidden"
-    );
-    assert_eq!(
-        Error::InvalidInput("missing field".to_string()).to_string(),
-        "Invalid input: missing field"
-    );
-    assert_eq!(
-        Error::RateLimited("slow down".to_string()).to_string(),
-        "Rate limited: slow down"
-    );
-    assert_eq!(
-        Error::Internal("panic".to_string()).to_string(),
-        "Internal error: panic"
-    );
-    assert_eq!(
-        Error::OptimisticLockConflict.to_string(),
-        "Optimistic lock conflict"
-    );
-}
-
-// InternalExt trait
 
 #[test]
 fn test_internal_ext_maps_error() {

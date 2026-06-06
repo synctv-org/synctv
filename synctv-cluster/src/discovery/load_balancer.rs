@@ -31,6 +31,74 @@ pub struct LoadBalancer {
     round_robin_index: std::sync::atomic::AtomicUsize,
 }
 
+fn metadata_i64(node: &NodeInfo, key: &'static str) -> Option<i64> {
+    node.metadata.get(key).and_then(|value| {
+        value
+            .parse::<i64>()
+            .map_err(|error| {
+                tracing::warn!(
+                    node_id = %node.node_id,
+                    metadata_key = key,
+                    metadata_value = %value,
+                    error = %error,
+                    "Ignoring invalid cluster node timestamp metadata"
+                );
+            })
+            .ok()
+    })
+}
+
+fn least_connections_score(node: &NodeInfo, now_timestamp: i64) -> usize {
+    // Nodes report connection count in metadata["connections"] via heartbeat.
+    // Nodes without valid connection metadata receive a warmup penalty so new or
+    // malformed reporters are not immediately preferred by every caller.
+    const WARMUP_PERIOD_SECS: i64 = 60;
+    const WARMUP_PERIOD_SECS_USIZE: usize = 60;
+    const WARMUP_PENALTY: usize = 1000;
+
+    if let Some(raw_connections) = node.metadata.get("connections") {
+        return raw_connections.parse::<usize>().unwrap_or_else(|error| {
+            tracing::warn!(
+                node_id = %node.node_id,
+                metadata_key = "connections",
+                metadata_value = %raw_connections,
+                error = %error,
+                effective_connections = WARMUP_PENALTY,
+                "Cluster node reported invalid connection metadata; applying routing penalty"
+            );
+            WARMUP_PENALTY
+        });
+    }
+
+    let registered_at = metadata_i64(node, "registered_at").unwrap_or_else(|| {
+        tracing::debug!(
+            node_id = %node.node_id,
+            "Node has no valid registered_at metadata; applying full warmup penalty"
+        );
+        now_timestamp
+    });
+
+    let age_secs = now_timestamp.saturating_sub(registered_at);
+    if age_secs < WARMUP_PERIOD_SECS {
+        let age_secs = usize::try_from(age_secs).unwrap_or(0);
+        let remaining_warmup = WARMUP_PERIOD_SECS_USIZE.saturating_sub(age_secs);
+        let penalty = WARMUP_PENALTY.saturating_mul(remaining_warmup) / WARMUP_PERIOD_SECS_USIZE;
+        tracing::trace!(
+            node_id = %node.node_id,
+            age_secs = age_secs,
+            effective_connections = penalty,
+            "Node in warmup period"
+        );
+        penalty
+    } else {
+        tracing::debug!(
+            node_id = %node.node_id,
+            "Node has no connection metadata after warmup, treating as empty"
+        );
+        0
+    }
+}
+
 impl LoadBalancer {
     /// Create a new load balancer
     #[must_use]
@@ -126,60 +194,10 @@ impl LoadBalancer {
                 sorted[index].node_id.clone()
             }
             LoadBalancingStrategy::LeastConnections => {
-                // Select node with fewest connections based on metadata.
-                // Nodes report connection count in metadata["connections"] via heartbeat.
-                // For nodes without connection metadata (newly joined), we use a
-                // warmup penalty to avoid immediately routing traffic to them.
-                // The penalty is based on registered_at timestamp - nodes registered
-                // within the last 60 seconds get a higher effective connection count
-                // to reduce the "thundering herd" problem on new nodes.
-                const WARMUP_PERIOD_SECS: i64 = 60;
-                const WARMUP_PENALTY: usize = 1000; // High value to deprioritize new nodes
-
-                let now = chrono::Utc::now();
-
+                let now_timestamp = chrono::Utc::now().timestamp();
                 nodes
                     .iter()
-                    .min_by_key(|n| {
-                        let connections = n.metadata
-                            .get("connections")
-                            .and_then(|v| v.parse::<usize>().ok());
-
-                        if let Some(conn) = connections { conn } else {
-                            // Node hasn't reported connections - check if in warmup
-                            let registered_at = n.metadata
-                                .get("registered_at")
-                                .and_then(|v| v.parse::<i64>().ok())
-                                .unwrap_or(0);
-
-                            let age_secs = now.timestamp() - registered_at;
-                            if age_secs < WARMUP_PERIOD_SECS {
-                                // In warmup period - apply penalty that decreases over time
-                                let age_secs = usize::try_from(age_secs).unwrap_or(0);
-                                let warmup_period_secs =
-                                    usize::try_from(WARMUP_PERIOD_SECS).unwrap_or(1);
-                                let remaining_warmup =
-                                    warmup_period_secs.saturating_sub(age_secs);
-                                let penalty = WARMUP_PENALTY
-                                    .saturating_mul(remaining_warmup)
-                                    / warmup_period_secs.max(1);
-                                tracing::trace!(
-                                    node_id = %n.node_id,
-                                    age_secs = age_secs,
-                                    effective_connections = penalty,
-                                    "Node in warmup period"
-                                );
-                                penalty
-                            } else {
-                                // Past warmup with no connection data - treat as empty
-                                tracing::debug!(
-                                    node_id = %n.node_id,
-                                    "Node has no connection metadata after warmup, treating as empty"
-                                );
-                                0
-                            }
-                        }
-                    })
+                    .min_by_key(|node| least_connections_score(node, now_timestamp))
                     .ok_or_else(|| Error::NotFound("No nodes available".to_string()))?
                     .node_id
                     .clone()

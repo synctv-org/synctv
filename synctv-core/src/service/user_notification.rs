@@ -33,8 +33,9 @@ pub struct UserNotificationService {
 }
 
 impl UserNotificationService {
-    fn u64_to_usize(value: u64) -> usize {
-        usize::try_from(value).unwrap_or(usize::MAX)
+    fn affected_rows_to_usize(value: u64, operation: &'static str) -> Result<usize> {
+        usize::try_from(value)
+            .map_err(|_| Error::Internal(format!("{operation} affected rows exceed usize::MAX")))
     }
 
     #[must_use]
@@ -60,19 +61,35 @@ impl UserNotificationService {
     ///
     /// This is used when the notification has already been persisted and a caller
     /// only needs to fan out the real-time event to active connections.
-    pub fn publish_realtime_event(&self, event: NotificationCreatedEvent) {
-        let _ = self.event_tx.send(event);
+    #[must_use]
+    pub fn publish_realtime_event(&self, event: NotificationCreatedEvent) -> usize {
+        match self.event_tx.send(event) {
+            Ok(subscriber_count) => subscriber_count,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "Failed to publish user notification realtime event"
+                );
+                0
+            }
+        }
     }
 
     /// Create a new notification
     pub async fn create(&self, req: CreateNotificationRequest) -> Result<Notification> {
         let notification = self.repository.create(&req).await?;
 
-        // Best-effort broadcast; ignore errors (no subscribers = no receivers).
-        self.publish_realtime_event(NotificationCreatedEvent {
+        let subscriber_count = self.publish_realtime_event(NotificationCreatedEvent {
             user_id: req.user_id,
             notification: notification.clone(),
         });
+        if subscriber_count == 0 {
+            tracing::debug!(
+                user_id = %req.user_id,
+                notification_id = %notification.id,
+                "User notification created event had no local subscribers"
+            );
+        }
 
         Ok(notification)
     }
@@ -177,7 +194,7 @@ impl UserNotificationService {
             .repository
             .mark_as_read(user_id, &req.notification_ids)
             .await?;
-        Ok(Self::u64_to_usize(affected))
+        Self::affected_rows_to_usize(affected, "mark notifications as read")
     }
 
     /// Mark all notifications as read
@@ -190,7 +207,7 @@ impl UserNotificationService {
             .repository
             .mark_all_as_read(user_id, req.before)
             .await?;
-        Ok(Self::u64_to_usize(affected))
+        Self::affected_rows_to_usize(affected, "mark all notifications as read")
     }
 
     /// Delete a notification
@@ -201,7 +218,7 @@ impl UserNotificationService {
     /// Delete all read notifications
     pub async fn delete_all_read(&self, user_id: &UserId) -> Result<usize> {
         let affected = self.repository.delete_all_read(user_id).await?;
-        Ok(Self::u64_to_usize(affected))
+        Self::affected_rows_to_usize(affected, "delete all read notifications")
     }
 }
 
@@ -215,5 +232,33 @@ mod tests {
             "room_invitation".parse::<NotificationType>().unwrap(),
             NotificationType::RoomInvitation
         );
+    }
+
+    #[tokio::test]
+    async fn publish_realtime_event_reports_subscriber_count() {
+        let repository = NotificationRepository::new(
+            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost/synctv_test")
+                .expect("lazy pool should accept a syntactically valid URL"),
+        );
+        let service = UserNotificationService::new(repository);
+        let event = NotificationCreatedEvent {
+            user_id: UserId::expect_positive(1),
+            notification: Notification {
+                id: 2,
+                user_id: UserId::expect_positive(1),
+                notification_type: NotificationType::SystemAnnouncement,
+                title: "title".to_string(),
+                content: "content".to_string(),
+                data: serde_json::Value::Null,
+                is_read: false,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        };
+
+        assert_eq!(service.publish_realtime_event(event.clone()), 0);
+
+        let _receiver = service.subscribe_events();
+        assert_eq!(service.publish_realtime_event(event), 1);
     }
 }

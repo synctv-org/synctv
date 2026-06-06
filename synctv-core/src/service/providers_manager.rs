@@ -21,21 +21,52 @@ fn provider_http_client_from_config(
     config: &Value,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> std::result::Result<Option<reqwest::Client>, crate::Error> {
-    let request_timeout_seconds = config
-        .get("request_timeout_seconds")
-        .and_then(serde_json::Value::as_u64);
-    let connect_timeout_seconds = config
-        .get("connect_timeout_seconds")
-        .and_then(serde_json::Value::as_u64);
+    fn parse_timeout_seconds(config: &Value, key: &str) -> Result<Option<u64>> {
+        config
+            .get(key)
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    crate::Error::InvalidInput(format!(
+                        "{key} must be a positive integer number of seconds"
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    let request_timeout_seconds = parse_timeout_seconds(config, "request_timeout_seconds")?;
+    let connect_timeout_seconds = parse_timeout_seconds(config, "connect_timeout_seconds")?;
 
     if request_timeout_seconds.is_none() && connect_timeout_seconds.is_none() {
         return Ok(None);
     }
 
-    let request_timeout_seconds = request_timeout_seconds
-        .unwrap_or_else(|| LocalProviderHttpConfig::default().request_timeout_seconds);
-    let connect_timeout_seconds = connect_timeout_seconds
-        .unwrap_or_else(|| LocalProviderHttpConfig::default().connect_timeout_seconds);
+    let defaults = LocalProviderHttpConfig::default();
+    let request_timeout_seconds =
+        request_timeout_seconds.unwrap_or(defaults.request_timeout_seconds);
+    let connect_timeout_seconds =
+        connect_timeout_seconds.unwrap_or(defaults.connect_timeout_seconds);
+
+    if request_timeout_seconds == 0 {
+        return Err(crate::Error::InvalidInput(
+            "request_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if request_timeout_seconds > 300 {
+        return Err(crate::Error::InvalidInput(
+            "request_timeout_seconds should not exceed 300 seconds (5 minutes)".to_string(),
+        ));
+    }
+    if connect_timeout_seconds == 0 {
+        return Err(crate::Error::InvalidInput(
+            "connect_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if connect_timeout_seconds > request_timeout_seconds {
+        return Err(crate::Error::InvalidInput(
+            "connect_timeout_seconds should not exceed request_timeout_seconds".to_string(),
+        ));
+    }
 
     let client = synctv_media_providers::provider_http_client_builder(ssrf_guard.clone())
         .request_timeout(std::time::Duration::from_secs(request_timeout_seconds))
@@ -102,8 +133,7 @@ impl ProvidersManager {
     }
 
     /// Create a new `ProvidersManager`
-    #[must_use]
-    pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
+    pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Result<Self> {
         Self::new_with_ssrf_guard(
             instance_manager,
             synctv_common::ssrf::SsrfGuard::strict_policy(),
@@ -111,19 +141,21 @@ impl ProvidersManager {
     }
 
     /// Create a new manager with an explicit global SSRF guard.
-    #[must_use]
     pub fn new_with_ssrf_guard(
         instance_manager: Arc<RemoteProviderManager>,
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    ) -> Self {
-        let default_provider_http_client =
-            synctv_media_providers::build_provider_http_client(ssrf_guard.clone())
-                .expect("default provider HTTP client should build");
-        Self::new_with_provider_http_client_and_ssrf_guard(
+    ) -> Result<Self> {
+        let default_provider_http_client = synctv_media_providers::build_provider_http_client(
+            ssrf_guard.clone(),
+        )
+        .map_err(|error| {
+            crate::Error::Internal(format!("Failed to build provider HTTP client: {error}"))
+        })?;
+        Ok(Self::new_with_provider_http_client_and_ssrf_guard(
             instance_manager,
             default_provider_http_client,
             ssrf_guard,
-        )
+        ))
     }
 
     /// Create a new manager with an explicit default local provider HTTP client.
@@ -493,7 +525,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Check that built-in providers are registered
         assert!(manager.has_factory("alist"));
@@ -510,7 +543,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         let types = manager.list_types();
         assert!(types.contains(&"alist".to_string()));
@@ -525,7 +559,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create provider with empty config (no timeout)
         let config = serde_json::json!({});
@@ -545,7 +580,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create provider with Alist-specific timeout config.
         let config = serde_json::json!({
@@ -568,7 +604,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create provider with Bilibili-specific timeout config.
         let config = serde_json::json!({
@@ -591,7 +628,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create provider with Emby-specific timeout config.
         let config = serde_json::json!({
@@ -609,22 +647,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_provider_config_invalid_timeout_ignored() {
-        // Test that invalid timeout values are gracefully handled
+    async fn test_provider_config_invalid_timeout_rejected() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
-        // Create provider with invalid timeout type (string instead of number).
-        let config = serde_json::json!({
-            "request_timeout_seconds": "invalid"
-        });
-        let provider = manager
-            .create_provider("alist", "test_alist_invalid", &config)
-            .await;
-        // Should still succeed, just ignore the invalid timeout
-        assert!(provider.is_ok());
+        for (config, expected_message) in [
+            (
+                serde_json::json!({"request_timeout_seconds": "invalid"}),
+                "request_timeout_seconds must be a positive integer number of seconds",
+            ),
+            (
+                serde_json::json!({"connect_timeout_seconds": "invalid"}),
+                "connect_timeout_seconds must be a positive integer number of seconds",
+            ),
+            (
+                serde_json::json!({"request_timeout_seconds": 0}),
+                "request_timeout_seconds must be greater than 0",
+            ),
+            (
+                serde_json::json!({"request_timeout_seconds": 301}),
+                "request_timeout_seconds should not exceed 300 seconds",
+            ),
+            (
+                serde_json::json!({
+                    "request_timeout_seconds": 10,
+                    "connect_timeout_seconds": 11,
+                }),
+                "connect_timeout_seconds should not exceed request_timeout_seconds",
+            ),
+        ] {
+            let Err(error) = manager
+                .create_provider("alist", "test_alist_invalid", &config)
+                .await
+            else {
+                panic!("invalid provider timeout config should fail fast");
+            };
+            assert!(
+                error.to_string().contains(expected_message),
+                "unexpected error for {config}: {error}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -723,7 +788,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         let config = serde_json::json!({});
         let provider = manager.create_provider("rtmp", "test_rtmp", &config).await;
@@ -735,7 +801,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         let config = serde_json::json!({});
         let provider = manager
@@ -750,7 +817,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create a provider
         let config = serde_json::json!({});
@@ -775,7 +843,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create default instance
         let config = serde_json::json!({});
@@ -799,7 +868,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         assert!(
             manager.proxy_registry().get("alist").is_none(),
@@ -829,7 +899,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         manager
             .create_provider("alist", "alist", &serde_json::json!({}))
@@ -852,7 +923,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         manager
             .create_provider("alist", "alist_alt", &serde_json::json!({}))
@@ -884,7 +956,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create first instance
         let config1 = serde_json::json!({"request_timeout_seconds": 10});
@@ -917,7 +990,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Initially empty
         let list = manager.list().await;
@@ -954,7 +1028,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Create provider
         manager
@@ -983,7 +1058,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager);
+        let manager =
+            ProvidersManager::new(instance_manager).expect("providers manager should build");
 
         // Try to create unknown provider type
         let config = serde_json::json!({});
@@ -1006,7 +1082,9 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = Arc::new(ProvidersManager::new(instance_manager));
+        let manager = Arc::new(
+            ProvidersManager::new(instance_manager).expect("providers manager should build"),
+        );
 
         // Spawn multiple tasks creating different providers concurrently
         let mut handles = vec![];
@@ -1040,7 +1118,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager = ProvidersManager::new(instance_manager.clone());
+        let manager = ProvidersManager::new(instance_manager.clone())
+            .expect("providers manager should build");
 
         // Verify instance_manager is accessible
         let retrieved = manager.instance_manager();

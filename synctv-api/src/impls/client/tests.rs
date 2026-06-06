@@ -13,12 +13,8 @@ use synctv_core::models::{
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 use synctv_core::RedisConnectionRuntime;
 
-/// Minimum delay constant used in password verification during `join_room`.
-/// This should match the constant in room.rs.
-const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
-
 fn test_public_id_codec() -> crate::PublicIdCodec {
-    crate::PublicIdCodec::default_for_tests()
+    crate::PublicIdCodec::plain()
 }
 
 fn test_pool_without_repository_access() -> sqlx::PgPool {
@@ -30,20 +26,36 @@ fn test_pool_without_repository_access() -> sqlx::PgPool {
 }
 
 fn test_client_api_without_repository_access() -> super::ClientApiImpl {
+    test_client_api_without_repository_access_with_runtime(
+        crate::impls::ClientApiRuntime::test_disabled(),
+    )
+}
+
+fn test_client_api_without_repository_access_with_runtime(
+    runtime: crate::impls::ClientApiRuntime,
+) -> super::ClientApiImpl {
     let pool = test_pool_without_repository_access();
-    super::ClientApiImpl::new(
-        Arc::new(synctv_core_testing::create_test_user_service(pool.clone())),
-        Arc::new(synctv_core_testing::create_test_room_service(pool)),
-        Arc::new(synctv_realtime::sync::ConnectionManager::new(
-            synctv_realtime::sync::ConnectionLimits::default(),
-        )),
-        Arc::new(synctv_core::Config::default()),
-        None,
-        synctv_core_testing::create_test_jwt_service(),
-        None,
-        None,
-        None,
-        Arc::new(test_public_id_codec()),
+    super::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiConfig {
+            user_service: Arc::new(synctv_core_testing::create_test_user_service(pool.clone())),
+            room_service: Arc::new(synctv_core_testing::create_test_room_service(pool)),
+            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                synctv_realtime::sync::ConnectionLimits::default(),
+            )),
+            config: Arc::new(synctv_core::Config::default()),
+            publish_key_service: None,
+            jwt_service: synctv_core_testing::create_test_jwt_service(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(test_public_id_codec()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        runtime,
     )
 }
 
@@ -103,6 +115,30 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
     );
 }
 
+#[tokio::test]
+async fn update_room_settings_rejects_empty_patch_before_repository_access() {
+    let api = test_client_api_without_repository_access();
+    let room_id = test_public_id_codec()
+        .encode_room_id(RoomId::expect_positive(1))
+        .expect("room id should encode");
+
+    let err = api
+        .update_room_settings(
+            &UserId::expect_positive(1),
+            &room_id,
+            crate::proto::client::UpdateRoomSettingsRequest {
+                settings: Vec::new(),
+            },
+        )
+        .await
+        .expect_err("empty settings patch must be rejected");
+
+    assert!(
+        matches!(err, ApiError::InvalidInput(ref message) if message.contains("settings patch")),
+        "expected settings patch validation error, got {err:?}"
+    );
+}
+
 #[test]
 fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
     let actor = super::RoomActor::Guest(guest_access(RoomPermissionSet(
@@ -119,20 +155,65 @@ fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
 }
 
 #[tokio::test]
+async fn test_room_actor_executor_rejects_malformed_authorization_header() {
+    let config = Arc::new(synctv_core::Config::default());
+    let api = test_client_api_without_repository_access();
+    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+        synctv_core_testing::create_test_jwt_service(),
+    )));
+    let request_executor = Arc::new(crate::impls::RequestExecutor::new(
+        config.clone(),
+        jwt_validator,
+        Arc::new(synctv_core::service::SecurityPipeline::new(
+            api.user_service.clone(),
+        )),
+        Arc::new(synctv_core::service::RateLimiter::local_only(
+            "test:room-actor-auth:".to_string(),
+        )),
+    ));
+    let api = Arc::new(test_client_api_without_repository_access_with_runtime(
+        crate::impls::ClientApiRuntime {
+            request_executor: Some(request_executor),
+            ..crate::impls::ClientApiRuntime::test_disabled()
+        },
+    ));
+    let metadata = crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
+        .with_authorization(Some("malformed-token".to_string()));
+
+    let err = super::ClientApiImpl::execute_room_actor_endpoint(
+        api,
+        &metadata,
+        test_public_id_codec()
+            .encode_room_id(RoomId::expect_positive(1))
+            .expect("room id should encode"),
+        crate::impls::EndpointRateLimitCategory::Read,
+        |_api, _actor| async move { Ok::<_, ApiError>(()) },
+    )
+    .await
+    .expect_err("malformed authorization must fail before room actor resolution");
+
+    assert!(
+        matches!(err, ApiError::Authentication(ref message) if message == synctv_common::messages::INVALID_AUTHORIZATION_HEADER),
+        "expected invalid authorization error, got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
     #[derive(Clone)]
     struct FakeRedisRuntime;
 
     #[async_trait]
     impl RedisConnectionRuntime for FakeRedisRuntime {
-        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
             panic!("snapshot should not be called in constructor-only test");
         }
     }
 
     let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
-    let api = super::ClientApiImpl::new(
-        Arc::new(synctv_core::service::UserService::new(
+    let api = super::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiConfig {
+            user_service: Arc::new(synctv_core::service::UserService::new_for_tests(
             &sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
@@ -141,7 +222,6 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
             )
             .expect("jwt"),
             synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
-            synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(
                 synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                     128, 3600, 86400,
@@ -150,11 +230,11 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
             synctv_core::cache::KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         )),
-        Arc::new(synctv_core::service::RoomService::new(
+            room_service: Arc::new(synctv_core::service::RoomService::new_for_tests(
             sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
-            synctv_core::service::UserService::new(
+            synctv_core::service::UserService::new_for_tests(
                 &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
@@ -167,7 +247,6 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                     128,
                     60,
                 ),
-                synctv_core::config::PasswordComplexityConfig::default(),
                 Arc::new(
                     synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                         128, 3600, 86400,
@@ -176,22 +255,32 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                 synctv_core::cache::KeyBuilder::new("test"),
                 synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
             ),
-        )),
-        Arc::new(synctv_realtime::sync::ConnectionManager::new(
+        )
+        .expect("room service should build")),
+            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::new(
             synctv_realtime::sync::ConnectionLimits::default(),
         )),
-        Arc::new(synctv_core::Config::default()),
-        None,
-        synctv_core::service::JwtService::new(
+            config: Arc::new(synctv_core::Config::default()),
+            publish_key_service: None,
+            jwt_service: synctv_core::service::JwtService::new(
             "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
         )
         .expect("jwt"),
-        None,
-        None,
-        None,
-        Arc::new(test_public_id_codec()),
-    )
-    .with_shared_runtime(Some(runtime.clone()));
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(test_public_id_codec()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        crate::impls::ClientApiRuntime {
+            redis_runtime: Some(runtime.clone()),
+            ..crate::impls::ClientApiRuntime::test_disabled()
+        },
+    );
 
     assert!(
         api.redis_runtime
@@ -251,8 +340,9 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
     let resolver: Arc<dyn ProviderStoreResolver> = Arc::new(FakeProviderStoreResolver {
         store: Arc::new(FakeProviderStore),
     });
-    let api = super::ClientApiImpl::new(
-        Arc::new(synctv_core::service::UserService::new(
+    let api = super::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiConfig {
+            user_service: Arc::new(synctv_core::service::UserService::new_for_tests(
             &sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
@@ -261,7 +351,6 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
             )
             .expect("jwt"),
             synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
-            synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(
                 synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                     128, 3600, 86400,
@@ -270,11 +359,11 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
             synctv_core::cache::KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         )),
-        Arc::new(synctv_core::service::RoomService::new(
+            room_service: Arc::new(synctv_core::service::RoomService::new_for_tests(
             sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
-            synctv_core::service::UserService::new(
+            synctv_core::service::UserService::new_for_tests(
                 &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
@@ -287,7 +376,6 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                     128,
                     60,
                 ),
-                synctv_core::config::PasswordComplexityConfig::default(),
                 Arc::new(
                     synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                         128, 3600, 86400,
@@ -296,126 +384,35 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                 synctv_core::cache::KeyBuilder::new("test"),
                 synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
             ),
-        )),
-        Arc::new(synctv_realtime::sync::ConnectionManager::new(
+        )
+        .expect("room service should build")),
+            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::new(
             synctv_realtime::sync::ConnectionLimits::default(),
         )),
-        Arc::new(synctv_core::Config::default()),
-        None,
-        synctv_core::service::JwtService::new(
+            config: Arc::new(synctv_core::Config::default()),
+            publish_key_service: None,
+            jwt_service: synctv_core::service::JwtService::new(
             "test-secret-key-for-client-api-provider-store-minimum-32-chars",
         )
         .expect("jwt"),
-        None,
-        None,
-        None,
-        Arc::new(test_public_id_codec()),
-    )
-    .with_provider_stores(resolver.clone());
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(test_public_id_codec()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: Some(resolver.clone()),
+            email_api: None,
+            passkey_service: None,
+        },
+        crate::impls::ClientApiRuntime::test_disabled(),
+    );
 
     assert!(
         api.provider_stores
             .as_ref()
             .is_some_and(|injected| Arc::ptr_eq(injected, &resolver)),
         "client API should retain the injected provider store resolver object"
-    );
-}
-
-/// Test that the timing delay calculation logic works correctly.
-#[test]
-fn test_timing_delay_calculation() {
-    use std::time::Duration;
-
-    // Simulate the timing protection logic
-    fn calculate_sleep_duration(elapsed: Duration, min_delay: Duration) -> Option<Duration> {
-        if elapsed < min_delay {
-            Some(min_delay.checked_sub(elapsed).unwrap())
-        } else {
-            None
-        }
-    }
-
-    let min_delay = Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
-
-    // Test case 1: Very fast operation (0ms elapsed) should require full delay
-    let fast_elapsed = Duration::from_millis(0);
-    let sleep = calculate_sleep_duration(fast_elapsed, min_delay);
-    assert!(sleep.is_some(), "Fast operation should require sleep");
-    assert_eq!(sleep.unwrap(), min_delay, "Should sleep for full delay");
-
-    // Test case 2: Partial time elapsed (50ms) should require partial delay
-    let partial_elapsed = Duration::from_millis(50);
-    let sleep = calculate_sleep_duration(partial_elapsed, min_delay);
-    assert!(sleep.is_some(), "Partial operation should require sleep");
-    let expected_sleep = min_delay.checked_sub(partial_elapsed).unwrap();
-    assert_eq!(
-        sleep.unwrap(),
-        expected_sleep,
-        "Should sleep for remaining time"
-    );
-
-    // Test case 3: Operation took exactly minimum time (250ms) should not require sleep
-    let exact_elapsed = Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
-    let sleep = calculate_sleep_duration(exact_elapsed, min_delay);
-    assert!(
-        sleep.is_none(),
-        "Operation at exact threshold should not require sleep"
-    );
-
-    // Test case 4: Operation took longer than minimum (300ms) should not require sleep
-    let long_elapsed = Duration::from_millis(300);
-    let sleep = calculate_sleep_duration(long_elapsed, min_delay);
-    assert!(sleep.is_none(), "Long operation should not require sleep");
-}
-
-/// Test that simulates the exact timing protection logic used in password verification during `join_room`.
-/// This verifies that both password success and failure scenarios result in
-/// approximately the same total execution time.
-#[test]
-fn test_timing_protection_simulation() {
-    use std::time::{Duration, Instant};
-
-    // Simulate the timing protection logic exactly as implemented in room.rs
-    fn simulate_password_check_timing(_password_valid: bool, operation_time_ms: u64) -> Duration {
-        let start = Instant::now();
-        let min_delay = Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
-
-        // Simulate the actual password verification work
-        // (in real code, this would be bcrypt verification which takes variable time)
-        std::thread::sleep(Duration::from_millis(operation_time_ms));
-
-        // Apply the timing protection (same for both valid and invalid passwords)
-        let elapsed = start.elapsed();
-        if elapsed < min_delay {
-            std::thread::sleep(min_delay.checked_sub(elapsed).unwrap());
-        }
-
-        start.elapsed()
-    }
-
-    // Simulate fast password verification (wrong password - fast reject)
-    let fast_result = simulate_password_check_timing(false, 5);
-
-    // Simulate slow password verification (correct password - full bcrypt)
-    let slow_result = simulate_password_check_timing(true, 100);
-
-    // Both should result in at least MIN_PASSWORD_CHECK_DELAY_MS
-    assert!(
-        fast_result >= Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS),
-        "Fast operation should be padded to minimum delay"
-    );
-    assert!(
-        slow_result >= Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS),
-        "Slow operation should meet minimum delay"
-    );
-
-    // The difference should stay bounded by the same minimum-delay budget.
-    // Shared CI runners can add substantial scheduling jitter, especially on Windows,
-    // so this simulation should only reject gaps that exceed the protection window itself.
-    let diff = fast_result.abs_diff(slow_result);
-    assert!(
-        diff < Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS),
-        "Timing difference between fast and slow operations should be bounded: {diff:?}"
     );
 }
 
@@ -609,29 +606,6 @@ fn test_proto_role_to_user_role_invalid() {
     assert!(err.to_string().contains("Unknown user role"));
 }
 
-#[test]
-fn test_room_role_to_proto_roundtrip() {
-    for role in [
-        RoomRole::Creator,
-        RoomRole::Admin,
-        RoomRole::Member,
-        RoomRole::Guest,
-    ] {
-        let proto_val = room_role_to_proto(role);
-        let back = proto_role_to_room_role(proto_val).unwrap();
-        assert_eq!(role, back);
-    }
-}
-
-#[test]
-fn test_user_role_to_proto_roundtrip() {
-    for role in [UserRole::Root, UserRole::Admin, UserRole::User] {
-        let proto_val = user_role_to_proto(role);
-        let back = proto_role_to_user_role(proto_val).unwrap();
-        assert_eq!(role, back);
-    }
-}
-
 fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
     synctv_core::models::User {
         id: UserId::expect_positive(101),
@@ -655,7 +629,8 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
 fn test_user_to_proto_basic() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
+    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
+        .expect("user proto should encode");
 
     assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
     assert_eq!(proto.username, "testuser");
@@ -742,7 +717,8 @@ fn test_provider_error_upstream_http_400_maps_to_invalid_input() {
 fn test_user_to_proto_admin_role() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
+    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
+        .expect("user proto should encode");
     assert_eq!(proto.role, synctv_proto::common::UserRole::Admin as i32);
 }
 
@@ -750,7 +726,8 @@ fn test_user_to_proto_admin_role() {
 fn test_user_to_proto_root_role() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Root, UserStatus::Active);
-    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
+    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
+        .expect("user proto should encode");
     assert_eq!(proto.role, synctv_proto::common::UserRole::Root as i32);
 }
 
@@ -758,7 +735,8 @@ fn test_user_to_proto_root_role() {
 fn test_user_to_proto_banned_status() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Banned);
-    let proto = user_to_proto(&user, Some("test@example.com"), &public_id_codec);
+    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
+        .expect("user proto should encode");
     assert_eq!(
         proto.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -769,7 +747,7 @@ fn test_user_to_proto_banned_status() {
 fn test_user_to_proto_no_email() {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = user_to_proto(&user, None, &public_id_codec);
+    let proto = try_user_to_proto(&user, None, &public_id_codec).expect("user proto should encode");
     assert_eq!(proto.email, ""); // None -> empty string
 }
 
@@ -792,10 +770,11 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
 }
 
 #[test]
-fn test_room_to_proto_basic() {
+fn test_try_room_to_proto_basic() {
     let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
-    let proto = room_to_proto_basic(&room, None, Some(5), &public_id_codec);
+    let proto = try_room_to_proto_basic(&room, None, Some(5), &public_id_codec)
+        .expect("room proto should encode");
 
     assert_eq!(proto.id, public_id_codec.encode_room_id(room.id).unwrap());
     assert_eq!(proto.name, "Test Room");
@@ -816,7 +795,8 @@ fn test_room_to_proto_basic() {
 fn test_room_to_proto_no_member_count() {
     let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
-    let proto = room_to_proto_basic(&room, None, None, &public_id_codec);
+    let proto = try_room_to_proto_basic(&room, None, None, &public_id_codec)
+        .expect("room proto should encode");
     assert_eq!(proto.member_count, 0); // None -> 0
 }
 
@@ -825,7 +805,8 @@ fn test_room_to_proto_banned() {
     let public_id_codec = test_public_id_codec();
     let mut room = make_test_room(RoomStatus::Active);
     room.is_banned = true;
-    let proto = room_to_proto_basic(&room, None, None, &public_id_codec);
+    let proto = try_room_to_proto_basic(&room, None, None, &public_id_codec)
+        .expect("room proto should encode");
     assert!(proto.is_banned);
     assert_eq!(
         proto.availability,
@@ -868,7 +849,8 @@ fn test_playback_state_to_proto() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state, &public_id_codec);
+    let proto = try_playback_state_to_proto(&state, &public_id_codec)
+        .expect("playback state proto should encode");
 
     assert_eq!(
         proto.room_id,
@@ -904,7 +886,8 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state, &public_id_codec);
+    let proto = try_playback_state_to_proto(&state, &public_id_codec)
+        .expect("playback state proto should encode");
 
     assert!(proto.position >= 123.5);
     assert!(proto.position < 124.5);
@@ -926,7 +909,8 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state, &public_id_codec);
+    let proto = try_playback_state_to_proto(&state, &public_id_codec)
+        .expect("playback state proto should encode");
 
     assert_eq!(proto.playing_media_id, "");
     assert_eq!(
@@ -943,7 +927,8 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
 fn test_playback_state_to_proto_no_media() {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(301));
-    let proto = playback_state_to_proto(&state, &public_id_codec);
+    let proto = try_playback_state_to_proto(&state, &public_id_codec)
+        .expect("playback state proto should encode");
 
     assert_eq!(proto.playing_media_id, ""); // None -> empty string
     assert_eq!(proto.playing_playlist_id, "");
@@ -974,7 +959,7 @@ fn make_test_media() -> synctv_core::models::Media {
 fn test_media_to_proto_basic() {
     let public_id_codec = test_public_id_codec();
     let media = make_test_media();
-    let proto = media_to_proto(&media, &public_id_codec);
+    let proto = try_media_to_proto(&media, &public_id_codec).expect("media proto should encode");
 
     assert_eq!(proto.id, public_id_codec.encode_media_id(media.id).unwrap());
     assert_eq!(
@@ -1008,8 +993,9 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() {
             "1080p".to_string(),
         ),
         1.0,
-    );
-    let proto = media_to_proto(&media, &public_id_codec);
+    )
+    .expect("direct media should build");
+    let proto = try_media_to_proto(&media, &public_id_codec).expect("media proto should encode");
     assert_eq!(proto.source_provider, "direct_url");
     assert!(proto.provider_instance_name.is_empty());
 }
@@ -1036,7 +1022,12 @@ fn test_room_member_to_proto() {
     let public_id_codec = test_public_id_codec();
     let member = make_test_member(RoomRole::Member);
     let role_default = RoomRole::Member.permissions();
-    let proto = room_member_to_proto(&member, role_default, &public_id_codec);
+    let proto = try_room_member_to_proto_with_permissions(
+        &member,
+        member.effective_permissions(role_default),
+        &public_id_codec,
+    )
+    .expect("room member proto should encode");
 
     assert_eq!(
         proto.room_id,
@@ -1059,7 +1050,12 @@ fn test_room_member_to_proto_creator() {
     let public_id_codec = test_public_id_codec();
     let member = make_test_member(RoomRole::Creator);
     let role_default = RoomRole::Creator.permissions();
-    let proto = room_member_to_proto(&member, role_default, &public_id_codec);
+    let proto = try_room_member_to_proto_with_permissions(
+        &member,
+        member.effective_permissions(role_default),
+        &public_id_codec,
+    )
+    .expect("room member proto should encode");
     assert_eq!(
         proto.role,
         synctv_proto::common::RoomMemberRole::Creator as i32
@@ -1073,7 +1069,12 @@ fn test_room_member_to_proto_custom_permissions() {
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = RoomRole::Member.permissions();
-    let proto = room_member_to_proto(&member, role_default, &public_id_codec);
+    let proto = try_room_member_to_proto_with_permissions(
+        &member,
+        member.effective_permissions(role_default),
+        &public_id_codec,
+    )
+    .expect("room member proto should encode");
     assert_eq!(proto.added_permissions, 0xFF);
     assert_eq!(proto.removed_permissions, 0x0F);
 }
@@ -1098,7 +1099,8 @@ fn test_playlist_to_proto() {
         version: 0,
     };
 
-    let proto = playlist_to_proto(&playlist, 10, &public_id_codec);
+    let proto = try_playlist_to_proto(&playlist, 10, &public_id_codec)
+        .expect("playlist proto should encode");
 
     assert_eq!(
         proto.id,
@@ -1134,7 +1136,8 @@ fn test_playlist_to_proto_dynamic() {
         version: 0,
     };
 
-    let proto = playlist_to_proto(&playlist, 5, &public_id_codec);
+    let proto = try_playlist_to_proto(&playlist, 5, &public_id_codec)
+        .expect("playlist proto should encode");
 
     assert_eq!(
         proto.parent_id,
@@ -1179,9 +1182,14 @@ fn test_members_to_proto_pattern_multiple_roles() {
         .into_iter()
         .map(|m| {
             let role_default = m.role.permissions();
-            room_member_to_proto(&m, role_default, &public_id_codec)
+            try_room_member_to_proto_with_permissions(
+                &m,
+                m.effective_permissions(role_default),
+                &public_id_codec,
+            )
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .expect("room member protos should encode");
 
     assert_eq!(result.len(), 4);
     assert_eq!(result[0].username, "owner");
@@ -1219,7 +1227,12 @@ fn test_members_to_proto_pattern_preserves_custom_permissions() {
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = member.role.permissions();
-    let result = room_member_to_proto(&member, role_default, &public_id_codec);
+    let result = try_room_member_to_proto_with_permissions(
+        &member,
+        member.effective_permissions(role_default),
+        &public_id_codec,
+    )
+    .expect("room member proto should encode");
     assert_eq!(result.added_permissions, 0xFF);
     assert_eq!(result.removed_permissions, 0x0F);
 }
@@ -1319,7 +1332,8 @@ fn test_playback_state_version_no_truncation() {
         version: large_version,
     };
 
-    let proto = playback_state_to_proto(&state, &public_id_codec);
+    let proto = try_playback_state_to_proto(&state, &public_id_codec)
+        .expect("playback state proto should encode");
     assert_eq!(
         proto.version, large_version,
         "Version should not be truncated from i64 to i32"
@@ -1343,6 +1357,7 @@ fn test_playback_state_version_i32_range_still_works() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state, &public_id_codec);
+    let proto = try_playback_state_to_proto(&state, &public_id_codec)
+        .expect("playback state proto should encode");
     assert_eq!(proto.version, 42);
 }

@@ -47,6 +47,8 @@ fn redact_qr_key(key: &str) -> &'static str {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
+// Provider business logic stays in `BilibiliApiImpl`.
 #[allow(clippy::result_large_err)]
 impl BilibiliProviderService for BilibiliProviderGrpcService {
     async fn parse(
@@ -57,7 +59,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili parse request: url={}", req.url);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -91,7 +93,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login QR request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -120,7 +122,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili check QR: key={}", redact_qr_key(&req.key));
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -154,7 +156,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili start SMS login request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -187,7 +189,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let masked_phone = if req.phone.len() >= 4 {
             format!("****{}", &req.phone[req.phone.len() - 4..])
@@ -220,7 +222,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login SMS");
         let api = self.api.clone();
@@ -253,7 +255,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili user info request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -287,7 +289,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili logout request");
         let api = self.api.clone();
@@ -315,7 +317,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.get_ref();
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

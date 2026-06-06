@@ -4,7 +4,6 @@
 //! When the blacklist store fails, logout should return an error so the caller
 //! knows that token revocation may not have succeeded.
 //!
-//! Run with: cargo test --test logout_blacklist_failure_tests -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,10 +16,6 @@ struct FailingBlacklistStore;
 
 #[async_trait::async_trait]
 impl TokenBlacklistStore for FailingBlacklistStore {
-    async fn is_blacklisted(&self, _key: &str) -> bool {
-        false
-    }
-
     async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
         Ok(false)
     }
@@ -31,8 +26,18 @@ impl TokenBlacklistStore for FailingBlacklistStore {
         ))
     }
 
-    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-        None
+    async fn blacklist_if_not_exists(
+        &self,
+        _key: &str,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<bool> {
+        Err(synctv_core::Error::Internal(
+            "Blacklist store unavailable".to_string(),
+        ))
+    }
+
+    async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
+        Ok(None)
     }
 
     async fn set_family_revoked(
@@ -53,10 +58,6 @@ struct CountingFailingStore {
 
 #[async_trait::async_trait]
 impl TokenBlacklistStore for CountingFailingStore {
-    async fn is_blacklisted(&self, _key: &str) -> bool {
-        false
-    }
-
     async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
         Ok(false)
     }
@@ -66,8 +67,17 @@ impl TokenBlacklistStore for CountingFailingStore {
         Err(synctv_core::Error::Internal("Store failed".to_string()))
     }
 
-    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-        None
+    async fn blacklist_if_not_exists(
+        &self,
+        _key: &str,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<bool> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(synctv_core::Error::Internal("Store failed".to_string()))
+    }
+
+    async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
+        Ok(None)
     }
 
     async fn set_family_revoked(
@@ -86,10 +96,6 @@ struct RecordingTtlStore {
 
 #[async_trait::async_trait]
 impl TokenBlacklistStore for RecordingTtlStore {
-    async fn is_blacklisted(&self, _key: &str) -> bool {
-        false
-    }
-
     async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
         Ok(false)
     }
@@ -99,8 +105,17 @@ impl TokenBlacklistStore for RecordingTtlStore {
         Ok(())
     }
 
-    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-        None
+    async fn blacklist_if_not_exists(
+        &self,
+        _key: &str,
+        ttl_secs: u64,
+    ) -> synctv_core::Result<bool> {
+        self.ttl_secs.store(ttl_secs, Ordering::SeqCst);
+        Ok(false)
+    }
+
+    async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
+        Ok(None)
     }
 
     async fn set_family_revoked(
@@ -127,7 +142,10 @@ async fn test_blacklist_success_returns_ok() {
     );
 
     // Verify token is blacklisted
-    assert!(store.is_blacklisted("jti:test_token").await);
+    assert!(store
+        .is_blacklisted_checked("jti:test_token")
+        .await
+        .unwrap());
 }
 
 // Test 2: Blacklist failure should return error (fail-closed)
@@ -261,7 +279,7 @@ async fn test_blacklist_empty_jti() {
     assert!(result.is_ok());
 
     // Empty key should be blacklisted
-    assert!(store.is_blacklisted("").await);
+    assert!(store.is_blacklisted_checked("").await.unwrap());
 }
 
 // Test 8: Blacklist with zero TTL

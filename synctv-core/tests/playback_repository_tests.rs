@@ -2,11 +2,10 @@
 //!
 //! Tests `create_or_get` idempotency and update optimistic locking.
 //!
-//! Run with: cargo test --test `playback_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
-use synctv_core::models::{Media, MediaId, Playlist, PlaylistId};
+use synctv_core::models::{FromProviderParams, Media, MediaId, Playlist, PlaylistId};
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
     repository::{
@@ -69,16 +68,17 @@ async fn attach_test_media(
     mut state: synctv_core::models::RoomPlaybackState,
     owner_id: UserId,
 ) -> synctv_core::models::RoomPlaybackState {
-    let media = Media::from_provider(
-        None,
-        state.room_id,
-        Some(owner_id),
-        "Playback Repository Test Video".to_string(),
-        serde_json::json!({"url": "https://example.com/video.mp4"}),
-        "direct_url",
-        None,
-        0.0,
-    );
+    let media = Media::from_provider_with_params(FromProviderParams {
+        playlist_id: None,
+        room_id: state.room_id,
+        creator_id: Some(owner_id),
+        name: "Playback Repository Test Video".to_string(),
+        description: String::new(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_name: "direct_url".to_string(),
+        provider_instance_name: None,
+        position: 0.0,
+    });
     let media = MediaRepository::new(pool.clone())
         .create(&media)
         .await

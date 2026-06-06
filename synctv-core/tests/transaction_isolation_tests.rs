@@ -4,7 +4,6 @@
 //! and isolation guarantees when multiple transactions attempt to modify the same
 //! room members simultaneously.
 //!
-//! Run with: cargo test --test `transaction_isolation_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 

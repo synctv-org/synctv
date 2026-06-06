@@ -52,33 +52,32 @@ impl LiveProxyProvider {
         // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
         // Use URL path parsing to avoid false positives from `.flv` appearing
         // in query parameters or other URL parts.
-        let is_rtmp = url.starts_with("rtmp://");
-        let parsed_url = url::Url::parse(url).ok();
-        let is_flv = parsed_url
-            .as_ref()
-            .map_or_else(|| url.ends_with(".flv"), |u| u.path().ends_with(".flv"));
+        let parsed_url = url::Url::parse(url).map_err(|error| {
+            ProviderError::InvalidConfig(format!("Invalid LiveProxy source URL '{url}': {error}"))
+        })?;
+        let is_rtmp = parsed_url.scheme().eq_ignore_ascii_case("rtmp");
+        let is_flv =
+            matches!(parsed_url.scheme(), "http" | "https") && parsed_url.path().ends_with(".flv");
         if !is_rtmp && !is_flv {
             return Err(ProviderError::InvalidConfig(format!(
                 "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
             )));
         }
 
-        if let Some(parsed_url) = parsed_url {
-            let host = parsed_url.host_str().ok_or_else(|| {
-                ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
-            })?;
-            if guard.is_host_blocked(host) {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "LiveProxy source host '{host}' is blocked by SSRF policy"
-                )));
-            }
+        let host = parsed_url.host_str().ok_or_else(|| {
+            ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
+        })?;
+        if guard.is_host_blocked(host) {
+            return Err(ProviderError::InvalidConfig(format!(
+                "LiveProxy source host '{host}' is blocked by SSRF policy"
+            )));
+        }
 
-            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                if guard.is_ip_blocked(&ip) {
-                    return Err(ProviderError::InvalidConfig(format!(
-                        "LiveProxy source IP '{ip}' is blocked by SSRF policy"
-                    )));
-                }
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if guard.is_ip_blocked(&ip) {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "LiveProxy source IP '{ip}' is blocked by SSRF policy"
+                )));
             }
         }
 
@@ -250,10 +249,17 @@ impl MediaProvider for LiveProxyProvider {
         // Do not advertise HLS until that path can start/remux external pullers.
         result.playback_infos.remove("hls");
         result.default_mode = "flv".to_string();
-        let redacted_host = url::Url::parse(source_url)
-            .ok()
-            .and_then(|u| u.host_str().map(String::from))
-            .unwrap_or_else(|| "unknown".to_string());
+        let parsed_source_url = url::Url::parse(source_url).map_err(|error| {
+            ProviderError::InvalidConfig(format!(
+                "Invalid LiveProxy source URL '{source_url}': {error}"
+            ))
+        })?;
+        let redacted_host = parsed_source_url
+            .host_str()
+            .ok_or_else(|| {
+                ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
+            })?
+            .to_string();
         result
             .metadata
             .insert("source_host".to_string(), json!(redacted_host));
@@ -379,7 +385,8 @@ mod tests {
         use std::sync::Arc;
 
         let provider = LiveProxyProvider::new();
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let ctx = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))

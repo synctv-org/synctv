@@ -44,6 +44,11 @@ trivially_copy_pass_by_ref = "allow"
 default_trait_access = "allow"
 match_wildcard_for_single_variants = "allow"
 explicit_deref_methods = "allow"
+double_must_use = "allow"
+field_reassign_with_default = "allow"
+float_cmp = "allow"
+large_enum_variant = "allow"
+struct_field_names = "allow"
 too_many_lines = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
@@ -53,7 +58,9 @@ redundant_pub_crate = "allow"
 similar_names = "allow"
 multiple_crate_versions = "allow"
 cargo_common_metadata = "allow"
+redundant_feature_names = "allow"
 needless_for_each = "allow"
+unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 # Async Runtime
@@ -143,7 +150,6 @@ redis = { version = "1.2.1", default-features = false, features = [
 ] }
 
 # Security
-argon2 = "0.5.3"
 opaque-ke = { version = "4.0.1", features = ["argon2"] }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }

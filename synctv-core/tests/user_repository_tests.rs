@@ -2,7 +2,6 @@
 //!
 //! Tests optimistic locking, soft-delete interactions, and batch queries.
 //!
-//! Run with: cargo test --test `user_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

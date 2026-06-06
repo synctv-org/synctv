@@ -9,6 +9,8 @@ use crate::{models::UserId, Error, Result};
 use std::sync::Arc;
 use tonic::{metadata::MetadataMap, Status};
 
+pub type GrpcStatusResult<T> = std::result::Result<T, Box<Status>>;
+
 /// Unified JWT validator for HTTP and gRPC authentication.
 ///
 /// This validator provides consistent token extraction and validation
@@ -176,21 +178,19 @@ impl JwtValidator {
     ///
     /// # Errors
     /// - `tonic::Status::unauthenticated` for any validation failure
-    #[allow(clippy::result_large_err)]
-    pub fn validate_grpc_as_status(
-        &self,
-        metadata: &MetadataMap,
-    ) -> std::result::Result<Claims, Status> {
+    pub fn validate_grpc_as_status(&self, metadata: &MetadataMap) -> GrpcStatusResult<Claims> {
         let token = Self::extract_grpc_token(metadata).map_err(|error| {
             tracing::warn!(error = %error, "gRPC token extraction failed");
-            Status::unauthenticated("Invalid authorization header")
+            Box::new(Status::unauthenticated("Invalid authorization header"))
         })?;
 
         self.jwt_service
             .verify_access_token(&token)
             .map_err(|error| {
                 tracing::warn!(error = %error, "gRPC token verification failed");
-                Status::unauthenticated(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN)
+                Box::new(Status::unauthenticated(
+                    synctv_common::messages::INVALID_OR_EXPIRED_TOKEN,
+                ))
             })
     }
 }
@@ -207,11 +207,8 @@ mod tests {
     }
 
     fn create_test_token(jwt_service: &JwtService, user_id: i64) -> String {
-        use super::super::jwt::TokenType;
         let user_id = UserId::expect_positive(user_id);
-        jwt_service
-            .sign_token(&user_id, TokenType::Access, 0)
-            .unwrap()
+        jwt_service.sign_access_token(&user_id, 0).unwrap()
     }
 
     #[test]

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
@@ -116,7 +116,7 @@ pub struct HealthMonitor {
     /// Probe state per node
     probe_states: Arc<RwLock<std::collections::HashMap<String, ProbeState>>>,
     /// JoinHandle for the monitoring task, stored so it can be awaited during shutdown
-    join_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    join_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl HealthMonitor {
@@ -146,7 +146,7 @@ impl HealthMonitor {
             last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config: HealthProbeConfig::default(),
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            join_handle: tokio::sync::Mutex::new(None),
+            join_handle: Mutex::new(None),
         }
     }
 
@@ -182,7 +182,7 @@ impl HealthMonitor {
             last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config: HealthProbeConfig::default(),
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            join_handle: tokio::sync::Mutex::new(None),
+            join_handle: Mutex::new(None),
         }
     }
 
@@ -218,7 +218,7 @@ impl HealthMonitor {
             last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config,
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            join_handle: tokio::sync::Mutex::new(None),
+            join_handle: Mutex::new(None),
         }
     }
 
@@ -257,31 +257,25 @@ impl HealthMonitor {
             last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config,
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            join_handle: tokio::sync::Mutex::new(None),
-        }
-    }
-
-    /// Replace the cancellation token with a child of the given parent.
-    ///
-    /// Must be called **before** [`start`](Self::start). Calling it after the
-    /// monitoring loop is already running has no effect on the running task.
-    pub fn set_cancellation_token(&mut self, parent_token: &CancellationToken) {
-        self.cancel_token = parent_token.child_token();
-    }
-
-    /// Store the JoinHandle from `start()` so it can be awaited during shutdown.
-    pub fn set_join_handle(&self, handle: tokio::task::JoinHandle<()>) {
-        // Use try_lock since this is called once during startup (no contention)
-        if let Ok(mut guard) = self.join_handle.try_lock() {
-            *guard = Some(handle);
+            join_handle: Mutex::new(None),
         }
     }
 
     /// Start health monitoring loop
     ///
-    /// Returns the `JoinHandle` so the caller can detect panics or task completion.
     /// Use `shutdown()` to gracefully stop the monitoring loop.
-    pub fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
+    pub fn start(&self) -> Result<()> {
+        let mut guard = self.join_handle.try_lock().map_err(|_| {
+            crate::error::Error::Internal(anyhow::anyhow!(
+                "health monitor startup is already in progress"
+            ))
+        })?;
+        if guard.is_some() {
+            return Err(crate::error::Error::Internal(anyhow::anyhow!(
+                "health monitor is already running"
+            )));
+        }
+
         let registry = self.node_registry.clone();
         let health_status = self.health_status.clone();
         let timeout_secs = registry.heartbeat_timeout_secs();
@@ -384,7 +378,9 @@ impl HealthMonitor {
             }
         });
 
-        Ok(handle)
+        *guard = Some(handle);
+
+        Ok(())
     }
 
     /// Process heartbeat status for a set of nodes (passive check).
@@ -596,6 +592,7 @@ impl HealthMonitor {
     }
 
     #[doc(hidden)]
+    #[cfg(test)]
     pub fn test_set_last_successful_refresh_at(&self, unix_secs: u64) {
         self.last_successful_refresh_at
             .store(unix_secs, Ordering::Relaxed);
@@ -604,12 +601,8 @@ impl HealthMonitor {
 
 #[async_trait]
 impl ClusterHealthRuntime for HealthMonitor {
-    fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
+    fn start(&self) -> Result<()> {
         Self::start(self)
-    }
-
-    fn set_join_handle(&self, handle: tokio::task::JoinHandle<()>) {
-        Self::set_join_handle(self, handle);
     }
 
     async fn shutdown(&self) {
@@ -630,10 +623,16 @@ impl ClusterHealthRuntime for HealthMonitor {
 }
 
 fn current_unix_timestamp_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "System clock is before UNIX_EPOCH while reading cluster health timestamp"
+            );
+            0
+        }
+    }
 }
 
 #[cfg(test)]
@@ -765,8 +764,7 @@ mod tests {
     async fn test_health_monitor_start_and_shutdown() {
         let registry = make_registry();
         let monitor = HealthMonitor::new(registry, 60);
-        let handle = monitor.start().unwrap();
-        monitor.set_join_handle(handle);
+        monitor.start().unwrap();
 
         // Let it run briefly
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -776,20 +774,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_monitor_shutdown_aborts_stuck_task() {
+    async fn test_health_monitor_shutdown_completes_when_monitor_is_running() {
         let registry = make_registry();
         let monitor = HealthMonitor::new(registry, 60);
-        let blocker = std::sync::Arc::new(tokio::sync::Notify::new());
-        let blocker_clone = blocker.clone();
-
-        monitor.set_join_handle(tokio::spawn(async move {
-            blocker_clone.notified().await;
-        }));
+        monitor.start().unwrap();
 
         let shutdown = tokio::time::timeout(Duration::from_secs(6), monitor.shutdown()).await;
         assert!(
             shutdown.is_ok(),
-            "shutdown should abort a stuck health monitor task instead of hanging"
+            "shutdown should stop a running health monitor task"
         );
     }
 
@@ -821,8 +814,7 @@ mod tests {
         let registry = make_registry();
         let parent = CancellationToken::new();
         let monitor = HealthMonitor::with_cancellation_token(registry, 60, &parent);
-        let handle = monitor.start().unwrap();
-        monitor.set_join_handle(handle);
+        monitor.start().unwrap();
 
         // Let it run briefly
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -866,8 +858,7 @@ mod tests {
 
         let monitor = HealthMonitor::new(registry, 1);
         monitor.test_set_last_successful_refresh_at(current_unix_timestamp_secs());
-        let handle = monitor.start().expect("monitor should start");
-        monitor.set_join_handle(handle);
+        monitor.start().expect("monitor should start");
 
         tokio::time::sleep(Duration::from_millis(2300)).await;
 
@@ -905,21 +896,6 @@ mod tests {
         assert!(
             !parent.is_cancelled(),
             "Constructing the child monitor must not cancel the parent token"
-        );
-    }
-
-    #[test]
-    fn test_set_cancellation_token() {
-        let registry = make_registry();
-        let mut monitor = HealthMonitor::new(registry, 10);
-        let parent = CancellationToken::new();
-        monitor.set_cancellation_token(&parent);
-
-        // Cancelling parent should propagate to the monitor's token
-        parent.cancel();
-        assert!(
-            monitor.cancel_token.is_cancelled(),
-            "Monitor's token should be cancelled when parent is cancelled"
         );
     }
 

@@ -22,7 +22,7 @@ struct CoreRegistryConnectionRuntime {
 
 #[async_trait::async_trait]
 impl synctv_livestream::relay::RegistryConnectionRuntime for CoreRegistryConnectionRuntime {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
         self.runtime.snapshot().await
     }
 }
@@ -151,22 +151,22 @@ pub async fn init_livestream(
         user_stream_tracker.clone(),
     );
 
-    let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
-        synctv_services.room_service.clone(),
-        synctv_services.user_service.clone(),
-        synctv_services.publish_key_service.clone(),
-        user_stream_tracker_for_auth,
-        publisher_registry_for_auth,
-        node_id.to_string(),
-        config.advertise_api_address(),
-        Arc::new(
+    let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(rtmp_auth::SyncTvRtmpAuthConfig {
+        room_service: synctv_services.room_service.clone(),
+        user_service: synctv_services.user_service.clone(),
+        publish_key_service: synctv_services.publish_key_service.clone(),
+        user_stream_tracker: user_stream_tracker_for_auth,
+        registry: publisher_registry_for_auth,
+        node_id: node_id.to_string(),
+        api_address: config.advertise_api_address(),
+        public_id_codec: Arc::new(
             synctv_core::PublicIdCodec::from_config(&config.public_ids)
-                .expect("public_ids config must be validated before building RTMP auth"),
+                .map_err(|error| anyhow::anyhow!("Invalid RTMP auth public ID config: {error}"))?,
         ),
-        Some(stream_lifecycle_tx),
-    )
-    .with_user_stream_index(user_stream_index)
-    .with_restarting_flag(livestream_server.restarting_flag());
+        stream_event_tx: Some(stream_lifecycle_tx),
+        is_restarting: Some(livestream_server.restarting_flag()),
+        user_stream_index,
+    });
     let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
 
     // One-shot facade: start all xiu components
@@ -245,7 +245,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RedisConnectionRuntime for MockRedisRuntime {
-        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
             panic!("mock redis runtime snapshot should not be called in factory tests");
         }
     }

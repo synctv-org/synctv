@@ -315,13 +315,11 @@ pub trait MediaProvider: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Prepare `source_config` for storage.
+    /// Prepare `source_config` for storage after validation.
     ///
-    /// Called after validation, before the `source_config` is persisted to the database.
-    /// Providers may override this to normalize provider-specific fields or reject
-    /// deprecated payload shapes before persistence.
-    ///
-    /// The default implementation returns the `source_config` unchanged.
+    /// Providers may override this to normalize provider-specific fields before
+    /// persistence. The default implementation returns the `source_config`
+    /// unchanged.
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,

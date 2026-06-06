@@ -51,12 +51,13 @@ impl BilibiliProvider {
     pub const NAME: &'static str = "bilibili";
 
     /// Create a new `BilibiliProvider` with `RemoteProviderManager`
-    #[must_use]
-    pub fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
-        Self {
+    pub fn new(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self {
             provider_instance_manager,
-            client_manager: Arc::new(ProviderClientManager::new()),
-        }
+            client_manager: Arc::new(ProviderClientManager::new()?),
+        })
     }
 
     #[must_use]
@@ -350,8 +351,6 @@ impl BilibiliProvider {
     }
 }
 
-// Note: Default implementation removed as it requires RemoteProviderManager
-
 /// Bilibili source configuration structs
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -389,6 +388,83 @@ impl BilibiliSourceConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BilibiliVideoIdentifier {
+    bvid: String,
+    aid: u64,
+}
+
+impl BilibiliVideoIdentifier {
+    fn parse(bvid: Option<&str>, aid: Option<u64>) -> Result<Self, ProviderError> {
+        let bvid = bvid
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let aid = match aid {
+            Some(value) if value > 0 => value,
+            _ => 0,
+        };
+        if bvid.is_none() && aid == 0 {
+            return Err(ProviderError::InvalidConfig(
+                "Bilibili video requires either bvid or aid".to_string(),
+            ));
+        }
+        if let Some(bvid) = bvid.as_deref() {
+            if !bvid.starts_with("BV") {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili bvid must start with 'BV'".to_string(),
+                ));
+            }
+            if bvid.len() != 12 {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili bvid must be exactly 12 characters long".to_string(),
+                ));
+            }
+            if !bvid.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            bvid: bvid.unwrap_or_default(),
+            aid,
+        })
+    }
+
+    fn cache_key_part(&self) -> String {
+        match (self.bvid.is_empty(), self.aid) {
+            (false, 0) => format!("bvid:{}", self.bvid),
+            (true, aid) => format!("aid:{aid}"),
+            (false, aid) => format!("bvid:{}:aid:{aid}", self.bvid),
+        }
+    }
+}
+
+fn resolve_bilibili_video_identifier(
+    bvid: Option<&str>,
+    aid: Option<u64>,
+) -> Result<(String, u64), ProviderError> {
+    let identifier = BilibiliVideoIdentifier::parse(bvid, aid)?;
+    Ok((identifier.bvid, identifier.aid))
+}
+
+fn non_empty_playback_urls<I>(urls: I, context: &str) -> Result<Vec<String>, ProviderError>
+where
+    I: IntoIterator<Item = String>,
+{
+    let urls = urls
+        .into_iter()
+        .filter(|url| !url.trim().is_empty())
+        .collect::<Vec<_>>();
+    if urls.is_empty() {
+        return Err(ProviderError::ApiError(format!(
+            "Bilibili {context} playback response did not include playable URLs"
+        )));
+    }
+    Ok(urls)
+}
+
 fn bilibili_credential_server_id() -> String {
     crate::models::UserProviderCredential::bilibili_server_id()
 }
@@ -404,26 +480,23 @@ fn is_bilibili_pgc_dash_unavailable(error: &synctv_media_providers::ProviderClie
 fn playback_cache_entry(
     config: &BilibiliSourceConfig,
     credential_cache_partition: &str,
-) -> (String, Duration) {
+) -> Result<(String, Duration), ProviderError> {
     match config {
-        BilibiliSourceConfig::Video { bvid, aid, cid, .. } => (
-            format!(
-                "playback:video:{}:{}:{}:{}",
-                bvid.as_deref().unwrap_or(""),
-                aid.unwrap_or(0),
-                cid,
-                credential_cache_partition
-            ),
-            Duration::from_hours(2),
-        ),
-        BilibiliSourceConfig::Pgc { epid, cid, .. } => (
+        BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
+            let video_key = BilibiliVideoIdentifier::parse(bvid.as_deref(), *aid)?.cache_key_part();
+            Ok((
+                format!("playback:video:{video_key}:{cid}:{credential_cache_partition}"),
+                Duration::from_hours(2),
+            ))
+        }
+        BilibiliSourceConfig::Pgc { epid, cid, .. } => Ok((
             format!("playback:pgc:{epid}:{cid}:{credential_cache_partition}"),
             Duration::from_hours(2),
-        ),
-        BilibiliSourceConfig::Live { room_id, .. } => (
+        )),
+        BilibiliSourceConfig::Live { room_id, .. } => Ok((
             format!("playback:live:{room_id}:{credential_cache_partition}"),
             Duration::from_mins(2),
-        ),
+        )),
     }
 }
 
@@ -501,7 +574,6 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Parse source_config
         let config = BilibiliSourceConfig::try_from(source_config)?;
 
         // Resolve cookies from DB. Shared Bilibili media uses the creator's
@@ -521,8 +593,7 @@ impl MediaProvider for BilibiliProvider {
         let (cookies, credential_cache_partition) =
             resolve_optional_bilibili_cookies(_ctx, *credential_owner_id).await?;
 
-        // Cache by content identity plus the exact credential binding that resolved it.
-        let (cache_key, cache_ttl) = playback_cache_entry(&config, &credential_cache_partition);
+        let (cache_key, cache_ttl) = playback_cache_entry(&config, &credential_cache_partition)?;
 
         let store = _ctx.store.as_ref();
 
@@ -580,34 +651,7 @@ impl MediaProvider for BilibiliProvider {
 
         match &config {
             BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                // Must have at least one of bvid or aid
-                let has_bvid = bvid.as_ref().is_some_and(|s| !s.is_empty());
-                let has_aid = aid.is_some_and(|a| a > 0);
-                if !has_bvid && !has_aid {
-                    return Err(ProviderError::InvalidConfig(
-                        "Bilibili video requires either bvid or aid".to_string(),
-                    ));
-                }
-                if let Some(bv) = bvid.as_ref() {
-                    if !bv.is_empty() {
-                        if !bv.starts_with("BV") {
-                            return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must start with 'BV'".to_string(),
-                            ));
-                        }
-                        if bv.len() != 12 {
-                            return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must be exactly 12 characters long".to_string(),
-                            ));
-                        }
-                        if !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
-                            return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must contain only alphanumeric characters"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                }
+                BilibiliVideoIdentifier::parse(bvid.as_deref(), *aid)?;
                 if *cid == 0 {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili video cid must be non-zero".to_string(),
@@ -720,9 +764,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                         info.headers.clone()
                     }
                 });
-            return Ok(super::proxy::action_for_signed_target_url(
-                ctx, version, url, headers,
-            ));
+            return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
         }
 
         if let Some(rest) = maybe_rest {
@@ -765,7 +807,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     } else {
                         playback_info.headers.clone()
                     },
-                    range_header: super::proxy::selected_range_header(ctx),
+                    range_header: super::proxy::selected_range_header(ctx)?,
                 });
             }
 
@@ -1036,7 +1078,7 @@ impl BilibiliProvider {
                 });
 
                 Ok(super::proxy::ProxyAction::DirectBody {
-                    body: serde_json::to_vec(&event_data).unwrap_or_default(),
+                    body: serde_json::to_vec(&event_data)?,
                     content_type: "application/json".to_string(),
                     status: 200,
                 })
@@ -1063,8 +1105,7 @@ impl BilibiliProvider {
 
         match config {
             BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                let bvid = bvid.clone().unwrap_or_default();
-                let aid = aid.unwrap_or(0);
+                let (bvid, aid) = resolve_bilibili_video_identifier(bvid.as_deref(), *aid)?;
                 let cid = *cid;
 
                 let request = synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq {
@@ -1112,11 +1153,14 @@ impl BilibiliProvider {
 
                 let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
 
-                let dash_urls: Vec<String> = dash_resp
-                    .dash
-                    .as_ref()
-                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
-                    .unwrap_or_default();
+                let dash_urls = non_empty_playback_urls(
+                    dash_resp.dash.as_ref().into_iter().flat_map(|dash| {
+                        dash.video_streams
+                            .iter()
+                            .map(|stream| stream.base_url.clone())
+                    }),
+                    "video DASH",
+                )?;
 
                 let mut playback_infos = HashMap::new();
                 playback_infos.insert(
@@ -1191,11 +1235,14 @@ impl BilibiliProvider {
 
                 let mut playback_infos = HashMap::new();
                 let default_mode = if let Some(dash_resp) = dash_resp {
-                    let pgc_urls: Vec<String> = dash_resp
-                        .dash
-                        .as_ref()
-                        .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
-                        .unwrap_or_default();
+                    let pgc_urls = non_empty_playback_urls(
+                        dash_resp.dash.as_ref().into_iter().flat_map(|dash| {
+                            dash.video_streams
+                                .iter()
+                                .map(|stream| stream.base_url.clone())
+                        }),
+                        "PGC DASH",
+                    )?;
 
                     playback_infos.insert(
                         "dash".to_string(),
@@ -1217,12 +1264,10 @@ impl BilibiliProvider {
                         cookies: sanitized_cookies.clone(),
                     };
                     let pgc_resp = client.get_pgcurl(request).await?;
-                    let pgc_urls: Vec<String> = pgc_resp
-                        .segments
-                        .iter()
-                        .map(|segment| segment.url.clone())
-                        .filter(|url| !url.is_empty())
-                        .collect();
+                    let pgc_urls = non_empty_playback_urls(
+                        pgc_resp.segments.iter().map(|segment| segment.url.clone()),
+                        "PGC durl",
+                    )?;
 
                     metadata.insert("fallback_format".to_string(), json!("durl"));
                     metadata.insert("quality".to_string(), json!(pgc_resp.current_quality));
@@ -1326,7 +1371,8 @@ mod tests {
         tokio::runtime::Runtime::new()
             .expect("runtime")
             .block_on(async {
-                let provider = BilibiliProvider::new(fake_provider_instance_manager());
+                let provider = BilibiliProvider::new(fake_provider_instance_manager())
+                    .expect("provider should build");
                 provider
                     .validate_source_config(
                         &ProviderContext::new("test"),
@@ -1334,6 +1380,83 @@ mod tests {
                     )
                     .await
             })
+    }
+
+    #[test]
+    fn video_identifier_requires_bvid_or_aid() {
+        let err = resolve_bilibili_video_identifier(None, None)
+            .expect_err("missing bvid and aid must fail");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(message)
+                if message.contains("requires either bvid or aid")
+        ));
+    }
+
+    #[test]
+    fn video_identifier_rejects_zero_aid_without_bvid() {
+        let err = BilibiliVideoIdentifier::parse(None, Some(0))
+            .expect_err("zero aid without bvid must fail");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(message)
+                if message.contains("requires either bvid or aid")
+        ));
+    }
+
+    #[test]
+    fn video_identifier_accepts_bvid_or_aid() {
+        assert_eq!(
+            BilibiliVideoIdentifier::parse(Some(" BV1xx411c7mD "), None)
+                .expect("bvid should identify video"),
+            BilibiliVideoIdentifier {
+                bvid: "BV1xx411c7mD".to_string(),
+                aid: 0,
+            }
+        );
+        assert_eq!(
+            BilibiliVideoIdentifier::parse(None, Some(42)).expect("aid should identify video"),
+            BilibiliVideoIdentifier {
+                bvid: String::new(),
+                aid: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn video_identifier_rejects_malformed_bvid() {
+        for bvid in ["av123", "BVshort", "BV1GJ411x7g!"] {
+            assert!(
+                BilibiliVideoIdentifier::parse(Some(bvid), None).is_err(),
+                "malformed bvid should fail: {bvid}"
+            );
+        }
+    }
+
+    #[test]
+    fn playback_urls_reject_empty_responses() {
+        let err = non_empty_playback_urls(vec![String::new(), "   ".to_string()], "video DASH")
+            .expect_err("empty playback URLs must fail");
+
+        assert!(matches!(
+            err,
+            ProviderError::ApiError(message)
+                if message.contains("did not include playable URLs")
+        ));
+    }
+
+    #[test]
+    fn playback_urls_filter_blank_entries() {
+        assert_eq!(
+            non_empty_playback_urls(
+                vec![String::new(), "https://upos.example/video.m4s".to_string()],
+                "video DASH",
+            )
+            .expect("non-empty URL should be kept"),
+            vec!["https://upos.example/video.m4s".to_string()]
+        );
     }
 
     struct MockBilibiliClient;
@@ -1639,7 +1762,7 @@ mod tests {
     }
 
     fn provider_with_mock_bilibili_client(client: Arc<dyn BilibiliInterface>) -> BilibiliProvider {
-        let default_clients = ProviderClientManager::new();
+        let default_clients = ProviderClientManager::new_for_tests();
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             default_clients.local_alist_client(),
             client,
@@ -1786,7 +1909,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_uses_creator() {
-        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let provider =
+            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1814,7 +1938,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_requires_explicit_creator() {
-        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let provider =
+            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -1836,7 +1961,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_non_shared_credential_dependency_uses_viewer() {
-        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let provider =
+            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1863,7 +1989,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_bilibili_config_rejects_provider_instance_name() {
-        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let provider =
+            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
@@ -2069,11 +2196,14 @@ mod tests {
         }))
         .expect("config should parse");
 
-        let (anon_key, anon_ttl) = playback_cache_entry(&config, "anon");
-        let (auth_key, auth_ttl) = playback_cache_entry(&config, "auth:user-alpha:global-bilibili");
+        let (anon_key, anon_ttl) =
+            playback_cache_entry(&config, "anon").expect("cache entry should build");
+        let (auth_key, auth_ttl) = playback_cache_entry(&config, "auth:user-alpha:global-bilibili")
+            .expect("cache entry should build");
 
         assert_eq!(anon_ttl, Duration::from_hours(2));
         assert_eq!(auth_ttl, Duration::from_hours(2));
+        assert!(anon_key.contains("bvid:BV1GJ411x7gL"));
         assert_ne!(
             anon_key, auth_key,
             "Bilibili playback cache must not collide between anonymous and authenticated playback"
@@ -2090,9 +2220,11 @@ mod tests {
         .expect("config should parse");
 
         let (first_key, first_ttl) =
-            playback_cache_entry(&config, "auth:user-alpha:global-bilibili");
+            playback_cache_entry(&config, "auth:user-alpha:global-bilibili")
+                .expect("cache entry should build");
         let (second_key, second_ttl) =
-            playback_cache_entry(&config, "auth:user-beta:global-bilibili");
+            playback_cache_entry(&config, "auth:user-beta:global-bilibili")
+                .expect("cache entry should build");
 
         assert_eq!(first_ttl, Duration::from_hours(2));
         assert_eq!(second_ttl, Duration::from_hours(2));
@@ -2116,10 +2248,14 @@ mod tests {
         }))
         .expect("live config should parse");
 
-        let (pgc_old_key, pgc_ttl) = playback_cache_entry(&pgc, "auth:7:bilibili:42:1000");
-        let (pgc_new_key, pgc_new_ttl) = playback_cache_entry(&pgc, "auth:7:bilibili:42:2000");
-        let (live_old_key, live_ttl) = playback_cache_entry(&live, "auth:7:bilibili:42:1000");
-        let (live_new_key, live_new_ttl) = playback_cache_entry(&live, "auth:7:bilibili:42:2000");
+        let (pgc_old_key, pgc_ttl) = playback_cache_entry(&pgc, "auth:7:bilibili:42:1000")
+            .expect("cache entry should build");
+        let (pgc_new_key, pgc_new_ttl) = playback_cache_entry(&pgc, "auth:7:bilibili:42:2000")
+            .expect("cache entry should build");
+        let (live_old_key, live_ttl) = playback_cache_entry(&live, "auth:7:bilibili:42:1000")
+            .expect("cache entry should build");
+        let (live_new_key, live_new_ttl) = playback_cache_entry(&live, "auth:7:bilibili:42:2000")
+            .expect("cache entry should build");
 
         assert_eq!(pgc_ttl, Duration::from_hours(2));
         assert_eq!(pgc_new_ttl, Duration::from_hours(2));

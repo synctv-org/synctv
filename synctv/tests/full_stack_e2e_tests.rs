@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures_util::{stream, SinkExt, StreamExt};
-use opaque_ke::argon2::Argon2;
+use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
@@ -59,7 +59,7 @@ struct TestOpaqueCipherSuite;
 impl CipherSuite for TestOpaqueCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
     type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, Sha512>;
-    type Ksf = Argon2<'static>;
+    type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
 fn reserve_local_port() -> u16 {
@@ -130,8 +130,8 @@ fn observe_playback_snapshot_message(
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::PlaybackSnapshot(
                 ObservePlaybackSnapshot {
-                    media_id: String::new(),
-                    playlist_id: String::new(),
+                    media_id: None,
+                    playlist_id: None,
                     target: Vec::new(),
                     playback_client_profile: None,
                     after_event_sequence: optional_event_sequence(after_event_sequence),
@@ -6788,7 +6788,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     assert_eq!(room.description, "created through full-stack gRPC e2e");
     assert_eq!(room.created_by, login.user.expect("login user").id);
     assert_eq!(room.member_count, 1);
-    let decoded_room_id = synctv_core::PublicIdCodec::default_for_tests()
+    let decoded_room_id = synctv_core::PublicIdCodec::plain()
         .decode_room_id(&room.id)
         .expect("created room id should be a typed public room id");
     assert!(decoded_room_id.as_i64() > 0);

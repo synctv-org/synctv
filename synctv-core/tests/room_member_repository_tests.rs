@@ -4,7 +4,6 @@
 //! atomic permission grants/revokes, permission reset, batch counts, pagination,
 //! and `diagnose_add_conflict` error branches.
 //!
-//! Run with: cargo test --test `room_member_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

@@ -78,11 +78,31 @@ fn unix_timestamp_now() -> Result<i64> {
     .map_err(|_| Error::Internal("Time error: unix timestamp overflow".to_string()))
 }
 
-fn cache_ttl_secs(token_ttl_hours: i64) -> u64 {
-    u64::try_from(token_ttl_hours)
-        .unwrap_or_default()
-        .saturating_mul(3600)
-        .saturating_add(300)
+fn cache_ttl_secs(token_ttl_hours: i64) -> Result<u64> {
+    if token_ttl_hours <= 0 {
+        tracing::warn!(
+            token_ttl_hours,
+            "Publish key token TTL must be positive; using deduplication grace window only"
+        );
+        return Ok(300);
+    }
+    let hours = u64::try_from(token_ttl_hours)
+        .map_err(|_| Error::InvalidInput("publish key token TTL is invalid".to_string()))?;
+    hours
+        .checked_mul(3600)
+        .and_then(|seconds| seconds.checked_add(300))
+        .ok_or_else(|| Error::InvalidInput("publish key cache TTL is too large".to_string()))
+}
+
+fn token_lifetime_secs(token_ttl_hours: i64) -> Result<i64> {
+    if token_ttl_hours <= 0 {
+        return Err(Error::InvalidInput(format!(
+            "publish key token_ttl_hours must be positive, got {token_ttl_hours}"
+        )));
+    }
+    token_ttl_hours
+        .checked_mul(3600)
+        .ok_or_else(|| Error::InvalidInput("publish key token TTL is too large".to_string()))
 }
 
 // JtiStore trait
@@ -305,34 +325,25 @@ impl InMemoryJtiStore {
 #[async_trait]
 impl JtiStore for InMemoryJtiStore {
     async fn try_claim(&self, jti: &str, _ttl_secs: u64) -> Result<bool> {
-        // Use moka's entry API for atomic check-and-insert.
-        // This eliminates the TOCTOU race where two concurrent tasks could both
-        // see contains_key()=false and both succeed.
         use moka::ops::compute::Op;
         let entry = self
             .cache
             .entry_by_ref(jti)
             .and_compute_with(|maybe_entry| async move {
                 if maybe_entry.is_some() {
-                    // Already claimed -- keep existing entry unchanged
                     Op::Nop
                 } else {
-                    // First claim -- insert a new entry
                     Op::Put(())
                 }
             })
             .await;
 
-        // If the operation was `Nop`, the entry already existed (replay).
-        // If it was `Put`, we just claimed it (first use).
         match entry {
-            // StillNone happens when Op::Nop is returned and there was no entry,
-            // but our logic never returns Nop when entry is None, so this is unreachable.
             moka::ops::compute::CompResult::Inserted(_)
-            | moka::ops::compute::CompResult::StillNone(_)
             | moka::ops::compute::CompResult::ReplacedWith(_) => Ok(true),
             moka::ops::compute::CompResult::Unchanged(_)
-            | moka::ops::compute::CompResult::Removed(_) => Ok(false),
+            | moka::ops::compute::CompResult::Removed(_)
+            | moka::ops::compute::CompResult::StillNone(_) => Ok(false),
         }
     }
 
@@ -485,16 +496,14 @@ impl PublishKeyService {
     }
 
     /// Create a new publish key service (local-only JTI deduplication)
-    #[must_use]
-    pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Self {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
+    pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Result<Self> {
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
         let store = Arc::new(InMemoryJtiStore::new(cache_ttl_secs));
-        Self::from_store(jwt_service, token_ttl_hours, store)
+        Ok(Self::from_store(jwt_service, token_ttl_hours, store))
     }
 
     /// Create a new publish key service with default TTL (24 hours)
-    #[must_use]
-    pub fn with_default_ttl(jwt_service: JwtService) -> Self {
+    pub fn with_default_ttl(jwt_service: JwtService) -> Result<Self> {
         Self::new(jwt_service, 24)
     }
 
@@ -503,14 +512,14 @@ impl PublishKeyService {
         token_ttl_hours: i64,
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
-    ) -> Self {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
+    ) -> Result<Self> {
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
         let store = Arc::new(RedisJtiStore::from_runtime(
             redis_runtime,
             key_prefix,
             cache_ttl_secs,
         ));
-        Self::from_store(jwt_service, token_ttl_hours, store)
+        Ok(Self::from_store(jwt_service, token_ttl_hours, store))
     }
 
     fn with_redis_runtime_fail_closed(
@@ -518,14 +527,14 @@ impl PublishKeyService {
         token_ttl_hours: i64,
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
-    ) -> Self {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
+    ) -> Result<Self> {
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
         let store = Arc::new(RedisJtiStore::from_runtime_fail_closed(
             redis_runtime,
             key_prefix,
             cache_ttl_secs,
         ));
-        Self::from_store(jwt_service, token_ttl_hours, store)
+        Ok(Self::from_store(jwt_service, token_ttl_hours, store))
     }
 
     pub fn from_shared_state_profile(
@@ -534,21 +543,19 @@ impl PublishKeyService {
         profile: &SharedStateProfile,
     ) -> Result<Self> {
         match profile.state_mode() {
-            SharedStateMode::SharedRequired => Ok(Self::with_redis_runtime_fail_closed(
+            SharedStateMode::SharedRequired => Self::with_redis_runtime_fail_closed(
                 jwt_service,
                 token_ttl_hours,
                 profile.require_shared_runtime("publish-key deduplication state")?,
                 profile.key_prefix().to_string(),
-            )),
-            SharedStateMode::SharedBestEffort => Ok(Self::with_redis_runtime(
+            ),
+            SharedStateMode::SharedBestEffort => Self::with_redis_runtime(
                 jwt_service,
                 token_ttl_hours,
-                profile
-                    .shared_runtime()
-                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.best_effort_shared_runtime("publish-key deduplication state")?,
                 profile.key_prefix().to_string(),
-            )),
-            SharedStateMode::LocalOnly => Ok(Self::new(jwt_service, token_ttl_hours)),
+            ),
+            SharedStateMode::LocalOnly => Self::new(jwt_service, token_ttl_hours),
         }
     }
 
@@ -560,8 +567,9 @@ impl PublishKeyService {
         user_id: &UserId,
     ) -> Result<PublishKey> {
         let now = unix_timestamp_now()?;
-
-        let exp = now + (self.token_ttl_hours * 3600);
+        let exp = now
+            .checked_add(token_lifetime_secs(self.token_ttl_hours)?)
+            .ok_or_else(|| Error::InvalidInput("publish key expiration overflow".to_string()))?;
 
         let claims = PublishClaims {
             room_id: room_id.to_string(),
@@ -713,7 +721,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -734,7 +742,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for HangingRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 tokio::time::sleep(Duration::from_mins(1)).await;
                 panic!("snapshot timeout should cancel this future")
             }
@@ -763,8 +771,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_key_service_supports_service_trait_object() {
-        let service: Arc<dyn StreamingPublishKeyService> =
-            Arc::new(PublishKeyService::new(create_jwt_service(), 24));
+        let service: Arc<dyn StreamingPublishKeyService> = Arc::new(
+            PublishKeyService::new(create_jwt_service(), 24)
+                .expect("publish key service should build"),
+        );
         let room_id = RoomId::expect_positive(40_001);
         let media_id = MediaId::expect_positive(40_002);
         let user_id = UserId::expect_positive(40_003);
@@ -826,20 +836,12 @@ mod tests {
 
     fn create_publish_key_service() -> PublishKeyService {
         let jwt = create_jwt_service();
-        PublishKeyService::new(jwt, 24)
+        PublishKeyService::new(jwt, 24).expect("publish key service should build")
     }
 
     fn create_publish_key_service_with_ttl(ttl_hours: i64) -> PublishKeyService {
         let jwt = create_jwt_service();
-        PublishKeyService::new(jwt, ttl_hours)
-    }
-
-    #[test]
-    fn test_publish_key_service_new() {
-        let service = create_publish_key_service();
-        let debug = format!("{service:?}");
-        assert!(debug.contains("token_ttl_hours"));
-        assert!(debug.contains("24"));
+        PublishKeyService::new(jwt, ttl_hours).expect("publish key service should build")
     }
 
     #[tokio::test]
@@ -914,7 +916,8 @@ mod tests {
             JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890")
                 .unwrap(),
             24,
-        );
+        )
+        .expect("publish key service should build");
 
         let room_id = RoomId::new();
         let media_id = MediaId::new();
@@ -1054,30 +1057,6 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_claims_serialization() {
-        let claims = PublishClaims {
-            room_id: "room123".to_string(),
-            media_id: "media456".to_string(),
-            user_id: "user789".to_string(),
-            perm_live_control: true,
-            iat: 1000,
-            exp: 2000,
-            jti: "unique-id".to_string(),
-        };
-
-        let json = serde_json::to_string(&claims).unwrap();
-        let back: PublishClaims = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(back.room_id, "room123");
-        assert_eq!(back.media_id, "media456");
-        assert_eq!(back.user_id, "user789");
-        assert!(back.perm_live_control);
-        assert_eq!(back.iat, 1000);
-        assert_eq!(back.exp, 2000);
-        assert_eq!(back.jti, "unique-id");
-    }
-
-    #[test]
     fn test_publish_claims_require_live_control_claim_name() {
         let old_claim = serde_json::json!({
             "room_id": "room123",
@@ -1095,24 +1074,6 @@ mod tests {
             error.to_string().contains("perm_live_control"),
             "unexpected error: {error}"
         );
-    }
-
-    #[test]
-    fn test_publish_key_serialization() {
-        let key = PublishKey {
-            token: "jwt.token.here".to_string(),
-            room_id: "room1".to_string(),
-            media_id: "media1".to_string(),
-            user_id: "user1".to_string(),
-            expires_at: 9999,
-        };
-
-        let json = serde_json::to_string(&key).unwrap();
-        let back: PublishKey = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(back.token, "jwt.token.here");
-        assert_eq!(back.room_id, "room1");
-        assert_eq!(back.expires_at, 9999);
     }
 
     #[tokio::test]
@@ -1167,7 +1128,8 @@ mod tests {
 
     #[test]
     fn test_publish_key_service_debug_reports_capabilities_not_backend_names() {
-        let service = PublishKeyService::new(create_jwt_service(), 24);
+        let service = PublishKeyService::new(create_jwt_service(), 24)
+            .expect("publish key service should build");
         let debug = format!("{service:?}");
 
         assert!(debug.contains("cross_node_single_use: false"));

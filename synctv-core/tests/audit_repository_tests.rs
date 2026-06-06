@@ -2,7 +2,6 @@
 //!
 //! Tests: list filter combinations, `get_by_id` 365-day visibility limit.
 //!
-//! Run with: cargo test -p synctv-core --test `audit_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};

@@ -4,7 +4,6 @@
 //! and `delete_message` permission logic with real `PostgreSQL`
 //! via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test `chat_service_full_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -14,7 +13,6 @@ use sha2::Digest;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind, ChatMessage,
         ChatMessageStatus, ChatMessageType, DeleteChatMessage, EditChatMessage,
@@ -31,9 +29,9 @@ use synctv_core::{
         chat::{ChatDependencies, ChatRuntime},
         file_storage::{FileStorageCleanupOrigin, FileStorageService},
         notification::RoomEvent,
-        AuditService, ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
-        PermissionService, RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService,
-        RoomSettingsService, UserService,
+        AuditService, ChatService, ContentFilter, DisabledFileStorageService,
+        InMemoryTokenBlacklistStore, NotificationService, PermissionService, RateLimitConfig,
+        RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService, UserService,
     },
     Error,
 };
@@ -52,16 +50,14 @@ fn make_user_service_with_username_cache(
 ) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -71,20 +67,47 @@ fn make_user_service_with_username_cache(
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 fn make_chat_service_with_config(
     pool: &PgPool,
     rate_limit_config: RateLimitConfig,
 ) -> (ChatService, UsernameCache) {
-    make_chat_service_with_config_and_audit(pool, rate_limit_config, None)
+    make_chat_service_with_options(
+        pool,
+        rate_limit_config,
+        None,
+        Arc::new(DisabledFileStorageService),
+    )
+}
+
+fn make_chat_service_with_config_and_storage(
+    pool: &PgPool,
+    rate_limit_config: RateLimitConfig,
+    file_storage_service: Arc<dyn FileStorageService>,
+) -> (ChatService, UsernameCache) {
+    make_chat_service_with_options(pool, rate_limit_config, None, file_storage_service)
 }
 
 fn make_chat_service_with_config_and_audit(
     pool: &PgPool,
     rate_limit_config: RateLimitConfig,
     audit_service: Option<Arc<AuditService>>,
+) -> (ChatService, UsernameCache) {
+    make_chat_service_with_options(
+        pool,
+        rate_limit_config,
+        audit_service,
+        Arc::new(DisabledFileStorageService),
+    )
+}
+
+fn make_chat_service_with_options(
+    pool: &PgPool,
+    rate_limit_config: RateLimitConfig,
+    audit_service: Option<Arc<AuditService>>,
+    file_storage_service: Arc<dyn FileStorageService>,
 ) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter: Arc<dyn RequestRateLimiterService> =
@@ -96,14 +119,15 @@ fn make_chat_service_with_config_and_audit(
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    let mut permission_service = PermissionService::new(
+    let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        None,
-        PermissionService::DEFAULT_CACHE_SIZE,
-        PermissionService::DEFAULT_CACHE_TTL_SECS,
-    );
-    permission_service.set_room_settings_repo(room_settings_repo.clone());
+        synctv_core::service::permission::PermissionServiceRuntime {
+            room_settings_repo: Some(room_settings_repo.clone()),
+            ..synctv_core::service::permission::PermissionServiceRuntime::default()
+        },
+    )
+    .expect("permission service should build");
 
     let notification_service = NotificationService::default();
     let room_settings_service = RoomSettingsService::new(
@@ -128,6 +152,7 @@ fn make_chat_service_with_config_and_audit(
                 pool,
                 username_cache.clone(),
             )),
+            file_storage_service,
             audit_service,
             notification_service,
         },
@@ -140,16 +165,16 @@ fn make_chat_service(pool: &PgPool) -> (ChatService, UsernameCache) {
 }
 
 fn make_chat_service_with_database_storage(pool: &PgPool) -> (ChatService, UsernameCache) {
-    let (service, username_cache) = make_chat_service(pool);
-    (
-        service.with_file_storage_service(Arc::new(
+    make_chat_service_with_config_and_storage(
+        pool,
+        RateLimitConfig::default(),
+        Arc::new(
             synctv_core::service::file_storage::DatabaseFileStorageService::new(
                 "database",
                 Arc::new(FileStorageRepository::new(pool.clone())),
                 "test-file-storage-secret",
             ),
-        )),
-        username_cache,
+        ),
     )
 }
 
@@ -364,14 +389,15 @@ async fn test_send_message_rate_limit_triggers() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    let mut permission_service = PermissionService::new(
+    let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        None,
-        PermissionService::DEFAULT_CACHE_SIZE,
-        PermissionService::DEFAULT_CACHE_TTL_SECS,
-    );
-    permission_service.set_room_settings_repo(room_settings_repo.clone());
+        synctv_core::service::permission::PermissionServiceRuntime {
+            room_settings_repo: Some(room_settings_repo.clone()),
+            ..synctv_core::service::permission::PermissionServiceRuntime::default()
+        },
+    )
+    .expect("permission service should build");
 
     let notification_service = Arc::new(NotificationService::default());
     let room_settings_service =
@@ -388,6 +414,7 @@ async fn test_send_message_rate_limit_triggers() {
             permission_service,
             room_settings_service,
             user_service: Arc::new(make_user_service_with_username_cache(&pool, username_cache)),
+            file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service: None,
             notification_service: NotificationService::default(),
         },
@@ -756,63 +783,6 @@ impl NotificationObserver {
     }
 }
 
-/// Helper function to create `ChatService` with a notification observer
-#[allow(dead_code)]
-fn make_chat_service_with_observer(
-    pool: &PgPool,
-    _observer: Arc<NotificationObserver>,
-) -> (ChatService, UsernameCache, NotificationService) {
-    let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter: Arc<dyn RequestRateLimiterService> =
-        Arc::new(RateLimiter::local_only("test:chat:".to_string()));
-    let rate_limit_config = RateLimitConfig::default();
-    let content_filter = ContentFilter::new();
-    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-
-    let member_repo = RoomMemberRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-
-    let mut permission_service = PermissionService::new(
-        member_repo,
-        room_repo,
-        None,
-        PermissionService::DEFAULT_CACHE_SIZE,
-        PermissionService::DEFAULT_CACHE_TTL_SECS,
-    );
-    permission_service.set_room_settings_repo(room_settings_repo.clone());
-
-    let notification_service = NotificationService::default();
-    let room_settings_service = RoomSettingsService::new(
-        room_settings_repo,
-        None,
-        Arc::new(notification_service.clone()),
-        None,
-        None,
-    );
-
-    let chat_service = ChatService::new(
-        chat_repo,
-        ChatRuntime {
-            rate_limiter,
-            rate_limit_config,
-            content_filter,
-        },
-        ChatDependencies {
-            permission_service,
-            room_settings_service,
-            user_service: Arc::new(make_user_service_with_username_cache(
-                pool,
-                username_cache.clone(),
-            )),
-            audit_service: None,
-            notification_service: notification_service.clone(),
-        },
-    );
-
-    (chat_service, username_cache, notification_service)
-}
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_send_message_broadcasts_to_room_members() {
@@ -843,14 +813,15 @@ async fn test_send_message_broadcasts_to_room_members() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    let mut permission_service = PermissionService::new(
+    let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        None,
-        PermissionService::DEFAULT_CACHE_SIZE,
-        PermissionService::DEFAULT_CACHE_TTL_SECS,
-    );
-    permission_service.set_room_settings_repo(room_settings_repo.clone());
+        synctv_core::service::permission::PermissionServiceRuntime {
+            room_settings_repo: Some(room_settings_repo.clone()),
+            ..synctv_core::service::permission::PermissionServiceRuntime::default()
+        },
+    )
+    .expect("permission service should build");
 
     let notification_service = NotificationService::default();
     let mut notification_rx = notification_service.subscribe();
@@ -873,6 +844,7 @@ async fn test_send_message_broadcasts_to_room_members() {
             permission_service,
             room_settings_service,
             user_service: Arc::new(make_user_service_with_username_cache(&pool, username_cache)),
+            file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service: None,
             notification_service,
         },

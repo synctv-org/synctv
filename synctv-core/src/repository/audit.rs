@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{postgres::PgRow, PgPool, Postgres, QueryBuilder, Row};
+use sqlx::{PgPool, Postgres, QueryBuilder};
 
 use crate::models::{AuditAction, AuditTargetType, PageParams, UserId};
 use crate::{Error, Result};
@@ -17,6 +17,43 @@ pub struct AuditLogRow {
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AuditLogDbRow {
+    id: i64,
+    actor_id: Option<UserId>,
+    actor_username: Option<String>,
+    action: i16,
+    target_type: Option<i16>,
+    target_id: Option<String>,
+    details: Option<serde_json::Value>,
+    ip_address: Option<String>,
+    user_agent: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl TryFrom<AuditLogDbRow> for AuditLogRow {
+    type Error = Error;
+
+    fn try_from(row: AuditLogDbRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            actor_id: row.actor_id,
+            actor_username: row.actor_username,
+            action: AuditAction::try_from(row.action).map_err(Error::Internal)?,
+            target_type: row
+                .target_type
+                .map(AuditTargetType::try_from)
+                .transpose()
+                .map_err(Error::Internal)?,
+            target_id: row.target_id,
+            details: row.details,
+            ip_address: row.ip_address,
+            user_agent: row.user_agent,
+            created_at: row.created_at,
+        })
+    }
 }
 
 /// Query parameters for listing audit logs
@@ -109,15 +146,19 @@ impl AuditLogRepository {
         );
         Self::push_filters(&mut list_builder, query, effective_from);
 
+        let limit = query.page.limit_i64()?;
+        let offset = query.page.offset_i64()?;
         list_builder.push(" ORDER BY created_at DESC LIMIT ");
-        list_builder.push_bind(query.page.limit().cast_signed());
+        list_builder.push_bind(limit);
         list_builder.push(" OFFSET ");
-        list_builder.push_bind(query.page.offset().cast_signed());
+        list_builder.push_bind(offset);
 
-        let rows = list_builder.build().fetch_all(&self.pool).await?;
-        let rows = rows
-            .iter()
-            .map(audit_log_row_from_row)
+        let rows = list_builder
+            .build_query_as::<AuditLogDbRow>()
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(TryInto::try_into)
             .collect::<Result<Vec<_>>>()?;
 
         Ok((rows, total))
@@ -127,7 +168,7 @@ impl AuditLogRepository {
     ///
     /// Scans recent partitions only (last 365 days) to avoid full partition scan.
     pub async fn get_by_id(&self, id: i64) -> Result<Option<AuditLogRow>> {
-        let row = sqlx::query(
+        let row = sqlx::query_as::<_, AuditLogDbRow>(
             "SELECT id, actor_id, actor_username, action, target_type, target_id, \
              details, ip_address, user_agent, created_at \
              FROM audit_logs \
@@ -137,26 +178,6 @@ impl AuditLogRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        row.as_ref().map(audit_log_row_from_row).transpose()
+        row.map(TryInto::try_into).transpose()
     }
-}
-
-fn audit_log_row_from_row(row: &PgRow) -> Result<AuditLogRow> {
-    let action_code: i16 = row.try_get("action")?;
-    let target_type_code: Option<i16> = row.try_get("target_type")?;
-    Ok(AuditLogRow {
-        id: row.try_get("id")?,
-        actor_id: row.try_get("actor_id")?,
-        actor_username: row.try_get("actor_username")?,
-        action: AuditAction::try_from(action_code).map_err(Error::Internal)?,
-        target_type: target_type_code
-            .map(AuditTargetType::try_from)
-            .transpose()
-            .map_err(Error::Internal)?,
-        target_id: row.try_get("target_id")?,
-        details: row.try_get("details")?,
-        ip_address: row.try_get("ip_address")?,
-        user_agent: row.try_get("user_agent")?,
-        created_at: row.try_get("created_at")?,
-    })
 }

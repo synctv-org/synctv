@@ -12,7 +12,7 @@ use tracing::{error, info};
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::service::partitioning::{
-    add_months, current_database_date, quote_ident, size_mb, start_of_month, table_exists,
+    add_months, current_database_date, quote_ident, size_centi_mib, start_of_month, table_exists,
 };
 use crate::{Error, Result};
 
@@ -25,14 +25,32 @@ const DEFAULT_MONTHS_AHEAD: i32 = 3;
 const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
 const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
 
+fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
+    i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn len_to_i64(len: usize, field: &'static str) -> Result<i64> {
+    i64::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
+}
+
 /// Health check result for notification partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationPartitionHealth {
     pub total_partitions: i32,
-    pub total_size_mb: f64,
+    pub total_size_centi_mib: i64,
     pub missing_partitions: Vec<String>,
     pub missing_count: i32,
     pub health_status: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionNameRow {
+    tablename: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionSizeRow {
+    size_bytes: i64,
 }
 
 /// Notification partition manager (fixed monthly granularity)
@@ -64,14 +82,14 @@ impl NotificationPartitionManager {
             ));
         }
 
-        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let current_month = start_of_month(current_database_date(&self.pool).await?)?;
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
 
         for offset in 0..=months_ahead {
-            let start_date = add_months(current_month, offset);
-            let end_date = add_months(start_date, 1);
+            let start_date = add_months(current_month, offset)?;
+            let end_date = add_months(start_date, 1)?;
             let partition_name = format!("notifications_{}", start_date.format("%Y_%m"));
             let partition_ident = quote_ident(&partition_name);
 
@@ -135,27 +153,30 @@ impl NotificationPartitionManager {
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
-        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let current_month = start_of_month(current_database_date(&self.pool).await?)?;
         let cutoff_name = format!(
             "notifications_{}",
-            add_months(current_month, -retain_months).format("%Y_%m")
+            add_months(current_month, -retain_months)?.format("%Y_%m")
         );
-        let partitions = sqlx::query_scalar_unchecked!(
-            "SELECT tablename
+        let partitions = sqlx::query_as!(
+            PartitionNameRow,
+            r#"
+            SELECT tablename AS "tablename!"
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename LIKE 'notifications_%'
                AND tablename != 'notifications_default'
                AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'
                AND tablename < $1
-             ORDER BY tablename",
+             ORDER BY tablename
+             "#,
             cutoff_name
         )
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| Error::Internal(format!("Failed to drop old notification partitions: {e}")))?
         .into_iter()
-        .flatten()
+        .map(|row| row.tablename)
         .collect::<Vec<_>>();
 
         for partition in &partitions {
@@ -167,7 +188,7 @@ impl NotificationPartitionManager {
                 })?;
         }
 
-        let dropped_count = i64::try_from(partitions.len()).unwrap_or(i64::MAX);
+        let dropped_count = len_to_i64(partitions.len(), "dropped notification partition count")?;
         if dropped_count > 0 {
             info!("Dropped {} old notification partitions", dropped_count);
         }
@@ -183,36 +204,42 @@ impl NotificationPartitionManager {
             ));
         }
 
-        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let current_month = start_of_month(current_database_date(&self.pool).await?)?;
         let mut missing_partitions = Vec::new();
         for offset in 0..=months_ahead {
             let partition_name = format!(
                 "notifications_{}",
-                add_months(current_month, offset).format("%Y_%m")
+                add_months(current_month, offset)?.format("%Y_%m")
             );
             if !table_exists(&self.pool, &partition_name).await? {
                 missing_partitions.push(partition_name);
             }
         }
 
-        let rows = sqlx::query_as::<_, (i64,)>(
-            "SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT
+        let rows = sqlx::query_as!(
+            PartitionSizeRow,
+            r#"
+            SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT AS "size_bytes!"
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename LIKE 'notifications_%'
                AND tablename != 'notifications_default'
-               AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'",
+               AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'
+             "#,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|e| Error::Internal(format!("Failed to check notification partitions: {e}")))?;
 
-        let total_partitions = i32::try_from(rows.len()).unwrap_or(i32::MAX);
-        let total_size_bytes = rows.iter().map(|(size,)| *size).sum::<i64>();
-        let missing_count = i32::try_from(missing_partitions.len()).unwrap_or(i32::MAX);
+        let total_partitions = len_to_i32(rows.len(), "notification partition count")?;
+        let total_size_bytes = rows.iter().map(|row| row.size_bytes).sum::<i64>();
+        let missing_count = len_to_i32(
+            missing_partitions.len(),
+            "missing notification partition count",
+        )?;
         Ok(NotificationPartitionHealth {
             total_partitions,
-            total_size_mb: size_mb(total_size_bytes),
+            total_size_centi_mib: size_centi_mib(total_size_bytes),
             missing_partitions,
             missing_count,
             health_status: if missing_count == 0 {
@@ -403,7 +430,7 @@ mod tests {
     fn test_notification_partition_health_deserialization() {
         let json = r#"{
             "total_partitions": 4,
-            "total_size_mb": 32.5,
+            "total_size_centi_mib": 3250,
             "missing_partitions": [],
             "missing_count": 0,
             "health_status": "healthy"
@@ -419,7 +446,7 @@ mod tests {
     fn test_notification_partition_health_warning() {
         let json = r#"{
             "total_partitions": 3,
-            "total_size_mb": 16.0,
+            "total_size_centi_mib": 1600,
             "missing_partitions": ["notifications_2026_09"],
             "missing_count": 1,
             "health_status": "warning"

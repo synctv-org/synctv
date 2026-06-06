@@ -132,8 +132,8 @@ mod tests {
 
         #[async_trait::async_trait]
         impl RedisConnectionRuntime for NoopRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
-                panic!("snapshot should not be needed for key formatting")
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+                panic!("snapshot should not be needed for key formatting");
             }
         }
 

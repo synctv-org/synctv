@@ -28,6 +28,7 @@ pub use synctv_cluster::grpc::ClusterAuthInterceptor;
 
 pub(crate) use crate::grpc_support::{
     extract_client_ip, grpc_unary_request_timeout, map_api_error, request_metadata,
+    request_user_agent,
 };
 
 /// Trait to apply gRPC message size limits to tonic service servers.
@@ -238,24 +239,31 @@ const fn grpc_service_registration_plan(
     }
 }
 
-fn request_targets_grpc_transport(headers: &axum::http::HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
-        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/grpc"))
+fn request_targets_grpc_transport(
+    headers: &axum::http::HeaderMap,
+) -> Result<bool, axum::http::header::ToStrError> {
+    let Some(value) = headers.get(axum::http::header::CONTENT_TYPE) else {
+        return Ok(false);
+    };
+    let media_type = value
+        .to_str()?
+        .trim()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    Ok(media_type.starts_with("application/grpc"))
 }
 
 async fn grpc_transport_only_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    if request_targets_grpc_transport(request.headers()) {
-        next.run(request).await
-    } else {
-        axum::response::IntoResponse::into_response(axum::http::StatusCode::NOT_FOUND)
+    match request_targets_grpc_transport(request.headers()) {
+        Ok(true) => next.run(request).await,
+        Ok(false) => axum::response::IntoResponse::into_response(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => axum::response::IntoResponse::into_response(axum::http::StatusCode::BAD_REQUEST),
     }
 }
 
@@ -522,7 +530,7 @@ pub struct GrpcServerConfig<'a> {
     pub user_service: Arc<CoreUserService>,
     pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<CoreRoomService>,
-    pub event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub event_service: Arc<dyn RealtimeEventService>,
     pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
@@ -571,35 +579,38 @@ fn resolve_provider_proxy_runtime(
     config: &Config,
     redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     shared_api_runtime: Option<&Arc<crate::http::SharedApiRuntime>>,
-) -> (
+) -> anyhow::Result<(
     Arc<synctv_core::proxy_signature::ProxySigningKey>,
     Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-) {
+)> {
     if let Some(shared_api_runtime) = shared_api_runtime {
-        return (
+        return Ok((
             shared_api_runtime.proxy_signing_key.clone(),
             shared_api_runtime.provider_stores.clone(),
-        );
+        ));
     }
 
-    (
-        Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
-            config.jwt.secret.as_bytes(),
-        )),
+    Ok((
+        Arc::new(
+            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                config.jwt.secret.as_bytes(),
+            )
+            .map_err(|error| anyhow::anyhow!("Failed to derive proxy signing key: {error}"))?,
+        ),
         synctv_core::provider::store::build_provider_store_resolver_from_profile(
             &synctv_core::SharedStateProfile::best_effort(
                 redis_runtime,
                 config.redis.key_prefix.clone(),
             ),
         ),
-    )
+    ))
 }
 
 struct FallbackHttpAppStateDeps {
     user_service: Arc<CoreUserService>,
     user_cache: Arc<synctv_core::cache::UserCache>,
     room_service: Arc<CoreRoomService>,
-    event_service: Option<Arc<dyn RealtimeEventService>>,
+    event_service: Arc<dyn RealtimeEventService>,
     connection_service: Arc<dyn RealtimeConnectionService>,
     config: Arc<Config>,
     content_filter: ContentFilter,
@@ -630,25 +641,25 @@ struct FallbackHttpAppStateDeps {
     audit_service: Arc<synctv_core::service::AuditService>,
 }
 
-fn cluster_node_id(event_service: Option<&Arc<dyn RealtimeEventService>>) -> String {
-    event_service.map_or_else(
-        || "single-node".to_string(),
-        |service| service.node_id().to_string(),
-    )
+fn cluster_node_id(event_service: &Arc<dyn RealtimeEventService>) -> String {
+    event_service.node_id().to_string()
 }
 
-fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::http::AppState> {
+fn build_fallback_http_app_state(
+    deps: FallbackHttpAppStateDeps,
+) -> anyhow::Result<Arc<crate::http::AppState>> {
     let ssrf_guard = deps.config.security.ssrf_guard();
     let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
         deps.provider_instance_manager.clone(),
         ssrf_guard.clone(),
-    );
+    )
+    .map_err(|error| anyhow::anyhow!("Failed to build provider HTTP client: {error}"))?;
     let proxy_http_client = synctv_proxy::build_proxy_http_client(ssrf_guard.clone())
-        .expect("gRPC proxy HTTP client should build");
+        .map_err(|error| anyhow::anyhow!("Failed to build gRPC proxy HTTP client: {error}"))?;
     let proxy_slice_cache_config =
         crate::config_adapters::proxy_slice_cache_config_from_app_config(deps.config.as_ref());
 
-    Arc::new(crate::http::create_app_state_from_config(
+    Ok(Arc::new(crate::http::create_app_state_from_config(
         crate::http::RouterConfig {
             config: deps.config,
             user_service: deps.user_service,
@@ -694,7 +705,7 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: deps.providers_manager,
         },
-    ))
+    )?))
 }
 
 async fn build_axum_router_with_health(
@@ -744,9 +755,10 @@ async fn build_axum_router_with_health(
         shared_http_app_state
             .as_ref()
             .map(|state| &state.shared_api_runtime),
-    );
-    let shared_http_app_state = shared_http_app_state.or_else(|| {
-        Some(build_fallback_http_app_state(FallbackHttpAppStateDeps {
+    )?;
+    let shared_http_app_state = match shared_http_app_state {
+        Some(state) => state,
+        None => build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: user_service.clone(),
             user_cache: user_cache.clone(),
             room_service: room_service.clone(),
@@ -779,8 +791,8 @@ async fn build_axum_router_with_health(
             builtin_stun_url,
             webrtc_status,
             audit_service: audit_service.clone(),
-        }))
-    });
+        })?,
+    };
 
     tracing::info!("Building gRPC router for {}", config.api_address());
 
@@ -796,13 +808,10 @@ async fn build_axum_router_with_health(
         Arc::try_unwrap(room_service_for_client).unwrap_or_else(|arc| (*arc).clone());
 
     // Resolve node identity from the injected realtime event service.
-    let cluster_node_id = cluster_node_id(event_service.as_ref());
+    let cluster_node_id = cluster_node_id(&event_service);
 
     let email_service_registered =
         should_register_email_service(email_service.is_some(), email_token_service.is_some());
-    let providers_manager_for_client = providers_manager.clone();
-    let shared_http_app_state =
-        shared_http_app_state.expect("shared or fallback HTTP state must be available for gRPC");
     let shared_api_runtime = shared_http_app_state.shared_api_runtime.clone();
     let client_api = shared_api_runtime.client_api.clone();
     let email_api = shared_api_runtime.email_api.clone().or_else(|| {
@@ -815,25 +824,22 @@ async fn build_axum_router_with_health(
         )
     });
 
-    let event_service_for_rt = event_service.clone();
     let chat_service = chat_service.ok_or_else(|| {
         anyhow::anyhow!(
             "chat_service is required for gRPC ClientService but was not provided. \
              Ensure chat_service is initialized before starting the gRPC server."
         )
     })?;
-    let client_service = ClientServiceImpl::from_config(ClientServiceConfig {
+    let client_service = ClientServiceImpl::new(ClientServiceConfig {
         user_service: user_service_clone,
         room_service: room_service_clone,
         chat_service,
-        event_service,
+        event_service: event_service.clone(),
         rate_limiter,
         rate_limit_config: rate_limit_config.clone(),
         content_filter,
         connection_service: connection_service.clone(),
         email_api,
-        settings_registry: settings_registry.clone(),
-        providers_manager: providers_manager_for_client,
         config: Arc::new(config.clone()),
         client_api: client_api.clone(),
         notification_service: notification_service.clone(),
@@ -843,7 +849,7 @@ async fn build_axum_router_with_health(
     let admin_api = shared_api_runtime
         .admin_api
         .clone()
-        .expect("shared or fallback API runtime must provide admin API wiring");
+        .ok_or_else(|| anyhow::anyhow!("gRPC API runtime is missing admin API wiring"))?;
 
     let admin_service = AdminServiceImpl::new(admin_api.clone(), Arc::new(config.clone()));
 
@@ -934,8 +940,9 @@ async fn build_axum_router_with_health(
 
     // Register NotificationService if notification_service is configured
     if grpc_registration_plan.health_state.notification_registered {
-        let notif_svc = notification_service
-            .expect("notification service presence must match registration plan");
+        let notif_svc = notification_service.ok_or_else(|| {
+            anyhow::anyhow!("NotificationService gRPC registration requires notification_service")
+        })?;
         let notification_api = shared_api_runtime
             .notification_api
             .clone()
@@ -961,8 +968,8 @@ async fn build_axum_router_with_health(
         // persistent user notifications. Without this, clients must poll.
         // The task listens for the server shutdown signal so it does not leak
         // when the gRPC server stops.
-        if let Some(ref event_service) = event_service_for_rt {
-            let event_service = Arc::clone(event_service);
+        {
+            let event_service = Arc::clone(&event_service);
             let mut notification_rx = notif_svc.subscribe_events();
             // Clone the optional shutdown watch receiver so the bridge task
             // can stop cleanly when the server receives a shutdown signal.
@@ -979,7 +986,11 @@ async fn build_axum_router_with_health(
                         Box<dyn std::future::Future<Output = ()> + Send>,
                     > = match bridge_shutdown_rx.as_mut() {
                         Some(rx) => Box::pin(async move {
-                            let _ = rx.changed().await;
+                            if rx.changed().await.is_err() {
+                                tracing::debug!(
+                                    "Notification-to-realtime bridge shutdown signal channel closed"
+                                );
+                            }
                         }),
                         None => Box::pin(std::future::pending()),
                     };
@@ -1039,8 +1050,9 @@ async fn build_axum_router_with_health(
     // (GetAuthorizationUrlForBind, UnlinkProvider, GetLinkedProviders) execute
     // the shared impl-level auth pipeline inline through RequestExecutor.
     if grpc_registration_plan.health_state.oauth2_registered {
-        let oauth2_svc =
-            oauth2_service.expect("oauth2 service presence must match registration plan");
+        let oauth2_svc = oauth2_service.ok_or_else(|| {
+            anyhow::anyhow!("OAuth2Service gRPC registration requires oauth2_service")
+        })?;
         let oauth2_api = shared_api_runtime.oauth2_api.clone().unwrap_or_else(|| {
             Arc::new(crate::impls::OAuth2ApiImpl::new(
                 oauth2_svc,
@@ -1067,7 +1079,9 @@ async fn build_axum_router_with_health(
         .health_state
         .provider_services_registered
     {
-        let _ = providers_manager.expect("provider services presence must match registration plan");
+        let _ = providers_manager.ok_or_else(|| {
+            anyhow::anyhow!("provider gRPC registration requires providers_manager")
+        })?;
         tracing::info!("Registering provider gRPC services");
 
         let shared_api_runtime = shared_api_runtime.clone();
@@ -1137,7 +1151,7 @@ async fn build_axum_router_with_health(
     } else if should_register_cluster_grpc_service(config, node_registry.is_some()) {
         let nr = node_registry
             .as_ref()
-            .expect("node_registry presence checked by should_register_cluster_grpc_service");
+            .ok_or_else(|| anyhow::anyhow!("cluster gRPC registration requires node_registry"))?;
         let cluster_server = synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone())
             .with_cluster_secret(config.cluster.secret.clone());
         routes.add_service(
@@ -1146,9 +1160,7 @@ async fn build_axum_router_with_health(
         );
         tracing::info!("Cluster node-discovery gRPC service registered with shared-secret auth");
     } else {
-        unreachable!(
-            "cluster.enabled=true without NodeRegistry must be rejected before gRPC service assembly"
-        );
+        anyhow::bail!("cluster gRPC registration requirements were not satisfied");
     }
 
     if grpc_registration_plan
@@ -1268,9 +1280,14 @@ async fn wait_for_grpc_shutdown(
     health_state: GrpcHealthRegistrationState,
 ) {
     if let Some(rx) = shutdown_rx.as_mut() {
-        let _ = rx.changed().await;
-    } else {
-        tokio::signal::ctrl_c().await.ok();
+        if rx.changed().await.is_err() {
+            tracing::debug!("gRPC shutdown signal channel closed");
+        }
+    } else if let Err(error) = tokio::signal::ctrl_c().await {
+        tracing::warn!(
+            error = %error,
+            "Failed to listen for Ctrl-C shutdown signal"
+        );
     }
     set_registered_grpc_services_not_serving(&health_reporter, health_state).await;
 }
@@ -1334,7 +1351,7 @@ mod tests {
         validate_cluster_grpc_runtime_requirements, wait_for_grpc_shutdown,
         FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
-    use crate::grpc::ClientServiceImpl;
+    use crate::grpc::{ClientServiceConfig, ClientServiceImpl};
     use crate::impls::{client::RoomActor, ClientApiImpl, RequestExecutor};
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
@@ -1346,10 +1363,7 @@ mod tests {
     use std::time::Duration;
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, SignupMethod, User, UserId, UserRole, UserStatus};
-    use synctv_core::provider::{
-        AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-        ProviderSet, RtmpProvider,
-    };
+    use synctv_core::provider::ProviderSet;
     use synctv_core::repository::{
         ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
         SettingsRepository, UserProviderCredentialRepository, UserRepository,
@@ -1399,11 +1413,10 @@ mod tests {
             UsernameCache::local_only("test:grpc-chat:username:".to_string(), 128, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
 
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             jwt_service,
             username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
             token_blacklist,
             synctv_core::cache::KeyBuilder::new("test:grpc-chat"),
             BruteForceProtection::in_memory("test:grpc-chat:auth".to_string()),
@@ -1416,14 +1429,17 @@ mod tests {
         audit_service: Option<Arc<AuditService>>,
     ) -> Arc<synctv_core::service::ChatService> {
         let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-        let mut permission_service = PermissionService::new(
+        let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
-            None,
-            1000,
-            300,
-        );
-        permission_service.set_room_settings_repo(room_settings_repo.clone());
+            synctv_core::service::permission::PermissionServiceRuntime {
+                cache_size: 1000,
+                cache_ttl_secs: 300,
+                room_settings_repo: Some(room_settings_repo.clone()),
+                ..synctv_core::service::permission::PermissionServiceRuntime::default()
+            },
+        )
+        .expect("permission service should build");
 
         Arc::new(synctv_core::service::ChatService::new(
             Arc::new(ChatRepository::new(pool.clone())),
@@ -1443,6 +1459,7 @@ mod tests {
                     None,
                 ),
                 user_service,
+                file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
                 audit_service,
                 notification_service: NotificationService::default(),
             },
@@ -1457,14 +1474,14 @@ mod tests {
     ) -> ClientApiImpl {
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
-        let security_pipeline =
-            synctv_core::service::auth::SecurityPipelineBuilder::new(user_service.clone())
-                .with_token_blacklist(
-                    user_service.token_blacklist_store(),
-                    user_service.key_builder().clone(),
-                )
-                .build()
-                .expect("test security pipeline");
+        let security_pipeline = synctv_core::service::SecurityPipeline::new_with_runtime(
+            user_service.clone(),
+            synctv_core::service::SecurityPipelineRuntime {
+                user_cache: None,
+                token_blacklist: Some(user_service.token_blacklist_store()),
+                key_builder: Some(user_service.key_builder().clone()),
+            },
+        );
         let request_executor = Arc::new(RequestExecutor::new(
             Arc::new(synctv_core::Config::default()),
             Arc::new(JwtValidator::new(Arc::new(
@@ -1474,21 +1491,36 @@ mod tests {
             Arc::new(security_pipeline),
             Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string())),
         ));
-        ClientApiImpl::new(
-            user_service,
-            room_service,
-            connection_manager,
-            Arc::new(synctv_core::Config::default()),
-            None,
-            JwtService::new("test-secret-key-for-grpc-chat-watch-minimum-32-chars").expect("jwt"),
-            None,
-            None,
-            None,
-            Arc::new(crate::PublicIdCodec::default_for_tests()),
+        ClientApiImpl::new_with_runtime(
+            crate::impls::ClientApiConfig {
+                user_service,
+                room_service,
+                connection_service: connection_manager,
+                config: Arc::new(synctv_core::Config::default()),
+                publish_key_service: None,
+                jwt_service: JwtService::new(
+                    "test-secret-key-for-grpc-chat-watch-minimum-32-chars",
+                )
+                .expect("jwt"),
+                live_streaming_infrastructure: None,
+                providers_manager: None,
+                settings_registry: None,
+                public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+                chat_service: Some(chat_service),
+                credential_encryption: None,
+                provider_stores: None,
+                email_api: None,
+                passkey_service: None,
+            },
+            crate::impls::ClientApiRuntime {
+                realtime_event_service: event_service.clone(),
+                chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
+                    event_service,
+                ),
+                request_executor: Some(request_executor),
+                ..crate::impls::ClientApiRuntime::test_disabled()
+            },
         )
-        .with_chat_service(Some(chat_service))
-        .with_realtime_event_service(event_service)
-        .with_request_executor(request_executor)
     }
 
     #[test]
@@ -1578,16 +1610,18 @@ mod tests {
         let jwt_service =
             JwtService::new("test-secret-key-for-grpc-router-tests-minimum-32-chars").expect("jwt");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
-        let user_service = Arc::new(UserService::new(
+        let user_service = Arc::new(UserService::new_for_tests(
             &pool,
             jwt_service.clone(),
             username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
             create_test_token_blacklist_store_service(),
             synctv_core::cache::KeyBuilder::new("test"),
             create_test_brute_force_protection_service(),
         ));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
             pool.clone(),
@@ -1658,29 +1692,23 @@ mod tests {
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         )));
-        let providers = ProviderSet {
-            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
-            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
-            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
-            direct_url: Arc::new(DirectUrlProvider::new()),
-            rtmp: Arc::new(RtmpProvider::new()),
-            live_proxy: Arc::new(LiveProxyProvider::new()),
-        };
+        let providers = ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
 
         let (_, state) =
             crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
                 config: Arc::new(synctv_core::Config::default()),
                 user_service: context.user_service,
-                user_cache: Arc::new(
-                    synctv_core::cache::UserCache::local_only(
-                        128,
-                        60,
-                        300,
-                        "test:user:".to_string(),
-                    )
-                    .expect("user cache"),
-                ),
+                user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )),
                 room_service: context.room_service,
                 content_filter: ContentFilter::new(),
                 provider_instance_manager,
@@ -1688,14 +1716,12 @@ mod tests {
                     synctv_core::repository::UserProviderCredentialRepository::new(pool),
                 ),
                 providers,
-                event_service: None,
+                event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
                 connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
                     synctv_realtime::sync::ConnectionLimits::default(),
                 )),
                 jwt_service: context.jwt_service,
-                realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
-                    None, false,
-                ),
+                realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
                 oauth2_service: None,
                 passkey_service: None,
                 settings_service: None,
@@ -1739,7 +1765,7 @@ mod tests {
     fn test_request_targets_grpc_transport_requires_grpc_content_type() {
         let mut headers = axum::http::HeaderMap::new();
         assert!(
-            !super::request_targets_grpc_transport(&headers),
+            !super::request_targets_grpc_transport(&headers).expect("missing header should parse"),
             "requests without Content-Type must not be treated as gRPC"
         );
 
@@ -1748,7 +1774,8 @@ mod tests {
             axum::http::HeaderValue::from_static("application/json"),
         );
         assert!(
-            !super::request_targets_grpc_transport(&headers),
+            !super::request_targets_grpc_transport(&headers)
+                .expect("json content-type should parse"),
             "plain HTTP JSON requests must not be treated as gRPC"
         );
 
@@ -1757,7 +1784,8 @@ mod tests {
             axum::http::HeaderValue::from_static("application/grpc"),
         );
         assert!(
-            super::request_targets_grpc_transport(&headers),
+            super::request_targets_grpc_transport(&headers)
+                .expect("grpc content-type should parse"),
             "canonical gRPC requests must be routed to tonic"
         );
 
@@ -1766,8 +1794,24 @@ mod tests {
             axum::http::HeaderValue::from_static("application/grpc+proto; charset=utf-8"),
         );
         assert!(
-            super::request_targets_grpc_transport(&headers),
+            super::request_targets_grpc_transport(&headers)
+                .expect("grpc content-type with parameters should parse"),
             "gRPC content-type variants must still be routed to tonic"
+        );
+    }
+
+    #[test]
+    fn test_request_targets_grpc_transport_rejects_non_ascii_content_type() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_bytes(b"application/grpc\xff")
+                .expect("header bytes should construct"),
+        );
+
+        assert!(
+            super::request_targets_grpc_transport(&headers).is_err(),
+            "invalid Content-Type bytes must not be silently treated as a non-gRPC request"
         );
     }
 
@@ -1804,6 +1848,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_grpc_transport_gate_returns_bad_request_for_invalid_content_type() {
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "grpc route" }))
+            .layer(axum::middleware::from_fn(
+                super::grpc_transport_only_middleware,
+            ));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .header(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_bytes(b"application/grpc\xff")
+                            .expect("header bytes should construct"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_build_fallback_http_app_state_reuses_shared_runtime_instances() {
         let context = fallback_grpc_test_context();
         let connection_service: Arc<dyn RealtimeConnectionService> =
@@ -1822,12 +1892,14 @@ mod tests {
             );
         let ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService> =
             Arc::new(synctv_core::service::WsTicketService::local_only(None));
-        let proxy_signing_key =
-            Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
+        let proxy_signing_key = Arc::new(
+            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
                 b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
-            ));
+            )
+            .expect("test proxy signing key should derive"),
+        );
         let content_filter =
-            ContentFilter::with_config(17, Some(vec!["blocked".to_string()]), false);
+            ContentFilter::new_with_config(17, Some(vec!["blocked".to_string()]), false);
         let messaging_rate_limit_config = RateLimitConfig {
             chat_per_second: 23,
             window_seconds: 11,
@@ -1844,12 +1916,14 @@ mod tests {
         let fallback_config = Arc::new(fallback_config);
         let http_state = build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: context.user_service,
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
-                    .expect("user cache"),
-            ),
+            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )),
             room_service: context.room_service,
-            event_service: Some(event_service.clone()),
+            event_service: event_service.clone(),
             connection_service: connection_service.clone(),
             config: fallback_config.clone(),
             content_filter: content_filter.clone(),
@@ -1867,9 +1941,7 @@ mod tests {
             email_service: None,
             email_token_service: None,
             ws_ticket_service: ws_ticket_service.clone(),
-            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
-                None, false,
-            ),
+            realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
             redis_runtime: None,
             rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
             messaging_rate_limit_config: messaging_rate_limit_config.clone(),
@@ -1880,7 +1952,8 @@ mod tests {
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             audit_service: context.audit_service,
-        });
+        })
+        .expect("fallback HTTP app state should build");
 
         assert!(
             Arc::ptr_eq(
@@ -1927,13 +2000,7 @@ mod tests {
             "fallback HTTP state must expose the same provider access cache across transports"
         );
         assert!(
-            Arc::ptr_eq(
-                http_state
-                    .event_service
-                    .as_ref()
-                    .expect("fallback HTTP state must preserve realtime events"),
-                &event_service,
-            ),
+            Arc::ptr_eq(&http_state.event_service, &event_service,),
             "fallback HTTP state must preserve the injected realtime event service"
         );
         assert_eq!(
@@ -2008,7 +2075,10 @@ mod tests {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
         let user_service = Arc::new(make_chat_watch_user_service(&pool));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
         let chat_service =
             make_chat_watch_chat_service(&pool, user_service.clone(), Some(audit_service));
@@ -2036,21 +2106,21 @@ mod tests {
             chat_service.clone(),
             event_service.clone(),
         ));
-        let client_service = ClientServiceImpl::new(
-            (*user_service).clone(),
-            (*room_service).clone(),
-            chat_service.clone(),
-            Some(event_service),
-            Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string())),
-            RateLimitConfig::default(),
-            ContentFilter::new(),
-            Arc::new(ConnectionManager::new(ConnectionLimits::default())),
-            None,
-            None,
-            None,
-            Arc::new(synctv_core::Config::default()),
-            client_api.clone(),
-        );
+        let client_service = ClientServiceImpl::new(ClientServiceConfig {
+            user_service: (*user_service).clone(),
+            room_service: (*room_service).clone(),
+            chat_service: chat_service.clone(),
+            event_service,
+            rate_limiter: Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string())),
+            rate_limit_config: RateLimitConfig::default(),
+            content_filter: ContentFilter::new(),
+            connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+            email_api: None,
+            config: Arc::new(synctv_core::Config::default()),
+            client_api: client_api.clone(),
+            notification_service: None,
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+        });
 
         let owner = user_repo
             .create(&make_chat_watch_user("grpc_watch_owner"))
@@ -2058,7 +2128,7 @@ mod tests {
             .unwrap();
         let token = client_api
             .jwt_service
-            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
+            .sign_access_token(&owner.id, 0)
             .expect("access token");
         let (room, _) = room_service
             .create_room(
@@ -2160,7 +2230,7 @@ mod tests {
         });
 
         assert_eq!(
-            cluster_node_id(Some(&event_service)),
+            cluster_node_id(&event_service),
             "fake-node",
             "gRPC transport must derive cluster node identity from the injected realtime event service"
         );
@@ -2175,7 +2245,8 @@ mod tests {
             &config,
             None,
             Some(&shared_http_app_state.shared_api_runtime),
-        );
+        )
+        .expect("provider proxy runtime should resolve");
 
         assert!(
             Arc::ptr_eq(
@@ -2297,7 +2368,7 @@ mod tests {
         );
 
         assert_eq!(
-            extract_client_ip(&request, &config),
+            extract_client_ip(&request, &config).expect("client ip should parse"),
             Some("203.0.113.50".parse().unwrap())
         );
     }
@@ -2316,13 +2387,13 @@ mod tests {
         );
 
         assert_eq!(
-            extract_client_ip(&request, &config),
+            extract_client_ip(&request, &config).expect("client ip should parse"),
             Some("192.168.1.100".parse().unwrap())
         );
     }
 
     #[test]
-    fn test_extract_client_ip_falls_back_to_x_real_ip_for_trusted_proxy() {
+    fn test_extract_client_ip_rejects_invalid_forwarded_for() {
         let mut config = synctv_core::Config::default();
         config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
 
@@ -2334,8 +2405,24 @@ mod tests {
             ],
         );
 
+        let status = extract_client_ip(&request, &config)
+            .expect_err("invalid forwarded header should fail the request");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn test_extract_client_ip_uses_x_real_ip_when_forwarded_for_absent() {
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+
+        let request = request_with_peer_and_headers(
+            "10.1.2.3:50051".parse().unwrap(),
+            &[("x-real-ip", "198.51.100.42")],
+        );
+
         assert_eq!(
-            extract_client_ip(&request, &config),
+            extract_client_ip(&request, &config).expect("client ip should parse"),
             Some("198.51.100.42".parse().unwrap())
         );
     }

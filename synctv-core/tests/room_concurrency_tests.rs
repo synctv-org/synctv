@@ -3,7 +3,6 @@
 //! Tests concurrent room operations: multi-user joins, concurrent room creation,
 //! and concurrent settings updates with optimistic lock retry.
 //!
-//! Run with: cargo test --test `room_concurrency_tests`
 //!
 //! # Test Coverage
 //!
@@ -154,14 +153,17 @@ async fn test_concurrent_join_respects_max_members_limit() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
-        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
-    let mut member_service = MemberService::new(
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
+            .expect("permission service should build");
+    let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
+        Some(room_settings_repo),
         permission_service.clone(),
+        None,
+        None,
         NotificationService::default(),
     );
-    member_service.set_room_settings_repo(room_settings_repo);
 
     // Use barrier to synchronize all joins
     let barrier = Arc::new(Barrier::new(20));
@@ -261,14 +263,17 @@ async fn test_concurrent_join_boundary_condition() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
-        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
-    let mut member_service = MemberService::new(
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
+            .expect("permission service should build");
+    let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
+        Some(room_settings_repo),
         permission_service.clone(),
+        None,
+        None,
         NotificationService::default(),
     );
-    member_service.set_room_settings_repo(room_settings_repo);
 
     // Synchronize with barrier
     let barrier = Arc::new(Barrier::new(5));
@@ -594,14 +599,17 @@ async fn test_concurrent_join_and_leave_operations() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
-        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
-    let mut member_service = MemberService::new(
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
+            .expect("permission service should build");
+    let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
+        Some(room_settings_repo),
         permission_service.clone(),
+        None,
+        None,
         NotificationService::default(),
     );
-    member_service.set_room_settings_repo(room_settings_repo);
 
     let mut leave_handles = Vec::with_capacity(5);
 
@@ -702,14 +710,17 @@ async fn test_concurrent_joins_respect_room_capacity() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
-        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
-    let mut member_service = MemberService::new(
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
+            .expect("permission service should build");
+    let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
+        Some(room_settings_repo),
         permission_service.clone(),
+        None,
+        None,
         NotificationService::default(),
     );
-    member_service.set_room_settings_repo(room_settings_repo);
 
     let barrier = Arc::new(Barrier::new(100));
     let room_id = room.id;

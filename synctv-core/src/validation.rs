@@ -14,8 +14,7 @@ pub const USERNAME_MAX: usize = 50;
 
 /// Minimum user-account password length
 pub const PASSWORD_MIN: usize = 8;
-/// Maximum password length (prevent bcrypt `DoS`; bcrypt input limit is 72 bytes,
-/// but we allow up to 128 for pre-hashing schemes)
+/// Maximum password length accepted by credential flows.
 pub const PASSWORD_MAX: usize = 128;
 
 /// Minimum room password length (shorter than user password because room
@@ -244,7 +243,7 @@ impl PasswordValidator {
         self
     }
 
-    /// Maximum password length to prevent bcrypt `DoS` (bcrypt input limit is 72 bytes)
+    /// Maximum password length accepted by credential flows.
     const MAX_LENGTH: usize = PASSWORD_MAX;
 
     pub fn validate(&self, password: &str) -> ValidationResult<()> {

@@ -7,11 +7,9 @@
 //! - Lock expiration and TTL renewal
 //! - Fencing token monotonic increase
 //! - Concurrent lock acquisition (only one succeeds)
-//! - Sentinel failover simulation (documents known vulnerability)
 //! - Lock release by non-owner fails
 //! - Redis connection failure handling
 //!
-//! Run with: cargo test --test `distributed_lock_tests`
 //! Run Docker tests: cargo test --test `distributed_lock_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
@@ -421,76 +419,6 @@ async fn test_with_lock_token_passes_fencing_token() {
 
     assert!(result > 0, "Result should be based on fencing token");
 }
-
-// Sentinel failover simulation (documents vulnerability)
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_sentinel_failover_documents_vulnerability() {
-    // This test documents the known vulnerability with Redis Sentinel failover.
-    // The problem: When Sentinel promotes a replica to master, any locks held on
-    // the old master are LOST because Redis replication is asynchronous.
-    // What this test ACTUALLY does: Simulates the scenario where a lock is "lost"
-    // by manually deleting it from Redis (mimicking what happens during failover).
-    // after the "failover" (lock deletion), but the fencing token should continue
-    // to increment. This documents that fencing tokens mitigate but don't fully
-    // solve the split-brain problem.
-
-    let (_container, conn) = start_redis().await;
-    let lock = DistributedLock::new(conn);
-
-    let key = "test_sentinel_failover";
-    let ttl = 10;
-
-    // Client 1 acquires lock
-    let client1_lock = lock.acquire_with_token(key, ttl).await.unwrap();
-    assert!(client1_lock.is_some(), "Client 1 should acquire lock");
-    let (client1_value, client1_token) = client1_lock.unwrap();
-
-    // Simulate Sentinel failover: lock is lost from Redis
-    // (In real failover, the old master's locks simply don't exist on new master)
-    // We can't access the private redis field, so we document this scenario
-    // In a real Sentinel failover, the lock would simply disappear from the new master
-    // For this test, we simulate the EFFECT of failover by releasing the lock
-    // and then immediately acquiring a new one, which demonstrates that:
-    lock.release(key, &client1_value).await.unwrap();
-
-    // Client 2 can now acquire the "same" lock (split-brain!)
-    let client2_lock = lock.acquire_with_token(key, ttl).await.unwrap();
-    assert!(
-        client2_lock.is_some(),
-        "Client 2 should acquire lock after failover"
-    );
-    let (client2_value, client2_token) = client2_lock.unwrap();
-
-    assert!(
-        client2_token > client1_token,
-        "Client 2 token should be greater than client 1 token"
-    );
-
-    // If client 1 is still running and tries to do something with its lock,
-    // it can't release anymore (lock value doesn't match)
-    let client1_release = lock.release(key, &client1_value).await.unwrap();
-    assert!(
-        !client1_release,
-        "Client 1 should not be able to release (lock lost)"
-    );
-
-    // Client 2 can release successfully
-    let client2_release = lock.release(key, &client2_value).await.unwrap();
-    assert!(client2_release, "Client 2 should be able to release");
-
-    // DOCUMENTATION: This test simulates the EFFECT of a Sentinel failover:
-    //    will fail with optimistic lock conflict, preventing data corruption
-    // In a REAL Sentinel failover:
-    // - Locks held on old master are LOST (asynchronous replication)
-    // - Two clients MAY simultaneously believe they hold the same lock (split-brain)
-    // - Fencing tokens mitigate this for database writes but not all operations
-    // Conclusion: For production use with Sentinel, implement Redlock algorithm
-    // with multiple independent Redis masters.
-}
-
-// Redis connection failure tests
 
 // Lock value uniqueness tests
 

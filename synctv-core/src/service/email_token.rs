@@ -81,9 +81,9 @@ impl EmailTokenService {
         }
     }
 
-    /// Create a new email token service with rate limiting enabled
+    /// Create a new email token service with explicit runtime dependencies.
     #[must_use]
-    pub fn with_rate_limiter(
+    pub fn new_with_runtime(
         pool: PgPool,
         rate_limiter: Arc<dyn RequestRateLimiterService>,
         rate_limit_config: Option<EmailTokenRateLimitConfig>,
@@ -434,7 +434,7 @@ mod tests {
             "email_token_check:".to_string(),
         ));
         let pool = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1/db").unwrap();
-        let service = EmailTokenService::with_rate_limiter(
+        let service = EmailTokenService::new_with_runtime(
             pool,
             limiter,
             Some(EmailTokenRateLimitConfig {

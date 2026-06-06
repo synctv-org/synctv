@@ -53,7 +53,7 @@ impl ContentFilter {
 
     /// Create with custom settings
     #[must_use]
-    pub fn with_config(
+    pub fn new_with_config(
         max_chat_length: usize,
         sensitive_words: Option<Vec<String>>,
         strip_html: bool,
@@ -133,7 +133,7 @@ impl ContentFilter {
             return Err(ContentFilterError::MessageTooLong { max_length: 50 });
         }
 
-        // Check for special characters first (allow alphanumeric, underscore, dash, whitespace only)
+        // Usernames allow Unicode letters/numbers, underscore, dash, and spaces.
         if !trimmed
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c.is_whitespace())
@@ -143,10 +143,7 @@ impl ContentFilter {
             });
         }
 
-        // Strip HTML (just in case, though validation above should catch it)
-        let sanitized = Self::strip_all_html(trimmed);
-
-        Ok(sanitized)
+        Ok(trimmed.to_string())
     }
 }
 
@@ -214,7 +211,7 @@ mod tests {
 
     #[test]
     fn test_sensitive_words() {
-        let filter = ContentFilter::with_config(
+        let filter = ContentFilter::new_with_config(
             1000,
             Some(vec!["badword".to_string(), "spam".to_string()]),
             true,
@@ -797,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_sensitive_word_edge_cases() {
-        let filter = ContentFilter::with_config(
+        let filter = ContentFilter::new_with_config(
             1000,
             Some(vec!["bad".to_string(), "spam".to_string()]),
             true,

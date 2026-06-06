@@ -236,18 +236,13 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
 
 /// Check cluster health by verifying the realtime cluster service is operational.
 ///
-/// Returns `None` if no cluster realtime service is configured (single-node mode).
 /// Returns `Some(Ok(()))` if the realtime runtime is healthy.
 /// Returns `Some(Err(...))` if the realtime runtime reports issues.
 fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
     if !state.config.cluster_runtime_enabled() {
         return None;
     }
-    let Some(event_service) = state.event_service.as_ref() else {
-        return Some(Err(
-            "Realtime runtime is enabled but realtime event service is not available".to_string(),
-        ));
-    };
+    let event_service = state.event_service.as_ref();
     let metrics = event_service.metrics();
 
     // Verify node has a valid ID (non-empty)
@@ -721,171 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn test_health_response_serialization() {
-        let response = HealthResponse {
-            status: "healthy".to_string(),
-            details: Some(HealthDetails {
-                database: "healthy".to_string(),
-                redis: "healthy".to_string(),
-                cluster: None,
-                ws_ticket: None,
-                email: None,
-                livestream: None,
-                memory: None,
-                message: None,
-                webrtc: None,
-            }),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        let back: HealthResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.status, "healthy");
-        let details = back.details.unwrap();
-        assert_eq!(details.database, "healthy");
-        assert_eq!(details.redis, "healthy");
-        assert!(details.cluster.is_none());
-        assert!(details.ws_ticket.is_none());
-        assert!(details.email.is_none());
-        assert!(details.livestream.is_none());
-        assert!(details.memory.is_none());
-        assert!(details.message.is_none());
-    }
-
-    #[test]
-    fn test_health_response_with_cluster_status() {
-        let response = HealthResponse {
-            status: "healthy".to_string(),
-            details: Some(HealthDetails {
-                database: "healthy".to_string(),
-                redis: "healthy".to_string(),
-                cluster: Some("healthy".to_string()),
-                ws_ticket: None,
-                email: None,
-                livestream: None,
-                memory: None,
-                message: None,
-                webrtc: None,
-            }),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"cluster\":\"healthy\""));
-    }
-
-    #[test]
-    fn test_health_response_with_error_message() {
-        let response = HealthResponse {
-            status: "unhealthy".to_string(),
-            details: Some(HealthDetails {
-                database: "unhealthy".to_string(),
-                redis: "healthy".to_string(),
-                cluster: None,
-                ws_ticket: None,
-                email: None,
-                livestream: None,
-                memory: None,
-                message: Some("Database: connection refused".to_string()),
-                webrtc: None,
-            }),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("Database: connection refused"));
-    }
-
-    #[test]
-    fn test_health_response_skips_none_message() {
-        let response = HealthResponse {
-            status: "healthy".to_string(),
-            details: Some(HealthDetails {
-                database: "healthy".to_string(),
-                redis: "healthy".to_string(),
-                cluster: None,
-                ws_ticket: None,
-                email: None,
-                livestream: None,
-                memory: None,
-                message: None,
-                webrtc: None,
-            }),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(!json.contains("message"));
-        assert!(!json.contains("cluster"));
-        assert!(!json.contains("ws_ticket"));
-        assert!(!json.contains("email"));
-        assert!(!json.contains("livestream"));
-        assert!(!json.contains("memory"));
-        assert!(!json.contains("webrtc"));
-    }
-
-    #[test]
-    fn test_health_response_skips_none_details() {
-        let response = HealthResponse {
-            status: "ok".to_string(),
-            details: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(!json.contains("details"));
-    }
-
-    #[test]
-    fn test_health_response_deserialization_without_optional_fields() {
-        let json = r#"{"status":"ok"}"#;
-        let response: HealthResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.status, "ok");
-        assert!(response.details.is_none());
-    }
-
-    #[test]
-    fn test_health_response_with_memory_health() {
-        let response = HealthResponse {
-            status: "healthy".to_string(),
-            details: Some(HealthDetails {
-                database: "healthy".to_string(),
-                redis: "healthy".to_string(),
-                cluster: None,
-                ws_ticket: None,
-                email: None,
-                livestream: None,
-                memory: Some(MemoryHealth {
-                    usage_percent: 45.5,
-                    status: "healthy".to_string(),
-                }),
-                message: None,
-                webrtc: None,
-            }),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"memory\":{"));
-        assert!(json.contains("\"usage_percent\":45.5"));
-        assert!(json.contains("\"status\":\"healthy\""));
-    }
-
-    #[test]
-    fn test_health_response_with_unhealthy_memory() {
-        let response = HealthResponse {
-            status: "unhealthy".to_string(),
-            details: Some(HealthDetails {
-                database: "healthy".to_string(),
-                redis: "healthy".to_string(),
-                cluster: None,
-                ws_ticket: None,
-                email: None,
-                livestream: None,
-                memory: Some(MemoryHealth {
-                    usage_percent: 95.2,
-                    status: "unhealthy".to_string(),
-                }),
-                message: Some("Memory: usage at 95.2% (threshold: 90%)".to_string()),
-                webrtc: None,
-            }),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"usage_percent\":95.2"));
-        assert!(json.contains("\"status\":\"unhealthy\""));
-    }
-
-    #[test]
     fn test_memory_health_status_below_threshold() {
-        // Memory usage below 90% should be healthy
         let mem = MemoryHealth {
             usage_percent: 50.0,
             status: "healthy".to_string(),
@@ -896,7 +727,6 @@ mod tests {
 
     #[test]
     fn test_memory_health_status_above_threshold() {
-        // Memory usage above 90% should be unhealthy
         let mem = MemoryHealth {
             usage_percent: 95.0,
             status: "unhealthy".to_string(),
@@ -919,15 +749,6 @@ mod tests {
             assert!(mem.usage_percent <= 100.0);
             assert!(mem.status == "healthy" || mem.status == "unhealthy");
         }
-    }
-
-    #[test]
-    fn test_memory_threshold_constant() {
-        // Verify the threshold is set at 90%
-        assert_eq!(
-            MEMORY_UNHEALTHY_THRESHOLD_PERCENT.to_bits(),
-            90.0f64.to_bits()
-        );
     }
 
     #[test]

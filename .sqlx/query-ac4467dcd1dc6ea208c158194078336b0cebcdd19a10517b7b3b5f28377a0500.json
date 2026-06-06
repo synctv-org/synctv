@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                r.message_id AS \"message_id!\",\n                r.message_created_at AS \"message_created_at!\",\n                r.reaction_key AS key,\n                COUNT(*)::bigint AS \"count!\",\n                COALESCE(BOOL_OR($3::bigint IS NOT NULL AND r.user_id = $3), FALSE) AS \"reacted_by_me!\"\n            FROM chat_message_reactions r\n            JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)\n              ON r.message_id = m.id AND r.message_created_at = m.created_at\n            GROUP BY r.message_id, r.message_created_at, r.reaction_key\n            ORDER BY COUNT(*) DESC, r.reaction_key ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "reacted_by_me!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "TimestamptzArray",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "ac4467dcd1dc6ea208c158194078336b0cebcdd19a10517b7b3b5f28377a0500"
+}

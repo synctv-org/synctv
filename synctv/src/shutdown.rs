@@ -68,6 +68,14 @@ impl Drop for AbortOnDropJoinHandle {
     }
 }
 
+fn log_hook_task_join_result(task_name: &'static str, result: Result<(), tokio::task::JoinError>) {
+    match result {
+        Ok(()) => info!("Shutdown hook task '{task_name}' stopped"),
+        Err(error) if error.is_cancelled() => info!("Shutdown hook task '{task_name}' cancelled"),
+        Err(error) => warn!("Shutdown hook task '{task_name}' ended with join error: {error}"),
+    }
+}
+
 /// Centralized collection of all shutdown resources.
 ///
 /// Resources are executed in this order during graceful shutdown:
@@ -388,7 +396,7 @@ impl ShutdownHook for CacheInvalidationStopHook {
             let mut guard = self.listener_task.lock().await;
             if let Some(task) = guard.take() {
                 task.abort();
-                let _ = task.await;
+                log_hook_task_join_result("cache_invalidation_stop", task.await);
             }
             info!("Cache invalidation service stopped");
         })
@@ -412,7 +420,7 @@ impl ShutdownHook for SettingsListenHook {
             let mut guard = self.task.lock().await;
             if let Some(task) = guard.take() {
                 let mut task = AbortOnDropJoinHandle::new(task);
-                let _ = task.wait().await;
+                log_hook_task_join_result("settings_listen_task", task.wait().await);
                 task.disarm();
             }
         })
@@ -438,7 +446,7 @@ impl ShutdownHook for ProviderInvalidationHook {
             let mut guard = self.task.lock().await;
             if let Some(task) = guard.take() {
                 let mut task = AbortOnDropJoinHandle::new(task);
-                let _ = task.wait().await;
+                log_hook_task_join_result("provider_invalidation_listener", task.wait().await);
                 task.disarm();
             }
         })
@@ -464,7 +472,7 @@ impl ShutdownHook for CacheFenceRepairHook {
             let mut guard = self.task.lock().await;
             if let Some(task) = guard.take() {
                 let mut task = AbortOnDropJoinHandle::new(task);
-                let _ = task.wait().await;
+                log_hook_task_join_result("cache_fence_repair_worker", task.wait().await);
                 task.disarm();
             }
         })

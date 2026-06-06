@@ -2,7 +2,6 @@
 //!
 //! Tests in-memory rate limiter behavior and Redis rate limiter with testcontainers.
 //!
-//! Run with: cargo test --test `rate_limiter_tests`
 //! Run Docker tests: cargo test --test `rate_limiter_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT tablename AS \"tablename!\"\n             FROM pg_tables\n             WHERE schemaname = 'public'\n               AND tablename ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'\n               AND tablename < $1\n             ORDER BY tablename\n             ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tablename!",
+        "type_info": "Name"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "a46717ce569d055247a670707a11e0663ac9cdd1b82fe51c46a869c0dce8c46f"
+}

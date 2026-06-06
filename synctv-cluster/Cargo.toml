@@ -7,6 +7,8 @@ license.workspace = true
 
 [features]
 default = ["k8s"]
+# Enables integration-test hooks that mutate internal discovery state.
+test-support = []
 k8s = ["kube", "k8s-openapi"]
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
@@ -103,3 +105,13 @@ testcontainers.workspace = true
 testcontainers-modules.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "cluster_mode_transitions_tests"
+path = "tests/cluster_mode_transitions_tests.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "heartbeat_backoff_tests"
+path = "tests/heartbeat_backoff_tests.rs"
+required-features = ["test-support"]

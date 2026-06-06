@@ -1,0 +1,137 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                r.name,\n                r.description,\n                r.cover_file_reference_id,\n                r.created_by AS \"created_by: UserId\",\n                r.closed_at,\n                r.created_at,\n                r.updated_at,\n                r.deleted_at,\n                r.version,\n                r.last_activity_at,\n                EXISTS (\n                    SELECT 1 FROM room_bans rb\n                    WHERE rb.room_id = r.id\n                      AND rb.revoked_at IS NULL\n                      AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                ) AS \"is_banned!\",\n                EXISTS(\n                    SELECT 1 FROM room_member_kick_cooldowns rmkc\n                    WHERE rmkc.room_id = r.id\n                      AND rmkc.user_id = $2\n                      AND rmkc.ends_at > CURRENT_TIMESTAMP\n                ) AS \"is_in_kick_cooldown!\",\n                rs_settings.value AS \"settings_json?: String\",\n                rpc.opaque_record,\n                rpc.opaque_credential_identifier,\n                rpc.opaque_ciphersuite,\n                rpc.opaque_server_setup_version,\n                COALESCE(rpc.enabled, false) AS \"password_enabled!\",\n                rpc.version AS \"password_version?\"\n            FROM rooms r\n            LEFT JOIN room_settings rs_settings\n                ON rs_settings.room_id = r.id AND rs_settings.key = '_settings'\n            LEFT JOIN room_password_credentials rpc\n                ON rpc.room_id = r.id\n            WHERE r.id = $1 AND r.deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_by: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "closed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "last_activity_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "is_banned!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "is_in_kick_cooldown!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 13,
+        "name": "settings_json?: String",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "opaque_record",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 15,
+        "name": "opaque_credential_identifier",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 16,
+        "name": "opaque_ciphersuite",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 17,
+        "name": "opaque_server_setup_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 18,
+        "name": "password_enabled!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 19,
+        "name": "password_version?",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      null,
+      false,
+      true,
+      true,
+      true,
+      true,
+      null,
+      false
+    ]
+  },
+  "hash": "ba4dff82abe02e88f9ee21e5047c42dd62ee39c4a54e2fb5af9b3a43b367431c"
+}

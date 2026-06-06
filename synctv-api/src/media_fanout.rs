@@ -24,7 +24,7 @@ impl PreparedMediaRemovedFanout {
     }
 
     #[must_use]
-    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+    pub fn cloned_outbox_event(&self) -> NewRealtimeOutboxEvent {
         self.plan.cloned_outbox_event()
     }
 
@@ -40,8 +40,9 @@ pub struct PreparedMediaOutboxFanout {
 
 impl PreparedMediaOutboxFanout {
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxMediaEventFactory> {
-        self.prepared.outbox_factory()
+    pub fn outbox_factory(&self) -> RealtimeOutboxMediaEventFactory {
+        let factory = self.prepared.outbox_factory();
+        Arc::new(move |media| factory(media))
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -53,7 +54,7 @@ impl PreparedMediaOutboxFanout {
 pub struct PreparedMediaBatchOutboxFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     events_builder: MediaBatchEventsBuilder,
-    events: Arc<std::sync::Mutex<Vec<RealtimeEvent>>>,
+    events: Arc<parking_lot::Mutex<Vec<RealtimeEvent>>>,
 }
 
 impl PreparedMediaBatchOutboxFanout {
@@ -62,28 +63,24 @@ impl PreparedMediaBatchOutboxFanout {
         let prepared = self.clone();
         Arc::new(move |media: &[Media]| {
             let events = (prepared.events_builder)(media);
-            prepared
-                .events
-                .lock()
-                .expect("media fanout events mutex should not be poisoned")
-                .clone_from(&events);
+            prepared.events.lock().clone_from(&events);
             if !prepared.realtime_fanout.is_distributed_enabled() {
-                return Vec::new();
+                return Ok(Vec::new());
             }
             events
                 .iter()
-                .filter_map(|event| prepared.realtime_fanout.outbox_event(event))
-                .collect()
+                .map(|event| {
+                    prepared
+                        .realtime_fanout
+                        .outbox_event(event)
+                        .map_err(synctv_core::Error::Internal)
+                })
+                .collect::<synctv_core::Result<Vec<_>>>()
         })
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        let events = std::mem::take(
-            &mut *self
-                .events
-                .lock()
-                .expect("media fanout events mutex should not be poisoned"),
-        );
+        let events = std::mem::take(&mut *self.events.lock());
         for event in events {
             self.realtime_fanout.publish_after_outbox_commit(event);
         }
@@ -139,7 +136,7 @@ pub trait MediaFanoutService: Send + Sync {
         user_id: &UserId,
         username: &str,
         media_id: &MediaId,
-    ) -> PreparedMediaRemovedFanout;
+    ) -> synctv_core::Result<PreparedMediaRemovedFanout>;
 
     fn prepare_added_outbox_fanout(
         &self,
@@ -294,15 +291,16 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         user_id: &UserId,
         username: &str,
         media_id: &MediaId,
-    ) -> PreparedMediaRemovedFanout {
+    ) -> synctv_core::Result<PreparedMediaRemovedFanout> {
         let event = media_removed_event(room_id, user_id, username, media_id);
-        PreparedMediaRemovedFanout {
+        Ok(PreparedMediaRemovedFanout {
             plan: PreparedRealtimeFanoutPlan::new(
                 self.realtime_fanout.clone(),
                 event,
                 RealtimeDeliveryRequirement::DistributedIfAvailable,
-            ),
-        }
+            )
+            .map_err(synctv_core::Error::Internal)?,
+        })
     }
 
     fn prepare_added_outbox_fanout(
@@ -353,7 +351,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
                     })
                     .collect()
             }),
-            events: Arc::new(std::sync::Mutex::new(Vec::new())),
+            events: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -369,7 +367,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             events_builder: Arc::new(move |moved_media: &[Media]| {
                 move_media_events(&plan, &room_id, &user_id, &username, moved_media)
             }),
-            events: Arc::new(std::sync::Mutex::new(Vec::new())),
+            events: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 }
@@ -493,7 +491,7 @@ pub fn default_media_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_media_fanout_service;
-    use crate::realtime_fanout::default_realtime_fanout_service_with_realtime;
+    use crate::realtime_fanout::local_realtime_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
     use crate::test_support::channel_realtime_fanout_service;
     use async_trait::async_trait;
@@ -644,11 +642,8 @@ mod tests {
     #[tokio::test]
     async fn test_standalone_media_fanout_broadcasts_locally() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_media_fanout_service(default_realtime_fanout_service_with_realtime(
-            None,
-            false,
-            Some(event_service.clone()),
-        ));
+        let service =
+            default_media_fanout_service(local_realtime_fanout_service(event_service.clone()));
         service.publish_reordered(&room_id(), &user_id(), "tester", vec![media_id()]);
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -700,9 +695,7 @@ mod tests {
         let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         let prepared =
             service.prepare_added_outbox_fanout(room_id(), user_id(), "tester".to_string());
-        let factory = prepared
-            .outbox_factory()
-            .expect("distributed realtime fanout should prepare an outbox factory");
+        let factory = prepared.outbox_factory();
 
         let event = factory(&media()).expect("fanout should prepare a durable resource event");
         assert!(!event.enqueue_outbox);
@@ -718,16 +711,11 @@ mod tests {
     #[tokio::test]
     async fn test_standalone_prepared_media_added_fanout_broadcasts_committed_event() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_media_fanout_service(default_realtime_fanout_service_with_realtime(
-            None,
-            false,
-            Some(event_service.clone()),
-        ));
+        let service =
+            default_media_fanout_service(local_realtime_fanout_service(event_service.clone()));
         let prepared =
             service.prepare_added_outbox_fanout(room_id(), user_id(), "tester".to_string());
-        let factory = prepared
-            .outbox_factory()
-            .expect("local realtime fanout should still capture committed events");
+        let factory = prepared.outbox_factory();
 
         let event =
             factory(&media()).expect("local fanout should prepare a durable resource event");

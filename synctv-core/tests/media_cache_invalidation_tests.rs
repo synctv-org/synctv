@@ -2,7 +2,6 @@
 //!
 //! Tests that media edits properly broadcast events.
 //!
-//! Run with: cargo test -p synctv-core --test `media_cache_invalidation_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
@@ -131,7 +130,8 @@ async fn test_edit_media_sends_notification() {
         None, // No settings registry
         1000, // cache_size
         300,  // cache_ttl_secs
-    );
+    )
+    .expect("permission service should build");
 
     // Register direct_url provider instance BEFORE creating RemoteProviderManager
     // (the manager caches instances at init, so it must exist first)
@@ -156,7 +156,10 @@ async fn test_edit_media_sends_notification() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let remote_provider_manager =
         synctv_core::service::RemoteProviderManager::new(Arc::new(provider_instance_repo));
-    let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
+    let providers_manager = Arc::new(
+        ProvidersManager::new(Arc::new(remote_provider_manager))
+            .expect("providers manager should build"),
+    );
 
     // Register the "direct_url" provider in the in-memory instances map
     // (DB insert alone is insufficient — ProvidersManager.get() reads from memory)
@@ -313,7 +316,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
         None, // No settings registry
         1000, // cache_size
         300,  // cache_ttl_secs
-    );
+    )
+    .expect("permission service should build");
 
     // Register direct_url provider instance BEFORE creating RemoteProviderManager
     let provider_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
@@ -337,7 +341,10 @@ async fn test_edit_media_without_notification_service_succeeds() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let remote_provider_manager =
         synctv_core::service::RemoteProviderManager::new(Arc::new(provider_instance_repo));
-    let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
+    let providers_manager = Arc::new(
+        ProvidersManager::new(Arc::new(remote_provider_manager))
+            .expect("providers manager should build"),
+    );
 
     // Register the "direct_url" provider in the in-memory instances map
     providers_manager

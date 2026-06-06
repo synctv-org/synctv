@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[async_trait]
 pub trait RedisConnectionRuntime: Send + Sync {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager;
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager>;
 
     fn operation_timeout(&self) -> Duration {
         crate::resilience::timeout::REDIS_OPERATION_TIMEOUT
@@ -19,6 +19,13 @@ pub async fn redis_runtime_snapshot(
     tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot())
         .await
         .map_err(|_| crate::Error::Timeout(format!("Redis timeout: {operation}")))
+        .and_then(|result| {
+            result.map_err(|error| {
+                crate::Error::Internal(format!(
+                    "Redis connection error during {operation}: {error}"
+                ))
+            })
+        })
 }
 
 #[async_trait]
@@ -55,8 +62,8 @@ impl DirectRedisConnectionRuntime {
 
 #[async_trait]
 impl RedisConnectionRuntime for DirectRedisConnectionRuntime {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
-        self.conn.clone()
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+        Ok(self.conn.clone())
     }
 
     fn operation_timeout(&self) -> Duration {
@@ -90,8 +97,8 @@ impl SharedRedisConnectionRuntime {
 
 #[async_trait]
 impl RedisConnectionRuntime for SharedRedisConnectionRuntime {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+        Ok(self.conn.read().await.clone())
     }
 
     fn operation_timeout(&self) -> Duration {
@@ -140,13 +147,12 @@ impl OnDemandRedisRuntime {
 
 #[async_trait]
 impl RedisConnectionRuntime for OnDemandRedisRuntime {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
         redis::aio::ConnectionManager::new_with_config(
             self.client.clone(),
             self.manager_config.clone(),
         )
         .await
-        .expect("on-demand redis runtime failed to create connection manager")
     }
 
     fn operation_timeout(&self) -> Duration {
@@ -238,8 +244,8 @@ impl ManagedRedisRuntime {
 
 #[async_trait]
 impl RedisConnectionRuntime for ManagedRedisRuntime {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+        Ok(self.conn.read().await.clone())
     }
 
     fn operation_timeout(&self) -> Duration {
@@ -424,7 +430,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl RedisConnectionRuntime for HangingRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 tokio::time::sleep(Duration::from_mins(1)).await;
                 panic!("snapshot timeout should cancel this future")
             }
@@ -459,7 +465,10 @@ mod tests {
             .expect("replacement connection manager should initialize");
         *shared_conn.write().await = replacement.clone();
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime
+            .snapshot()
+            .await
+            .expect("snapshot should return a Redis connection");
 
         let _: redis::aio::ConnectionManager = snapshot;
         let _: redis::aio::ConnectionManager = replacement;

@@ -2,7 +2,6 @@
 //!
 //! Tests for `AlistProvider::resolve_proxy` sub_path parsing and dispatch.
 //!
-//! Run with: cargo nextest run -p synctv-core --test provider_proxy_alist_tests
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
@@ -25,7 +24,7 @@ fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderM
 }
 
 fn provider() -> AlistProvider {
-    AlistProvider::new(fake_provider_instance_manager())
+    AlistProvider::new(fake_provider_instance_manager()).expect("provider should build")
 }
 
 fn new_store() -> Arc<dyn ProviderStore> {
@@ -82,27 +81,30 @@ fn fake_proxy_services() -> ProxyServices {
     let key_builder = synctv_core::cache::KeyBuilder::new("test");
     let brute_force =
         synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());
-    let user_service = synctv_core::service::UserService::new(
+    let user_service = synctv_core::service::UserService::new_for_tests(
         &pool,
         jwt,
         username_cache,
-        synctv_core::config::PasswordComplexityConfig::default(),
         token_blacklist,
         key_builder,
         brute_force,
     );
     let credential_repo =
         Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-    let room_service = synctv_core::service::RoomService::new(pool, user_service);
+    let room_service = synctv_core::service::RoomService::new_for_tests(pool, user_service)
+        .expect("room service should build");
     ProxyServices {
         room_service: Arc::new(room_service),
         credential_encryption: None,
         credential_repo,
         provider_access_service: None,
-        signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
-            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-        )),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
+        signing_key: Arc::new(
+            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+            )
+            .expect("test proxy signing key should derive"),
+        ),
+        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
     }
 }
 
@@ -187,9 +189,10 @@ async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
 
 #[test]
 fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
         b"test-jwt-secret-that-is-long-enough",
-    );
+    )
+    .expect("test proxy signing key should derive");
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([(
             "direct".to_string(),
@@ -307,9 +310,10 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
     };
     store_versioned(&store, &stored).await;
 
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
         b"test-jwt-secret-that-is-long-enough",
-    );
+    )
+    .expect("test proxy signing key should derive");
     sign_playback_urls(
         &mut result,
         "alist",
@@ -428,9 +432,10 @@ async fn test_unknown_sub_path() {
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
     let store = new_store();
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    );
+    )
+    .expect("test proxy signing key should derive");
     let version = "asub";
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([

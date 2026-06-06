@@ -5,7 +5,7 @@ use std::str::FromStr;
 use super::id::UserId;
 use super::query::SortDirection;
 
-/// Global user role (design document 06/07: role and status separation)
+/// Global user role.
 ///
 /// This represents the user's permission level at the GLOBAL level,
 /// independent of their account status.
@@ -219,6 +219,11 @@ impl TryFrom<i32> for UserStatus {
     }
 }
 
+sqlx_i16_enum!(UserStatus, "Invalid UserStatus value", {
+    Active = 1,
+    Banned = 2,
+});
+
 sqlx_i16_enum!(UserRole, "Invalid UserRole value", {
     Root = 1,
     Admin = 2,
@@ -275,8 +280,8 @@ impl FromStr for SignupMethod {
             "email" => Ok(Self::Email),
             "password" => Ok(Self::Password),
             "oauth2" => Ok(Self::OAuth2),
-            "admin_created" | "admincreated" => Ok(Self::AdminCreated),
-            "webauthn" | "passkey" => Ok(Self::WebAuthn),
+            "admin_created" => Ok(Self::AdminCreated),
+            "webauthn" => Ok(Self::WebAuthn),
             other => Err(format!("Unknown signup method: {other}")),
         }
     }
@@ -328,44 +333,6 @@ pub struct User {
     /// Incremented by `UPDATE … SET version = version + 1 WHERE version = <old>`.
     pub version: i32,
     pub deleted_at: Option<DateTime<Utc>>,
-}
-
-impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
-    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-        use sqlx::Row;
-
-        let is_banned = row.try_get("is_banned").unwrap_or(false);
-        let banned_at = row
-            .try_get::<Option<DateTime<Utc>>, _>("banned_at")
-            .unwrap_or(None);
-        let banned_by = row
-            .try_get::<Option<UserId>, _>("banned_by")
-            .unwrap_or(None);
-        let banned_reason = row
-            .try_get::<Option<String>, _>("banned_reason")
-            .unwrap_or(None);
-
-        Ok(Self {
-            id: row.try_get("id")?,
-            username: row.try_get("username")?,
-            role: row.try_get("role")?,
-            avatar_file_reference_id: row.try_get("avatar_file_reference_id")?,
-            status: if is_banned {
-                UserStatus::Banned
-            } else {
-                UserStatus::Active
-            },
-            is_banned,
-            banned_at,
-            banned_by,
-            banned_reason,
-            signup_method: row.try_get("signup_method")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            version: row.try_get("version")?,
-            deleted_at: row.try_get("deleted_at")?,
-        })
-    }
 }
 
 impl User {
@@ -485,8 +452,8 @@ sort_field_enum! {
         Email => { display: "email", sql: "email" },
         Status => { display: "status", sql: "is_banned" },
         Role => { display: "role", sql: "role" },
-        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
-        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
+        UpdatedAt => { display: "updated_at", sql: "updated_at" },
+        CreatedAt => { display: "created_at", sql: "created_at" },
     }
     default = CreatedAt;
     error = "Unknown user list sort field";
@@ -519,14 +486,16 @@ mod tests {
             SignupMethod::OAuth2
         );
         assert_eq!(
-            SignupMethod::from_str_name("admincreated"),
+            SignupMethod::from_str_name("admin_created"),
             Some(SignupMethod::AdminCreated)
         );
         assert_eq!(
-            "passkey".parse::<SignupMethod>().unwrap(),
+            "webauthn".parse::<SignupMethod>().unwrap(),
             SignupMethod::WebAuthn
         );
         assert_eq!(SignupMethod::WebAuthn.to_string(), "webauthn");
+        assert!("admincreated".parse::<SignupMethod>().is_err());
+        assert!("passkey".parse::<SignupMethod>().is_err());
         assert!("ldap".parse::<SignupMethod>().is_err());
     }
 

@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn build_get_stream_info_request_rejects_invalid_media_id() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let err = build_get_stream_info_request(
             GetStreamInfoRequest {
                 room_id: public_id_codec
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn build_get_stream_info_request_accepts_valid_request() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let expected_room_id = public_id_codec
             .encode_room_id(synctv_core::models::RoomId::expect_positive(123))
             .unwrap();

@@ -43,6 +43,8 @@ impl NotificationServiceImpl {
 use super::map_api_error;
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
+// Notification business logic stays in `NotificationApiImpl`.
 #[allow(clippy::result_large_err)]
 impl NotificationService for NotificationServiceImpl {
     async fn list_notifications(
@@ -53,7 +55,7 @@ impl NotificationService for NotificationServiceImpl {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
         let response = self
@@ -81,7 +83,7 @@ impl NotificationService for NotificationServiceImpl {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
@@ -110,7 +112,7 @@ impl NotificationService for NotificationServiceImpl {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
@@ -139,7 +141,7 @@ impl NotificationService for NotificationServiceImpl {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
@@ -168,7 +170,7 @@ impl NotificationService for NotificationServiceImpl {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
@@ -197,7 +199,7 @@ impl NotificationService for NotificationServiceImpl {
             &request,
             &self.config,
             Some(super::grpc_unary_request_timeout()),
-        );
+        )?;
         let notification_api = Arc::clone(&self.notification_api);
 
         let response = self

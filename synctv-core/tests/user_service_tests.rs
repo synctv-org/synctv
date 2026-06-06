@@ -2,7 +2,6 @@
 //!
 //! Tests user registration and login validation using testcontainers.
 //!
-//! Run with: cargo test --test `user_service_tests`
 //! Run Docker tests: cargo test --test `user_service_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
@@ -16,23 +15,29 @@ use synctv_core::{
     models::{
         Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
         RoomMember, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
+        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
-        UserEmailRepository, UserRepository, WebAuthnCredentialRepository,
+        SettingsRepository, UserEmailRepository, UserPasswordRepository, UserRepository,
+        WebAuthnCredentialRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
+        auth::{BruteForceProtection, JwtService, OpaquePasswordService},
         local_passkey_session_store,
         permission::PermissionServiceRuntime,
         user::UserServiceRuntimeOptions,
-        AuthFactorMethod, AuthenticatedLogin, InMemoryTokenBlacklistStore, PasskeyService,
-        PermissionService, SecurityPipeline, SensitiveVerificationOutcome, TokenAuthContext,
-        UserService,
+        AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
+        InMemoryTokenBlacklistStore, PasskeyService, PermissionService, SecurityPipeline,
+        SecurityPipelineRuntime, SensitiveVerificationOutcome, SettingsRegistry, SettingsService,
+        TokenAuthContext, UserService,
     },
     Config, Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{
+    create_test_pool, opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
+    opaque_register_user_with_client_ip,
+};
 use tokio::sync::Barrier;
 
 fn create_jwt_service() -> JwtService {
@@ -40,12 +45,12 @@ fn create_jwt_service() -> JwtService {
 }
 
 fn create_user_service(pool: &PgPool) -> UserService {
-    create_user_service_with_runtime(pool, UserServiceRuntimeOptions::default())
+    create_user_service_with_runtime(pool, UserServiceRuntimeOptions::test_defaults())
 }
 
 fn create_user_service_with_runtime(
     pool: &PgPool,
-    runtime: UserServiceRuntimeOptions,
+    mut runtime: UserServiceRuntimeOptions,
 ) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -55,7 +60,13 @@ fn create_user_service_with_runtime(
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new_with_brute_force_service_and_runtime(
+    runtime.password_registration_policy_override =
+        Some(synctv_core::service::RegistrationPolicy {
+            enabled: true,
+            need_review: false,
+        });
+
+    UserService::new_with_brute_force_service_and_runtime(
         pool,
         synctv_core::service::user::UserServiceDependencies {
             jwt_service: jwt,
@@ -66,9 +77,26 @@ fn create_user_service_with_runtime(
             brute_force: Arc::new(brute_force),
         },
         runtime,
-    );
-    svc.enable_password_registration_for_tests();
-    svc
+    )
+}
+
+async fn email_signup_registry(pool: &PgPool) -> Arc<SettingsRegistry> {
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool.clone(),
+    ));
+    let registry = Arc::new(SettingsRegistry::new(settings_service));
+    registry
+        .enable_email_signup
+        .set(true)
+        .await
+        .expect("email signup setting should persist");
+    registry
+        .email_signup_need_review
+        .set(false)
+        .await
+        .expect("email signup review setting should persist");
+    registry
 }
 
 fn create_user_service_with_security_pipeline(
@@ -82,19 +110,33 @@ fn create_user_service_with_security_pipeline(
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut service = UserService::new(
+    let service = UserService::new_with_brute_force_service_and_runtime(
         pool,
-        jwt.clone(),
-        username_cache,
-        password_config,
-        Arc::clone(&token_blacklist),
-        key_builder.clone(),
-        brute_force,
+        synctv_core::service::user::UserServiceDependencies {
+            jwt_service: jwt.clone(),
+            username_cache,
+            password_complexity: password_config,
+            token_blacklist: Arc::clone(&token_blacklist),
+            key_builder: key_builder.clone(),
+            brute_force: Arc::new(brute_force),
+        },
+        UserServiceRuntimeOptions {
+            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
+                enabled: true,
+                need_review: false,
+            }),
+            ..UserServiceRuntimeOptions::test_defaults()
+        },
     );
-    service.enable_password_registration_for_tests();
     let service = Arc::new(service);
-    let pipeline = SecurityPipeline::new(Arc::clone(&service))
-        .with_token_blacklist(token_blacklist, key_builder);
+    let pipeline = SecurityPipeline::new_with_runtime(
+        Arc::clone(&service),
+        SecurityPipelineRuntime {
+            user_cache: None,
+            token_blacklist: Some(token_blacklist),
+            key_builder: Some(key_builder),
+        },
+    );
     (service, jwt, pipeline)
 }
 
@@ -116,6 +158,134 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_direct_password_registration_stores_opaque_credential() {
+    let (_container, pool) = create_test_pool().await;
+    let opaque_password_service = Arc::new(OpaquePasswordService::derive_from_secret(
+        b"direct-password-registration-test",
+    ));
+    let service = create_user_service_with_runtime(
+        &pool,
+        UserServiceRuntimeOptions {
+            opaque_password_service: Arc::clone(&opaque_password_service),
+            ..UserServiceRuntimeOptions::test_defaults()
+        },
+    );
+
+    let username = format!("direct_password_{}", synctv_common::snanoid!(8));
+    let password = "StrongPass1";
+    let email = format!("{username}@example.com");
+    let outcome = service
+        .register_with_direct_password_transport_with_control(
+            username.clone(),
+            Some(email),
+            password.to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("direct password registration should succeed");
+    let AccountRegistrationOutcome::Registered {
+        user,
+        access_token,
+        refresh_token,
+        ..
+    } = outcome
+    else {
+        panic!("direct password registration should complete without review");
+    };
+
+    assert_eq!(user.username, username.to_ascii_lowercase());
+    assert!(!access_token.is_empty());
+    assert!(!refresh_token.is_empty());
+
+    let stored_credential = UserPasswordRepository::new(pool.clone())
+        .get_opaque_credential(&user.id)
+        .await
+        .expect("password credential lookup should succeed")
+        .expect("password credential should be stored");
+
+    assert_eq!(
+        stored_credential.record.ciphersuite,
+        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID
+    );
+    assert_eq!(
+        stored_credential.record.server_setup_version,
+        OPAQUE_SERVER_SETUP_VERSION
+    );
+    assert!(opaque_password_service
+        .verify_password(&stored_credential.record, password,)
+        .expect("stored OPAQUE credential should verify"));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_email_registration_confirmation_stores_opaque_credential() {
+    let (_container, pool) = create_test_pool().await;
+    let opaque_password_service = Arc::new(OpaquePasswordService::derive_from_secret(
+        b"email-registration-confirmation-test",
+    ));
+    let service = create_user_service_with_runtime(
+        &pool,
+        UserServiceRuntimeOptions {
+            opaque_password_service: Arc::clone(&opaque_password_service),
+            settings_registry: Some(email_signup_registry(&pool).await),
+            ..UserServiceRuntimeOptions::test_defaults()
+        },
+    );
+
+    let username = format!("email_registration_{}", synctv_common::snanoid!(8));
+    let email = format!("{username}@example.com");
+    let password = "StrongPass1";
+
+    let token = service
+        .create_email_registration_token_with_control(username.clone(), email.clone(), None, None)
+        .await
+        .expect("email registration token should be created");
+    let outcome = service
+        .complete_email_registration_with_direct_password_transport_with_control(
+            &token,
+            password.to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("email registration confirmation should succeed");
+    let AccountRegistrationOutcome::Registered {
+        user,
+        access_token,
+        refresh_token,
+        ..
+    } = outcome
+    else {
+        panic!("email registration confirmation should complete without review");
+    };
+
+    assert_eq!(user.username, username.to_ascii_lowercase());
+    assert!(!access_token.is_empty());
+    assert!(!refresh_token.is_empty());
+
+    let stored_credential = UserPasswordRepository::new(pool.clone())
+        .get_opaque_credential(&user.id)
+        .await
+        .expect("password credential lookup should succeed")
+        .expect("password credential should be stored");
+    assert!(opaque_password_service
+        .verify_password(&stored_credential.record, password,)
+        .expect("stored OPAQUE credential should verify"));
+
+    let reuse = service
+        .complete_email_registration_with_direct_password_transport_with_control(
+            &token,
+            password.to_string(),
+            None,
+            None,
+        )
+        .await;
+    assert!(matches!(reuse, Err(Error::InvalidInput(_))));
 }
 
 async fn password_verification_id(
@@ -285,75 +455,64 @@ fn make_media(
 
 async fn assert_register_duplicate_username_error(service: &UserService) {
     // Register first user
-    let result = service
-        .register(
-            "unique_user_dup".to_string(),
-            Some("dup1@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await;
+    let result = opaque_register_user(
+        service,
+        "unique_user_dup",
+        Some("dup1@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await;
     assert!(
         result.is_ok(),
         "First registration should succeed: {result:?}"
     );
 
     // Register with same username, different email
-    let result = service
-        .register(
-            "unique_user_dup".to_string(),
-            Some("dup2@example.com".to_string()),
-            "StrongPass2".to_string(),
-            None,
-        )
-        .await;
+    let result = opaque_register_user(
+        service,
+        "unique_user_dup",
+        Some("dup2@example.com".to_string()),
+        "StrongPass2",
+    )
+    .await;
     assert!(result.is_err(), "Duplicate username should be rejected");
 }
 
 async fn assert_register_duplicate_email_error(service: &UserService) {
     // Register first user
-    let result = service
-        .register(
-            "email_dup_1".to_string(),
-            Some("same_email@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await;
+    let result = opaque_register_user(
+        service,
+        "email_dup_1",
+        Some("same_email@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await;
     assert!(result.is_ok(), "First registration should succeed");
 
     // Register with different username, same email
-    let result = service
-        .register(
-            "email_dup_2".to_string(),
-            Some("same_email@example.com".to_string()),
-            "StrongPass2".to_string(),
-            None,
-        )
-        .await;
+    let result = opaque_register_user(
+        service,
+        "email_dup_2",
+        Some("same_email@example.com".to_string()),
+        "StrongPass2",
+    )
+    .await;
     assert!(result.is_err(), "Duplicate email should be rejected");
 }
 
 async fn assert_login_wrong_password(service: &UserService) {
     // Register a user
-    service
-        .register(
-            "login_test_user".to_string(),
-            Some("login@example.com".to_string()),
-            "CorrectPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    opaque_register_user(
+        service,
+        "login_test_user",
+        Some("login@example.com".to_string()),
+        "CorrectPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     // Try to login with wrong password
-    let result = service
-        .login(
-            "login_test_user".to_string(),
-            "WrongPass1".to_string(),
-            None,
-        )
-        .await;
+    let result = opaque_login_user(service, "login_test_user", "WrongPass1").await;
 
     assert!(result.is_err(), "Login with wrong password should fail");
 }
@@ -384,15 +543,14 @@ fn test_password_validation() {
 
 async fn assert_delete_user_already_deleted_returns_error(service: &UserService) {
     // Register a user
-    let (user, _, _) = service
-        .register(
-            "delete_test_user".to_string(),
-            Some("delete@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        service,
+        "delete_test_user",
+        Some("delete@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let user_id = user.id;
 
@@ -420,15 +578,14 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
     let service = create_user_service(&pool);
 
     // Register a user
-    let (user, _, _) = service
-        .register(
-            "concurrent_delete_user".to_string(),
-            Some("concurrent@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "concurrent_delete_user",
+        Some("concurrent@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let user_id = user.id;
 
@@ -800,26 +957,26 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
     let client_ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     // Register first user
-    service
-        .register(
-            "existing_user_42".to_string(),
-            Some("existing_42@test.com".to_string()),
-            "StrongPass1".to_string(),
-            Some(client_ip),
-        )
-        .await
-        .expect("First registration should succeed");
+    opaque_register_user_with_client_ip(
+        service,
+        "existing_user_42",
+        Some("existing_42@test.com".to_string()),
+        "StrongPass1",
+        Some(client_ip),
+    )
+    .await
+    .expect("First registration should succeed");
 
     // Try to register with the same username multiple times (should fail with AlreadyExists)
     for _ in 0..5 {
-        let result = service
-            .register(
-                "existing_user_42".to_string(),
-                Some("different@test.com".to_string()),
-                "StrongPass1".to_string(),
-                Some(client_ip),
-            )
-            .await;
+        let result = opaque_register_user_with_client_ip(
+            service,
+            "existing_user_42",
+            Some("different@test.com".to_string()),
+            "StrongPass1",
+            Some(client_ip),
+        )
+        .await;
 
         // Should fail with AlreadyExists
         assert!(
@@ -835,14 +992,14 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
     }
 
     // Now try with a DIFFERENT username - should succeed (IP not locked)
-    let result = service
-        .register(
-            "new_unique_user_42".to_string(),
-            Some("new_42@test.com".to_string()),
-            "StrongPass1".to_string(),
-            Some(client_ip),
-        )
-        .await;
+    let result = opaque_register_user_with_client_ip(
+        service,
+        "new_unique_user_42",
+        Some("new_42@test.com".to_string()),
+        "StrongPass1",
+        Some(client_ip),
+    )
+    .await;
 
     assert!(
         result.is_ok(),
@@ -863,12 +1020,13 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
             version_fence: Some(version_fence.clone()),
             ..PermissionServiceRuntime::default()
         },
-    );
+    )
+    .expect("permission service should build");
     let user_service = create_user_service_with_runtime(
         &pool,
         UserServiceRuntimeOptions {
             permission_service: Some(permission_service),
-            ..UserServiceRuntimeOptions::default()
+            ..UserServiceRuntimeOptions::test_defaults()
         },
     );
     let user_repo = UserRepository::new(pool.clone());
@@ -955,11 +1113,12 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
     let mut validation_error_count = 0;
     for _ in 0..25 {
         let result = service
-            .register(
-                "ab".to_string(), // Too short - validation error
+            .start_opaque_registration_with_control(
+                "ab".to_string(),
                 Some("test@example.com".to_string()),
-                "StrongPass1".to_string(),
+                vec![1, 2, 3],
                 Some(client_ip),
+                None,
             )
             .await;
 
@@ -1016,15 +1175,14 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     let email_repo = UserEmailRepository::new(pool.clone());
 
     let original_email = "email_bind_flow_user@example.com";
-    let (created, _, _) = service
-        .register(
-            "email_bind_flow_user".to_string(),
-            Some(original_email.to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create email bind flow user");
+    let (created, _, _) = opaque_register_user(
+        &service,
+        "email_bind_flow_user",
+        Some(original_email.to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create email bind flow user");
     let new_email = "email_bind_flow_new@example.com";
 
     let token = service
@@ -1121,15 +1279,10 @@ async fn assert_email_bind_rejects_taken_email(pool: PgPool) {
 async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
     let service = create_user_service(&pool);
 
-    let (password_only, _, _) = service
-        .register(
-            "two_factor_password_only".to_string(),
-            None,
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create password-only user");
+    let (password_only, _, _) =
+        opaque_register_user(&service, "two_factor_password_only", None, "StrongPass1")
+            .await
+            .expect("create password-only user");
     let result = service
         .set_two_factor_enabled(&password_only.id, true)
         .await
@@ -1139,15 +1292,14 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
         "expected InvalidInput for insufficient auth factors, got {result:?}"
     );
 
-    let (email_and_password, _, _) = service
-        .register(
-            "two_factor_email_password".to_string(),
-            Some("two_factor_email_password@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create email+password user");
+    let (email_and_password, _, _) = opaque_register_user(
+        &service,
+        "two_factor_email_password",
+        Some("two_factor_email_password@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create email+password user");
     let (preferences, factors) = service
         .set_two_factor_enabled(&email_and_password.id, true)
         .await
@@ -1160,15 +1312,14 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
 
 async fn assert_sensitive_verification_is_one_time(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "sensitive_verification_one_time".to_string(),
-            Some("sensitive_verification_one_time@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "sensitive_verification_one_time",
+        Some("sensitive_verification_one_time@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
 
     let verification_id = password_verification_id(&service, &user.id, "StrongPass1").await;
     service
@@ -1187,15 +1338,14 @@ async fn assert_sensitive_verification_is_one_time(pool: PgPool) {
 
 async fn assert_sensitive_password_verification_is_rate_limited(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "sensitive_verification_rate_limit".to_string(),
-            Some("sensitive_verification_rate_limit@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "sensitive_verification_rate_limit",
+        Some("sensitive_verification_rate_limit@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
     let outcome = service
         .start_sensitive_operation_verification(&user.id, None)
         .await
@@ -1237,15 +1387,14 @@ async fn assert_sensitive_password_verification_is_rate_limited(pool: PgPool) {
 async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabled(pool: PgPool) {
     let service = create_user_service(&pool);
     let email = "sensitive_verification_2fa@example.com";
-    let (user, _, _) = service
-        .register(
-            "sensitive_verification_2fa".to_string(),
-            Some(email.to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password and email");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "sensitive_verification_2fa",
+        Some(email.to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password and email");
     insert_trusted_email_identity(&pool, &user.id, email).await;
     service
         .set_two_factor_enabled(&user.id, true)
@@ -1307,15 +1456,14 @@ async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabl
 async fn assert_oauth2_session_sensitive_verification_requires_one_local_factor(pool: PgPool) {
     let service = create_user_service(&pool);
     let email = "sensitive_verification_oauth2@example.com";
-    let (user, _, _) = service
-        .register(
-            "sensitive_verification_oauth2".to_string(),
-            Some(email.to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password and email");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "sensitive_verification_oauth2",
+        Some(email.to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password and email");
     insert_trusted_email_identity(&pool, &user.id, email).await;
     service
         .set_two_factor_enabled(&user.id, true)
@@ -1387,15 +1535,14 @@ async fn assert_oauth2_only_session_can_bootstrap_first_local_factor(pool: PgPoo
 
 async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
     let user_service = Arc::new(create_user_service(&pool));
-    let (user, _, _) = user_service
-        .register(
-            "two_factor_passkey_user".to_string(),
-            None,
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create password+passkey user");
+    let (user, _, _) = opaque_register_user(
+        user_service.as_ref(),
+        "two_factor_passkey_user",
+        None,
+        "StrongPass1",
+    )
+    .await
+    .expect("create password+passkey user");
     let credential_id = b"two-factor-required-passkey";
     insert_dummy_passkey(&pool, &user.id, credential_id).await;
 
@@ -1417,23 +1564,17 @@ async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
 
 async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "two_factor_login_blocked".to_string(),
-            Some("two_factor_login_blocked@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "two_factor_login_blocked",
+        Some("two_factor_login_blocked@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
 
     insert_trusted_email_identity(&pool, &user.id, "two_factor_login_blocked@example.com").await;
-    let refresh_token = match service
-        .login(
-            "two_factor_login_blocked".to_string(),
-            "StrongPass1".to_string(),
-            None,
-        )
+    let refresh_token = match opaque_login_user(&service, "two_factor_login_blocked", "StrongPass1")
         .await
         .expect("single-factor login should work before 2FA is enabled")
     {
@@ -1448,14 +1589,10 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
         .await
         .expect("password+verified email user can enable two-factor authentication");
 
-    let login_result = service
-        .login(
-            "two_factor_login_blocked".to_string(),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("first factor should return an MFA challenge after 2FA is enabled");
+    let login_result =
+        opaque_login_user_with_challenge(&service, "two_factor_login_blocked", "StrongPass1")
+            .await
+            .expect("first factor should return an MFA challenge after 2FA is enabled");
     let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
         panic!("single-factor login must not issue tokens after 2FA is enabled");
     };
@@ -1505,15 +1642,14 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
 
 async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
     let (service, jwt, pipeline) = create_user_service_with_security_pipeline(&pool);
-    let (user, old_access_token, old_refresh_token) = service
-        .register(
-            "two_factor_access_context".to_string(),
-            Some("two_factor_access_context@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, old_access_token, old_refresh_token) = opaque_register_user(
+        service.as_ref(),
+        "two_factor_access_context",
+        Some("two_factor_access_context@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
     let old_access_token = old_access_token.expect("2FA-disabled registration issues access token");
     let old_refresh_token =
         old_refresh_token.expect("2FA-disabled registration issues refresh token");
@@ -1548,14 +1684,13 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
         "expected old refresh token to require 2FA context, got {refresh_result:?}"
     );
 
-    let login_result = service
-        .login(
-            "two_factor_access_context".to_string(),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("password first factor should start MFA challenge");
+    let login_result = opaque_login_user_with_challenge(
+        service.as_ref(),
+        "two_factor_access_context",
+        "StrongPass1",
+    )
+    .await
+    .expect("password first factor should start MFA challenge");
     let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
         panic!("2FA-enabled password login should require email second factor");
     };
@@ -1625,15 +1760,14 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
 
 async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "two_factor_oauth2_allowed".to_string(),
-            Some("two_factor_oauth2_allowed@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "two_factor_oauth2_allowed",
+        Some("two_factor_oauth2_allowed@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
 
     insert_trusted_email_identity(&pool, &user.id, "two_factor_oauth2_allowed@example.com").await;
     service
@@ -1667,15 +1801,14 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
 
 async fn assert_refresh_token_rejects_unbound_oauth2_identity(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "oauth_refresh_binding".to_string(),
-            Some("oauth_refresh_binding@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "oauth_refresh_binding",
+        Some("oauth_refresh_binding@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
 
     insert_oauth2_identity(&pool, &user.id, "github", "oauth-refresh-provider-user").await;
     let refresh_token = match service
@@ -1707,15 +1840,14 @@ async fn assert_refresh_token_rejects_unbound_oauth2_identity(pool: PgPool) {
 
 async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "email_refresh_binding".to_string(),
-            Some("email_refresh_binding@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "email_refresh_binding",
+        Some("email_refresh_binding@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
     let refresh_token = match service
         .login_with_verified_email(&user.id, "email-refresh-binding", None)
         .await
@@ -1740,15 +1872,14 @@ async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
 
 async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
     let service = create_user_service(&pool);
-    let (user, _, _) = service
-        .register(
-            "passkey_refresh_binding".to_string(),
-            Some("passkey_refresh_binding@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("create user with password");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        "passkey_refresh_binding",
+        Some("passkey_refresh_binding@example.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("create user with password");
     let credential_id = b"passkey-refresh-binding";
     insert_dummy_passkey(&pool, &user.id, credential_id).await;
 

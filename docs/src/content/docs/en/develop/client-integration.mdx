@@ -106,7 +106,7 @@ curl -sS http://localhost:8080/api/auth/opaque/login/start \
   }'
 ```
 
-Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. A typical finish response contains `access_token`, `refresh_token`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in. `/api/auth/login` is reserved for passwordless email-token login.
+Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. A typical finish response contains `access_token`, `refresh_token`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in. Passwordless email-token login uses `/api/auth/email/confirm`.
 
   </TabItem>
   <TabItem label="Create WebSocket ticket" icon="document">
@@ -188,7 +188,7 @@ Client flow:
 7. After the second factor succeeds, the final response returns usable tokens.
 </Steps>
 
-`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. Password is a first factor completed through the OPAQUE login flow; it is not a plaintext MFA completion method. OAuth2 does not count as a local 2FA factor.
+`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. Password is a first factor completed through OPAQUE or direct password login. OAuth2 does not count as a local 2FA factor.
 
 <Aside type="note">
 OPAQUE is the public client local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email or WebAuthn.

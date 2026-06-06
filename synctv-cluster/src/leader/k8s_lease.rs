@@ -40,7 +40,7 @@ const DEFAULT_GRACE_PERIOD_MAX_SECS: u64 = 60;
 /// At the default renew interval of 10s, 3 failures = ~30s of no leader.
 const LEADER_VACANCY_THRESHOLD: u64 = 3;
 
-use super::LeadershipEvent;
+use super::{publish_leadership_event, LeadershipEvent};
 
 fn metric_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -724,7 +724,7 @@ impl K8sLeaderElector {
             );
             *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
             // Notify observers of leadership loss
-            let _ = self.event_tx.send(LeadershipEvent::Lost);
+            publish_leadership_event(&self.event_tx, &self.identity, LeadershipEvent::Lost);
         }
     }
 
@@ -745,7 +745,7 @@ impl K8sLeaderElector {
                 "Leader vacancy detected: no node has held leadership for {} consecutive election cycles",
                 failures
             );
-            let _ = self.event_tx.send(LeadershipEvent::Vacancy);
+            publish_leadership_event(&self.event_tx, &self.identity, LeadershipEvent::Vacancy);
         } else if failures > LEADER_VACANCY_THRESHOLD
             && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD)
         {
@@ -802,7 +802,11 @@ impl K8sLeaderElector {
         synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
 
         // Step 5: Notify observers of leadership gain (after is_leader and epoch are set).
-        let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });
+        publish_leadership_event(
+            &self.event_tx,
+            &self.identity,
+            LeadershipEvent::Gained { epoch },
+        );
     }
 
     /// Calculate the grace period duration based on consecutive losses.

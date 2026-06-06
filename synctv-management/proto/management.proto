@@ -27,7 +27,7 @@ service ManagementService {
     rpc BanUser(BanUserRequest) returns (synctv.admin.BanUserResponse);
     rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.UnbanUserResponse);
     rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.UpdateUserRoleResponse);
-    rpc UpdateUserPassword(UpdateUserPasswordRequest) returns (synctv.admin.UpdateUserPasswordResponse);
+    rpc SetUserPassword(SetUserPasswordRequest) returns (synctv.admin.SetUserPasswordResponse);
     rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (synctv.admin.UpdateUserUsernameResponse);
     rpc GetUserRooms(GetUserRoomsRequest) returns (synctv.admin.GetUserRoomsResponse);
     rpc BatchBanUsers(BatchBanUsersRequest) returns (synctv.admin.BatchBanUsersResponse);
@@ -278,9 +278,9 @@ message ListAdminsRequest {
 message CreateUserRequest {
     string username = 1;
     string email = 2;
-    string password = 3;
-    synctv.common.UserRole role = 4;
-    synctv.common.UserStatus status = 5;
+    synctv.common.UserRole role = 3;
+    synctv.common.UserStatus status = 4;
+    string password = 5;
 }
 
 message DeleteUserRequest {
@@ -301,9 +301,9 @@ message UpdateUserRoleRequest {
     synctv.common.UserRole role = 2;
 }
 
-message UpdateUserPasswordRequest {
+message SetUserPasswordRequest {
     UserRef user = 1;
-    string new_password = 2;
+    string password = 2;
     string reason = 3;
 }
 

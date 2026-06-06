@@ -12,10 +12,7 @@ use crate::repository::UserProviderCredentialRepository;
 
 use super::{PlaybackClientProfile, ProviderAccessService};
 
-/// Provider execution context
-///
-/// Provides access to database, shared provider storage, user information, and other resources
-/// needed by providers to generate playback information.
+/// Provider execution context.
 #[derive(Clone)]
 pub struct ProviderContext<'a> {
     /// User ID requesting playback (optional)
@@ -49,13 +46,13 @@ pub struct ProviderContext<'a> {
     /// Database connection pool (optional)
     pub db: Option<&'a PgPool>,
 
-    /// Credential encryption for provider credential resolution (optional)
+    /// Credential encryption required by credential-backed providers.
     pub credential_encryption: Option<&'a CredentialEncryption>,
 
     /// Provider store for caching and distributed locking (optional)
     pub store: Option<Arc<dyn super::store::ProviderStore>>,
 
-    /// User provider credential repository for resolving stored credentials (optional)
+    /// Repository required by credential-backed providers.
     pub credential_repo: Option<&'a UserProviderCredentialRepository>,
 
     /// Typed provider access service for cached credential/session resolution (optional)
@@ -159,7 +156,7 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set credential encryption for provider credential resolution
+    /// Set credential encryption for credential-backed provider resolution.
     #[must_use]
     pub const fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
         self.credential_encryption = Some(enc);
@@ -173,7 +170,7 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set user provider credential repository for resolving stored credentials
+    /// Set repository for credential-backed provider resolution.
     #[must_use]
     pub const fn with_credential_repo(
         mut self,

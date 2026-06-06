@@ -13,6 +13,14 @@ use crate::{
     Error, Result,
 };
 
+fn bootstrap_exists_value(value: Option<bool>, query_description: &str) -> Result<bool> {
+    value.ok_or_else(|| {
+        Error::Internal(format!(
+            "{query_description} EXISTS query returned no scalar value"
+        ))
+    })
+}
+
 /// Bootstrap root user on first startup.
 ///
 /// Creates a root user if none exists and bootstrap is enabled. On first
@@ -36,13 +44,13 @@ pub async fn bootstrap_root_user(
     let user_password_repository = UserPasswordRepository::new(pool.clone());
 
     // Check if any root user exists
-    let root_exists = sqlx::query_scalar_unchecked!(
+    let root_exists = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM users WHERE role = $1 AND deleted_at IS NULL LIMIT 1)",
-        UserRole::Root
+        i16::from(UserRole::Root)
     )
     .fetch_one(pool)
-    .await?
-    .unwrap_or(false);
+    .await?;
+    let root_exists = bootstrap_exists_value(root_exists, "root user bootstrap")?;
 
     if root_exists {
         info!("Root user already exists, skipping bootstrap");
@@ -114,22 +122,20 @@ pub async fn bootstrap_root_user(
 ///
 /// Used during startup to distinguish first deployment (no users) from
 /// subsequent starts. On first deployment, root bootstrap failure is fatal.
-pub async fn has_any_users(pool: &PgPool) -> bool {
-    sqlx::query_scalar_unchecked!(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1)"
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(None)
-    .unwrap_or(false)
+pub async fn has_any_users(pool: &PgPool) -> Result<bool> {
+    let exists =
+        sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1)")
+            .fetch_one(pool)
+            .await?;
+    bootstrap_exists_value(exists, "active user")
 }
 
 /// Check whether any active administrator-capable users exist in the database.
 ///
 /// Startup may continue after bootstrap failure only when the system already has
 /// an existing administrative account (`root` or `admin`) that can manage it.
-pub async fn has_any_admin_users(pool: &PgPool) -> bool {
-    sqlx::query_scalar_unchecked!(
+pub async fn has_any_admin_users(pool: &PgPool) -> Result<bool> {
+    let exists = sqlx::query_scalar!(
         "SELECT EXISTS(
             SELECT 1
             FROM users
@@ -137,11 +143,32 @@ pub async fn has_any_admin_users(pool: &PgPool) -> bool {
               AND (role = $1 OR role = $2)
             LIMIT 1
         )",
-        UserRole::Root,
-        UserRole::Admin
+        i16::from(UserRole::Root),
+        i16::from(UserRole::Admin)
     )
     .fetch_one(pool)
-    .await
-    .unwrap_or(None)
-    .unwrap_or(false)
+    .await?;
+    bootstrap_exists_value(exists, "administrator user")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_exists_value_rejects_missing_scalar() {
+        let error =
+            bootstrap_exists_value(None, "administrator user").expect_err("missing scalar fails");
+
+        assert!(matches!(
+            error,
+            Error::Internal(message) if message.contains("administrator user")
+        ));
+    }
+
+    #[test]
+    fn bootstrap_exists_value_accepts_scalar() {
+        assert!(bootstrap_exists_value(Some(true), "administrator user").unwrap());
+        assert!(!bootstrap_exists_value(Some(false), "administrator user").unwrap());
+    }
 }

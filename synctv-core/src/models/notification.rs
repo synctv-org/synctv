@@ -10,8 +10,8 @@ sort_field_enum! {
     #[serde(rename_all = "snake_case")]
     pub enum NotificationListSortBy {
         Title => { display: "title", sql: "title" },
-        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
-        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
+        UpdatedAt => { display: "updated_at", sql: "updated_at" },
+        CreatedAt => { display: "created_at", sql: "created_at" },
     }
     default = CreatedAt;
     error = "Unknown notification list sort field";
@@ -136,84 +136,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_notification_type_display() {
-        assert_eq!(
-            NotificationType::RoomInvitation.to_string(),
-            "room_invitation"
-        );
-        assert_eq!(
-            NotificationType::SystemAnnouncement.to_string(),
-            "system_announcement"
-        );
-        assert_eq!(NotificationType::RoomEvent.to_string(), "room_event");
-        assert_eq!(
-            NotificationType::PasswordReset.to_string(),
-            "password_reset"
-        );
-        assert_eq!(NotificationType::EmailBind.to_string(), "email_bind");
-    }
-
-    #[test]
-    fn test_notification_type_from_str() {
-        assert_eq!(
-            "room_invitation".parse::<NotificationType>().unwrap(),
-            NotificationType::RoomInvitation
-        );
-        assert_eq!(
-            "system_announcement".parse::<NotificationType>().unwrap(),
-            NotificationType::SystemAnnouncement
-        );
-        assert_eq!(
-            "room_event".parse::<NotificationType>().unwrap(),
-            NotificationType::RoomEvent
-        );
-        assert_eq!(
-            "password_reset".parse::<NotificationType>().unwrap(),
-            NotificationType::PasswordReset
-        );
-        assert_eq!(
-            "email_bind".parse::<NotificationType>().unwrap(),
-            NotificationType::EmailBind
-        );
-    }
-
-    #[test]
-    fn test_notification_type_from_str_invalid() {
-        let result = "invalid_type".parse::<NotificationType>();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid notification type"));
-    }
-
-    #[test]
-    fn test_notification_type_roundtrip() {
-        let types = vec![
-            NotificationType::RoomInvitation,
-            NotificationType::SystemAnnouncement,
-            NotificationType::RoomEvent,
-            NotificationType::PasswordReset,
-            NotificationType::EmailBind,
-        ];
-        for nt in types {
-            let s = nt.to_string();
-            let parsed: NotificationType = s.parse().unwrap();
-            assert_eq!(parsed, nt);
+    fn notification_type_string_contract_is_stable() {
+        for (notification_type, value) in [
+            (NotificationType::RoomInvitation, "room_invitation"),
+            (NotificationType::SystemAnnouncement, "system_announcement"),
+            (NotificationType::RoomEvent, "room_event"),
+            (NotificationType::PasswordReset, "password_reset"),
+            (NotificationType::EmailBind, "email_bind"),
+        ] {
+            assert_eq!(notification_type.to_string(), value);
+            assert_eq!(
+                value.parse::<NotificationType>().unwrap(),
+                notification_type
+            );
         }
+
+        let invalid = "invalid_type".parse::<NotificationType>().unwrap_err();
+        assert!(invalid.to_string().contains("Invalid notification type"));
     }
 
     #[test]
-    fn test_notification_type_serde_roundtrip() {
-        let nt = NotificationType::RoomInvitation;
-        let json = serde_json::to_string(&nt).unwrap();
+    fn notification_type_serde_roundtrip_uses_snake_case() {
+        let notification_type = NotificationType::RoomInvitation;
+        let json = serde_json::to_string(&notification_type).unwrap();
         assert_eq!(json, "\"room_invitation\"");
-        let deserialized: NotificationType = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, nt);
+        assert_eq!(
+            serde_json::from_str::<NotificationType>(&json).unwrap(),
+            notification_type
+        );
     }
 
     #[test]
-    fn test_create_notification_request_deserialize() {
+    fn create_notification_request_defaults_data_to_empty_object() {
         let json = serde_json::json!({
             "user_id": 123,
             "notification_type": "room_invitation",
@@ -225,12 +179,11 @@ mod tests {
         assert_eq!(req.notification_type, NotificationType::RoomInvitation);
         assert_eq!(req.title, "You have been invited");
         assert_eq!(req.content, "Join room ABC");
-        // data should default to empty object
         assert_eq!(req.data, serde_json::json!({}));
     }
 
     #[test]
-    fn test_create_notification_request_with_data() {
+    fn create_notification_request_preserves_data_payload() {
         let json = serde_json::json!({
             "user_id": 456,
             "notification_type": "system_announcement",
@@ -244,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_as_read_request_deserialize() {
+    fn mark_as_read_request_accepts_notification_ids() {
         let json = serde_json::json!({
             "notification_ids": [
                 5_508_400,
@@ -256,14 +209,11 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_all_as_read_request_no_before() {
+    fn mark_all_as_read_request_accepts_optional_cutoff() {
         let json = serde_json::json!({});
         let req: MarkAllAsReadRequest = serde_json::from_value(json).unwrap();
         assert!(req.before.is_none());
-    }
 
-    #[test]
-    fn test_mark_all_as_read_request_with_before() {
         let json = serde_json::json!({
             "before": "2025-01-01T00:00:00Z"
         });

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_registration_requests (\n                username, email, opaque_record,\n                opaque_credential_identifier, opaque_ciphersuite,\n                opaque_server_setup_version, signup_method, status, requested_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)\n            RETURNING id AS \"id: UserId\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: UserId",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "75e8edebd4fedaf5256c8e2b81ee4dcd45b4bbc9cf917e60554fc7af74c9aa55"
+}

@@ -495,17 +495,29 @@ impl RedisCacheL2 {
         format!("{prefix}__l2_index")
     }
 
-    fn now_unix_seconds() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .try_into()
-            .unwrap_or(i64::MAX)
+    fn ttl_secs_to_i64(ttl_secs: u64) -> Result<i64> {
+        i64::try_from(ttl_secs)
+            .map_err(|_| Error::Internal("L2 cache TTL exceeds i64::MAX seconds".to_string()))
     }
 
-    fn expiry_timestamp(ttl_secs: u64) -> i64 {
-        Self::now_unix_seconds().saturating_add(ttl_secs.try_into().unwrap_or(i64::MAX))
+    fn now_unix_seconds() -> Result<i64> {
+        let duration = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| {
+                Error::Internal(format!(
+                    "System clock is before UNIX_EPOCH while computing L2 cache timestamp: {error}"
+                ))
+            })?;
+        i64::try_from(duration.as_secs())
+            .map_err(|_| Error::Internal("L2 cache timestamp exceeds i64::MAX".to_string()))
+    }
+
+    fn expiry_timestamp(ttl_secs: u64) -> Result<i64> {
+        Self::now_unix_seconds()?
+            .checked_add(Self::ttl_secs_to_i64(ttl_secs)?)
+            .ok_or_else(|| {
+                Error::Internal("L2 cache expiry timestamp exceeds i64::MAX".to_string())
+            })
     }
 }
 
@@ -595,8 +607,8 @@ impl CacheL2Backend for RedisCacheL2 {
     async fn set_scoped(&self, prefix: &str, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
         let mut conn = self.conn("get scoped L2 cache connection for set").await?;
         let index_key = Self::namespace_index_key(prefix);
-        let expires_at = Self::expiry_timestamp(ttl_secs);
-        let now = Self::now_unix_seconds();
+        let expires_at = Self::expiry_timestamp(ttl_secs)?;
+        let now = Self::now_unix_seconds()?;
         let json = json_with_inferred_updated_at_ms(json)?;
 
         let mut pipe = redis::pipe();
@@ -896,6 +908,7 @@ impl CacheL2Backend for RedisCacheL2 {
             .conn("get L2 cache connection for set_if_newer")
             .await?;
         let json = json_with_updated_at_ms(json, new_ts_millis)?;
+        let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
             self.operation_timeout(),
@@ -903,7 +916,7 @@ impl CacheL2Backend for RedisCacheL2 {
             SET_IF_NEWER_SCRIPT
                 .key(key)
                 .arg(&json)
-                .arg(ttl_secs.cast_signed())
+                .arg(ttl_secs)
                 .arg(new_ts_millis)
                 .invoke_async(&mut conn),
         )
@@ -924,9 +937,10 @@ impl CacheL2Backend for RedisCacheL2 {
             .conn("get scoped L2 cache connection for set_if_newer")
             .await?;
         let index_key = Self::namespace_index_key(prefix);
-        let expires_at = Self::expiry_timestamp(ttl_secs);
-        let now = Self::now_unix_seconds();
+        let expires_at = Self::expiry_timestamp(ttl_secs)?;
+        let now = Self::now_unix_seconds()?;
         let json = json_with_updated_at_ms(json, new_ts_millis)?;
+        let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
             self.operation_timeout(),
@@ -935,7 +949,7 @@ impl CacheL2Backend for RedisCacheL2 {
                 .key(key)
                 .key(&index_key)
                 .arg(&json)
-                .arg(ttl_secs.cast_signed())
+                .arg(ttl_secs)
                 .arg(new_ts_millis)
                 .arg(expires_at)
                 .arg(now)
@@ -957,6 +971,7 @@ impl CacheL2Backend for RedisCacheL2 {
             .conn("get L2 cache connection for set_if_version_at_least")
             .await?;
         let json = json_with_cache_version(json, version)?;
+        let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
             self.operation_timeout(),
@@ -964,7 +979,7 @@ impl CacheL2Backend for RedisCacheL2 {
             SET_IF_VERSION_AT_LEAST_SCRIPT
                 .key(key)
                 .arg(&json)
-                .arg(ttl_secs.cast_signed())
+                .arg(ttl_secs)
                 .arg(version)
                 .invoke_async(&mut conn),
         )
@@ -985,9 +1000,10 @@ impl CacheL2Backend for RedisCacheL2 {
             .conn("get scoped L2 cache connection for set_if_version_at_least")
             .await?;
         let index_key = Self::namespace_index_key(prefix);
-        let expires_at = Self::expiry_timestamp(ttl_secs);
-        let now = Self::now_unix_seconds();
+        let expires_at = Self::expiry_timestamp(ttl_secs)?;
+        let now = Self::now_unix_seconds()?;
         let json = json_with_cache_version(json, version)?;
+        let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
             self.operation_timeout(),
@@ -996,7 +1012,7 @@ impl CacheL2Backend for RedisCacheL2 {
                 .key(key)
                 .key(&index_key)
                 .arg(&json)
-                .arg(ttl_secs.cast_signed())
+                .arg(ttl_secs)
                 .arg(version)
                 .arg(expires_at)
                 .arg(now)
@@ -1215,7 +1231,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1305,9 +1321,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_l2_redis_timeout_maps_to_timeout_error() {
         let timeout_future = run_l2_redis_op(TEST_TIMEOUT, "get from L2 cache", async {
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), redis::RedisError>(())
+            std::future::pending::<std::result::Result<(), redis::RedisError>>().await
         });
 
         tokio::pin!(timeout_future);
@@ -1324,9 +1338,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_l2_redis_retry_attempt_reports_timeout() {
         let timeout_future = run_l2_redis_attempt(TEST_TIMEOUT, async {
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), redis::RedisError>(())
+            std::future::pending::<std::result::Result<(), redis::RedisError>>().await
         });
 
         tokio::pin!(timeout_future);

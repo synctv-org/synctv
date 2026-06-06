@@ -42,6 +42,8 @@ impl EmbyProviderGrpcService {
 }
 
 #[tonic::async_trait]
+// Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
+// Provider business logic stays in `EmbyApiImpl`.
 #[allow(clippy::result_large_err)]
 impl EmbyProviderService for EmbyProviderGrpcService {
     async fn login(
@@ -52,7 +54,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby login request: host={}", req.host);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -83,7 +85,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!(
             "gRPC Emby list request: server_id={}, path={}",
@@ -121,7 +123,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby me request: server_id={}", req.server_id);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -155,7 +157,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby logout request");
         let api = self.api.clone();
@@ -183,7 +185,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.get_ref();
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

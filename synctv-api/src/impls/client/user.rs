@@ -14,7 +14,8 @@ use synctv_core::service::{
 };
 use synctv_core::validation::UsernameValidator;
 
-use super::convert::{stored_file_reference_to_video_cover, user_to_proto};
+use super::convert::{stored_file_reference_to_video_cover, try_user_to_proto};
+use super::media::{required_stored_file_fields, upload_session_fields};
 use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
@@ -50,80 +51,87 @@ pub(crate) fn token_auth_context_from_claims(
 
 fn sensitive_challenge_to_proto(
     challenge: SensitiveVerificationChallenge,
-) -> crate::proto::client::SensitiveOperationVerificationChallenge {
-    crate::proto::client::SensitiveOperationVerificationChallenge {
-        session_id: challenge.session_id,
-        required_methods: challenge
-            .required_methods
-            .into_iter()
-            .map(sensitive_method_to_proto)
-            .collect(),
-        completed_methods: challenge
-            .completed_methods
-            .into_iter()
-            .map(sensitive_method_to_proto)
-            .collect(),
-        available_methods: challenge
-            .available_methods
-            .into_iter()
-            .map(sensitive_method_to_proto)
-            .collect(),
-        masked_email: challenge.masked_email.unwrap_or_default(),
-        expires_at: challenge.expires_at,
-        required_count: i32::try_from(challenge.required_count).unwrap_or(i32::MAX),
-    }
+) -> Result<crate::proto::client::SensitiveOperationVerificationChallenge, ApiError> {
+    Ok(
+        crate::proto::client::SensitiveOperationVerificationChallenge {
+            session_id: challenge.session_id,
+            required_methods: challenge
+                .required_methods
+                .into_iter()
+                .map(sensitive_method_to_proto)
+                .collect(),
+            completed_methods: challenge
+                .completed_methods
+                .into_iter()
+                .map(sensitive_method_to_proto)
+                .collect(),
+            available_methods: challenge
+                .available_methods
+                .into_iter()
+                .map(sensitive_method_to_proto)
+                .collect(),
+            masked_email: challenge.masked_email.unwrap_or_default(),
+            expires_at: challenge.expires_at,
+            required_count: i32::try_from(challenge.required_count).map_err(|_| {
+                ApiError::Internal("required MFA count exceeds i32::MAX".to_string())
+            })?,
+        },
+    )
 }
 
 fn sensitive_outcome_to_proto(
     outcome: SensitiveVerificationOutcome,
-) -> crate::proto::client::FinishSensitiveOperationVerificationResponse {
+) -> Result<crate::proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
     match outcome {
-        SensitiveVerificationOutcome::Pending(challenge) => {
+        SensitiveVerificationOutcome::Pending(challenge) => Ok(
             crate::proto::client::FinishSensitiveOperationVerificationResponse {
                 verification_id: String::new(),
-                challenge: Some(sensitive_challenge_to_proto(challenge)),
-            }
-        }
-        SensitiveVerificationOutcome::Complete { verification_id } => {
+                challenge: Some(sensitive_challenge_to_proto(challenge)?),
+            },
+        ),
+        SensitiveVerificationOutcome::Complete { verification_id } => Ok(
             crate::proto::client::FinishSensitiveOperationVerificationResponse {
                 verification_id,
                 challenge: None,
-            }
-        }
+            },
+        ),
     }
 }
 
 fn sensitive_start_outcome_to_proto(
     outcome: SensitiveVerificationOutcome,
-) -> crate::proto::client::StartSensitiveOperationVerificationResponse {
+) -> Result<crate::proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
     match outcome {
-        SensitiveVerificationOutcome::Pending(challenge) => {
+        SensitiveVerificationOutcome::Pending(challenge) => Ok(
             crate::proto::client::StartSensitiveOperationVerificationResponse {
-                challenge: Some(sensitive_challenge_to_proto(challenge)),
+                challenge: Some(sensitive_challenge_to_proto(challenge)?),
                 verification_id: String::new(),
-            }
-        }
-        SensitiveVerificationOutcome::Complete { verification_id } => {
+            },
+        ),
+        SensitiveVerificationOutcome::Complete { verification_id } => Ok(
             crate::proto::client::StartSensitiveOperationVerificationResponse {
                 challenge: None,
                 verification_id,
-            }
-        }
+            },
+        ),
     }
 }
 
-fn new_file_to_avatar_proto(file: &NewStoredFile) -> crate::proto::client::UserAvatar {
-    crate::proto::client::UserAvatar {
+fn new_file_to_avatar_proto(
+    file: &NewStoredFile,
+) -> Result<crate::proto::client::UserAvatar, ApiError> {
+    let fields = required_stored_file_fields(file, "user avatar metadata")?;
+    Ok(crate::proto::client::UserAvatar {
         id: file.id.clone(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
-        url: file.url.clone().unwrap_or_default(),
-        mime_type: file.mime_type.clone().unwrap_or_default(),
-        size_bytes: file.size_bytes.unwrap_or_default(),
-        width: file.width.unwrap_or_default(),
-        height: file.height.unwrap_or_default(),
-        metadata: serde_json::to_vec(&file.metadata).unwrap_or_default(),
-    }
+        url: fields.url,
+        mime_type: fields.mime_type,
+        size_bytes: fields.size_bytes,
+        width: fields.width,
+        height: fields.height,
+        metadata: fields.metadata,
+    })
 }
 
 fn avatar_proto_to_new_file(
@@ -155,17 +163,18 @@ fn avatar_proto_to_new_file(
 
 fn avatar_upload_session_to_proto(
     session: FileUploadSession,
-) -> crate::proto::client::UserAvatarUploadSession {
-    crate::proto::client::UserAvatarUploadSession {
-        avatar: Some(new_file_to_avatar_proto(&session.file)),
+) -> Result<crate::proto::client::UserAvatarUploadSession, ApiError> {
+    let fields = upload_session_fields(&session)?;
+    Ok(crate::proto::client::UserAvatarUploadSession {
+        avatar: Some(new_file_to_avatar_proto(&session.file)?),
         upload_required: session.upload_required,
-        upload_url: session.upload_url.unwrap_or_default(),
-        upload_method: session.upload_method.unwrap_or_default(),
+        upload_url: fields.upload_url,
+        upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
-        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        expires_at: fields.expires_at,
         max_size_bytes: session.max_size_bytes,
         ownership_proof_required: session.ownership_proof_required,
-        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_nonce: fields.ownership_proof_nonce,
         ownership_proof_ranges: session
             .ownership_proof_ranges
             .into_iter()
@@ -176,8 +185,8 @@ fn avatar_upload_session_to_proto(
                 },
             )
             .collect(),
-        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
-    }
+        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+    })
 }
 
 fn avatar_object_to_proto(blob: &FileBlob) -> crate::proto::client::UserAvatarObjectResponse {
@@ -191,13 +200,15 @@ fn avatar_object_to_proto(blob: &FileBlob) -> crate::proto::client::UserAvatarOb
 
 fn auth_factors_to_proto(
     factors: &synctv_core::models::UserAuthFactors,
-) -> crate::proto::client::UserAuthFactors {
-    crate::proto::client::UserAuthFactors {
+) -> Result<crate::proto::client::UserAuthFactors, ApiError> {
+    Ok(crate::proto::client::UserAuthFactors {
         password: factors.password,
         webauthn: factors.webauthn,
         email: factors.email,
-        eligible_count: i32::try_from(factors.eligible_count()).unwrap_or(i32::MAX),
-    }
+        eligible_count: i32::try_from(factors.eligible_count()).map_err(|_| {
+            ApiError::Internal("eligible auth factor count exceeds i32::MAX".to_string())
+        })?,
+    })
 }
 
 fn user_preferences_to_proto(
@@ -267,7 +278,10 @@ async fn list_owned_room_ids(
         }
 
         room_ids.extend(rooms.into_iter().map(|room| room.id));
-        if i64::try_from(room_ids.len()).unwrap_or(i64::MAX) >= total {
+        if i64::try_from(room_ids.len())
+            .map_err(|_| ApiError::Internal("owned room count exceeds i64::MAX".to_string()))?
+            >= total
+        {
             break;
         }
 
@@ -281,25 +295,26 @@ fn prepare_deleted_room_outbox_fanout(
     api: &ClientApiImpl,
     room_ids: &[RoomId],
     deleted_by: &UserId,
-) -> (
-    HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
-    Vec<DeletedRoomAfterCommitFanout>,
-) {
+) -> Result<
+    (
+        HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
+        Vec<DeletedRoomAfterCommitFanout>,
+    ),
+    ApiError,
+> {
     let mut outbox_events = HashMap::with_capacity(room_ids.len());
     let mut fanout = Vec::with_capacity(room_ids.len());
     for room_id in room_ids {
         let prepared = api
             .room_lifecycle_fanout
-            .prepare_room_deleted_outbox_fanout(room_id, deleted_by);
-        if let Some(outbox_event) = prepared.cloned_outbox_event() {
-            outbox_events.insert(*room_id, outbox_event);
-        }
+            .prepare_room_deleted_outbox_fanout(room_id, deleted_by)?;
+        outbox_events.insert(*room_id, prepared.cloned_outbox_event());
         fanout.push(DeletedRoomAfterCommitFanout {
             room_id: *room_id,
             event: prepared.into_event(),
         });
     }
-    (outbox_events, fanout)
+    Ok((outbox_events, fanout))
 }
 
 impl ClientApiImpl {
@@ -312,7 +327,7 @@ impl ClientApiImpl {
             .get_email(&user.id)
             .await
             .map_err(ApiError::from)?;
-        let mut proto = user_to_proto(user, email.as_deref(), &self.public_id_codec);
+        let mut proto = try_user_to_proto(user, email.as_deref(), &self.public_id_codec)?;
         if let Some(file) = self
             .load_stored_file_reference(user.avatar_file_reference_id)
             .await?
@@ -323,7 +338,7 @@ impl ClientApiImpl {
                     &synctv_core::service::user_avatar_upload_policy(),
                 )?
                 .unwrap_or_default();
-            let file = stored_file_reference_to_video_cover(&file, Some(url));
+            let file = stored_file_reference_to_video_cover(&file, Some(url.as_str()))?;
             proto.avatar = Some(crate::proto::client::UserAvatar {
                 id: file.id,
                 storage_backend: file.storage_backend,
@@ -346,7 +361,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let owned_room_ids = list_owned_room_ids(self, &uid).await?;
         let (deleted_room_outbox_events, deleted_room_fanout) =
-            prepare_deleted_room_outbox_fanout(self, &owned_room_ids, &uid);
+            prepare_deleted_room_outbox_fanout(self, &owned_room_ids, &uid)?;
         let summary = self
             .user_service
             .delete_user_with_summary_and_outbox(&uid, deleted_room_outbox_events)
@@ -428,7 +443,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetUserPreferencesResponse {
             preferences: Some(user_preferences_to_proto(&preferences)?),
-            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
     }
 
@@ -452,7 +467,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::UpdateUserPreferencesResponse {
             preferences: Some(user_preferences_to_proto(&preferences)?),
-            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
     }
 
@@ -502,7 +517,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         Ok(
             crate::proto::client::CreateUserAvatarUploadSessionResponse {
-                session: Some(avatar_upload_session_to_proto(session)),
+                session: Some(avatar_upload_session_to_proto(session)?),
             },
         )
     }
@@ -516,7 +531,7 @@ impl ClientApiImpl {
             .store_avatar_upload_object(
                 &req.encoded_object_key,
                 &req.token,
-                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.content_type.as_deref(),
                 req.data,
             )
             .await
@@ -634,11 +649,11 @@ impl ClientApiImpl {
             })?;
 
         Ok(crate::proto::client::ConfirmEmailBindResponse {
-            user: Some(user_to_proto(
+            user: Some(try_user_to_proto(
                 &updated_user,
                 Some(&email),
                 &self.public_id_codec,
-            )),
+            )?),
         })
     }
 
@@ -654,7 +669,11 @@ impl ClientApiImpl {
             .await?;
 
         Ok(crate::proto::client::UnbindEmailResponse {
-            user: Some(user_to_proto(&updated_user, None, &self.public_id_codec)),
+            user: Some(try_user_to_proto(
+                &updated_user,
+                None,
+                &self.public_id_codec,
+            )?),
         })
     }
 
@@ -670,7 +689,7 @@ impl ClientApiImpl {
             .start_sensitive_operation_verification(user_id, auth_context)
             .await
             .map_err(ApiError::from)?;
-        Ok(sensitive_start_outcome_to_proto(outcome))
+        sensitive_start_outcome_to_proto(outcome)
     }
 
     pub async fn start_sensitive_operation_passkey(
@@ -827,7 +846,7 @@ impl ClientApiImpl {
             }
         };
 
-        Ok(sensitive_outcome_to_proto(outcome))
+        sensitive_outcome_to_proto(outcome)
     }
 
     pub async fn start_opaque_password_update(

@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n             INSERT INTO rooms (name, description, cover_file_reference_id,\n                                created_by, closed_at, created_at, updated_at, version, last_activity_at)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n             RETURNING id AS \"id: RoomId\",\n                       name,\n                       description,\n                       cover_file_reference_id,\n                       created_by AS \"created_by: UserId\",\n                       closed_at,\n                       false AS \"is_banned!\",\n                       created_at,\n                       updated_at,\n                       deleted_at,\n                       version,\n                       last_activity_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_by: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "closed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_banned!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "last_activity_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      null,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "189f159c26e8ec91c0a2524eac2e716b7e5b09a4b420c9b350f475827c2f060e"
+}

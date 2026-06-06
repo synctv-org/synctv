@@ -7,7 +7,6 @@
 //! - cluster mode with Redis should work correctly
 //! - cluster mode without Redis should return an error (tested in unit tests)
 //!
-//! Run with: cargo test --test `ws_ticket_redis_tests`
 #![allow(clippy::unwrap_used)]
 
 use redis::AsyncCommands;

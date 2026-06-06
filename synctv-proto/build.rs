@@ -401,7 +401,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[
             ".synctv.client.ConfirmEmailLoginRequest.email",
             ".synctv.client.ConfirmEmailLoginRequest.email_token",
-            ".synctv.client.RegisterRequest.username",
             ".synctv.client.StartOpaqueRegistrationRequest.username",
             ".synctv.client.StartOpaquePasswordResetRequest.email",
             ".synctv.client.StartPasskeyRegistrationRequest.email",
@@ -428,8 +427,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_field_attributes(
         &mut main_field_attributes,
         &[
-            ".synctv.client.RegisterRequest.password",
-            ".synctv.client.LoginRequest.password",
             ".synctv.client.CreateRoomRequest.description",
             ".synctv.client.CreateRoomRequest.password",
             ".synctv.client.JoinRoomRequest.password",
@@ -610,6 +607,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.ListActiveStreamsRequest.sort_by",
             ".synctv.admin.ListActiveStreamsRequest.sort_direction",
             ".synctv.admin.CreateUserRequest.email",
+            ".synctv.admin.CreateUserRequest.password",
             ".synctv.client.EditMediaRequest.media_id",
             ".synctv.client.EditMediaRequest.description",
             ".synctv.client.EditChatMessageRequest.message_id",
@@ -631,8 +629,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.UpdateMemberPermissionsRequest.removed_permissions",
             ".synctv.client.UpdateMemberPermissionsRequest.admin_added_permissions",
             ".synctv.client.UpdateMemberPermissionsRequest.admin_removed_permissions",
-            ".synctv.admin.UpdateUserPasswordRequest.user_id",
-            ".synctv.admin.UpdateUserPasswordRequest.reason",
+            ".synctv.admin.SetUserPasswordRequest.user_id",
+            ".synctv.admin.SetUserPasswordRequest.password",
+            ".synctv.admin.SetUserPasswordRequest.reason",
             ".synctv.admin.UpdateUserUsernameRequest.user_id",
             ".synctv.admin.UpdateUserRoleRequest.user_id",
             ".synctv.admin.UpdateUserPreferencesRequest.user_id",
@@ -653,6 +652,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost_config.message_attribute(
         ".synctv.client.MovePlaylistRequest",
         "#[serde(try_from = \"crate::http_serde::MovePlaylistRequestDef\")]",
+    );
+    prost_config.message_attribute(
+        ".synctv.client.StartOpaqueLoginRequest",
+        "#[serde(try_from = \"crate::http_serde::StartOpaqueLoginRequestDef\")]",
+    );
+    prost_config.message_attribute(
+        ".synctv.client.LoginWithDirectPasswordRequest",
+        "#[serde(try_from = \"crate::http_serde::LoginWithDirectPasswordRequestDef\")]",
+    );
+    prost_config.message_attribute(
+        ".synctv.client.StartPasskeyLoginRequest",
+        "#[serde(try_from = \"crate::http_serde::StartPasskeyLoginRequestDef\")]",
     );
     add_field_attributes(
         &mut main_field_attributes,

@@ -4,16 +4,19 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use webauthn_rs::prelude::{
-    CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyAuthentication,
-    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential, Url, Webauthn,
-    WebauthnBuilder,
+    AuthenticationResult, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
+    PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    Url, Webauthn, WebauthnBuilder,
 };
 
 use crate::{
     config::WebAuthnConfig,
     models::{SignupMethod, User, UserId},
     repository::{WebAuthnCredential, WebAuthnCredentialRepository},
-    service::{session_store::RedisJsonSessionStore, RegistrationMode},
+    service::{
+        session_store::RedisJsonSessionStore, AccountRegistrationOutcome,
+        PendingAccountRegistration, RegistrationMode,
+    },
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -53,6 +56,7 @@ pub enum PasskeySession {
 #[async_trait::async_trait]
 pub trait PasskeySessionStore: Send + Sync {
     async fn store(&self, session_id: &str, session: &PasskeySession, ttl: Duration) -> Result<()>;
+    async fn get(&self, session_id: &str) -> Result<Option<PasskeySession>>;
     async fn consume(&self, session_id: &str) -> Result<Option<PasskeySession>>;
     fn supports_cross_node_single_use(&self) -> bool;
 }
@@ -83,9 +87,7 @@ pub fn passkey_session_store_from_shared_state_profile(
             ))
         }
         SharedStateMode::SharedBestEffort => Ok(shared_passkey_session_store(
-            profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.best_effort_shared_runtime("single-use WebAuthn challenge storage")?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_passkey_session_store()),
@@ -146,6 +148,10 @@ impl PasskeySessionStore for InMemoryPasskeySessionStore {
         Ok(())
     }
 
+    async fn get(&self, session_id: &str) -> Result<Option<PasskeySession>> {
+        Ok(self.entries.get(session_id).map(|entry| entry.session))
+    }
+
     async fn consume(&self, session_id: &str) -> Result<Option<PasskeySession>> {
         if self.entries.get(session_id).is_none() {
             return Ok(None);
@@ -189,6 +195,17 @@ impl PasskeySessionStore for RedisPasskeySessionStore {
             .await
     }
 
+    async fn get(&self, session_id: &str) -> Result<Option<PasskeySession>> {
+        self.store
+            .get(
+                PASSKEY_SESSION_REDIS_NAMESPACE,
+                session_id,
+                "Failed to deserialize WebAuthn session",
+                "get WebAuthn session from Redis",
+            )
+            .await
+    }
+
     async fn consume(&self, session_id: &str) -> Result<Option<PasskeySession>> {
         self.store
             .consume(
@@ -209,6 +226,13 @@ impl PasskeySessionStore for RedisPasskeySessionStore {
 pub struct StartPasskeyRegistration {
     pub session_id: String,
     pub options_json: Vec<u8>,
+}
+
+pub struct PreparedPasskeyRegistration {
+    session_id: String,
+    user_id: UserId,
+    credential_name: Option<String>,
+    passkey: Passkey,
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +325,20 @@ impl PasskeyService {
             .iter()
             .map(|credential| credential.passkey.clone())
             .collect()
+    }
+
+    fn apply_authentication_result(
+        stored: &mut WebAuthnCredential,
+        auth_result: &AuthenticationResult,
+    ) -> Result<bool> {
+        stored
+            .passkey
+            .update_credential(auth_result)
+            .ok_or_else(|| {
+                Error::Internal(
+                    "Authenticated passkey result does not match the stored credential".to_string(),
+                )
+            })
     }
 
     fn validate_sign_in_method_delete_policy(remaining_sign_in_method_count: usize) -> Result<()> {
@@ -409,11 +447,23 @@ impl PasskeyService {
         credential_json: &[u8],
         authenticated_user_id: &UserId,
     ) -> Result<WebAuthnCredential> {
+        let prepared = self
+            .prepare_registration(session_id, credential_json, authenticated_user_id)
+            .await?;
+        self.commit_prepared_registration(prepared).await
+    }
+
+    pub async fn prepare_registration(
+        &self,
+        session_id: &str,
+        credential_json: &[u8],
+        authenticated_user_id: &UserId,
+    ) -> Result<PreparedPasskeyRegistration> {
         let Some(PasskeySession::Registration {
             user_id,
             credential_name,
             state,
-        }) = self.session_store.consume(session_id).await?
+        }) = self.session_store.get(session_id).await?
         else {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
@@ -422,7 +472,6 @@ impl PasskeyService {
                 "Passkey registration session belongs to a different user".to_string(),
             ));
         }
-
         let credential: RegisterPublicKeyCredential = serde_json::from_slice(credential_json)
             .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
         let passkey = self
@@ -441,8 +490,34 @@ impl PasskeyService {
             ));
         }
 
+        Ok(PreparedPasskeyRegistration {
+            session_id: session_id.to_string(),
+            user_id,
+            credential_name,
+            passkey,
+        })
+    }
+
+    pub async fn commit_prepared_registration(
+        &self,
+        prepared: PreparedPasskeyRegistration,
+    ) -> Result<WebAuthnCredential> {
+        let Some(PasskeySession::Registration { user_id, .. }) =
+            self.session_store.consume(&prepared.session_id).await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+        if user_id != prepared.user_id {
+            return Err(Error::Authorization(
+                "Passkey registration session belongs to a different user".to_string(),
+            ));
+        }
         self.repository
-            .create(&user_id, &passkey, credential_name.as_deref())
+            .create(
+                &prepared.user_id,
+                &prepared.passkey,
+                prepared.credential_name.as_deref(),
+            )
             .await
     }
 
@@ -452,7 +527,7 @@ impl PasskeyService {
         credential_json: &[u8],
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
-    ) -> Result<(User, Option<String>, Option<String>)> {
+    ) -> Result<AccountRegistrationOutcome> {
         let Some(PasskeySession::AccountRegistration {
             username,
             email,
@@ -504,7 +579,13 @@ impl PasskeyService {
                     credential_name.as_deref(),
                 )
                 .await?;
-            return Ok((pending_user, None, None));
+            return Ok(AccountRegistrationOutcome::PendingReview(
+                PendingAccountRegistration {
+                    review_request_id: pending_user.id,
+                    username: pending_user.username,
+                    email,
+                },
+            ));
         }
 
         let user = User::new(username.clone(), SignupMethod::WebAuthn);
@@ -553,10 +634,15 @@ impl PasskeyService {
         match login {
             crate::service::AuthenticatedLogin::Complete {
                 user,
-                email: _,
+                email,
                 access_token,
                 refresh_token,
-            } => Ok((user, Some(access_token), Some(refresh_token))),
+            } => Ok(AccountRegistrationOutcome::Registered {
+                user,
+                email,
+                access_token,
+                refresh_token,
+            }),
             crate::service::AuthenticatedLogin::MfaRequired { .. } => Err(Error::Internal(
                 "New passkey registrations must not require MFA during initial token issuance"
                     .to_string(),
@@ -776,10 +862,7 @@ impl PasskeyService {
                 .await;
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
-        let changed = stored
-            .passkey
-            .update_credential(&auth_result)
-            .unwrap_or(false);
+        let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
         if changed || i64::from(auth_result.counter()) != stored.sign_count {
             self.repository
                 .update_after_authentication(
@@ -840,10 +923,7 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
-        let changed = stored
-            .passkey
-            .update_credential(&auth_result)
-            .unwrap_or(false);
+        let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
         if changed || i64::from(auth_result.counter()) != stored.sign_count {
             self.repository
                 .update_after_authentication(
@@ -914,10 +994,7 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        let changed = stored
-            .passkey
-            .update_credential(&auth_result)
-            .unwrap_or(false);
+        let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
         if changed || i64::from(auth_result.counter()) != stored.sign_count {
             self.repository
                 .update_after_authentication(

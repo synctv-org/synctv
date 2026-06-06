@@ -6,7 +6,15 @@ use crate::models::{
     UserId,
 };
 use crate::repository::query_builder::escape_ilike;
-use crate::Result;
+use crate::{Error, Result};
+
+fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
+    value.ok_or_else(|| {
+        Error::Internal(format!(
+            "COUNT query returned NULL while loading {query_description}"
+        ))
+    })
+}
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserRegistrationReviewRecord {
@@ -160,19 +168,31 @@ impl ReviewRepository {
         &self,
         request_id: UserId,
     ) -> Result<Option<UserRegistrationReviewRecord>> {
-        let row = sqlx::query_as_unchecked!(
+        let row = sqlx::query_as!(
             UserRegistrationReviewRow,
-            r"
-            SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
-                   requested_at, reviewed_at, reviewed_by, rejection_reason,
-                   oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
-                   oauth2_provider_user_id, oauth2_provider_username,
-                   oauth2_avatar_url, oauth2_email_trusted,
-                   webauthn_credential_id, webauthn_credential_name
+            r#"
+            SELECT id AS "id: UserId",
+                   username,
+                   COALESCE(email, '') AS "email!",
+                   signup_method AS "signup_method: SignupMethod",
+                   status AS "status: ReviewStatus",
+                   requested_at,
+                   reviewed_at,
+                   reviewed_by AS "reviewed_by: UserId",
+                   rejection_reason,
+                   oauth2_provider_type,
+                   oauth2_provider_instance_name,
+                   oauth2_provider_issuer,
+                   oauth2_provider_user_id,
+                   oauth2_provider_username,
+                   oauth2_avatar_url,
+                   oauth2_email_trusted,
+                   webauthn_credential_id,
+                   webauthn_credential_name
             FROM user_registration_requests
             WHERE id = $1
-            ",
-            request_id
+            "#,
+            request_id.as_i64()
         )
         .fetch_optional(&self.pool)
         .await
@@ -190,38 +210,52 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let total = sqlx::query_scalar_unchecked!(r"
+        let total_count = sqlx::query_scalar!(
+            r#"
             SELECT COUNT(*)
             FROM user_registration_requests
             WHERE status = $1
               AND ($2 = '' OR username ILIKE $2 ESCAPE '\' OR COALESCE(email, '') ILIKE $2 ESCAPE '\')
-            ",
-query.status,
-&search)
-
+            "#,
+            i16::from(query.status),
+            &search
+        )
         .fetch_one(&self.pool)
-        .await?.unwrap_or(0);
+        .await?;
+        let total = count_value(total_count, "user registration review total")?;
 
-        let rows = sqlx::query_as_unchecked!(
-UserRegistrationReviewRow,
-r"
-            SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
-                   requested_at, reviewed_at, reviewed_by, rejection_reason,
-                   oauth2_provider_type, oauth2_provider_instance_name, oauth2_provider_issuer,
-                   oauth2_provider_user_id, oauth2_provider_username,
-                   oauth2_avatar_url, oauth2_email_trusted,
-                   webauthn_credential_id, webauthn_credential_name
+        let rows = sqlx::query_as!(
+            UserRegistrationReviewRow,
+            r#"
+            SELECT id AS "id: UserId",
+                   username,
+                   COALESCE(email, '') AS "email!",
+                   signup_method AS "signup_method: SignupMethod",
+                   status AS "status: ReviewStatus",
+                   requested_at,
+                   reviewed_at,
+                   reviewed_by AS "reviewed_by: UserId",
+                   rejection_reason,
+                   oauth2_provider_type,
+                   oauth2_provider_instance_name,
+                   oauth2_provider_issuer,
+                   oauth2_provider_user_id,
+                   oauth2_provider_username,
+                   oauth2_avatar_url,
+                   oauth2_email_trusted,
+                   webauthn_credential_id,
+                   webauthn_credential_name
             FROM user_registration_requests
             WHERE status = $1
               AND ($2 = '' OR username ILIKE $2 ESCAPE '\' OR COALESCE(email, '') ILIKE $2 ESCAPE '\')
             ORDER BY requested_at DESC, id DESC
             LIMIT $3 OFFSET $4
-            ",
-query.status,
-&search,
-query.limit,
-query.offset
-)
+            "#,
+            i16::from(query.status),
+            &search,
+            query.limit,
+            query.offset
+        )
         .fetch_all(&self.pool)
         .await?;
 
@@ -278,17 +312,17 @@ query.offset
         E: PgExecutor<'e>,
     {
         let result = sqlx::query!(
-r"
+            r"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
-request_id.as_i64(),
-i16::from(ReviewStatus::Rejected),
-reviewed_by.map(|id| id.as_i64()),
-reason,
-i16::from(ReviewStatus::Pending)
-)
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Rejected),
+            reviewed_by.map(|id| id.as_i64()),
+            reason,
+            i16::from(ReviewStatus::Pending)
+        )
         .execute(executor)
         .await?;
 
@@ -330,17 +364,17 @@ i16::from(ReviewStatus::Pending)
         E: PgExecutor<'e>,
     {
         let result = sqlx::query!(
-r"
+            r"
             UPDATE room_creation_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
-request_id.as_i64(),
-i16::from(ReviewStatus::Rejected),
-reviewed_by.map(|id| id.as_i64()),
-reason,
-i16::from(ReviewStatus::Pending)
-)
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Rejected),
+            reviewed_by.map(|id| id.as_i64()),
+            reason,
+            i16::from(ReviewStatus::Pending)
+        )
         .execute(executor)
         .await?;
 
@@ -351,17 +385,24 @@ i16::from(ReviewStatus::Pending)
         &self,
         request_id: RoomId,
     ) -> Result<Option<RoomCreationReviewRecord>> {
-        sqlx::query_as_unchecked!(
+        sqlx::query_as!(
             RoomCreationReviewRecord,
-            r"
-            SELECT rcr.id, rcr.requested_by, COALESCE(u.username, '') AS requested_by_username,
-                   rcr.name, rcr.description, rcr.status, rcr.requested_at, rcr.reviewed_at,
-                   rcr.reviewed_by, rcr.rejection_reason
+            r#"
+            SELECT rcr.id AS "id: RoomId",
+                   rcr.requested_by AS "requested_by: UserId",
+                   COALESCE(u.username, '') AS "requested_by_username!",
+                   rcr.name,
+                   rcr.description,
+                   rcr.status AS "status: ReviewStatus",
+                   rcr.requested_at,
+                   rcr.reviewed_at,
+                   rcr.reviewed_by AS "reviewed_by: UserId",
+                   rcr.rejection_reason
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
             WHERE rcr.id = $1
-            ",
-            request_id
+            "#,
+            request_id.as_i64()
         )
         .fetch_optional(&self.pool)
         .await
@@ -377,28 +418,35 @@ i16::from(ReviewStatus::Pending)
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let total = sqlx::query_scalar_unchecked!(
-            r"
+        let total_count = sqlx::query_scalar!(
+            r#"
             SELECT COUNT(*)
             FROM room_creation_requests
             WHERE status = $1
               AND ($2::bigint IS NULL OR requested_by = $2)
               AND ($3 = '' OR name ILIKE $3 ESCAPE '\' OR description ILIKE $3 ESCAPE '\')
-            ",
-            query.status,
-            query.requested_by,
+            "#,
+            i16::from(query.status),
+            query.requested_by.map(|id| id.as_i64()),
             &search
         )
         .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+        .await?;
+        let total = count_value(total_count, "room creation review total")?;
 
-        let rows = sqlx::query_as_unchecked!(
+        let rows = sqlx::query_as!(
             RoomCreationReviewRecord,
-            r"
-            SELECT rcr.id, rcr.requested_by, COALESCE(u.username, '') AS requested_by_username,
-                   rcr.name, rcr.description, rcr.status, rcr.requested_at, rcr.reviewed_at,
-                   rcr.reviewed_by, rcr.rejection_reason
+            r#"
+            SELECT rcr.id AS "id: RoomId",
+                   rcr.requested_by AS "requested_by: UserId",
+                   COALESCE(u.username, '') AS "requested_by_username!",
+                   rcr.name,
+                   rcr.description,
+                   rcr.status AS "status: ReviewStatus",
+                   rcr.requested_at,
+                   rcr.reviewed_at,
+                   rcr.reviewed_by AS "reviewed_by: UserId",
+                   rcr.rejection_reason
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
             WHERE rcr.status = $1
@@ -406,9 +454,9 @@ i16::from(ReviewStatus::Pending)
               AND ($3 = '' OR rcr.name ILIKE $3 ESCAPE '\' OR rcr.description ILIKE $3 ESCAPE '\')
             ORDER BY rcr.requested_at DESC, rcr.id DESC
             LIMIT $4 OFFSET $5
-            ",
-            query.status,
-            query.requested_by,
+            "#,
+            i16::from(query.status),
+            query.requested_by.map(|id| id.as_i64()),
             &search,
             query.limit,
             query.offset
@@ -423,11 +471,30 @@ i16::from(ReviewStatus::Pending)
         &self,
         request_id: ReviewRequestId,
     ) -> Result<Option<RoomJoinReviewRecord>> {
-        sqlx::query_as::<_, RoomJoinReviewRecord>(&Self::room_join_select_sql("WHERE rjr.id = $1"))
-            .bind(request_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Into::into)
+        sqlx::query_as!(
+            RoomJoinReviewRecord,
+            r#"
+            SELECT rjr.id AS "id: ReviewRequestId",
+                   rjr.room_id AS "room_id: RoomId",
+                   COALESCE(r.name, '') AS "room_name!",
+                   rjr.user_id AS "user_id: UserId",
+                   COALESCE(u.username, '') AS "username!",
+                   COALESCE(rjr.requested_role, 0)::int4 AS "requested_role!",
+                   rjr.status AS "status: ReviewStatus",
+                   rjr.requested_at,
+                   rjr.reviewed_at,
+                   rjr.reviewed_by AS "reviewed_by: UserId",
+                   rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN rooms r ON r.id = rjr.room_id
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.id = $1
+            "#,
+            request_id.as_i64()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
     }
 
     pub async fn load_room_join_in_room(
@@ -435,11 +502,28 @@ i16::from(ReviewStatus::Pending)
         request_id: ReviewRequestId,
         room_id: RoomId,
     ) -> Result<Option<RoomJoinReviewRecord>> {
-        sqlx::query_as::<_, RoomJoinReviewRecord>(&Self::room_join_select_sql(
-            "WHERE rjr.id = $1 AND rjr.room_id = $2",
-        ))
-        .bind(request_id)
-        .bind(room_id)
+        sqlx::query_as!(
+            RoomJoinReviewRecord,
+            r#"
+            SELECT rjr.id AS "id: ReviewRequestId",
+                   rjr.room_id AS "room_id: RoomId",
+                   COALESCE(r.name, '') AS "room_name!",
+                   rjr.user_id AS "user_id: UserId",
+                   COALESCE(u.username, '') AS "username!",
+                   COALESCE(rjr.requested_role, 0)::int4 AS "requested_role!",
+                   rjr.status AS "status: ReviewStatus",
+                   rjr.requested_at,
+                   rjr.reviewed_at,
+                   rjr.reviewed_by AS "reviewed_by: UserId",
+                   rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN rooms r ON r.id = rjr.room_id
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.id = $1 AND rjr.room_id = $2
+            "#,
+            request_id.as_i64(),
+            room_id.as_i64()
+        )
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
@@ -449,14 +533,19 @@ i16::from(ReviewStatus::Pending)
         &self,
         request_id: ReviewRequestId,
     ) -> Result<Option<(RoomId, UserId)>> {
-        let row = sqlx::query_as::<_, (RoomId, UserId)>(
-            "SELECT room_id, user_id FROM room_join_requests WHERE id = $1",
+        let row = sqlx::query!(
+            r#"
+            SELECT room_id AS "room_id: RoomId",
+                   user_id AS "user_id: UserId"
+            FROM room_join_requests
+            WHERE id = $1
+            "#,
+            request_id.as_i64()
         )
-        .bind(request_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row)
+        Ok(row.map(|row| (row.room_id, row.user_id)))
     }
 
     pub async fn approve_room_join_by_member_with_executor<'e, E>(
@@ -567,7 +656,8 @@ i16::from(ReviewStatus::Pending)
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let total = sqlx::query_scalar_unchecked!(r"
+        let total_count = sqlx::query_scalar!(
+            r#"
             SELECT COUNT(*)
             FROM room_join_requests rjr
             LEFT JOIN rooms r ON r.id = rjr.room_id
@@ -576,54 +666,70 @@ i16::from(ReviewStatus::Pending)
               AND ($2::bigint IS NULL OR rjr.room_id = $2)
               AND ($3::bigint IS NULL OR rjr.user_id = $3)
               AND ($4 = '' OR COALESCE(r.name, '') ILIKE $4 ESCAPE '\' OR COALESCE(u.username, '') ILIKE $4 ESCAPE '\')
-            ",
-query.status,
-query.room_id,
-query.user_id,
-&search)
-
-        .fetch_one(&self.pool)
-        .await?.unwrap_or(0);
-
-        let rows = sqlx::query_as::<_, RoomJoinReviewRecord>(
-            &format!(
-                "{} {}",
-                Self::room_join_select_sql(
-                    r"
-                      WHERE rjr.status = $1
-                        AND ($2::bigint IS NULL OR rjr.room_id = $2)
-                        AND ($3::bigint IS NULL OR rjr.user_id = $3)
-                        AND ($4 = '' OR COALESCE(r.name, '') ILIKE $4 ESCAPE '\' OR COALESCE(u.username, '') ILIKE $4 ESCAPE '\')
-                    "
-                ),
-                "ORDER BY rjr.requested_at DESC, rjr.id DESC LIMIT $5 OFFSET $6"
-            ),
+            "#,
+            i16::from(query.status),
+            query.room_id.map(|id| id.as_i64()),
+            query.user_id.map(|id| id.as_i64()),
+            &search
         )
-        .bind(query.status)
-        .bind(query.room_id)
-        .bind(query.user_id)
-        .bind(&search)
-        .bind(query.limit)
-        .bind(query.offset)
+        .fetch_one(&self.pool)
+        .await?;
+        let total = count_value(total_count, "room join review total")?;
+
+        let rows = sqlx::query_as!(
+            RoomJoinReviewRecord,
+            r#"
+            SELECT rjr.id AS "id: ReviewRequestId",
+                   rjr.room_id AS "room_id: RoomId",
+                   COALESCE(r.name, '') AS "room_name!",
+                   rjr.user_id AS "user_id: UserId",
+                   COALESCE(u.username, '') AS "username!",
+                   COALESCE(rjr.requested_role, 0)::int4 AS "requested_role!",
+                   rjr.status AS "status: ReviewStatus",
+                   rjr.requested_at,
+                   rjr.reviewed_at,
+                   rjr.reviewed_by AS "reviewed_by: UserId",
+                   rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN rooms r ON r.id = rjr.room_id
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.status = $1
+              AND ($2::bigint IS NULL OR rjr.room_id = $2)
+              AND ($3::bigint IS NULL OR rjr.user_id = $3)
+              AND ($4 = '' OR COALESCE(r.name, '') ILIKE $4 ESCAPE '\' OR COALESCE(u.username, '') ILIKE $4 ESCAPE '\')
+            ORDER BY rjr.requested_at DESC, rjr.id DESC
+            LIMIT $5 OFFSET $6
+            "#,
+            i16::from(query.status),
+            query.room_id.map(|id| id.as_i64()),
+            query.user_id.map(|id| id.as_i64()),
+            &search,
+            query.limit,
+            query.offset
+        )
         .fetch_all(&self.pool)
         .await?;
 
         Ok(ReviewPage { rows, total })
     }
+}
 
-    fn room_join_select_sql(where_clause: &str) -> String {
-        format!(
-            r"
-            SELECT rjr.id, rjr.room_id, COALESCE(r.name, '') AS room_name, rjr.user_id,
-                   COALESCE(u.username, '') AS username,
-                   COALESCE(rjr.requested_role, 0)::int4 AS requested_role,
-                   rjr.status, rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by,
-                   rjr.rejection_reason
-            FROM room_join_requests rjr
-            LEFT JOIN rooms r ON r.id = rjr.room_id
-            LEFT JOIN users u ON u.id = rjr.user_id
-            {where_clause}
-            "
-        )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_value_rejects_missing_count_result() {
+        let error = count_value(None, "review total").expect_err("missing COUNT must fail");
+
+        assert!(matches!(
+            error,
+            Error::Internal(message) if message.contains("review total")
+        ));
+    }
+
+    #[test]
+    fn count_value_accepts_count_result() {
+        assert_eq!(count_value(Some(7), "review total").unwrap(), 7);
     }
 }

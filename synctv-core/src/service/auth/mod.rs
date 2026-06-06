@@ -2,7 +2,6 @@ pub mod brute_force;
 pub mod guest_validator;
 pub mod jwt;
 pub mod opaque_password;
-pub mod password;
 pub mod security_pipeline;
 pub mod token_blacklist;
 pub mod validator;
@@ -16,13 +15,8 @@ pub use jwt::{
     Claims, GuestClaims, JwtService, TokenAuthContext, TokenCredentialBinding, TokenType,
 };
 pub use opaque_password::OpaquePasswordService;
-pub use password::{
-    dummy_password_hash, hash_password, verify_password, PasswordHasherService, ProdPasswordHasher,
-    TestPasswordHasher,
-};
 pub use security_pipeline::{
-    AuthErrorCategory, AuthenticatedToken, BlacklistEnforcement, SecurityPipeline,
-    SecurityPipelineBuildError, SecurityPipelineBuilder,
+    AuthErrorCategory, AuthenticatedToken, SecurityPipeline, SecurityPipelineRuntime,
 };
 pub use token_blacklist::TokenBlacklistStore;
 pub use validator::JwtValidator;

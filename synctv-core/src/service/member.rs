@@ -8,10 +8,10 @@ use crate::{
     models::{
         AddMemberOptions, AuditAction, AuditTargetType, MemberStatus, MyRoomListQuery, PageParams,
         Room, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId, RoomMember,
-        RoomMemberPermissionBits, RoomMemberWithUser, RoomRole, RoomSettings, UserId,
+        RoomMemberPermissionBits, RoomMemberWithUser, RoomRole, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::audit::AuditService,
+    service::audit::{AuditEventParams, AuditService},
     service::notification::{NotificationService, PermissionChangedNotification},
     service::permission::PermissionService,
     Error, Result,
@@ -195,18 +195,6 @@ impl MemberService {
         }
     }
 
-    /// Set the room settings repository
-    pub fn set_room_settings_repo(&mut self, repo: RoomSettingsRepository) {
-        self.room_settings_repo = Some(repo);
-    }
-
-    /// Set the cache invalidation service for cross-replica permission cache sync
-    pub fn set_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        self.permission_service
-            .set_invalidation_service(Arc::clone(&service));
-        self.cache_invalidation = Some(service);
-    }
-
     async fn notify_permission_changed(
         &self,
         room_id: &RoomId,
@@ -215,21 +203,50 @@ impl MemberService {
         member: &RoomMember,
     ) {
         let resolved_actor_username = if actor_username.trim().is_empty() {
-            self.lookup_username(actor_id).await
+            match self.lookup_username(actor_id).await {
+                Ok(username) => username,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        actor_id = %actor_id,
+                        user_id = %member.user_id,
+                        "Skipped permission changed notification because actor username lookup failed"
+                    );
+                    return;
+                }
+            }
         } else {
             actor_username.to_string()
         };
-        let room_settings = if let Some(repo) = self.room_settings_repo.as_ref() {
-            repo.get(room_id).await.unwrap_or_default()
-        } else {
-            RoomSettings::default()
+        let Some(repo) = self.room_settings_repo.as_ref() else {
+            tracing::warn!(
+                room_id = %room_id,
+                actor_id = %actor_id,
+                user_id = %member.user_id,
+                "Skipped permission changed notification because room settings repository is unavailable"
+            );
+            return;
+        };
+        let room_settings = match repo.get(room_id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    actor_id = %actor_id,
+                    user_id = %member.user_id,
+                    "Skipped permission changed notification because room settings lookup failed"
+                );
+                return;
+            }
         };
         let effective_permissions = self
             .permission_service
             .effective_member_permissions(member, &room_settings)
             .0;
 
-        if let Err(error) = self.notification_service.notify_permission_changed(
+        let subscriber_count = self.notification_service.notify_permission_changed(
             room_id,
             PermissionChangedNotification {
                 user_id: &member.user_id,
@@ -242,24 +259,22 @@ impl MemberService {
                 updated_by_user_id: actor_id,
                 updated_by_username: &resolved_actor_username,
             },
-        ) {
-            tracing::warn!(
-                error = %error,
+        );
+        if subscriber_count == 0 {
+            tracing::debug!(
                 room_id = %room_id,
                 user_id = %member.user_id,
-                "Failed to broadcast permission changed event"
+                "Permission changed event had no local subscribers"
             );
         }
     }
 
-    async fn lookup_username(&self, user_id: &UserId) -> String {
+    async fn lookup_username(&self, user_id: &UserId) -> Result<String> {
         UserRepository::new(self.member_repo.pool().clone())
             .get_by_id(user_id)
-            .await
-            .ok()
-            .flatten()
+            .await?
             .map(|user| user.username)
-            .unwrap_or_default()
+            .ok_or_else(|| Error::NotFound("Actor user not found".to_string()))
     }
 
     /// Log an audit event if the audit service is configured.
@@ -279,16 +294,16 @@ impl MemberService {
     ) {
         if let Some(ref audit) = self.audit_service {
             if let Err(e) = audit
-                .log(
-                    actor_id.to_string(),
-                    actor_username.to_string(),
+                .log(AuditEventParams {
+                    actor_id: actor_id.to_string(),
+                    actor_username: actor_username.to_string(),
                     action,
                     target_type,
                     target_id,
                     details,
-                    None,
-                    None,
-                )
+                    ip_address: None,
+                    user_agent: None,
+                })
                 .await
             {
                 tracing::warn!(error = %e, "Failed to write audit log from MemberService");
@@ -321,11 +336,13 @@ impl MemberService {
     ) -> Result<RoomMember> {
         // Get room settings and apply to options if max_members check is enabled
         if options.check_max_members {
-            let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
-                settings_repo.get(&room_id).await?
-            } else {
-                RoomSettings::default()
-            };
+            let settings_repo = self.room_settings_repo.as_ref().ok_or_else(|| {
+                Error::Internal(
+                    "MemberService is missing room_settings_repo for member capacity checks"
+                        .to_string(),
+                )
+            })?;
+            let room_settings = settings_repo.get(&room_id).await?;
 
             options.max_members = room_settings.max_members.0;
         }
@@ -503,6 +520,7 @@ impl MemberService {
                 crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
+        let granter_username = self.lookup_username(&granter_id).await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
             Self::PERMISSION_UPDATE_MAX_RETRIES,
@@ -589,7 +607,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &granter_id,
-            "",
+            &granter_username,
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
@@ -601,7 +619,7 @@ impl MemberService {
         )
         .await;
 
-        self.notify_permission_changed(&room_id, &granter_id, "", &updated_member)
+        self.notify_permission_changed(&room_id, &granter_id, &granter_username, &updated_member)
             .await;
 
         Ok(updated_member)
@@ -876,6 +894,7 @@ impl MemberService {
                 crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
+        let granter_username = self.lookup_username(&granter_id).await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
             Self::PERMISSION_UPDATE_MAX_RETRIES,
@@ -953,7 +972,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &granter_id,
-            "",
+            &granter_username,
             AuditAction::PermissionGranted,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
@@ -986,6 +1005,7 @@ impl MemberService {
                 crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
             )
             .await?;
+        let granter_username = self.lookup_username(&granter_id).await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
             Self::PERMISSION_UPDATE_MAX_RETRIES,
@@ -1063,7 +1083,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &granter_id,
-            "",
+            &granter_username,
             AuditAction::PermissionRevoked,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
@@ -1276,6 +1296,7 @@ impl MemberService {
                 "Cannot change the role of the room creator via set_member_role".to_string(),
             ));
         }
+        let creator_username = self.lookup_username(&creator_id).await?;
 
         // Verify target is a member and update role with optimistic lock retry
         let (updated_member, old_role) = super::optimistic_retry::retry_with_optimistic_lock(
@@ -1344,7 +1365,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &creator_id,
-            "",
+            &creator_username,
             AuditAction::MemberRoleUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),

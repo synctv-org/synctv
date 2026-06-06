@@ -2,7 +2,6 @@
 //!
 //! Integration tests for the `UserProviderCredentialRepository`.
 //!
-//! Run with: cargo test --test `user_provider_credential_tests` -- --ignored
 //! (Requires Docker)
 #![allow(clippy::unwrap_used)]
 

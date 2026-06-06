@@ -319,7 +319,7 @@ pub fn emby_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/emby/login",
         tag = "Provider",
-        request_body = crate::proto::providers::emby::LoginRequest,
+        request_body = synctv_proto::http_serde::EmbyLoginRequestDef,
         responses(
             (status = 200, description = "Emby login succeeded", body = crate::proto::providers::emby::LoginResponse),
             (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
@@ -339,10 +339,12 @@ pub fn emby_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::emby::LoginRequest>,
+    Json(req): Json<synctv_proto::http_serde::EmbyLoginRequestDef>,
 ) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
+    let req = crate::proto::providers::emby::LoginRequest::try_from(req)
+        .map_err(crate::impls::ApiError::InvalidInput)?;
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
@@ -737,7 +739,8 @@ mod tests {
 
     #[test]
     fn test_authorize_thumbnail_request_requires_signature_for_shared_credentials() {
-        let signing_key = ProxySigningKey::derive_from(b"test-signing-key-minimum-32-bytes!!");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")
+            .expect("test proxy signing key should derive");
         let err = authorize_thumbnail_request(
             &signing_key,
             "viewer-1",
@@ -760,7 +763,8 @@ mod tests {
 
     #[test]
     fn test_authorize_thumbnail_request_rejects_signed_url_for_other_user() {
-        let signing_key = ProxySigningKey::derive_from(b"test-signing-key-minimum-32-bytes!!");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")
+            .expect("test proxy signing key should derive");
         let raw_query = build_signed_thumbnail_query(
             &signing_key,
             "room-1",
@@ -797,7 +801,8 @@ mod tests {
 
     #[test]
     fn test_sign_emby_thumbnail_url_appends_room_scoped_signature() {
-        let signing_key = ProxySigningKey::derive_from(b"test-signing-key-minimum-32-bytes!!");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")
+            .expect("test proxy signing key should derive");
         let signed = sign_emby_thumbnail_url(
             "/api/providers/emby/thumbnail/item-123?server_id=emby-main&credential_owner_id=owner-1&max_height=300",
             "room-7",

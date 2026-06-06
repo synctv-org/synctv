@@ -9,6 +9,8 @@
 //! **Binding values** is still done by the caller -- the builder only tracks *which*
 //! conditions need a bound parameter and in what order.
 
+use crate::{Error, Result};
+
 /// A single condition in the WHERE clause.
 enum Condition {
     /// A static SQL fragment with no bound parameter (e.g. `r.deleted_at IS NULL`).
@@ -32,10 +34,10 @@ enum Condition {
 /// }
 ///
 /// // For COUNT query (params start at $1):
-/// let (count_where, _) = wb.build(1);
+/// let (count_where, _) = wb.build(1)?;
 ///
 /// // For SELECT query (params start at $3 after LIMIT/OFFSET):
-/// let (list_where, _) = wb.build(3);
+/// let (list_where, _) = wb.build(3)?;
 /// ```
 pub struct WhereClauseBuilder {
     conditions: Vec<Condition>,
@@ -70,15 +72,14 @@ impl WhereClauseBuilder {
     }
 
     /// The number of bound parameters this builder will consume.
-    #[must_use]
-    pub fn param_count(&self) -> u32 {
+    pub fn param_count(&self) -> Result<u32> {
         u32::try_from(
             self.conditions
                 .iter()
                 .filter(|c| matches!(c, Condition::Parameterized { .. }))
                 .count(),
         )
-        .unwrap_or(u32::MAX)
+        .map_err(|_| Error::Internal("WHERE clause parameter count exceeds u32::MAX".to_string()))
     }
 
     /// Render the WHERE clause body (conditions joined with ` AND `).
@@ -86,8 +87,7 @@ impl WhereClauseBuilder {
     /// `start_idx` is the first `$N` index to use for parameterized conditions.
     ///
     /// Returns `(sql_fragment, next_unused_index)`.
-    #[must_use]
-    pub fn build(&self, start_idx: u32) -> (String, u32) {
+    pub fn build(&self, start_idx: u32) -> Result<(String, u32)> {
         let mut parts: Vec<String> = Vec::with_capacity(self.conditions.len());
         let mut idx = start_idx;
 
@@ -98,23 +98,24 @@ impl WhereClauseBuilder {
                 }
                 Condition::Parameterized { template } => {
                     parts.push(template.replace("${idx}", &format!("${idx}")));
-                    idx += 1;
+                    idx = idx.checked_add(1).ok_or_else(|| {
+                        Error::Internal("WHERE clause parameter index exceeds u32::MAX".to_string())
+                    })?;
                 }
             }
         }
 
-        (parts.join(" AND "), idx)
+        Ok((parts.join(" AND "), idx))
     }
 
     /// Convenience: build `WHERE <conditions>` string.  Returns empty string if
     /// there are no conditions.
-    #[must_use]
-    pub fn build_where(&self, start_idx: u32) -> (String, u32) {
-        let (body, next) = self.build(start_idx);
+    pub fn build_where(&self, start_idx: u32) -> Result<(String, u32)> {
+        let (body, next) = self.build(start_idx)?;
         if body.is_empty() {
-            (String::new(), next)
+            Ok((String::new(), next))
         } else {
-            (format!("WHERE {body}"), next)
+            Ok((format!("WHERE {body}"), next))
         }
     }
 }
@@ -139,7 +140,7 @@ mod tests {
         wb.push_literal("deleted_at IS NULL");
         wb.push_literal("status = 1");
 
-        let (sql, next) = wb.build(1);
+        let (sql, next) = wb.build(1).expect("literal WHERE clause should build");
         assert_eq!(sql, "deleted_at IS NULL AND status = 1");
         assert_eq!(next, 1); // no params consumed
     }
@@ -152,7 +153,7 @@ mod tests {
         wb.push_param("status = ${idx}");
 
         // Count query: start at $1
-        let (sql, next) = wb.build(1);
+        let (sql, next) = wb.build(1).expect("count WHERE clause should build");
         assert_eq!(
             sql,
             "deleted_at IS NULL AND (name ILIKE $1 OR description ILIKE $1) AND status = $2"
@@ -160,7 +161,7 @@ mod tests {
         assert_eq!(next, 3);
 
         // List query: start at $3
-        let (sql, next) = wb.build(3);
+        let (sql, next) = wb.build(3).expect("list WHERE clause should build");
         assert_eq!(
             sql,
             "deleted_at IS NULL AND (name ILIKE $3 OR description ILIKE $3) AND status = $4"
@@ -176,7 +177,7 @@ mod tests {
         wb.push_param("status = ${idx}");
         wb.push_literal("is_banned = FALSE");
 
-        assert_eq!(wb.param_count(), 2);
+        assert_eq!(wb.param_count().expect("param count should fit u32"), 2);
     }
 
     #[test]
@@ -184,14 +185,14 @@ mod tests {
         let mut wb = WhereClauseBuilder::new();
         wb.push_literal("deleted_at IS NULL");
 
-        let (sql, _) = wb.build_where(1);
+        let (sql, _) = wb.build_where(1).expect("WHERE clause should build");
         assert_eq!(sql, "WHERE deleted_at IS NULL");
     }
 
     #[test]
     fn test_empty_builder() {
         let wb = WhereClauseBuilder::new();
-        let (sql, next) = wb.build_where(1);
+        let (sql, next) = wb.build_where(1).expect("empty WHERE clause should build");
         assert_eq!(sql, "");
         assert_eq!(next, 1);
     }

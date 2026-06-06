@@ -2,6 +2,7 @@
 
 use crate::impls::ApiError;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use synctv_core::models::{
     ChatImageBlob, ChatMessageEvent, ChatMessageType, ChatMessageWithImages,
     ChatPlaybackMessagesQuery, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
@@ -11,12 +12,13 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
 
 use super::convert::{
-    member_status_to_proto, members_to_proto, playback_state_to_proto,
-    resource_availability_enum_to_proto, room_role_to_proto,
+    member_status_to_proto, resource_availability_enum_to_proto, room_role_to_proto,
+    try_members_to_proto, try_playback_state_to_proto,
 };
 use super::media::{
     file_cover_proto_to_stored_file, file_upload_session_to_room_cover_proto,
-    prepare_delete_entries_outbox_fanout, room_cover_object_to_proto,
+    prepare_delete_entries_outbox_fanout, required_stored_file_fields, room_cover_object_to_proto,
+    upload_session_fields,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
@@ -26,6 +28,112 @@ fn settings_registry_unavailable_error() -> ApiError {
 
 fn chat_service_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Chat service is not available on this server.".to_string())
+}
+
+fn parse_optional_client_ip(client_ip: Option<&str>) -> Result<Option<IpAddr>, ApiError> {
+    client_ip
+        .map(|ip| {
+            ip.parse::<IpAddr>().map_err(|error| {
+                ApiError::InvalidInput(format!("Invalid client IP address '{ip}': {error}"))
+            })
+        })
+        .transpose()
+}
+
+fn required_room_settings<'a>(
+    settings: &'a std::collections::HashMap<
+        synctv_core::models::RoomId,
+        synctv_core::models::RoomSettings,
+    >,
+    room_id: &synctv_core::models::RoomId,
+) -> Result<&'a synctv_core::models::RoomSettings, ApiError> {
+    settings.get(room_id).ok_or_else(|| {
+        ApiError::Internal(format!(
+            "Missing room settings for room {room_id} in batch response"
+        ))
+    })
+}
+
+fn proto_room_status_filter(
+    value: i32,
+) -> Result<Option<synctv_core::models::RoomStatus>, ApiError> {
+    if value == synctv_proto::common::RoomStatus::Unspecified as i32 {
+        return Ok(None);
+    }
+    synctv_core::models::RoomStatus::try_from(value)
+        .map(Some)
+        .map_err(|_| ApiError::InvalidInput("Unsupported room status".to_string()))
+}
+
+fn proto_room_list_sort_by(value: i32) -> Result<synctv_core::models::RoomListSortBy, ApiError> {
+    match crate::proto::client::RoomListSortBy::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported room list sort field".to_string()))?
+    {
+        crate::proto::client::RoomListSortBy::Unspecified
+        | crate::proto::client::RoomListSortBy::CreatedAt => {
+            Ok(synctv_core::models::RoomListSortBy::CreatedAt)
+        }
+        crate::proto::client::RoomListSortBy::Name => Ok(synctv_core::models::RoomListSortBy::Name),
+        crate::proto::client::RoomListSortBy::UpdatedAt => {
+            Ok(synctv_core::models::RoomListSortBy::UpdatedAt)
+        }
+        crate::proto::client::RoomListSortBy::LastActivityAt => {
+            Ok(synctv_core::models::RoomListSortBy::LastActivityAt)
+        }
+    }
+}
+
+fn proto_my_room_relation(value: i32) -> Result<synctv_core::models::MyRoomRelation, ApiError> {
+    match crate::proto::client::MyRoomRelation::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported room relation".to_string()))?
+    {
+        crate::proto::client::MyRoomRelation::Unspecified
+        | crate::proto::client::MyRoomRelation::All => Ok(synctv_core::models::MyRoomRelation::All),
+        crate::proto::client::MyRoomRelation::Created => {
+            Ok(synctv_core::models::MyRoomRelation::Created)
+        }
+        crate::proto::client::MyRoomRelation::Participating => {
+            Ok(synctv_core::models::MyRoomRelation::Participating)
+        }
+    }
+}
+
+fn proto_my_room_list_sort_by(
+    value: i32,
+) -> Result<synctv_core::models::MyRoomListSortBy, ApiError> {
+    match crate::proto::client::MyRoomListSortBy::try_from(value).map_err(|_| {
+        ApiError::InvalidInput("Unsupported related room list sort field".to_string())
+    })? {
+        crate::proto::client::MyRoomListSortBy::Unspecified
+        | crate::proto::client::MyRoomListSortBy::JoinedAt => {
+            Ok(synctv_core::models::MyRoomListSortBy::JoinedAt)
+        }
+        crate::proto::client::MyRoomListSortBy::Name => {
+            Ok(synctv_core::models::MyRoomListSortBy::Name)
+        }
+        crate::proto::client::MyRoomListSortBy::CreatedAt => {
+            Ok(synctv_core::models::MyRoomListSortBy::CreatedAt)
+        }
+        crate::proto::client::MyRoomListSortBy::UpdatedAt => {
+            Ok(synctv_core::models::MyRoomListSortBy::UpdatedAt)
+        }
+        crate::proto::client::MyRoomListSortBy::LastActivityAt => {
+            Ok(synctv_core::models::MyRoomListSortBy::LastActivityAt)
+        }
+    }
+}
+
+fn proto_sort_direction(
+    value: i32,
+    default: synctv_core::models::SortDirection,
+) -> Result<synctv_core::models::SortDirection, ApiError> {
+    match crate::proto::client::SortDirection::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        crate::proto::client::SortDirection::Unspecified => Ok(default),
+        crate::proto::client::SortDirection::Asc => Ok(synctv_core::models::SortDirection::Asc),
+        crate::proto::client::SortDirection::Desc => Ok(synctv_core::models::SortDirection::Desc),
+    }
 }
 
 const DEFAULT_ROOM_PAGE: u32 = 1;
@@ -75,12 +183,77 @@ fn positive_i32(value: i32, default: i32) -> i32 {
     }
 }
 
-fn positive_i64_to_usize(value: i64, default: usize) -> usize {
-    usize::try_from(value).unwrap_or(default)
+fn optional_positive_window_seconds(
+    value: f64,
+    default: f64,
+    field: &str,
+) -> Result<f64, ApiError> {
+    if value == 0.0 {
+        return Ok(default);
+    }
+    if !value.is_finite() || value < 0.0 {
+        return Err(ApiError::InvalidInput(format!(
+            "{field} must be a finite non-negative number"
+        )));
+    }
+    Ok(value)
 }
 
-fn usize_to_i32_saturating(value: usize) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
+fn optional_positive_limit(
+    value: i32,
+    default: i32,
+    max: i32,
+    field: &str,
+) -> Result<i32, ApiError> {
+    if value == 0 {
+        return Ok(default);
+    }
+    if value < 0 {
+        return Err(ApiError::InvalidInput(format!(
+            "{field} must be a positive integer"
+        )));
+    }
+    if value > max {
+        return Err(ApiError::InvalidInput(format!(
+            "{field} must be at most {max}"
+        )));
+    }
+    Ok(value)
+}
+
+fn required_playback_position_seconds(value: f64) -> Result<f64, ApiError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(ApiError::InvalidInput(
+            "position_seconds must be a finite non-negative number".to_string(),
+        ));
+    }
+    Ok(value)
+}
+
+fn positive_i64_to_usize(
+    value: i64,
+    default: usize,
+    field: &'static str,
+) -> Result<usize, ApiError> {
+    let value = if value <= 0 {
+        i64::try_from(default)
+            .map_err(|_| ApiError::Internal(format!("{field} default exceeds i64::MAX")))?
+    } else {
+        value
+    };
+    usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
+}
+
+fn usize_to_i32_api(value: usize, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn usize_to_u32_api(value: usize, field: &'static str) -> Result<u32, ApiError> {
+    u32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u32::MAX")))
 }
 
 fn chat_status_to_proto(
@@ -102,70 +275,81 @@ fn chat_status_to_proto(
 async fn username_for_chat_message(
     api: &ClientApiImpl,
     message: &synctv_core::models::ChatMessage,
-) -> String {
+) -> Result<String, ApiError> {
     let Some(user_id) = message.user_id else {
-        return "[deleted]".to_string();
+        return Ok("[deleted]".to_string());
     };
     api.user_service
         .get_username(&user_id)
         .await
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Chat message author not found".to_string()))
 }
 
-fn chat_image_to_proto(image: &synctv_core::models::ChatImage) -> crate::proto::client::ChatImage {
+fn chat_image_to_proto(
+    image: &synctv_core::models::ChatImage,
+) -> Result<crate::proto::client::ChatImage, ApiError> {
     crate::impls::messaging::core_chat_image_to_proto(image)
+        .map_err(|error| ApiError::Internal(error.clone()))
 }
 
-fn new_chat_image_to_proto(image: &NewChatImage) -> crate::proto::client::ChatImage {
-    crate::proto::client::ChatImage {
+fn new_chat_image_to_proto(
+    image: &NewChatImage,
+) -> Result<crate::proto::client::ChatImage, ApiError> {
+    let fields = required_stored_file_fields(image, "chat image metadata")?;
+    Ok(crate::proto::client::ChatImage {
         id: image.id.clone(),
         storage_backend: image.storage_backend.clone(),
         object_key: image.object_key.clone(),
-        url: image.url.clone().unwrap_or_default(),
-        mime_type: image.mime_type.clone().unwrap_or_default(),
-        size_bytes: image.size_bytes.unwrap_or_default(),
-        width: image.width.unwrap_or_default(),
-        height: image.height.unwrap_or_default(),
-        metadata: serde_json::to_vec(&image.metadata).unwrap_or_default(),
-    }
+        url: fields.url,
+        mime_type: fields.mime_type,
+        size_bytes: fields.size_bytes,
+        width: fields.width,
+        height: fields.height,
+        metadata: fields.metadata,
+    })
 }
 
 fn chat_message_to_proto(
     api: &ClientApiImpl,
     message: ChatMessageWithImages,
     username: String,
-) -> crate::proto::client::ChatMessageReceive {
+) -> Result<crate::proto::client::ChatMessageReceive, ApiError> {
     let msg = message.message;
     let room_id = api
         .public_id_codec
         .encode_room_id(msg.room_id)
-        .expect("chat message room id must be encodable");
+        .map_err(|error| ApiError::Internal(format!("Failed to encode chat room id: {error}")))?;
     let user_id = msg
         .user_id
-        .and_then(|id| api.public_id_codec.encode_user_id(id).ok())
+        .map(|id| {
+            api.public_id_codec.encode_user_id(id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode chat user id: {error}"))
+            })
+        })
+        .transpose()?
         .unwrap_or_default();
     let deleted_by_user_id = msg
         .deleted_by
-        .and_then(|id| api.public_id_codec.encode_user_id(id).ok())
+        .map(|id| {
+            api.public_id_codec.encode_user_id(id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode chat deleted_by user id: {error}"))
+            })
+        })
+        .transpose()?
         .unwrap_or_default();
     let reactions = message
         .reactions
         .iter()
-        .map(|reaction| crate::proto::client::ChatReactionSummary {
-            key: reaction.key.clone(),
-            count: reaction.count,
-            reacted_by_me: reaction.reacted_by_me,
-        })
-        .collect::<Vec<_>>();
-    let reaction_count = reactions
-        .iter()
-        .map(|reaction| reaction.count)
-        .sum::<i64>()
-        .try_into()
-        .unwrap_or(i32::MAX);
-    crate::proto::client::ChatMessageReceive {
+        .map(chat_reaction_summary_to_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let reaction_count = chat_reaction_count(&reactions)?;
+    let playback = crate::impls::messaging::chat_playback_metadata_from_metadata(
+        &msg.metadata,
+        &api.public_id_codec,
+    )
+    .map_err(ApiError::Internal)?;
+    Ok(crate::proto::client::ChatMessageReceive {
         id: msg.id.to_string(),
         room_id,
         user_id,
@@ -174,8 +358,10 @@ fn chat_message_to_proto(
         timestamp: msg.created_at.timestamp(),
         display_position: crate::impls::messaging::chat_display_position_from_metadata(
             &msg.metadata,
-        ),
-        display_color: crate::impls::messaging::chat_display_color_from_metadata(&msg.metadata),
+        )
+        .map_err(ApiError::Internal)?,
+        display_color: crate::impls::messaging::chat_display_color_from_metadata(&msg.metadata)
+            .map_err(ApiError::Internal)?,
         client_message_id: msg.client_message_id.unwrap_or_default(),
         status: chat_status_to_proto(msg.status) as i32,
         version: msg.version,
@@ -185,49 +371,93 @@ fn chat_message_to_proto(
             .reply_to_message_id
             .map(|id| id.to_string())
             .unwrap_or_default(),
-        images: message.images.iter().map(chat_image_to_proto).collect(),
+        images: message
+            .images
+            .iter()
+            .map(chat_image_to_proto)
+            .collect::<Result<Vec<_>, _>>()?,
         deleted_by_user_id,
         delete_reason: msg.delete_reason.unwrap_or_default(),
-        playback_media_id: crate::impls::messaging::chat_playback_media_id_from_metadata(
-            &msg.metadata,
-            &api.public_id_codec,
-        ),
-        playback_playlist_id: crate::impls::messaging::chat_playback_playlist_id_from_metadata(
-            &msg.metadata,
-            &api.public_id_codec,
-        ),
-        playback_target: crate::impls::messaging::chat_playback_target_from_metadata(&msg.metadata),
-        playback_target_hash: crate::impls::messaging::chat_playback_target_hash_from_metadata(
-            &msg.metadata,
-        ),
-        playback_position_seconds:
-            crate::impls::messaging::chat_playback_position_seconds_from_metadata(&msg.metadata),
+        playback_media_id: playback.media_id,
+        playback_playlist_id: playback.playlist_id,
+        playback_target: playback.target,
+        playback_target_hash: playback.target_hash,
+        playback_position_seconds: playback.position_seconds,
         reactions,
         reaction_count,
+    })
+}
+
+pub(crate) fn chat_reaction_summary_to_proto(
+    reaction: &synctv_core::models::ChatReactionSummary,
+) -> Result<crate::proto::client::ChatReactionSummary, ApiError> {
+    let key = reaction.key.trim();
+    if key.is_empty() {
+        return Err(ApiError::Internal(
+            "chat reaction summary key is empty".to_string(),
+        ));
     }
+    if reaction.count < 0 {
+        return Err(ApiError::Internal(format!(
+            "chat reaction summary '{}' has negative count",
+            reaction.key
+        )));
+    }
+    Ok(crate::proto::client::ChatReactionSummary {
+        key: key.to_string(),
+        count: reaction.count,
+        reacted_by_me: reaction.reacted_by_me,
+    })
+}
+
+pub(crate) fn chat_reaction_count(
+    reactions: &[crate::proto::client::ChatReactionSummary],
+) -> Result<i32, ApiError> {
+    reactions
+        .iter()
+        .try_fold(0_i64, |total, reaction| {
+            if reaction.count < 0 {
+                return Err(ApiError::Internal(format!(
+                    "chat reaction summary '{}' has negative count",
+                    reaction.key
+                )));
+            }
+            total.checked_add(reaction.count).ok_or_else(|| {
+                ApiError::Internal("chat reaction count exceeds i64::MAX".to_string())
+            })
+        })?
+        .try_into()
+        .map_err(|_| ApiError::Internal("chat reaction count exceeds i32::MAX".to_string()))
 }
 
 async fn chat_event_to_proto(
     api: &ClientApiImpl,
     event: ChatMessageEvent,
-) -> crate::proto::client::ChatMessageEvent {
-    let username = username_for_chat_message(api, &event.message.message).await;
+) -> Result<crate::proto::client::ChatMessageEvent, ApiError> {
+    let username = username_for_chat_message(api, &event.message.message).await?;
     let room_id = api
         .public_id_codec
         .encode_room_id(event.room_id)
-        .expect("chat event room id must be encodable");
-    crate::proto::client::ChatMessageEvent {
+        .map_err(|error| {
+            ApiError::Internal(format!("Failed to encode chat event room id: {error}"))
+        })?;
+    Ok(crate::proto::client::ChatMessageEvent {
         event_id: event.event_id,
         room_id,
         kind: crate::impls::messaging::chat_event_kind_to_proto(event.kind) as i32,
-        message: Some(chat_message_to_proto(api, event.message, username)),
+        message: Some(chat_message_to_proto(api, event.message, username)?),
         occurred_at: event.occurred_at.timestamp(),
         sequence: event.sequence,
-    }
+    })
 }
 
-fn expected_chat_version(raw: i64) -> Option<i64> {
-    (raw > 0).then_some(raw)
+fn optional_chat_expected_version(raw: i64) -> Result<Option<i64>, ApiError> {
+    if raw < 0 {
+        return Err(ApiError::InvalidInput(
+            "expected_version must be non-negative".to_string(),
+        ));
+    }
+    Ok((raw > 0).then_some(raw))
 }
 
 fn optional_trimmed_string(value: &str) -> Option<String> {
@@ -267,17 +497,18 @@ fn parse_proto_chat_images(
 
 fn upload_session_to_proto(
     session: FileUploadSession,
-) -> crate::proto::client::ChatImageUploadSession {
-    crate::proto::client::ChatImageUploadSession {
-        image: Some(new_chat_image_to_proto(&session.file)),
+) -> Result<crate::proto::client::ChatImageUploadSession, ApiError> {
+    let fields = upload_session_fields(&session)?;
+    Ok(crate::proto::client::ChatImageUploadSession {
+        image: Some(new_chat_image_to_proto(&session.file)?),
         upload_required: session.upload_required,
-        upload_url: session.upload_url.unwrap_or_default(),
-        upload_method: session.upload_method.unwrap_or_default(),
+        upload_url: fields.upload_url,
+        upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
-        expires_at: session.expires_at.map_or(0, |ts| ts.timestamp()),
+        expires_at: fields.expires_at,
         max_size_bytes: session.max_size_bytes,
         ownership_proof_required: session.ownership_proof_required,
-        ownership_proof_nonce: session.ownership_proof_nonce.unwrap_or_default(),
+        ownership_proof_nonce: fields.ownership_proof_nonce,
         ownership_proof_ranges: session
             .ownership_proof_ranges
             .into_iter()
@@ -286,8 +517,8 @@ fn upload_session_to_proto(
                 length: range.length,
             })
             .collect(),
-        ownership_proof_metadata_key: session.ownership_proof_metadata_key.unwrap_or_default(),
-    }
+        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+    })
 }
 
 fn chat_image_object_to_proto(
@@ -315,7 +546,7 @@ fn edit_chat_message_request_to_core(
         client_operation_id: optional_trimmed_string(&req.client_operation_id),
         content: req.content,
         metadata: parse_json_metadata(&req.metadata)?,
-        expected_version: expected_chat_version(req.expected_version),
+        expected_version: optional_chat_expected_version(req.expected_version)?,
     })
 }
 
@@ -330,23 +561,27 @@ fn delete_chat_message_request_to_core(
         user_id,
         client_operation_id: optional_trimmed_string(&req.client_operation_id),
         reason: optional_trimmed_string(&req.reason),
-        expected_version: expected_chat_version(req.expected_version),
+        expected_version: optional_chat_expected_version(req.expected_version)?,
     })
 }
 
 fn chat_read_state_to_proto(
     api: &ClientApiImpl,
     state: synctv_core::models::ChatReadStateWithUnread,
-) -> crate::proto::client::ChatReadStateResponse {
+) -> Result<crate::proto::client::ChatReadStateResponse, ApiError> {
     let room_id = api
         .public_id_codec
         .encode_room_id(state.state.room_id)
-        .expect("chat read state room id must be encodable");
+        .map_err(|error| {
+            ApiError::Internal(format!("Failed to encode chat read state room id: {error}"))
+        })?;
     let user_id = api
         .public_id_codec
         .encode_user_id(state.state.user_id)
-        .expect("chat read state user id must be encodable");
-    crate::proto::client::ChatReadStateResponse {
+        .map_err(|error| {
+            ApiError::Internal(format!("Failed to encode chat read state user id: {error}"))
+        })?;
+    Ok(crate::proto::client::ChatReadStateResponse {
         state: Some(crate::proto::client::ChatReadState {
             room_id,
             user_id,
@@ -360,7 +595,7 @@ fn chat_read_state_to_proto(
             updated_at: state.state.updated_at.timestamp(),
         }),
         unread_count: state.unread_count,
-    }
+    })
 }
 
 fn build_public_room_list_query(
@@ -380,22 +615,11 @@ fn build_public_room_list_query(
         search: (!req.search.is_empty()).then_some(req.search),
         status: Some(synctv_core::models::RoomStatus::Active),
         is_banned: Some(false),
-        sort_by: match crate::proto::client::RoomListSortBy::try_from(req.sort_by) {
-            Ok(crate::proto::client::RoomListSortBy::Name) => {
-                synctv_core::models::RoomListSortBy::Name
-            }
-            Ok(crate::proto::client::RoomListSortBy::UpdatedAt) => {
-                synctv_core::models::RoomListSortBy::UpdatedAt
-            }
-            Ok(crate::proto::client::RoomListSortBy::LastActivityAt) => {
-                synctv_core::models::RoomListSortBy::LastActivityAt
-            }
-            _ => synctv_core::models::RoomListSortBy::CreatedAt,
-        },
-        sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction) {
-            Ok(crate::proto::client::SortDirection::Asc) => synctv_core::models::SortDirection::Asc,
-            _ => synctv_core::models::SortDirection::Desc,
-        },
+        sort_by: proto_room_list_sort_by(req.sort_by)?,
+        sort_direction: proto_sort_direction(
+            req.sort_direction,
+            synctv_core::models::SortDirection::Desc,
+        )?,
         ..Default::default()
     })
 }
@@ -415,36 +639,14 @@ fn build_my_room_list_query(
     Ok(synctv_core::models::MyRoomListQuery {
         pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
         search: (!req.search.is_empty()).then_some(req.search),
-        status: synctv_core::models::RoomStatus::try_from(req.status).ok(),
+        status: proto_room_status_filter(req.status)?,
         is_banned: req.is_banned,
-        relation: match crate::proto::client::MyRoomRelation::try_from(req.relation) {
-            Ok(crate::proto::client::MyRoomRelation::Created) => {
-                synctv_core::models::MyRoomRelation::Created
-            }
-            Ok(crate::proto::client::MyRoomRelation::Participating) => {
-                synctv_core::models::MyRoomRelation::Participating
-            }
-            _ => synctv_core::models::MyRoomRelation::All,
-        },
-        sort_by: match crate::proto::client::MyRoomListSortBy::try_from(req.sort_by) {
-            Ok(crate::proto::client::MyRoomListSortBy::Name) => {
-                synctv_core::models::MyRoomListSortBy::Name
-            }
-            Ok(crate::proto::client::MyRoomListSortBy::CreatedAt) => {
-                synctv_core::models::MyRoomListSortBy::CreatedAt
-            }
-            Ok(crate::proto::client::MyRoomListSortBy::UpdatedAt) => {
-                synctv_core::models::MyRoomListSortBy::UpdatedAt
-            }
-            Ok(crate::proto::client::MyRoomListSortBy::LastActivityAt) => {
-                synctv_core::models::MyRoomListSortBy::LastActivityAt
-            }
-            _ => synctv_core::models::MyRoomListSortBy::JoinedAt,
-        },
-        sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction) {
-            Ok(crate::proto::client::SortDirection::Asc) => synctv_core::models::SortDirection::Asc,
-            _ => synctv_core::models::SortDirection::Desc,
-        },
+        relation: proto_my_room_relation(req.relation)?,
+        sort_by: proto_my_room_list_sort_by(req.sort_by)?,
+        sort_direction: proto_sort_direction(
+            req.sort_direction,
+            synctv_core::models::SortDirection::Desc,
+        )?,
     })
 }
 
@@ -536,6 +738,26 @@ impl ClientApiImpl {
             .map_err(ApiError::from)
     }
 
+    async fn load_room_playback_state_proto(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+    ) -> Result<crate::proto::client::PlaybackState, ApiError> {
+        let state = self
+            .room_service
+            .get_playback_state(room_id)
+            .await
+            .map_err(ApiError::from)?;
+        try_playback_state_to_proto(&state, &self.public_id_codec)
+    }
+
+    async fn user_username_for_event(&self, user_id: &UserId) -> Result<String, ApiError> {
+        self.user_service
+            .get_user(user_id)
+            .await
+            .map(|user| user.username)
+            .map_err(ApiError::from)
+    }
+
     /// Get the currently playing media for a room.
     ///
     /// Requires the caller to be a member of the room.
@@ -616,7 +838,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ListRoomsResponse {
             rooms: room_list,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i64_to_i32_api(total, "room total")?,
         })
     }
 
@@ -648,11 +870,11 @@ impl ClientApiImpl {
             // which only gives role-level defaults. calculate_role_default_permissions applies:
             //   1. Global default permissions (from SettingsRegistry)
             //   2. Room-level overrides (room_added / room_removed)
-            let settings = room_settings_map.get(&room.id).cloned().unwrap_or_default();
+            let settings = required_room_settings(&room_settings_map, &room.id)?;
             let permissions = self
                 .room_service
                 .permission_service()
-                .calculate_role_default_permissions(role, &settings)
+                .calculate_role_default_permissions(role, settings)
                 .0;
             let relation = if room.created_by == uid {
                 crate::proto::client::MyRoomRelation::Created as i32
@@ -663,7 +885,7 @@ impl ClientApiImpl {
                 room: Some(
                     self.room_to_proto_basic_with_loaded_cover(
                         room,
-                        Some(&settings),
+                        Some(settings),
                         Some(*member_count),
                     )
                     .await?,
@@ -676,7 +898,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ListMyRoomsResponse {
             rooms: room_list,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i64_to_i32_api(total, "my room total")?,
         })
     }
 
@@ -724,7 +946,7 @@ impl ClientApiImpl {
                 uid,
                 password,
                 settings,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -763,12 +985,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let playback_state = self
-            .room_service
-            .get_playback_state(&rid)
-            .await
-            .ok()
-            .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
+        let playback_state = self.load_room_playback_state_proto(&rid).await?;
         let settings = self
             .room_service
             .get_room_settings(&rid)
@@ -784,7 +1001,7 @@ impl ClientApiImpl {
                 )
                 .await?,
             ),
-            playback_state,
+            playback_state: Some(playback_state),
         })
     }
 
@@ -815,12 +1032,7 @@ impl ClientApiImpl {
                 )
                 .await?,
             ),
-            playback_state: self
-                .room_service
-                .get_playback_state(&rid)
-                .await
-                .ok()
-                .map(|s| playback_state_to_proto(&s, &self.public_id_codec)),
+            playback_state: Some(self.load_room_playback_state_proto(&rid).await?),
         })
     }
 
@@ -850,7 +1062,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Ok(crate::proto::client::CreateRoomCoverUploadSessionResponse {
-            session: Some(file_upload_session_to_room_cover_proto(session)),
+            session: Some(file_upload_session_to_room_cover_proto(session)?),
         })
     }
 
@@ -863,7 +1075,7 @@ impl ClientApiImpl {
             .store_room_cover_upload_object(
                 &req.encoded_object_key,
                 &req.token,
-                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.content_type.as_deref(),
                 req.data,
             )
             .await
@@ -962,7 +1174,7 @@ impl ClientApiImpl {
             let password = password.as_ref().ok_or_else(|| {
                 ApiError::Authorization("Forbidden: Password required".to_string())
             })?;
-            let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
+            let parsed_client_ip = parse_optional_client_ip(client_ip)?;
             if !self
                 .room_service
                 .check_room_password_with_rate_limit_with_control(
@@ -1007,19 +1219,14 @@ impl ClientApiImpl {
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
-        let playback_state = self
-            .room_service
-            .get_playback_state(&rid)
-            .await
-            .ok()
-            .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
+        let playback_state = self.load_room_playback_state_proto(&rid).await?;
 
-        let proto_members = members_to_proto(
+        let proto_members = try_members_to_proto(
             &members,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
-        );
+        )?;
 
         let requires_approval = proto_members.is_empty();
         Ok(crate::proto::client::JoinRoomResponse {
@@ -1032,7 +1239,7 @@ impl ClientApiImpl {
                 .await?,
             ),
             members: proto_members,
-            playback_state,
+            playback_state: Some(playback_state),
             membership_status: member_status_to_proto(member.status),
             requires_approval,
         })
@@ -1048,7 +1255,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(&req.room_id)?;
-        let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
+        let parsed_client_ip = parse_optional_client_ip(client_ip)?;
         let challenge = self
             .room_service
             .start_room_opaque_password_login_with_control(
@@ -1078,7 +1285,7 @@ impl ClientApiImpl {
         let expected_room_id = expected_room_id
             .map(|room_id| self.parse_room_id(room_id))
             .transpose()?;
-        let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
+        let parsed_client_ip = parse_optional_client_ip(client_ip)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(uid, uid);
@@ -1102,18 +1309,13 @@ impl ClientApiImpl {
             .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        let playback_state = self
-            .room_service
-            .get_playback_state(&rid)
-            .await
-            .ok()
-            .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
-        let proto_members = members_to_proto(
+        let playback_state = self.load_room_playback_state_proto(&rid).await?;
+        let proto_members = try_members_to_proto(
             &members,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
-        );
+        )?;
         let requires_approval = proto_members.is_empty();
         Ok(crate::proto::client::JoinRoomResponse {
             room: Some(
@@ -1125,7 +1327,7 @@ impl ClientApiImpl {
                 .await?,
             ),
             members: proto_members,
-            playback_state,
+            playback_state: Some(playback_state),
             membership_status: member_status_to_proto(member.status),
             requires_approval,
         })
@@ -1284,14 +1486,11 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_user_left_outbox_fanout();
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map_or_else(|_| uid.to_string(), |user| user.username);
+        let username = self.user_username_for_event(&uid).await?;
         let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             uid,
@@ -1328,12 +1527,12 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let prepared_outbox_fanout = self
             .room_lifecycle_fanout
-            .prepare_room_deleted_outbox_fanout(&rid, &uid);
+            .prepare_room_deleted_outbox_fanout(&rid, &uid)?;
 
         // 1. Delete the DB record first. If this fails, no realtime event is
         //    published and no connections are dropped -- the room remains intact.
         self.room_service
-            .delete_room_with_outbox(rid, uid, prepared_outbox_fanout.cloned_outbox_event())
+            .delete_room_with_outbox(rid, uid, Some(prepared_outbox_fanout.cloned_outbox_event()))
             .await
             .map_err(ApiError::from)?;
 
@@ -1357,43 +1556,34 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
 
         if req.settings.is_empty() {
-            // SECURITY: Return success with None room instead of room details.
-            // Previously this returned room data after only checking membership,
-            // which allowed any room member to bypass UPDATE_ROOM_SETTINGS permission.
-            // Users should use get_room or get_room_settings endpoints to fetch room info.
-            return Ok(crate::proto::client::UpdateRoomSettingsResponse { room: None });
+            return Err(ApiError::InvalidInput(
+                "settings patch is required".to_string(),
+            ));
         }
 
         let settings_patch: serde_json::Value = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.user_username_for_event(&uid).await?;
         let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             &uid,
             &username,
             Vec::new(),
             0,
-        );
+        )?;
         let snapshot = self
             .room_service
             .patch_settings_with_outbox(
                 rid,
                 uid,
                 settings_patch,
-                prepared_settings_fanout.settings_outbox_factory(),
+                Some(prepared_settings_fanout.settings_outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
         let prepared_settings_fanout = prepared_settings_fanout
             .with_settings_and_version(&snapshot.settings, snapshot.version)
-            .ok_or_else(|| {
-                ApiError::Internal("Failed to serialize updated room settings".to_string())
-            })?;
+            .map_err(ApiError::from)?;
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(prepared_settings_fanout);
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -1448,12 +1638,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.user_username_for_event(&uid).await?;
         let state = self
             .room_service
             .finish_room_opaque_password_registration(
@@ -1559,12 +1744,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let username = self.user_username_for_event(&uid).await?;
         let default_settings = synctv_core::models::RoomSettings::default();
         let (_, current_version) = self
             .room_service
@@ -1578,19 +1758,19 @@ impl ClientApiImpl {
             &username,
             settings_json.clone(),
             current_version + 1,
-        );
+        )?;
         let snapshot = self
             .room_service
             .reset_room_settings_with_outbox(
                 &rid,
                 &uid,
-                prepared_settings_fanout.settings_outbox_factory(),
+                Some(prepared_settings_fanout.settings_outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout.with_version(snapshot.version),
+                prepared_settings_fanout.with_version(snapshot.version)?,
             );
         self.room_cache_fanout.publish_invalidation(&rid);
 
@@ -1651,7 +1831,7 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(settings_registry_unavailable_error)?;
 
-        let s = reg.to_public_settings();
+        let s = reg.to_public_settings().map_err(ApiError::from)?;
         Ok(crate::proto::client::GetPublicSettingsResponse {
             allow_room_creation: s.allow_room_creation,
             max_rooms_per_user: s.max_rooms_per_user,
@@ -1725,12 +1905,13 @@ impl ClientApiImpl {
                     availability: resource_availability_enum_to_proto(availability),
                 })
             }
-            Err(_) => Ok(crate::proto::client::CheckRoomResponse {
+            Err(synctv_core::Error::NotFound(_)) => Ok(crate::proto::client::CheckRoomResponse {
                 exists: false,
                 requires_password: false,
                 name: String::new(),
                 availability: crate::proto::client::ResourceAvailability::Unspecified as i32,
             }),
+            Err(error) => Err(ApiError::from(error)),
         }
     }
 
@@ -1745,7 +1926,8 @@ impl ClientApiImpl {
         } else {
             i64::from(req.limit)
         };
-        let limit_usize = positive_i64_to_usize(limit, DEFAULT_HOT_ROOM_LIMIT_USIZE);
+        let limit_usize =
+            positive_i64_to_usize(limit, DEFAULT_HOT_ROOM_LIMIT_USIZE, "hot room limit")?;
 
         let room_online_counts = self
             .connection_service
@@ -1768,9 +1950,12 @@ impl ClientApiImpl {
             .into_iter()
             .filter_map(|room| {
                 let count = online_by_room.remove(&room.id).unwrap_or(0);
-                (count > 0).then_some((room, usize_to_i32_saturating(count)))
+                (count > 0).then_some((room, count))
             })
-            .collect();
+            .map(|(room, count)| {
+                usize_to_i32_api(count, "hot room online count").map(|count| (room, count))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         room_online.sort_by_key(|(room, count)| (std::cmp::Reverse(*count), room.id));
         let mut top_rooms: Vec<_> = room_online.into_iter().take(limit_usize).collect();
 
@@ -1778,7 +1963,7 @@ impl ClientApiImpl {
             let fallback_query = synctv_core::models::RoomListQuery {
                 pagination: synctv_core::models::PageParams::new(
                     Some(1),
-                    Some(u32::try_from(limit_usize).unwrap_or(u32::MAX)),
+                    Some(usize_to_u32_api(limit_usize, "hot room fallback limit")?),
                 ),
                 search: None,
                 status: Some(synctv_core::models::RoomStatus::Active),
@@ -1810,16 +1995,14 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch member counts for the top N rooms (single SQL query instead of N+1)
         let top_room_id_refs: Vec<&synctv_core::models::RoomId> =
             top_rooms.iter().map(|(r, _)| &r.id).collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&top_room_id_refs)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
-        // Batch-fetch settings for the top N rooms
         let room_ids: Vec<synctv_core::models::RoomId> =
             top_rooms.iter().map(|(room, _)| room.id).collect();
         let settings_map = self
@@ -1909,7 +2092,7 @@ impl ClientApiImpl {
             .user_service
             .get_usernames(&user_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         // Convert to proto format
         let proto_messages = page
@@ -1918,30 +2101,31 @@ impl ClientApiImpl {
             .map(|m| {
                 let (user_id_str, username) = match &m.message.user_id {
                     Some(uid) => {
-                        let uid_str = self
-                            .public_id_codec
-                            .encode_user_id(*uid)
-                            .expect("chat message user id must be encodable");
-                        let name = username_map
-                            .get(uid)
-                            .cloned()
-                            .unwrap_or_else(|| format!("user_{uid_str}"));
+                        let uid_str =
+                            self.public_id_codec.encode_user_id(*uid).map_err(|error| {
+                                ApiError::Internal(format!(
+                                    "Failed to encode chat message user id: {error}"
+                                ))
+                            })?;
+                        let name = username_map.get(uid).cloned().ok_or_else(|| {
+                            ApiError::NotFound("Chat message author not found".to_string())
+                        })?;
                         (uid_str, name)
                     }
                     None => (String::new(), "[deleted]".to_string()),
                 };
 
-                let mut proto = chat_message_to_proto(self, m, username);
+                let mut proto = chat_message_to_proto(self, m, username)?;
                 proto.user_id = user_id_str;
-                proto
+                Ok(proto)
             })
-            .collect();
+            .collect::<Result<Vec<_>, ApiError>>()?;
 
         Ok(crate::proto::client::GetChatHistoryResponse {
             messages: proto_messages,
             next_cursor: next_cursor_str.unwrap_or_default(),
             event_cursor: Some(crate::proto::client::EventCursor {
-                event_id: page.event_cursor.event_id.unwrap_or_default(),
+                event_id: page.event_cursor.event_id,
                 sequence: page.event_cursor.sequence,
             }),
         })
@@ -1964,12 +2148,12 @@ impl ClientApiImpl {
             .playback_service()
             .get_state(&room_id)
             .await
-            .ok();
+            .map_err(ApiError::from)?;
         let metadata = crate::impls::messaging::chat_metadata_for_send(
             parse_json_metadata(&req.metadata)?,
             &req.display_position,
             &req.display_color,
-            playback_state.as_ref(),
+            Some(&playback_state),
         )
         .map_err(ApiError::InvalidInput)?;
         let outcome = chat_service
@@ -1997,7 +2181,7 @@ impl ClientApiImpl {
             self.broadcast_chat_event(&outcome.event);
         }
         Ok(crate::proto::client::ChatMessageEventResponse {
-            event: Some(chat_event_to_proto(self, outcome.event).await),
+            event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
 
@@ -2026,7 +2210,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Ok(crate::proto::client::CreateChatImageUploadSessionResponse {
-            session: Some(upload_session_to_proto(session)),
+            session: Some(upload_session_to_proto(session)?),
         })
     }
 
@@ -2043,7 +2227,7 @@ impl ClientApiImpl {
             .store_image_upload_object(
                 &req.encoded_object_key,
                 &req.token,
-                (!req.content_type.trim().is_empty()).then_some(req.content_type.as_str()),
+                req.content_type.as_deref(),
                 req.data,
             )
             .await
@@ -2091,7 +2275,7 @@ impl ClientApiImpl {
             self.broadcast_chat_event(&outcome.event);
         }
         Ok(crate::proto::client::ChatMessageEventResponse {
-            event: Some(chat_event_to_proto(self, outcome.event).await),
+            event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
 
@@ -2117,7 +2301,7 @@ impl ClientApiImpl {
             self.broadcast_chat_event(&outcome.event);
         }
         Ok(crate::proto::client::ChatMessageEventResponse {
-            event: Some(chat_event_to_proto(self, outcome.event).await),
+            event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
 
@@ -2143,7 +2327,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         self.broadcast_chat_event(&outcome.event);
         Ok(crate::proto::client::SetChatReactionResponse {
-            event: Some(chat_event_to_proto(self, outcome.event).await),
+            event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
 
@@ -2190,7 +2374,7 @@ impl ClientApiImpl {
             .user_service
             .get_usernames(&user_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
         let users = page
             .users
             .into_iter()
@@ -2198,29 +2382,42 @@ impl ClientApiImpl {
                 let user_id = self
                     .public_id_codec
                     .encode_user_id(reaction_user.user_id)
-                    .expect("reaction user id must be encodable");
+                    .map_err(|error| {
+                        ApiError::Internal(format!(
+                            "Failed to encode chat reaction user id: {error}"
+                        ))
+                    })?;
                 let username = username_map
                     .get(&reaction_user.user_id)
                     .cloned()
-                    .unwrap_or_else(|| format!("user_{user_id}"));
-                crate::proto::client::ChatReactionUser {
+                    .ok_or_else(|| {
+                        ApiError::NotFound("Chat reaction user not found".to_string())
+                    })?;
+                Ok(crate::proto::client::ChatReactionUser {
                     user_id,
                     username,
                     reacted_at: reaction_user.reacted_at.timestamp(),
-                }
+                })
             })
-            .collect();
-        let next_cursor = page.next_cursor.map(|cursor| {
-            let user_id = self
-                .public_id_codec
-                .encode_user_id(cursor.user_id)
-                .expect("reaction cursor user id must be encodable");
-            format!(
-                "{}|{}",
-                synctv_common::time::format_datetime_rfc3339(cursor.reacted_at),
-                user_id
-            )
-        });
+            .collect::<Result<Vec<_>, ApiError>>()?;
+        let next_cursor = page
+            .next_cursor
+            .map(|cursor| {
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(cursor.user_id)
+                    .map_err(|error| {
+                        ApiError::Internal(format!(
+                            "Failed to encode chat reaction cursor user id: {error}"
+                        ))
+                    })?;
+                Ok::<String, ApiError>(format!(
+                    "{}|{}",
+                    synctv_common::time::format_datetime_rfc3339(cursor.reacted_at),
+                    user_id
+                ))
+            })
+            .transpose()?;
 
         Ok(crate::proto::client::ListChatReactionUsersResponse {
             users,
@@ -2247,7 +2444,7 @@ impl ClientApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        Ok(chat_read_state_to_proto(self, state))
+        chat_read_state_to_proto(self, state)
     }
 
     pub async fn get_chat_read_state_for_actor(
@@ -2264,7 +2461,7 @@ impl ClientApiImpl {
             .get_read_state(&actor.room_id(), &user_id)
             .await
             .map_err(ApiError::from)?;
-        Ok(chat_read_state_to_proto(self, state))
+        chat_read_state_to_proto(self, state)
     }
 
     fn broadcast_chat_event(&self, event: &ChatMessageEvent) {
@@ -2317,9 +2514,9 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let username = username_for_chat_message(self, &message.message).await;
+        let username = username_for_chat_message(self, &message.message).await?;
         Ok(crate::proto::client::GetChatMessageResponse {
-            message: Some(chat_message_to_proto(self, message, username)),
+            message: Some(chat_message_to_proto(self, message, username)?),
         })
     }
 
@@ -2348,10 +2545,10 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let before = self.chat_messages_to_proto(context.before).await;
-        let username = username_for_chat_message(self, &context.anchor.message).await;
-        let message = chat_message_to_proto(self, context.anchor, username);
-        let after = self.chat_messages_to_proto(context.after).await;
+        let before = self.chat_messages_to_proto(context.before).await?;
+        let username = username_for_chat_message(self, &context.anchor.message).await?;
+        let message = chat_message_to_proto(self, context.anchor, username)?;
+        let after = self.chat_messages_to_proto(context.after).await?;
         Ok(crate::proto::client::GetChatMessageContextResponse {
             before,
             message: Some(message),
@@ -2379,27 +2576,21 @@ impl ClientApiImpl {
         let playlist_id = optional_trimmed_string(&req.playback_playlist_id)
             .map(|id| crate::impls::proto_validated_playlist_id(id, &self.public_id_codec))
             .transpose()?;
-        let target_hash = (!req.playback_target.is_empty())
-            .then(|| crate::impls::messaging::chat_playback_target_hash(&req.playback_target));
-        let before_seconds = if req.before_seconds.is_finite() && req.before_seconds > 0.0 {
-            req.before_seconds
-        } else {
-            0.0
-        };
-        let after_seconds = if req.after_seconds.is_finite() && req.after_seconds > 0.0 {
-            req.after_seconds
-        } else {
-            30.0
-        };
-        let limit = positive_i32(req.limit, 200).min(500);
+        let target = (!req.playback_target.is_empty()).then(|| req.playback_target.clone());
+        let position_seconds = required_playback_position_seconds(req.position_seconds)?;
+        let before_seconds =
+            optional_positive_window_seconds(req.before_seconds, 0.0, "before_seconds")?;
+        let after_seconds =
+            optional_positive_window_seconds(req.after_seconds, 30.0, "after_seconds")?;
+        let limit = optional_positive_limit(req.limit, 200, 500, "limit")?;
         let messages = chat_service
             .get_playback_messages_with_images_for_viewer(
                 ChatPlaybackMessagesQuery {
                     room_id: actor.room_id(),
                     media_id,
                     playlist_id,
-                    target_hash,
-                    position_seconds: req.position_seconds,
+                    target,
+                    position_seconds,
                     before_seconds,
                     after_seconds,
                     limit,
@@ -2411,20 +2602,36 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetChatPlaybackMessagesResponse {
-            messages: self.chat_messages_to_proto(messages).await,
+            messages: self.chat_messages_to_proto(messages).await?,
         })
     }
 
     async fn chat_messages_to_proto(
         &self,
         messages: Vec<ChatMessageWithImages>,
-    ) -> Vec<crate::proto::client::ChatMessageReceive> {
+    ) -> Result<Vec<crate::proto::client::ChatMessageReceive>, ApiError> {
+        let mut user_ids: Vec<UserId> = messages
+            .iter()
+            .filter_map(|message| message.message.user_id)
+            .collect();
+        user_ids.sort();
+        user_ids.dedup();
+        let username_map = self
+            .user_service
+            .get_usernames(&user_ids)
+            .await
+            .map_err(ApiError::from)?;
         let mut converted = Vec::with_capacity(messages.len());
         for message in messages {
-            let username = username_for_chat_message(self, &message.message).await;
-            converted.push(chat_message_to_proto(self, message, username));
+            let username = match message.message.user_id {
+                Some(user_id) => username_map.get(&user_id).cloned().ok_or_else(|| {
+                    ApiError::NotFound("Chat message author not found".to_string())
+                })?,
+                None => "[deleted]".to_string(),
+            };
+            converted.push(chat_message_to_proto(self, message, username)?);
         }
-        converted
+        Ok(converted)
     }
 }
 
@@ -2434,9 +2641,10 @@ mod tests {
         build_check_room_request, build_create_websocket_ticket_request,
         build_get_chat_history_request, build_my_room_list_query, build_public_room_list_query,
         build_transfer_room_ownership_request, delete_chat_message_request_to_core,
-        edit_chat_message_request_to_core, optional_trimmed_string, parse_json_metadata,
-        parse_proto_chat_images, settings_registry_unavailable_error,
-        websocket_ticket_service_unavailable_error,
+        edit_chat_message_request_to_core, optional_positive_limit,
+        optional_positive_window_seconds, optional_trimmed_string, parse_json_metadata,
+        parse_proto_chat_images, required_playback_position_seconds,
+        settings_registry_unavailable_error, websocket_ticket_service_unavailable_error,
     };
     use crate::impls::ErrorKind;
 
@@ -2519,6 +2727,79 @@ mod tests {
     }
 
     #[test]
+    fn build_my_room_list_query_rejects_unknown_room_status() {
+        let error = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: String::new(),
+            status: 99,
+            is_banned: None,
+            relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
+            sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("status"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn room_list_query_builders_reject_unknown_sort_and_relation_enums() {
+        let public_room_error =
+            build_public_room_list_query(crate::proto::client::ListRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                sort_by: 99,
+                sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            public_room_error,
+            crate::impls::ApiError::InvalidInput(message) if message.contains("sort_by")
+        ));
+
+        let my_room_relation_error =
+            build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                is_banned: None,
+                relation: 99,
+                sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            my_room_relation_error,
+            crate::impls::ApiError::InvalidInput(message) if message.contains("relation")
+        ));
+
+        let my_room_sort_error =
+            build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                is_banned: None,
+                relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
+                sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
+                sort_direction: 99,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            my_room_sort_error,
+            crate::impls::ApiError::InvalidInput(message) if message.contains("sort_direction")
+        ));
+    }
+
+    #[test]
     fn build_my_room_list_query_rejects_too_long_search() {
         let error = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
             page: 1,
@@ -2565,7 +2846,7 @@ mod tests {
 
     #[test]
     fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let error = build_transfer_room_ownership_request(
             crate::proto::client::TransferRoomOwnershipRequest {
                 new_owner_user_id: "bad-id".to_string(),
@@ -2584,7 +2865,7 @@ mod tests {
 
     #[test]
     fn build_check_room_request_rejects_invalid_room_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let error = build_check_room_request(
             crate::proto::client::CheckRoomRequest {
                 room_id: "bad-room".to_string(),
@@ -2603,7 +2884,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_rejects_invalid_room_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let error = build_create_websocket_ticket_request(
             &crate::proto::client::CreateWebSocketTicketRequest {
                 room_id: "bad-room".to_string(),
@@ -2622,7 +2903,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_parses_proto_validated_room_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let room_id = synctv_core::models::RoomId::expect_positive(123);
         let room_public_id = codec.encode_room_id(room_id).unwrap();
         let parsed = build_create_websocket_ticket_request(
@@ -2638,7 +2919,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id() {
-        let codec = crate::PublicIdCodec::default_for_tests();
+        let codec = crate::PublicIdCodec::plain();
         let error = build_create_websocket_ticket_request(
             &crate::proto::client::CreateWebSocketTicketRequest {
                 room_id: "room_abc".to_string(),
@@ -2732,6 +3013,57 @@ mod tests {
     }
 
     #[test]
+    fn chat_playback_window_seconds_validate_explicit_values() {
+        assert_eq!(
+            optional_positive_window_seconds(0.0, 30.0, "after_seconds").unwrap(),
+            30.0
+        );
+        assert_eq!(
+            optional_positive_window_seconds(12.5, 30.0, "after_seconds").unwrap(),
+            12.5
+        );
+        assert!(matches!(
+            optional_positive_window_seconds(-1.0, 30.0, "after_seconds"),
+            Err(crate::impls::ApiError::InvalidInput(message))
+                if message.contains("after_seconds")
+        ));
+        assert!(matches!(
+            optional_positive_window_seconds(f64::NAN, 30.0, "after_seconds"),
+            Err(crate::impls::ApiError::InvalidInput(message))
+                if message.contains("after_seconds")
+        ));
+    }
+
+    #[test]
+    fn chat_playback_limit_validates_explicit_values() {
+        assert_eq!(optional_positive_limit(0, 200, 500, "limit").unwrap(), 200);
+        assert_eq!(optional_positive_limit(50, 200, 500, "limit").unwrap(), 50);
+        assert!(matches!(
+            optional_positive_limit(-1, 200, 500, "limit"),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("limit")
+        ));
+        assert!(matches!(
+            optional_positive_limit(501, 200, 500, "limit"),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("limit")
+        ));
+    }
+
+    #[test]
+    fn chat_playback_position_seconds_is_required_valid_value() {
+        assert_eq!(required_playback_position_seconds(42.5).unwrap(), 42.5);
+        assert!(matches!(
+            required_playback_position_seconds(-0.1),
+            Err(crate::impls::ApiError::InvalidInput(message))
+                if message.contains("position_seconds")
+        ));
+        assert!(matches!(
+            required_playback_position_seconds(f64::INFINITY),
+            Err(crate::impls::ApiError::InvalidInput(message))
+                if message.contains("position_seconds")
+        ));
+    }
+
+    #[test]
     fn parse_json_metadata_rejects_non_object_values() {
         let error = parse_json_metadata(br#"["tag"]"#).expect_err("metadata should be object");
 
@@ -2756,7 +3088,7 @@ mod tests {
             id: "image-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "rooms/1/chat/2/image-1".to_string(),
-            url: None,
+            url: Some("https://cdn.example.test/rooms/1/chat/2/image-1.webp".to_string()),
             mime_type: Some("image/webp".to_string()),
             size_bytes: Some(1024),
             width: Some(640),
@@ -2764,11 +3096,43 @@ mod tests {
             metadata: metadata.clone(),
         };
 
-        let proto = super::new_chat_image_to_proto(&image);
+        let proto = super::new_chat_image_to_proto(&image).expect("image should convert");
         let parsed = parse_proto_chat_images(&[proto]).expect("image should parse");
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].metadata, metadata);
+    }
+
+    #[test]
+    fn chat_image_upload_session_requires_upload_metadata_when_upload_required() {
+        let session = synctv_core::models::FileUploadSession {
+            file: synctv_core::models::NewChatImage {
+                id: "image-1".to_string(),
+                storage_backend: "database".to_string(),
+                object_key: "rooms/1/chat/2/image-1".to_string(),
+                url: None,
+                mime_type: Some("image/webp".to_string()),
+                size_bytes: Some(1024),
+                width: Some(640),
+                height: Some(480),
+                metadata: serde_json::json!({}),
+            },
+            upload_required: true,
+            ownership_proof_required: false,
+            ownership_proof_nonce: None,
+            ownership_proof_ranges: Vec::new(),
+            ownership_proof_metadata_key: None,
+            upload_url: Some("https://upload.example.test/image-1".to_string()),
+            upload_method: None,
+            upload_headers: Default::default(),
+            expires_at: Some(chrono::Utc::now()),
+            max_size_bytes: 1024 * 1024,
+        };
+
+        assert!(matches!(
+            super::upload_session_to_proto(session),
+            Err(crate::impls::ApiError::Internal(message)) if message.contains("upload_method")
+        ));
     }
 
     #[test]
@@ -2830,6 +3194,142 @@ mod tests {
     }
 
     #[test]
+    fn edit_chat_message_request_accepts_absent_expected_version() {
+        let core = edit_chat_message_request_to_core(
+            synctv_core::models::RoomId::expect_positive(9),
+            synctv_core::models::UserId::expect_positive(11),
+            crate::proto::client::EditChatMessageRequest {
+                message_id: "42".to_string(),
+                content: "hello".to_string(),
+                expected_version: 0,
+                metadata: Vec::new(),
+                client_operation_id: String::new(),
+            },
+        )
+        .expect("edit request should accept absent expected_version");
+
+        assert_eq!(core.expected_version, None);
+    }
+
+    #[test]
+    fn delete_chat_message_request_accepts_absent_expected_version() {
+        let request = crate::proto::client::DeleteChatMessageRequest {
+            message_id: "42".to_string(),
+            expected_version: 0,
+            reason: String::new(),
+            client_operation_id: String::new(),
+        };
+        let core = delete_chat_message_request_to_core(
+            synctv_core::models::RoomId::expect_positive(9),
+            synctv_core::models::UserId::expect_positive(11),
+            &request,
+        )
+        .expect("delete request should accept absent expected_version");
+
+        assert_eq!(core.expected_version, None);
+    }
+
+    #[test]
+    fn chat_message_request_rejects_negative_expected_version() {
+        let edit_error = edit_chat_message_request_to_core(
+            synctv_core::models::RoomId::expect_positive(9),
+            synctv_core::models::UserId::expect_positive(11),
+            crate::proto::client::EditChatMessageRequest {
+                message_id: "42".to_string(),
+                content: "hello".to_string(),
+                expected_version: -1,
+                metadata: Vec::new(),
+                client_operation_id: String::new(),
+            },
+        )
+        .expect_err("edit request with negative expected_version should fail");
+        assert!(matches!(
+            edit_error,
+            crate::impls::ApiError::InvalidInput(message)
+                if message.contains("expected_version")
+        ));
+
+        let delete_request = crate::proto::client::DeleteChatMessageRequest {
+            message_id: "42".to_string(),
+            expected_version: -1,
+            reason: String::new(),
+            client_operation_id: String::new(),
+        };
+        let delete_error = delete_chat_message_request_to_core(
+            synctv_core::models::RoomId::expect_positive(9),
+            synctv_core::models::UserId::expect_positive(11),
+            &delete_request,
+        )
+        .expect_err("delete request with negative expected_version should fail");
+        assert!(matches!(
+            delete_error,
+            crate::impls::ApiError::InvalidInput(message)
+                if message.contains("expected_version")
+        ));
+    }
+
+    #[test]
+    fn chat_reaction_summary_rejects_empty_key() {
+        let reaction = synctv_core::models::ChatReactionSummary {
+            key: " ".to_string(),
+            count: 1,
+            reacted_by_me: false,
+        };
+
+        let error = super::chat_reaction_summary_to_proto(&reaction)
+            .expect_err("empty reaction key should fail");
+
+        assert!(matches!(
+            error,
+            crate::impls::ApiError::Internal(message)
+                if message.contains("reaction summary key is empty")
+        ));
+    }
+
+    #[test]
+    fn chat_reaction_summary_rejects_negative_count() {
+        let reaction = synctv_core::models::ChatReactionSummary {
+            key: "like".to_string(),
+            count: -1,
+            reacted_by_me: true,
+        };
+
+        let error = super::chat_reaction_summary_to_proto(&reaction)
+            .expect_err("negative reaction count should fail");
+
+        assert!(matches!(
+            error,
+            crate::impls::ApiError::Internal(message)
+                if message.contains("negative count")
+        ));
+    }
+
+    #[test]
+    fn chat_reaction_count_rejects_overflow() {
+        let reactions = vec![
+            crate::proto::client::ChatReactionSummary {
+                key: "a".to_string(),
+                count: i64::MAX,
+                reacted_by_me: false,
+            },
+            crate::proto::client::ChatReactionSummary {
+                key: "b".to_string(),
+                count: 1,
+                reacted_by_me: false,
+            },
+        ];
+
+        let error = super::chat_reaction_count(&reactions)
+            .expect_err("reaction count overflow should fail");
+
+        assert!(matches!(
+            error,
+            crate::impls::ApiError::Internal(message)
+                if message.contains("reaction count exceeds")
+        ));
+    }
+
+    #[test]
     fn get_public_settings_missing_registry_is_service_unavailable() {
         let err = settings_registry_unavailable_error();
         assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
@@ -2853,5 +3353,22 @@ mod tests {
         assert!(matches!(err, crate::impls::ApiError::InvalidInput(_)));
         super::validate_room_password_for_set(" abcd ")
             .expect("trimmed password meets room minimum");
+    }
+
+    #[test]
+    fn parse_optional_client_ip_accepts_valid_ip() {
+        let parsed = super::parse_optional_client_ip(Some("203.0.113.42"))
+            .expect("valid client ip should parse");
+        assert_eq!(parsed, Some("203.0.113.42".parse().unwrap()));
+    }
+
+    #[test]
+    fn parse_optional_client_ip_rejects_invalid_ip() {
+        let error = super::parse_optional_client_ip(Some("not-an-ip"))
+            .expect_err("invalid client ip should fail");
+        assert!(matches!(
+            error,
+            crate::impls::ApiError::InvalidInput(message) if message.contains("Invalid client IP address")
+        ));
     }
 }

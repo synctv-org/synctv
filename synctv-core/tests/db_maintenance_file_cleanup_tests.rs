@@ -11,8 +11,8 @@ use synctv_core::{
     },
     repository::{FileStorageRepository, RoomRepository, UserRepository},
     service::{
-        AlwaysLeader, DatabaseMaintenanceService, FileStorageCleanupOrigin, FileStorageContext,
-        FileStorageService,
+        db_maintenance::DatabaseMaintenanceOptions, AlwaysLeader, DatabaseMaintenanceService,
+        FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
     },
     Error,
 };
@@ -90,6 +90,20 @@ impl FileStorageService for FailingFileStorageService {
     }
 }
 
+fn maintenance_with_storage(
+    pool: sqlx::PgPool,
+    storage: Arc<dyn FileStorageService>,
+) -> DatabaseMaintenanceService {
+    DatabaseMaintenanceService::new_with_options(
+        pool,
+        Arc::new(AlwaysLeader),
+        DatabaseMaintenanceOptions {
+            file_storage_service: Some(storage),
+            ..DatabaseMaintenanceOptions::default()
+        },
+    )
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn old_chat_message_cleanup_deletes_image_objects() {
@@ -116,8 +130,7 @@ async fn old_chat_message_cleanup_deletes_image_objects() {
     .await
     .expect("chat message should be inserted");
 
-    let service = DatabaseMaintenanceService::new(pool.clone(), Arc::new(AlwaysLeader))
-        .with_file_storage_service(storage.clone());
+    let service = maintenance_with_storage(pool.clone(), storage.clone());
 
     service
         .run_cleanup_old_chat_messages()
@@ -164,8 +177,8 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
     .await
     .expect("chat message should be inserted");
 
-    let failing_service = DatabaseMaintenanceService::new(pool.clone(), Arc::new(AlwaysLeader))
-        .with_file_storage_service(Arc::new(FailingFileStorageService));
+    let failing_service =
+        maintenance_with_storage(pool.clone(), Arc::new(FailingFileStorageService));
     failing_service
         .run_cleanup_old_chat_messages()
         .await
@@ -186,8 +199,7 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
     assert_eq!(due, 1);
 
     let recording_storage = Arc::new(RecordingFileStorageService::default());
-    let retry_service = DatabaseMaintenanceService::new(pool.clone(), Arc::new(AlwaysLeader))
-        .with_file_storage_service(recording_storage.clone());
+    let retry_service = maintenance_with_storage(pool.clone(), recording_storage.clone());
     retry_service
         .run_retry_file_cleanup_jobs()
         .await
@@ -251,8 +263,7 @@ async fn expired_file_reference_cleanup_releases_reference() {
     .expect("expired reference should insert");
     tx.commit().await.expect("transaction should commit");
 
-    let service = DatabaseMaintenanceService::new(pool.clone(), Arc::new(AlwaysLeader))
-        .with_file_storage_service(storage.clone());
+    let service = maintenance_with_storage(pool.clone(), storage.clone());
     let released = service
         .run_cleanup_expired_file_references()
         .await

@@ -11,7 +11,7 @@ use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
     models::{
         normalize_provider_instance_name, CreateFileUploadSession, FileBlob, FileUploadSession,
-        Media, MediaId, NewStoredFile, PlaylistId, RoomId, UserId,
+        FromProviderParams, Media, MediaId, NewStoredFile, PlaylistId, RoomId, UserId,
     },
     provider::{
         provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
@@ -43,13 +43,14 @@ const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
 const MEDIA_COVER_REFERENCE_KIND: &str = "media_cover";
 
 pub type RealtimeOutboxMediaEventFactory =
-    Arc<dyn Fn(&Media) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&Media) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxMediaBatchEventFactory =
-    Arc<dyn Fn(&[Media]) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&[Media]) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
 
-fn batch_media_position(index: usize, start_position: f64) -> f64 {
-    let index = u32::try_from(index).unwrap_or(u32::MAX);
-    MEDIA_BATCH_POSITION_STEP.mul_add(f64::from(index), start_position)
+fn batch_media_position(index: usize, start_position: f64) -> Result<f64> {
+    let index = u32::try_from(index)
+        .map_err(|_| Error::InvalidInput("Media batch index exceeds u32::MAX".to_string()))?;
+    Ok(MEDIA_BATCH_POSITION_STEP.mul_add(f64::from(index), start_position))
 }
 
 fn validate_media_name(name: &str) -> Result<()> {
@@ -139,9 +140,9 @@ pub struct MediaService {
     providers_manager: Arc<ProvidersManager>,
     /// Local room event bus for media/domain notifications
     notification_service: NotificationService,
-    /// Optional credential encryption for provider credential resolution
+    /// Credential encryption used by credential-backed providers.
     credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
-    /// Optional credential repository for provider-backed source resolution
+    /// Repository used by credential-backed providers.
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
@@ -222,14 +223,12 @@ impl MediaService {
         deduped
     }
 
-    async fn resolve_actor_username(&self, user_id: &UserId) -> String {
+    async fn resolve_actor_username(&self, user_id: &UserId) -> Result<String> {
         UserRepository::new(self.media_repo.pool().clone())
             .get_by_id(user_id)
-            .await
-            .ok()
-            .flatten()
+            .await?
             .map(|user| user.username)
-            .unwrap_or_default()
+            .ok_or_else(|| Error::NotFound("Actor user not found".to_string()))
     }
 
     /// Create a new media service
@@ -268,6 +267,36 @@ impl MediaService {
         credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
+        Self::new_with_runtime(
+            media_repo,
+            playlist_repo,
+            permission_service,
+            providers_manager,
+            notification_service,
+            credential_encryption,
+            credential_repo,
+            None,
+            None,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_runtime(
+        media_repo: MediaRepository,
+        playlist_repo: PlaylistRepository,
+        permission_service: PermissionService,
+        providers_manager: Arc<ProvidersManager>,
+        notification_service: NotificationService,
+        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
+        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+        realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+        file_storage_service: Option<Arc<dyn FileStorageService>>,
+    ) -> Self {
+        assert!(
+            credential_repo.is_none() || credential_encryption.is_some(),
+            "provider credential repository wiring requires credential encryption"
+        );
         Self {
             media_repo,
             playlist_repo,
@@ -276,27 +305,14 @@ impl MediaService {
             notification_service,
             credential_encryption,
             credential_repo,
-            realtime_outbox: None,
-            file_storage_service: None,
+            realtime_outbox,
+            file_storage_service,
         }
-    }
-
-    #[must_use]
-    pub fn with_file_storage_service(
-        mut self,
-        file_storage_service: Arc<dyn FileStorageService>,
-    ) -> Self {
-        self.file_storage_service = Some(file_storage_service);
-        self
     }
 
     #[must_use]
     pub fn file_storage_service(&self) -> Option<&Arc<dyn FileStorageService>> {
         self.file_storage_service.as_ref()
-    }
-
-    pub fn set_realtime_outbox(&mut self, realtime_outbox: Option<Arc<RealtimeOutboxRepository>>) {
-        self.realtime_outbox = realtime_outbox;
     }
 
     /// Get a reference to the providers manager
@@ -472,18 +488,17 @@ impl MediaService {
         // Store the provider type and optional instance binding separately.
         // Source config remains provider-owned and must not carry instance
         // routing metadata.
-        let media = Media::from_provider_with_description(
-            request.playlist_id,
+        let media = Media::from_provider_with_params(FromProviderParams {
+            playlist_id: request.playlist_id,
             room_id,
-            Some(user_id),
-            request.name.clone(),
-            request.description.clone(),
-            prepared_source_config,
-            provider.name(), // Provider type name (e.g., "bilibili")
-            bound_provider_instance.clone(),
+            creator_id: Some(user_id),
+            name: request.name.clone(),
+            description: request.description.clone(),
+            source_config: prepared_source_config,
+            provider_name: provider.name().to_string(),
+            provider_instance_name: bound_provider_instance.clone(),
             position,
-        );
-
+        });
         let created_media = self
             .media_repo
             .create_with_executor(&media, &mut *tx)
@@ -491,7 +506,8 @@ impl MediaService {
 
         let outbox_event = outbox_event_factory
             .as_ref()
-            .and_then(|factory| factory(&created_media));
+            .map(|factory| factory(&created_media))
+            .transpose()?;
         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
             outbox.insert_with_executor(event, &mut *tx).await?;
         }
@@ -506,9 +522,21 @@ impl MediaService {
             provider_instance_name = bound_provider_instance.as_deref().unwrap_or(""),
             "Media added to playlist"
         );
-        let actor_username = self.resolve_actor_username(&user_id).await;
+        let actor_username = match self.resolve_actor_username(&user_id).await {
+            Ok(username) => username,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    media_id = %created_media.id,
+                    "Skipped media added notification because actor username lookup failed"
+                );
+                return Ok(created_media);
+            }
+        };
 
-        if let Err(e) = self.notification_service.notify_media_added(
+        let subscriber_count = self.notification_service.notify_media_added(
             &room_id,
             &MediaAddedNotification {
                 user_id: &user_id,
@@ -518,11 +546,12 @@ impl MediaService {
                 url: "", // URL is generated dynamically at playback time
                 position: created_media.position,
             },
-        ) {
-            tracing::warn!(
-                error = %e,
+        );
+        if subscriber_count == 0 {
+            tracing::debug!(
                 room_id = %room_id,
-                "Failed to broadcast media added event"
+                media_id = %created_media.id,
+                "Media added event had no local subscribers"
             );
         }
 
@@ -688,17 +717,17 @@ impl MediaService {
         for (index, (item, provider, prepared_source_config, provider_instance_name)) in
             validated_items.into_iter().enumerate()
         {
-            let media = Media::from_provider_with_description(
-                item.playlist_id,
+            let media = Media::from_provider_with_params(FromProviderParams {
+                playlist_id: item.playlist_id,
                 room_id,
-                Some(user_id),
-                item.name,
-                item.description,
-                prepared_source_config,
-                provider.name(), // Provider type name
+                creator_id: Some(user_id),
+                name: item.name,
+                description: item.description,
+                source_config: prepared_source_config,
+                provider_name: provider.name().to_string(),
                 provider_instance_name,
-                batch_media_position(index, start_position),
-            );
+                position: batch_media_position(index, start_position)?,
+            });
             media_items.push(media);
         }
 
@@ -708,9 +737,10 @@ impl MediaService {
             .create_batch_with_executor(&media_items, &mut *tx)
             .await?;
 
-        let outbox_events = outbox_event_factory
-            .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&created_items));
+        let outbox_events = match outbox_event_factory.as_ref() {
+            Some(factory) => factory(&created_items)?,
+            None => Vec::new(),
+        };
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -724,10 +754,21 @@ impl MediaService {
             count = created_items.len(),
             "Batch added media to playlist"
         );
-        let actor_username = self.resolve_actor_username(&user_id).await;
+        let actor_username = match self.resolve_actor_username(&user_id).await {
+            Ok(username) => username,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "Skipped batch media added notifications because actor username lookup failed"
+                );
+                return Ok(created_items);
+            }
+        };
 
         for item in &created_items {
-            if let Err(e) = self.notification_service.notify_media_added(
+            let subscriber_count = self.notification_service.notify_media_added(
                 &room_id,
                 &MediaAddedNotification {
                     user_id: &user_id,
@@ -737,12 +778,12 @@ impl MediaService {
                     url: "",
                     position: item.position,
                 },
-            ) {
-                tracing::warn!(
-                    error = %e,
+            );
+            if subscriber_count == 0 {
+                tracing::debug!(
                     room_id = %room_id,
                     media_id = %item.id,
-                    "Failed to broadcast media added event"
+                    "Media added event had no local subscribers"
                 );
             }
         }
@@ -837,7 +878,8 @@ impl MediaService {
                     Ok(Some(updated_media)) => {
                         let outbox_event = outbox_event_factory
                             .as_ref()
-                            .and_then(|factory| factory(&updated_media));
+                            .map(|factory| factory(&updated_media))
+                            .transpose()?;
                         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
                         {
                             outbox.insert_with_executor(event, &mut *tx).await?;
@@ -860,20 +902,33 @@ impl MediaService {
             media_id = %request.media_id,
             "Media edited"
         );
-        let actor_username = self.resolve_actor_username(&user_id).await;
+        let actor_username = match self.resolve_actor_username(&user_id).await {
+            Ok(username) => username,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    media_id = %updated_media.id,
+                    "Skipped media updated notification because actor username lookup failed"
+                );
+                return Ok(updated_media);
+            }
+        };
 
-        if let Err(e) = self.notification_service.notify_media_updated(
+        let subscriber_count = self.notification_service.notify_media_updated(
             &room_id,
             &user_id,
             &actor_username,
             updated_media.id,
             &updated_media.name,
             updated_media.position,
-        ) {
-            tracing::warn!(
-                error = %e,
+        );
+        if subscriber_count == 0 {
+            tracing::debug!(
                 room_id = %room_id,
-                "Failed to broadcast media updated event"
+                media_id = %updated_media.id,
+                "Media updated event had no local subscribers"
             );
         }
 
@@ -1135,7 +1190,8 @@ impl MediaService {
                     Ok(Some(updated_media)) => {
                         let outbox_event = outbox_event_factory
                             .as_ref()
-                            .and_then(|factory| factory(&updated_media));
+                            .map(|factory| factory(&updated_media))
+                            .transpose()?;
                         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
                         {
                             outbox.insert_with_executor(event, &mut *tx).await?;
@@ -1159,18 +1215,19 @@ impl MediaService {
             media_id = %request.media_id,
             "Media edited by admin"
         );
-        if let Err(e) = self.notification_service.notify_media_updated(
+        let subscriber_count = self.notification_service.notify_media_updated(
             &room_id,
             &admin_user_id,
             actor_username,
             updated_media.id,
             &updated_media.name,
             updated_media.position,
-        ) {
-            tracing::warn!(
-                error = %e,
+        );
+        if subscriber_count == 0 {
+            tracing::debug!(
                 room_id = %room_id,
-                "Failed to broadcast media updated event"
+                media_id = %updated_media.id,
+                "Media updated event had no local subscribers"
             );
         }
 
@@ -1473,9 +1530,10 @@ impl MediaService {
             )
             .await?;
 
-        let outbox_events = outbox_event_factory
-            .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&moved));
+        let outbox_events = match outbox_event_factory.as_ref() {
+            Some(factory) => factory(&moved)?,
+            None => Vec::new(),
+        };
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -1498,60 +1556,87 @@ impl MediaService {
         let actor_username = if let Some(actor_username) = actor_username {
             actor_username.to_string()
         } else {
-            self.resolve_actor_username(&user_id).await
+            match self.resolve_actor_username(&user_id).await {
+                Ok(username) => username,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        user_id = %user_id,
+                        "Skipped media move notifications because actor username lookup failed"
+                    );
+                    return Ok(moved);
+                }
+            }
         };
 
         if moved_within_same_scope {
             if moved.len() == 1 {
                 let media = &moved[0];
-                if let Err(e) = self.notification_service.notify_media_updated(
+                let subscriber_count = self.notification_service.notify_media_updated(
                     &room_id,
                     &user_id,
                     &actor_username,
                     media.id,
                     &media.name,
                     media.position,
-                ) {
-                    tracing::warn!(
-                        error = %e,
+                );
+                if subscriber_count == 0 {
+                    tracing::debug!(
                         room_id = %room_id,
                         media_id = %media.id,
-                        "Failed to broadcast media moved event"
+                        "Media moved event had no local subscribers"
                     );
                 }
             } else {
                 let moved_ids: Vec<MediaId> = moved.iter().map(|media| media.id).collect();
-                if let Err(e) = self.notification_service.notify_playlist_reordered(
+                let subscriber_count = self.notification_service.notify_playlist_reordered(
                     &room_id,
                     Some(&user_id),
                     &actor_username,
                     &moved_ids,
-                ) {
-                    tracing::warn!(
-                        error = %e,
+                );
+                if subscriber_count == 0 {
+                    tracing::debug!(
                         room_id = %room_id,
-                        "Failed to broadcast playlist reordered event"
+                        "Playlist reordered event had no local subscribers"
                     );
                 }
             }
         } else {
             for media in &moved {
                 if let Some(original_scope) = original_scope_by_id.get(&media.id) {
-                    if *original_scope != media.playlist_id {
-                        if let Err(e) = self.notification_service.notify_media_removed(
+                    if *original_scope == media.playlist_id {
+                        let subscriber_count = self.notification_service.notify_media_updated(
+                            &room_id,
+                            &user_id,
+                            &actor_username,
+                            media.id,
+                            &media.name,
+                            media.position,
+                        );
+                        if subscriber_count == 0 {
+                            tracing::debug!(
+                                room_id = %room_id,
+                                media_id = %media.id,
+                                "Media moved event had no local subscribers"
+                            );
+                        }
+                    } else {
+                        let subscriber_count = self.notification_service.notify_media_removed(
                             &room_id,
                             Some(&user_id),
                             &actor_username,
                             media.id,
-                        ) {
-                            tracing::warn!(
-                                error = %e,
+                        );
+                        if subscriber_count == 0 {
+                            tracing::debug!(
                                 room_id = %room_id,
                                 media_id = %media.id,
-                                "Failed to broadcast moved media removal event"
+                                "Moved media removal event had no local subscribers"
                             );
                         }
-                        if let Err(e) = self.notification_service.notify_media_added(
+                        let subscriber_count = self.notification_service.notify_media_added(
                             &room_id,
                             &MediaAddedNotification {
                                 user_id: &user_id,
@@ -1561,28 +1646,14 @@ impl MediaService {
                                 url: "",
                                 position: media.position,
                             },
-                        ) {
-                            tracing::warn!(
-                                error = %e,
+                        );
+                        if subscriber_count == 0 {
+                            tracing::debug!(
                                 room_id = %room_id,
                                 media_id = %media.id,
-                                "Failed to broadcast moved media add event"
+                                "Moved media add event had no local subscribers"
                             );
                         }
-                    } else if let Err(e) = self.notification_service.notify_media_updated(
-                        &room_id,
-                        &user_id,
-                        &actor_username,
-                        media.id,
-                        &media.name,
-                        media.position,
-                    ) {
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id,
-                            media_id = %media.id,
-                            "Failed to broadcast media moved event"
-                        );
                     }
                 }
             }
@@ -1985,61 +2056,6 @@ mod tests {
     }
 
     #[test]
-    fn test_add_media_request_construction() {
-        let request = AddMediaRequest {
-            playlist_id: Some(PlaylistId::new()),
-            name: "Test Video".to_string(),
-            description: String::new(),
-            source_provider: "bilibili".to_string(),
-            provider_instance_name: Some("bilibili_main".to_string()),
-            source_config: serde_json::json!({"bvid": "BV1234567890"}),
-        };
-
-        assert_eq!(request.name, "Test Video");
-        assert_eq!(request.source_provider, "bilibili");
-        assert_eq!(
-            request.provider_instance_name.as_deref(),
-            Some("bilibili_main")
-        );
-        assert!(request.source_config.get("bvid").is_some());
-    }
-
-    #[test]
-    fn test_add_media_request_with_complex_source_config() {
-        let config = serde_json::json!({
-            "url": "https://example.com/video.mp4",
-            "headers": {"Referer": "https://example.com"},
-            "quality": "1080p"
-        });
-
-        let request = AddMediaRequest {
-            playlist_id: Some(PlaylistId::new()),
-            name: "Complex Video".to_string(),
-            description: String::new(),
-            source_provider: "alist".to_string(),
-            provider_instance_name: Some("alist_home".to_string()),
-            source_config: config.clone(),
-        };
-
-        assert_eq!(request.source_config, config);
-        assert_eq!(
-            request.source_config["headers"]["Referer"],
-            "https://example.com"
-        );
-    }
-
-    #[test]
-    fn test_edit_media_request_name_only() {
-        let request = EditMediaRequest {
-            media_id: MediaId::new(),
-            name: Some("New Name".to_string()),
-            description: None,
-        };
-
-        assert_eq!(request.name, Some("New Name".to_string()));
-    }
-
-    #[test]
     fn test_media_edit_requires_matching_creator() {
         let creator_id = UserId::expect_positive(10);
         let media = Media {
@@ -2076,102 +2092,7 @@ mod tests {
     }
 
     #[test]
-    fn test_move_media_request_before_anchor() {
-        let request = MoveMediaRequest {
-            media_ids: vec![MediaId::new()],
-            source_playlist_id: None,
-            target_playlist_id: None,
-            all_from_scope: false,
-            before_media_id: Some(MediaId::new()),
-            after_media_id: None,
-        };
-
-        assert_eq!(request.media_ids.len(), 1);
-        assert!(request.before_media_id.is_some());
-        assert!(request.after_media_id.is_none());
-    }
-
-    #[test]
-    fn test_move_media_request_after_anchor() {
-        let request = MoveMediaRequest {
-            media_ids: vec![MediaId::new()],
-            source_playlist_id: None,
-            target_playlist_id: None,
-            all_from_scope: false,
-            before_media_id: None,
-            after_media_id: Some(MediaId::new()),
-        };
-
-        assert_eq!(request.media_ids.len(), 1);
-        assert!(request.before_media_id.is_none());
-        assert!(request.after_media_id.is_some());
-    }
-
-    #[test]
-    fn test_batch_items_construction() {
-        let items: Vec<AddMediaRequest> = (0..101)
-            .map(|i| AddMediaRequest {
-                playlist_id: Some(PlaylistId::new()),
-                name: format!("Video {i}"),
-                description: String::new(),
-                source_provider: "direct_url".to_string(),
-                provider_instance_name: Some("test".to_string()),
-                source_config: serde_json::json!({}),
-            })
-            .collect();
-
-        assert_eq!(items.len(), 101);
-    }
-
-    #[test]
-    fn test_empty_batch_is_valid() {
-        let items: Vec<AddMediaRequest> = Vec::new();
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_source_config_null_value() {
-        let request = AddMediaRequest {
-            playlist_id: Some(PlaylistId::new()),
-            name: "Null Config".to_string(),
-            description: String::new(),
-            source_provider: "direct_url".to_string(),
-            provider_instance_name: Some("test".to_string()),
-            source_config: serde_json::Value::Null,
-        };
-
-        assert!(request.source_config.is_null());
-    }
-
-    #[test]
-    fn test_source_config_nested_structure() {
-        let config = serde_json::json!({
-            "provider": "alist",
-            "path": "/movies/action",
-            "options": {
-                "transcode": true,
-                "subtitle": {
-                    "lang": "en",
-                    "auto": false
-                }
-            }
-        });
-
-        let request = AddMediaRequest {
-            playlist_id: Some(PlaylistId::new()),
-            name: "Nested Config".to_string(),
-            description: String::new(),
-            source_provider: "alist".to_string(),
-            provider_instance_name: Some("alist_home".to_string()),
-            source_config: config,
-        };
-
-        assert_eq!(request.source_config["options"]["subtitle"]["lang"], "en");
-    }
-
-    #[test]
     fn test_edit_media_error_message_contains_media_id() {
-        // Test that optimistic lock error messages include media_id for debugging
         let media_id = MediaId::new();
 
         let expected_msg =

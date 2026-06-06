@@ -80,15 +80,7 @@ impl MetricsAccessController {
         metrics: &MetricsConfig,
         headers: &HeaderMap,
     ) -> Result<(), MetricsAccessError> {
-        let Some(header_value) = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-        else {
-            return Err(MetricsAccessError::Unauthorized);
-        };
-
-        let provided = synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
-            .map_err(|_| MetricsAccessError::Unauthorized)?;
+        let provided = extract_bearer_token_from_headers(headers)?;
 
         if constant_time_eq(&provided, &metrics.auth.bearer_token) {
             Ok(())
@@ -170,24 +162,17 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
 
 #[cfg(feature = "k8s")]
 fn extract_bearer_token(headers: &HeaderMap) -> Result<String, MetricsAccessError> {
-    let Some(header_value) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return Err(MetricsAccessError::Unauthorized);
-    };
+    extract_bearer_token_from_headers(headers)
+}
 
+fn extract_bearer_token_from_headers(headers: &HeaderMap) -> Result<String, MetricsAccessError> {
+    let header_value = authorization_header(headers)?;
     synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
         .map_err(|_| MetricsAccessError::Unauthorized)
 }
 
 fn extract_basic_credentials(headers: &HeaderMap) -> Result<String, MetricsAccessError> {
-    let Some(header_value) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return Err(MetricsAccessError::Unauthorized);
-    };
+    let header_value = authorization_header(headers)?;
 
     let Some(encoded) = header_value
         .split_once(' ')
@@ -201,6 +186,13 @@ fn extract_basic_credentials(headers: &HeaderMap) -> Result<String, MetricsAcces
         .decode(encoded)
         .map_err(|_| MetricsAccessError::Unauthorized)?;
     String::from_utf8(decoded).map_err(|_| MetricsAccessError::Unauthorized)
+}
+
+fn authorization_header(headers: &HeaderMap) -> Result<&str, MetricsAccessError> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .ok_or(MetricsAccessError::Unauthorized)
+        .and_then(|value| value.to_str().map_err(|_| MetricsAccessError::Unauthorized))
 }
 
 #[cfg(feature = "k8s")]
@@ -476,6 +468,38 @@ mod tests {
         assert_eq!(result, Err(MetricsAccessError::Unauthorized));
     }
 
+    #[cfg(not(feature = "k8s"))]
+    #[test]
+    fn metrics_access_controller_rejects_non_ascii_bearer_authorization() {
+        let controller = MetricsAccessController::new();
+        let config = bearer_metrics_config("secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let result = controller.authorize(&config, &headers, "/metrics", "GET");
+
+        assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+    }
+
+    #[cfg(not(feature = "k8s"))]
+    #[test]
+    fn metrics_access_controller_rejects_non_ascii_basic_authorization() {
+        let controller = MetricsAccessController::new();
+        let config = basic_metrics_config("metrics", "secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let result = controller.authorize(&config, &headers, "/metrics", "GET");
+
+        assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+    }
+
     #[cfg(feature = "k8s")]
     #[tokio::test]
     async fn metrics_access_controller_rejects_wrong_basic_password() {
@@ -485,6 +509,42 @@ mod tests {
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_static("Basic bWV0cmljczp3cm9uZw=="),
+        );
+
+        let result = controller
+            .authorize(&config, &headers, "/metrics", "GET")
+            .await;
+
+        assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+    }
+
+    #[cfg(feature = "k8s")]
+    #[tokio::test]
+    async fn metrics_access_controller_rejects_non_ascii_bearer_authorization() {
+        let controller = MetricsAccessController::new();
+        let config = bearer_metrics_config("secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let result = controller
+            .authorize(&config, &headers, "/metrics", "GET")
+            .await;
+
+        assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+    }
+
+    #[cfg(feature = "k8s")]
+    #[tokio::test]
+    async fn metrics_access_controller_rejects_non_ascii_basic_authorization() {
+        let controller = MetricsAccessController::new();
+        let config = basic_metrics_config("metrics", "secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
         );
 
         let result = controller

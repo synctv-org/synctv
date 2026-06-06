@@ -20,9 +20,11 @@ use std::time::{Duration, Instant};
 
 use crate::{RedisConnectionRuntime, Result, SharedStateProfile};
 
-fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> chrono::Duration {
-    let seconds = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
-    chrono::Duration::seconds(seconds)
+fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> Result<chrono::Duration> {
+    let seconds = i64::try_from(ttl_secs).map_err(|_| {
+        crate::Error::InvalidInput("token blacklist TTL exceeds i64::MAX seconds".to_string())
+    })?;
+    Ok(chrono::Duration::seconds(seconds))
 }
 
 // TokenBlacklistStore trait
@@ -37,28 +39,7 @@ fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> chrono::Duration {
 /// revoked. The same primitive is also used by a few higher-level version keys.
 #[async_trait]
 pub trait TokenBlacklistStore: Send + Sync {
-    /// Check if a JTI key is blacklisted (already used).
-    ///
-    /// This convenience method is intended for tests and best-effort
-    /// introspection only. Security-sensitive authentication paths must use
-    /// [`is_blacklisted_checked`] so storage errors fail closed instead of
-    /// silently treating the token as valid.
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        self.is_blacklisted_checked(key).await.unwrap_or_else(|e| {
-            tracing::error!(
-                key = %key,
-                error = %e,
-                "Token blacklist convenience lookup failed; returning not-blacklisted for non-auth usage"
-            );
-            false
-        })
-    }
-
     /// Check if a JTI key is blacklisted, propagating storage errors.
-    ///
-    /// Unlike [`is_blacklisted`] which returns `false` on errors (fail-open),
-    /// this method returns `Err` on storage failures so the caller can decide
-    /// whether to fail-open or fail-closed.
     ///
     /// Implementations must provide this method; authentication code relies on
     /// it to preserve fail-closed semantics.
@@ -85,32 +66,13 @@ pub trait TokenBlacklistStore: Send + Sync {
     /// - `Ok(false)` means this is the first use → proceed to issue new token
     /// - `Ok(true)` means a replay was detected → trigger family revocation
     ///
-    /// # Default Implementation
-    ///
-    /// The default implementation uses `is_blacklisted_checked` + `blacklist`
-    /// which is NOT atomic. Implementations should override this with proper atomic
-    /// operations (e.g., Redis SETNX, `PostgreSQL` INSERT... ON CONFLICT DO NOTHING).
-    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        // Default: non-atomic check-then-set (has TOCTOU race condition)
-        if self.is_blacklisted_checked(key).await? {
-            return Ok(true);
-        }
-        self.blacklist(key, ttl_secs).await?;
-        Ok(false)
-    }
-
-    /// Get the family revocation timestamp for a key, if set.
-    ///
-    /// Returns `Some(revoked_at_timestamp)` if the family was revoked.
-    async fn get_family_revoked_at(&self, key: &str) -> Option<i64>;
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool>;
 
     /// Get the family revocation timestamp for a key, propagating storage errors.
     ///
     /// Authentication-sensitive code must use this variant so storage failures
     /// fail closed instead of silently treating the family as valid.
-    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
-        Ok(self.get_family_revoked_at(key).await)
-    }
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>>;
 
     /// Set the family revocation timestamp for a key with TTL.
     ///
@@ -216,15 +178,11 @@ impl InMemoryTokenBlacklistStore {
 
 #[async_trait]
 impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        match self.jti_blacklist.get(key).await {
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        Ok(match self.jti_blacklist.get(key).await {
             Some(expiry) => Instant::now() < expiry,
             None => false,
-        }
-    }
-
-    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
-        Ok(self.is_blacklisted(key).await)
+        })
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
@@ -253,7 +211,7 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
             let _guard = mutex.lock().await;
 
             // Double-check pattern: check if already blacklisted
-            if self.is_blacklisted(key).await {
+            if self.is_blacklisted_checked(key).await? {
                 true
             } else {
                 // Not blacklisted, so insert atomically
@@ -270,11 +228,11 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
         Ok(already_blacklisted)
     }
 
-    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        match self.family_revoked.get(key).await {
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
+        Ok(match self.family_revoked.get(key).await {
             Some((timestamp, expiry)) if Instant::now() < expiry => Some(timestamp),
             _ => None,
-        }
+        })
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
@@ -347,16 +305,6 @@ impl PgTokenBlacklistStore {
 
 #[async_trait]
 impl TokenBlacklistStore for PgTokenBlacklistStore {
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM auth_token_blacklist WHERE jti = $1 AND expires_at > NOW()) as \"exists!\"",
-            key,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(false)
-    }
-
     async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
         sqlx::query_scalar!(
             "SELECT EXISTS(SELECT 1 FROM auth_token_blacklist WHERE jti = $1 AND expires_at > NOW()) as \"exists!\"",
@@ -375,7 +323,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
-        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
+        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs)?;
         sqlx::query!(
             "INSERT INTO auth_token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
@@ -403,7 +351,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
+        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs)?;
 
         // xmax = 0 means the row was inserted (no conflict)
         // xmax != 0 means the row already existed (conflict, nothing inserted)
@@ -432,21 +380,6 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         Ok(!inserted)
     }
 
-    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        sqlx::query_scalar!(
-            r#"SELECT family_revoked_at as "family_revoked_at!"
-             FROM auth_token_blacklist
-             WHERE jti = $1
-               AND expires_at > NOW()
-               AND family_revoked_at IS NOT NULL"#,
-            key,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
-    }
-
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
         sqlx::query_scalar!(
             r#"SELECT family_revoked_at as "family_revoked_at!"
@@ -469,7 +402,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
-        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
+        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs)?;
         sqlx::query!(
             "INSERT INTO auth_token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) \
              ON CONFLICT (jti) DO UPDATE
@@ -511,7 +444,7 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 /// ## Architecture
 ///
 /// ```text
-/// is_blacklisted("jti_xyz"):
+/// is_blacklisted_checked("jti_xyz"):
 ///
 /// L1 (moka) ──hit──> return cached result (positive or negative)
 /// │ miss
@@ -628,16 +561,22 @@ impl TieredTokenBlacklistStore {
 
     async fn redis_conn_snapshot_result(&self) -> Option<redis::aio::ConnectionManager> {
         let runtime = self.redis_runtime.as_ref()?;
-        if let Ok(conn) =
-            tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await
-        {
-            Some(conn)
-        } else {
-            tracing::warn!(
-                timeout_ms = runtime.operation_timeout().as_millis(),
-                "Redis L2 token blacklist connection snapshot timed out"
-            );
-            None
+        match tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await {
+            Ok(Ok(conn)) => Some(conn),
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    error = %error,
+                    "Redis L2 token blacklist connection snapshot failed"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = runtime.operation_timeout().as_millis(),
+                    "Redis L2 token blacklist connection snapshot timed out"
+                );
+                None
+            }
         }
     }
 
@@ -696,74 +635,6 @@ impl TieredTokenBlacklistStore {
 
 #[async_trait]
 impl TokenBlacklistStore for TieredTokenBlacklistStore {
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
-            if Instant::now() < expiry {
-                return is_bl;
-            }
-            // Expired entry; fall through to L2/PG
-        }
-
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let redis_key = self.bl_key(key);
-            if let Some(Some(val)) = self
-                .redis_get_string(&mut conn, &redis_key, "blacklist lookup")
-                .await
-            {
-                let is_bl = val == "1";
-                let l1_ttl = if is_bl {
-                    L1_POSITIVE_TTL
-                } else {
-                    L1_NEGATIVE_TTL
-                };
-                self.l1_blacklist
-                    .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
-                    .await;
-                return is_bl;
-            }
-        }
-
-        let found = self.pg.is_blacklisted(key).await;
-
-        if found {
-            // Positive: populate L1 + L2
-            self.l1_blacklist
-                .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
-                .await;
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let redis_key = self.bl_key(key);
-                // Use a reasonable TTL; we don't know the token's TTL here,
-                // so use L1_POSITIVE_TTL as a safe upper bound for L2.
-                self.redis_set_ex(
-                    &mut conn,
-                    &redis_key,
-                    "1",
-                    L1_POSITIVE_TTL.as_secs(),
-                    "blacklist positive cache write",
-                )
-                .await;
-            }
-        } else {
-            // Negative sentinel: populate L1 + L2
-            self.l1_blacklist
-                .insert(key.to_string(), (false, Instant::now() + L1_NEGATIVE_TTL))
-                .await;
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let redis_key = self.bl_key(key);
-                self.redis_set_ex(
-                    &mut conn,
-                    &redis_key,
-                    "0",
-                    L2_NEGATIVE_TTL_SECS,
-                    "blacklist negative cache write",
-                )
-                .await;
-            }
-        }
-
-        found
-    }
-
     async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
         if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
             if Instant::now() < expiry {
@@ -928,83 +799,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         Ok(already_existed)
     }
 
-    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        if let Some((cached_val, expiry)) = self.l1_family.get(key).await {
-            if Instant::now() < expiry {
-                return cached_val;
-            }
-        }
-
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let redis_key = self.fam_key(key);
-            if let Some(Some(val)) = self
-                .redis_get_string(&mut conn, &redis_key, "family lookup")
-                .await
-            {
-                if val == "_" {
-                    // Negative sentinel
-                    self.l1_family
-                        .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
-                        .await;
-                    return None;
-                }
-                // Positive: parse timestamp
-                if let Ok(ts) = val.parse::<i64>() {
-                    self.l1_family
-                        .insert(
-                            key.to_string(),
-                            (Some(ts), Instant::now() + L1_POSITIVE_TTL),
-                        )
-                        .await;
-                    return Some(ts);
-                }
-                // Malformed value, fall through to PG
-                tracing::warn!(key = %key, val = %val, "Malformed family revocation value in Redis L2");
-            }
-        }
-
-        let result = self.pg.get_family_revoked_at(key).await;
-
-        if let Some(ts) = result {
-            // Positive: populate L1 + L2
-            self.l1_family
-                .insert(
-                    key.to_string(),
-                    (Some(ts), Instant::now() + L1_POSITIVE_TTL),
-                )
-                .await;
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let redis_key = self.fam_key(key);
-                self.redis_set_ex(
-                    &mut conn,
-                    &redis_key,
-                    ts.to_string(),
-                    L1_POSITIVE_TTL.as_secs(),
-                    "family positive cache write",
-                )
-                .await;
-            }
-            Some(ts)
-        } else {
-            // Negative sentinel: populate L1 + L2
-            self.l1_family
-                .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
-                .await;
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let redis_key = self.fam_key(key);
-                self.redis_set_ex(
-                    &mut conn,
-                    &redis_key,
-                    "_",
-                    L2_NEGATIVE_TTL_SECS,
-                    "family negative cache write",
-                )
-                .await;
-            }
-            None
-        }
-    }
-
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
         if let Some((cached_val, expiry)) = self.l1_family.get(key).await {
             if Instant::now() < expiry {
@@ -1123,7 +917,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1157,7 +951,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1214,7 +1008,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for HangingRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 std::future::pending().await
             }
 
@@ -1296,7 +1090,7 @@ mod tests {
             .await;
 
         // Should return true from L1 without touching PG
-        assert!(store.is_blacklisted("jti:abc").await);
+        assert!(store.is_blacklisted_checked("jti:abc").await.unwrap());
     }
 
     #[tokio::test]
@@ -1313,7 +1107,7 @@ mod tests {
             .await;
 
         // Should return false from L1 without touching PG
-        assert!(!store.is_blacklisted("jti:def").await);
+        assert!(!store.is_blacklisted_checked("jti:def").await.unwrap());
     }
 
     #[tokio::test]
@@ -1332,10 +1126,11 @@ mod tests {
             )
             .await;
 
-        // The expired entry should be ignored. Since PG is a dummy pool,
-        // the PG query will fail and return false (unwrap_or(false)).
-        // This tests that expired L1 entries don't short-circuit.
-        assert!(!store.is_blacklisted("jti:expired").await);
+        let result = store.is_blacklisted_checked("jti:expired").await;
+        assert!(
+            result.is_err(),
+            "expired L1 entries must fall through to durable storage errors"
+        );
     }
 
     #[tokio::test]
@@ -1351,7 +1146,13 @@ mod tests {
             )
             .await;
 
-        assert_eq!(store.get_family_revoked_at("family:user42").await, Some(ts));
+        assert_eq!(
+            store
+                .get_family_revoked_at_checked("family:user42")
+                .await
+                .unwrap(),
+            Some(ts)
+        );
     }
 
     #[tokio::test]
@@ -1366,7 +1167,13 @@ mod tests {
             )
             .await;
 
-        assert_eq!(store.get_family_revoked_at("family:user99").await, None);
+        assert_eq!(
+            store
+                .get_family_revoked_at_checked("family:user99")
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1381,7 +1188,7 @@ mod tests {
                 (false, Instant::now() + Duration::from_mins(1)),
             )
             .await;
-        assert!(!store.is_blacklisted("jti:overwrite").await);
+        assert!(!store.is_blacklisted_checked("jti:overwrite").await.unwrap());
 
         // blacklist() will fail on PG (dummy pool), but the write-through to
         // L1 would have happened if PG succeeded. Since PG is unreachable,
@@ -1397,10 +1204,7 @@ mod tests {
         let store = make_tiered_l1_only();
 
         // Verify L1 starts empty
-        assert!(store
-            .get_family_revoked_at("family:write_test")
-            .await
-            .is_none());
+        assert!(store.l1_family.get("family:write_test").await.is_none());
 
         // Family revocation is fail-closed: if the durable PG write fails, the
         // tiered store must return an error and must not populate L1 as if the
@@ -1412,7 +1216,7 @@ mod tests {
         assert!(result.is_err());
 
         // L1 should remain empty because the durable write failed.
-        assert_eq!(store.get_family_revoked_at("family:write_test").await, None);
+        assert!(store.l1_family.get("family:write_test").await.is_none());
     }
 
     #[tokio::test]
@@ -1435,10 +1239,10 @@ mod tests {
         let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
 
         let key = "jti:abc123";
-        assert!(!store.is_blacklisted(key).await);
+        assert!(!store.is_blacklisted_checked(key).await.unwrap());
 
         store.blacklist(key, 3600).await.unwrap();
-        assert!(store.is_blacklisted(key).await);
+        assert!(store.is_blacklisted_checked(key).await.unwrap());
     }
 
     #[tokio::test]
@@ -1447,14 +1251,14 @@ mod tests {
 
         let key = "jti:expiry_test";
         store.blacklist(key, 1).await.unwrap();
-        assert!(store.is_blacklisted(key).await);
+        assert!(store.is_blacklisted_checked(key).await.unwrap());
 
         store
             .jti_blacklist
             .insert(key.to_string(), expired_instant())
             .await;
         assert!(
-            !store.is_blacklisted(key).await,
+            !store.is_blacklisted_checked(key).await.unwrap(),
             "Should no longer be blacklisted after TTL expiry"
         );
     }
@@ -1466,12 +1270,19 @@ mod tests {
         let key = "family:user_42";
         let timestamp = 1_700_000_000_i64;
 
-        assert!(store.get_family_revoked_at(key).await.is_none());
+        assert!(store
+            .get_family_revoked_at_checked(key)
+            .await
+            .unwrap()
+            .is_none());
         store
             .set_family_revoked(key, timestamp, 86400)
             .await
             .unwrap();
-        assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
+        assert_eq!(
+            store.get_family_revoked_at_checked(key).await.unwrap(),
+            Some(timestamp)
+        );
     }
 
     #[tokio::test]
@@ -1481,14 +1292,17 @@ mod tests {
         // Add multiple entries
         for i in 0..10 {
             let key = format!("jti:test_{i}");
-            assert!(!store.is_blacklisted(&key).await);
+            assert!(!store.is_blacklisted_checked(&key).await.unwrap());
             store.blacklist(&key, 3600).await.unwrap();
-            assert!(store.is_blacklisted(&key).await);
+            assert!(store.is_blacklisted_checked(&key).await.unwrap());
         }
 
         // Verify all are blacklisted
         for i in 0..10 {
-            assert!(store.is_blacklisted(&format!("jti:test_{i}")).await);
+            assert!(store
+                .is_blacklisted_checked(&format!("jti:test_{i}"))
+                .await
+                .unwrap());
         }
     }
 
@@ -1498,11 +1312,11 @@ mod tests {
 
         let key = "jti:overwrite_test";
         store.blacklist(key, 1).await.unwrap();
-        assert!(store.is_blacklisted(key).await);
+        assert!(store.is_blacklisted_checked(key).await.unwrap());
 
         // Overwrite with longer TTL
         store.blacklist(key, 3600).await.unwrap();
-        assert!(store.is_blacklisted(key).await);
+        assert!(store.is_blacklisted_checked(key).await.unwrap());
 
         let expiry = store
             .jti_blacklist
@@ -1523,14 +1337,21 @@ mod tests {
         let timestamp = 1_700_000_000_i64;
 
         store.set_family_revoked(key, timestamp, 1).await.unwrap();
-        assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
+        assert_eq!(
+            store.get_family_revoked_at_checked(key).await.unwrap(),
+            Some(timestamp)
+        );
 
         store
             .family_revoked
             .insert(key.to_string(), (timestamp, expired_instant()))
             .await;
         assert!(
-            store.get_family_revoked_at(key).await.is_none(),
+            store
+                .get_family_revoked_at_checked(key)
+                .await
+                .unwrap()
+                .is_none(),
             "Family revocation should expire after TTL"
         );
     }
@@ -1553,7 +1374,10 @@ mod tests {
         for i in 0..10 {
             let key = format!("family:user_{i}");
             let expected_ts = 1_700_000_000_i64 + i;
-            assert_eq!(store.get_family_revoked_at(&key).await, Some(expected_ts));
+            assert_eq!(
+                store.get_family_revoked_at_checked(&key).await.unwrap(),
+                Some(expected_ts)
+            );
         }
     }
 
@@ -1584,7 +1408,10 @@ mod tests {
             .await;
 
         // Should return true from L1 without hitting PG
-        assert!(store.is_blacklisted("jti:l1_only_test").await);
+        assert!(store
+            .is_blacklisted_checked("jti:l1_only_test")
+            .await
+            .unwrap());
     }
 
     /// Test that concurrent calls to `blacklist_if_not_exists` on the same token
@@ -1630,7 +1457,7 @@ mod tests {
         );
 
         // Verify the token is now blacklisted
-        assert!(store.is_blacklisted(key).await);
+        assert!(store.is_blacklisted_checked(key).await.unwrap());
     }
 
     #[tokio::test]
@@ -1728,7 +1555,7 @@ mod tests {
         let initial_count = store.blacklist_locks.len();
 
         // Perform blacklist_if_not_exists
-        let _ = store.blacklist_if_not_exists(key, 3600).await;
+        store.blacklist_if_not_exists(key, 3600).await.unwrap();
 
         // Lock should be cleaned up after the operation
         // Note: There might be a brief moment where the lock exists,

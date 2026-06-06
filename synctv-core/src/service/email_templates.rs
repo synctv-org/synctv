@@ -14,12 +14,16 @@ const PASSWORD_RESET_TEMPLATE: &str = include_str!("email_templates/password_res
 const PASSWORD_RESET_TEXT_TEMPLATE: &str = include_str!("email_templates/password_reset.txt.hbs");
 const EMAIL_LOGIN_TEMPLATE: &str = include_str!("email_templates/email_login.html.hbs");
 const EMAIL_LOGIN_TEXT_TEMPLATE: &str = include_str!("email_templates/email_login.txt.hbs");
+const EMAIL_REGISTRATION_TEMPLATE: &str =
+    include_str!("email_templates/email_registration.html.hbs");
+const EMAIL_REGISTRATION_TEXT_TEMPLATE: &str =
+    include_str!("email_templates/email_registration.txt.hbs");
 const TEST_EMAIL_TEMPLATE: &str = include_str!("email_templates/test_email.html.hbs");
 const TEST_EMAIL_TEXT_TEMPLATE: &str = include_str!("email_templates/test_email.txt.hbs");
 const NOTIFICATION_TEMPLATE: &str = include_str!("email_templates/notification.html.hbs");
 const NOTIFICATION_TEXT_TEMPLATE: &str = include_str!("email_templates/notification.txt.hbs");
 
-const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 10] = [
+const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 12] = [
     (
         "email_bind",
         EMAIL_BIND_TEMPLATE,
@@ -49,6 +53,16 @@ const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 10] = [
         "email_login_text",
         EMAIL_LOGIN_TEXT_TEMPLATE,
         "Failed to register email login text template",
+    ),
+    (
+        "email_registration",
+        EMAIL_REGISTRATION_TEMPLATE,
+        "Failed to register email registration template",
+    ),
+    (
+        "email_registration_text",
+        EMAIL_REGISTRATION_TEXT_TEMPLATE,
+        "Failed to register email registration text template",
     ),
     (
         "test_email",
@@ -81,6 +95,8 @@ pub enum EmailTemplateType {
     PasswordReset,
     /// Passwordless email login template
     EmailLogin,
+    /// Email registration template
+    EmailRegistration,
     /// Test email template
     TestEmail,
     /// General notification template
@@ -193,6 +209,30 @@ impl EmailTemplateManager {
         Ok((html, plain_text))
     }
 
+    /// Render email registration template.
+    pub fn render_email_registration_email(
+        &self,
+        token: &str,
+        expires_in: &str,
+    ) -> Result<(String, String)> {
+        let data = json!({
+            "token": token,
+            "expires_in": expires_in,
+        });
+
+        let html = self
+            .handlebars
+            .render("email_registration", &data)
+            .internal_with_err("Failed to render template")?;
+
+        let plain_text = self
+            .handlebars
+            .render("email_registration_text", &data)
+            .internal_with_err("Failed to render template")?;
+
+        Ok((html, plain_text))
+    }
+
     /// Render test email template
     ///
     /// # Arguments
@@ -270,12 +310,6 @@ impl EmailTemplateManager {
     }
 }
 
-impl Default for EmailTemplateManager {
-    fn default() -> Self {
-        Self::new().expect("Failed to create default EmailTemplateManager")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +336,19 @@ mod tests {
     fn test_render_email_login_email() {
         let manager = EmailTemplateManager::new().unwrap();
         let result = manager.render_email_login_email("654321", "15 minutes");
+        assert!(result.is_ok());
+
+        let (html, plain_text) = result.unwrap();
+        assert!(html.contains("654321"));
+        assert!(html.contains("15 minutes"));
+        assert!(plain_text.contains("654321"));
+        assert!(plain_text.contains("15 minutes"));
+    }
+
+    #[test]
+    fn test_render_email_registration_email() {
+        let manager = EmailTemplateManager::new().unwrap();
+        let result = manager.render_email_registration_email("654321", "15 minutes");
         assert!(result.is_ok());
 
         let (html, plain_text) = result.unwrap();

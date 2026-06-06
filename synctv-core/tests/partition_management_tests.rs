@@ -4,7 +4,6 @@
 //! and that the chat partition manager creates future partitions.
 //! Also verifies `audit_logs` DEFAULT partition.
 //!
-//! Run with: cargo test --test `partition_management_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};

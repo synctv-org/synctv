@@ -634,15 +634,16 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_update_user_password_request_with_audit() {
-        let req = crate::admin::UpdateUserPasswordRequest {
+    fn roundtrip_set_user_password_request_with_audit() {
+        let req = crate::admin::SetUserPasswordRequest {
             user_id: "user-123".into(),
-            new_password: "new-secure-pass".into(),
+            password: "NewPassword123!".into(),
             reason: "security incident".into(),
         };
         let bytes = req.encode_to_vec();
-        let decoded = crate::admin::UpdateUserPasswordRequest::decode(bytes.as_slice()).unwrap();
+        let decoded = crate::admin::SetUserPasswordRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.user_id, "user-123");
+        assert_eq!(decoded.password, "NewPassword123!");
         assert_eq!(decoded.reason, "security incident");
     }
 
@@ -733,13 +734,13 @@ mod tests {
     }
 
     #[test]
-    fn http_json_update_user_password_request_accepts_new_password_field() {
-        let json = r#"{"new_password":"new-password-123","reason":"support reset"}"#;
+    fn http_json_set_user_password_request_accepts_password_and_reason_fields() {
+        let json = r#"{"password":"NewPassword123!","reason":"support reset"}"#;
 
-        let decoded: crate::admin::UpdateUserPasswordRequest =
+        let decoded: crate::admin::SetUserPasswordRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto");
 
-        assert_eq!(decoded.new_password, "new-password-123");
+        assert_eq!(decoded.password, "NewPassword123!");
         assert_eq!(decoded.reason, "support reset");
     }
 
@@ -902,13 +903,12 @@ mod tests {
 
     #[test]
     fn http_json_admin_create_user_request_defaults_optional_email() {
-        let json = r#"{"username":"alice","password":"StrongPass123","role":3,"status":1}"#;
+        let json = r#"{"username":"alice","role":3,"status":1}"#;
 
         let decoded: crate::admin::CreateUserRequest =
             serde_json::from_str(json).expect("optional email should default");
 
         assert_eq!(decoded.username, "alice");
-        assert_eq!(decoded.password, "StrongPass123");
         assert_eq!(decoded.email, "");
         assert_eq!(decoded.role, crate::common::UserRole::User as i32);
         assert_eq!(decoded.status, crate::common::UserStatus::Active as i32);
@@ -958,10 +958,10 @@ mod tests {
     fn validate_admin_create_user_request_allows_empty_optional_email() {
         crate::validate(&crate::admin::CreateUserRequest {
             username: "admin_created".into(),
-            password: "StrongPwd12345!".into(),
             email: String::new(),
             role: crate::common::UserRole::Admin as i32,
             status: crate::common::UserStatus::Active as i32,
+            password: String::new(),
         })
         .unwrap();
     }
@@ -1003,19 +1003,13 @@ mod tests {
     }
 
     #[test]
-    fn http_json_move_playlist_request_rejects_legacy_alias_fields() {
-        let decoded: crate::client::MovePlaylistRequest =
-            serde_json::from_str(r#"{"before":"playlist-2","playlistId":"playlist-1"}"#)
-                .expect("unknown JSON fields are ignored by serde");
+    fn http_json_move_playlist_request_rejects_unknown_fields() {
+        let err = serde_json::from_str::<crate::client::MovePlaylistRequest>(
+            r#"{"before":"playlist-2","playlistId":"playlist-1"}"#,
+        )
+        .expect_err("unknown JSON fields should be rejected");
 
-        assert!(
-            decoded.playlist_id.is_empty(),
-            "legacy playlistId alias must not populate playlist_id"
-        );
-        assert!(
-            decoded.anchor.is_none(),
-            "legacy before alias must not populate the oneof anchor"
-        );
+        assert!(err.is_data());
     }
 
     #[test]
@@ -1227,26 +1221,9 @@ mod tests {
 
     #[test]
     fn http_json_login_identifier_transports_accept_flat_fields() {
-        let login = crate::client::LoginRequest::try_from(
-            serde_json::from_str::<crate::http_serde::LoginRequestDef>(
-                r#"{"username":"alice","password":"password"}"#,
-            )
-            .expect("login transport should deserialize flat username"),
-        )
-        .expect("login transport should convert to proto request");
-        assert!(matches!(
-            login.identifier,
-            Some(crate::client::login_request::Identifier::Username(ref username))
-                if username == "alice"
-        ));
-
-        let opaque = crate::client::StartOpaqueLoginRequest::try_from(
-            serde_json::from_str::<crate::http_serde::StartOpaqueLoginRequestDef>(
-                r#"{"email":"alice@example.com","credential_request":"AQID"}"#,
-            )
-            .expect("OPAQUE login transport should deserialize flat email"),
-        )
-        .expect("OPAQUE login transport should convert to proto request");
+        let opaque: crate::client::StartOpaqueLoginRequest =
+            serde_json::from_str(r#"{"email":"alice@example.com","credential_request":"AQID"}"#)
+                .expect("OPAQUE login request should deserialize flat email");
         assert!(matches!(
             opaque.identifier,
             Some(crate::client::start_opaque_login_request::Identifier::Email(ref email))
@@ -1254,18 +1231,118 @@ mod tests {
         ));
         assert_eq!(opaque.credential_request, vec![1, 2, 3]);
 
-        let passkey = crate::client::StartPasskeyLoginRequest::try_from(
-            serde_json::from_str::<crate::http_serde::StartPasskeyLoginRequestDef>(
-                r#"{"username":"alice"}"#,
-            )
-            .expect("passkey login transport should deserialize flat username"),
-        )
-        .expect("passkey login transport should convert to proto request");
+        let direct_password: crate::client::LoginWithDirectPasswordRequest =
+            serde_json::from_str(r#"{"username":"alice","password":"StrongPass1"}"#)
+                .expect("direct password login request should deserialize flat username");
+        assert!(matches!(
+            direct_password.identifier,
+            Some(crate::client::login_with_direct_password_request::Identifier::Username(
+                ref username
+            )) if username == "alice"
+        ));
+        assert_eq!(direct_password.password, "StrongPass1");
+
+        let passkey: crate::client::StartPasskeyLoginRequest =
+            serde_json::from_str(r#"{"username":"alice"}"#)
+                .expect("passkey login request should deserialize flat username");
         assert!(matches!(
             passkey.identifier,
             Some(crate::client::start_passkey_login_request::Identifier::Username(ref username))
                 if username == "alice"
         ));
+    }
+
+    #[test]
+    fn http_json_direct_password_and_email_registration_payloads_are_supported() {
+        let direct_registration: crate::client::RegisterWithDirectPasswordRequest =
+            serde_json::from_str(
+                r#"{"username":"alice","email":"alice@example.com","password":"StrongPass1"}"#,
+            )
+            .expect("direct password registration should deserialize");
+        assert_eq!(direct_registration.username, "alice");
+        assert_eq!(
+            direct_registration.email.as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(direct_registration.password, "StrongPass1");
+        crate::validate(&direct_registration).expect("direct registration should validate");
+
+        let direct_username_login: crate::client::LoginWithDirectPasswordRequest =
+            serde_json::from_str(r#"{"username":"alice","password":"StrongPass1"}"#)
+                .expect("direct password username login should deserialize");
+        assert!(matches!(
+            direct_username_login.identifier,
+            Some(crate::client::login_with_direct_password_request::Identifier::Username(
+                ref username
+            )) if username == "alice"
+        ));
+        assert_eq!(direct_username_login.password, "StrongPass1");
+        crate::validate(&direct_username_login)
+            .expect("direct password username login should validate");
+
+        let direct_email_login: crate::client::LoginWithDirectPasswordRequest =
+            serde_json::from_str(r#"{"email":"alice@example.com","password":"StrongPass1"}"#)
+                .expect("direct password email login should deserialize");
+        assert!(matches!(
+            direct_email_login.identifier,
+            Some(crate::client::login_with_direct_password_request::Identifier::Email(ref email))
+                if email == "alice@example.com"
+        ));
+        assert_eq!(direct_email_login.password, "StrongPass1");
+        crate::validate(&direct_email_login).expect("direct password email login should validate");
+
+        let email_registration: crate::client::RequestEmailRegistrationRequest =
+            serde_json::from_str(r#"{"username":"alice","email":"alice@example.com"}"#)
+                .expect("email registration request should deserialize");
+        assert_eq!(email_registration.username, "alice");
+        assert_eq!(email_registration.email, "alice@example.com");
+        crate::validate(&email_registration).expect("email registration request should validate");
+
+        let email_confirmation: crate::client::ConfirmEmailRegistrationRequest =
+            serde_json::from_str(r#"{"email_token":"token-123","password":"StrongPass1"}"#)
+                .expect("email registration confirmation should deserialize");
+        assert_eq!(email_confirmation.email_token, "token-123");
+        assert_eq!(email_confirmation.password, "StrongPass1");
+        crate::validate(&email_confirmation)
+            .expect("email registration confirmation should validate");
+    }
+
+    #[test]
+    fn http_json_login_identifier_transports_reject_unknown_fields() {
+        assert!(
+            serde_json::from_str::<crate::client::StartOpaqueLoginRequest>(
+                r#"{"email":"alice@example.com","credential_request":"AQID","extra":true}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<crate::client::LoginWithDirectPasswordRequest>(
+                r#"{"username":"alice","password":"StrongPass1","extra":true}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<crate::client::StartPasskeyLoginRequest>(
+                r#"{"username":"alice","extra":true}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn http_json_provider_login_requests_reject_unknown_fields() {
+        assert!(
+            serde_json::from_str::<crate::http_serde::AlistLoginRequestDef>(
+                r#"{"host":"https://alist.example.com","username":"alice","password":"password","extra":true}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<crate::http_serde::EmbyLoginRequestDef>(
+                r#"{"host":"https://emby.example.com","username":"alice","api_key":"key","extra":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1320,10 +1397,10 @@ mod tests {
     fn validate_create_user_request_rejects_undefined_enum_values() {
         let request = crate::admin::CreateUserRequest {
             username: "valid_user".into(),
-            password: "StrongPass123".into(),
             email: "valid@example.com".into(),
             role: 99,
             status: 99,
+            password: String::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());

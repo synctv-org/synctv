@@ -25,14 +25,14 @@ use synctv_api::impls::admin::validate_admin_auth;
 use synctv_api::impls::ApiError;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::UserId,
     service::{
         auth::{BruteForceProtection, JwtService},
+        user::UserServiceRuntimeOptions,
         InMemoryTokenBlacklistStore, UserService,
     },
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, opaque_register_user};
 
 // Test constants - the expected unified error message
 
@@ -49,23 +49,37 @@ fn create_jwt_service() -> JwtService {
 fn create_user_service(pool: &PgPool) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_config = PasswordComplexityConfig::default();
     let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut service = UserService::new(
+    UserService::new_with_runtime(
         pool,
         jwt,
         username_cache,
-        password_config,
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    service.enable_password_registration_for_tests();
-    service
+        UserServiceRuntimeOptions {
+            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
+                enabled: true,
+                need_review: false,
+            }),
+            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+        },
+    )
+}
+
+async fn register_test_user(
+    service: &UserService,
+    username: &str,
+    email: &str,
+) -> synctv_core::models::User {
+    opaque_register_user(service, username, Some(email.to_string()), "StrongPass1")
+        .await
+        .expect("Failed to create user")
+        .0
 }
 
 /// Extract the error message from an ApiError::Authentication variant
@@ -122,15 +136,7 @@ async fn test_banned_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(&pool);
 
-    let (user, _, _) = user_service
-        .register(
-            "banned_test_user".to_string(),
-            Some("banned@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Failed to create user");
+    let user = register_test_user(&user_service, "banned_test_user", "banned@example.com").await;
 
     user_service
         .ban_user_and_cleanup_memberships(&user.id, None, None)
@@ -159,15 +165,7 @@ async fn test_deleted_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(&pool);
 
-    let (user, _, _) = user_service
-        .register(
-            "deleted_test_user".to_string(),
-            Some("deleted@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Failed to create user");
+    let user = register_test_user(&user_service, "deleted_test_user", "deleted@example.com").await;
 
     // Delete the user (soft delete)
     user_service
@@ -197,15 +195,7 @@ async fn test_active_user_passes_auth() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(&pool);
 
-    let (user, _, _) = user_service
-        .register(
-            "active_test_user".to_string(),
-            Some("active@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Failed to create user");
+    let user = register_test_user(&user_service, "active_test_user", "active@example.com").await;
 
     let token_iat = Utc::now().timestamp();
 
@@ -237,15 +227,12 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 2: Banned user
-    let (banned_user, _, _) = user_service
-        .register(
-            "banned_for_comparison".to_string(),
-            Some("banned_comp@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
+    let banned_user = register_test_user(
+        &user_service,
+        "banned_for_comparison",
+        "banned_comp@example.com",
+    )
+    .await;
     user_service
         .ban_user_and_cleanup_memberships(&banned_user.id, None, None)
         .await
@@ -254,15 +241,12 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 3: Deleted user
-    let (deleted_user, _, _) = user_service
-        .register(
-            "deleted_for_comparison".to_string(),
-            Some("deleted_comp@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
+    let deleted_user = register_test_user(
+        &user_service,
+        "deleted_for_comparison",
+        "deleted_comp@example.com",
+    )
+    .await;
     user_service.delete_user(&deleted_user.id).await.unwrap();
     let result = validate_admin_auth(&user_service, deleted_user.id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));

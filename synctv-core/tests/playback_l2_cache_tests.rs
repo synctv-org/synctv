@@ -6,7 +6,6 @@
 //! - L2 miss with PostgreSQL fallback
 //! - Cross-replica consistency via L2 cache
 //!
-//! Run with: cargo test -p synctv-core --test playback_l2_cache_tests -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -16,11 +15,11 @@ use redis::AsyncCommands;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{Media, MediaId, RoomId, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
@@ -42,16 +41,14 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -61,7 +58,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -728,8 +725,6 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
     // Clear L1 to simulate another replica
     playback_service.invalidate_playback_cache(&room.id).await;
 
-    // On L1 miss, if L2 is implemented, it should check L2 first
-    // For now, verify the DB has the correct state
     let fresh_state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
         (fresh_state.position - 200.0).abs() < f64::EPSILON,
@@ -747,7 +742,6 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         start_redis_client_manager_with_label("playback-l2-invalidation").await;
 
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
 
     let l2_backend: Arc<dyn CacheL2Backend> = Arc::new(RedisCacheL2::from_runtime(
         synctv_core::direct_runtime(redis_conn.clone()),
@@ -758,8 +752,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         5,
         60,
         "test:playback:invalidate:".to_string(),
-    )
-    .unwrap();
+    );
 
     let cache_stream = format!(
         "test:playback:invalidate:stream:{}",
@@ -779,8 +772,17 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         cache_stream,
     ));
 
-    room_service.set_playback_l2_cache(l2_cache.clone());
-    room_service.set_playback_cache_invalidation(subscriber.clone());
+    let user_service = make_user_service(&pool);
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        user_service,
+        RoomServiceOptions {
+            cache_invalidation: Some(subscriber.clone()),
+            playback_l2_cache: Some(l2_cache.clone()),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
     room_service.playback_service().start().await.unwrap();
 
     let owner = user_repo
@@ -813,14 +815,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     );
 }
 
-// Test 10: PlaybackStateCache Direct Test with L2 (Redis)
-
-/// Test the PlaybackStateCache directly with a real Redis backend.
-///
-/// This test verifies the tiered cache behavior:
-/// - L1 hit returns immediately
-/// - L1 miss checks L2
-/// - L2 miss would need to fetch from DB (not tested here as PlaybackStateCache doesn't do DB)
+/// `PlaybackStateCache` serves entries from L1, L2, and invalidates both layers.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_playback_state_cache_direct_with_redis() {
@@ -835,8 +830,7 @@ async fn test_playback_state_cache_direct_with_redis() {
         5,   // L1 TTL seconds
         60,  // L2 TTL seconds
         "test:playback:".to_string(),
-    )
-    .expect("Failed to create PlaybackStateCache");
+    );
 
     let room_id = RoomId::expect_positive(10_000_005);
     let state = synctv_core::models::RoomPlaybackState::new(room_id);
@@ -874,11 +868,7 @@ async fn test_playback_state_cache_direct_with_redis() {
     );
 }
 
-// Test 11: PlaybackStateCache set_if_newer with Real Redis
-
-/// Test the set_if_newer functionality with real Redis backend.
-///
-/// This test verifies that stale data doesn't overwrite fresh data.
+/// `set_if_newer` keeps newer Redis-backed playback cache entries.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_playback_state_cache_set_if_newer_with_redis() {
@@ -887,8 +877,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     let l2_backend = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
         redis_conn.clone(),
     )));
-    let cache = PlaybackStateCache::new(l2_backend, 100, 5, 60, "test:playback:newer:".to_string())
-        .expect("Failed to create PlaybackStateCache");
+    let cache = PlaybackStateCache::new(l2_backend, 100, 5, 60, "test:playback:newer:".to_string());
 
     let room_id = RoomId::expect_positive(10_000_006);
 

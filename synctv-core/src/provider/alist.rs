@@ -36,8 +36,17 @@ fn alist_headers() -> HashMap<String, String> {
     )])
 }
 
-fn alist_modified_to_i64(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn alist_modified_to_i64(value: u64) -> Result<i64, ProviderError> {
+    i64::try_from(value).map_err(|_| {
+        ProviderError::ApiError(format!(
+            "Alist file modified timestamp {value} exceeds i64::MAX"
+        ))
+    })
+}
+
+fn usize_to_u64(value: usize, field: &str) -> Result<u64, ProviderError> {
+    u64::try_from(value)
+        .map_err(|_| ProviderError::InvalidConfig(format!("{field} exceeds u64::MAX")))
 }
 
 fn alist_directory_item_type(name: &str, is_dir: bool) -> Option<ItemType> {
@@ -242,12 +251,13 @@ impl AlistProvider {
     pub const NAME: &'static str = "alist";
 
     /// Create a new `AlistProvider` with `RemoteProviderManager`
-    #[must_use]
-    pub fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
-        Self {
+    pub fn new(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self {
             provider_instance_manager,
-            client_manager: Arc::new(ProviderClientManager::new()),
-        }
+            client_manager: Arc::new(ProviderClientManager::new()?),
+        })
     }
 
     #[must_use]
@@ -402,7 +412,7 @@ impl AlistProvider {
             .collect::<Vec<_>>();
 
         Ok(FsSearchResp {
-            total: u64::try_from(content.len()).unwrap_or(u64::MAX),
+            total: usize_to_u64(content.len(), "Alist search fallback total")?,
             content,
         })
     }
@@ -493,8 +503,6 @@ impl TryFrom<&Value> for AlistSourceConfig {
         super::parse_source_config(value, "Alist")
     }
 }
-
-// Note: Default implementation removed as it requires RemoteProviderManager
 
 impl AlistProvider {
     fn playback_cache_key(
@@ -1181,9 +1189,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 .playback_infos
                 .get(&versioned.result.default_mode)
                 .map_or_else(HashMap::new, |info| info.headers.clone());
-            return Ok(super::proxy::action_for_signed_target_url(
-                ctx, version, url, headers,
-            ));
+            return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
         }
 
         if let Some(rest) = rest {
@@ -1276,7 +1282,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: url.clone(),
                     headers: playback_info.headers.clone(),
-                    range_header: super::proxy::selected_range_header(ctx),
+                    range_header: super::proxy::selected_range_header(ctx)?,
                 });
             }
 
@@ -1316,7 +1322,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                     return Ok(super::proxy::ProxyAction::FetchAndForward {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        range_header: super::proxy::selected_range_header(ctx),
+                        range_header: super::proxy::selected_range_header(ctx)?,
                     });
                 }
                 "m3u8" => {
@@ -1382,8 +1388,8 @@ impl DynamicFolder for AlistProvider {
             )
             .await?;
 
-        let page = u64::try_from(query.page.max(1)).unwrap_or(u64::MAX);
-        let per_page = u64::try_from(query.page_size.max(1)).unwrap_or(u64::MAX);
+        let page = usize_to_u64(query.page.max(1), "Alist page")?;
+        let per_page = usize_to_u64(query.page_size.max(1), "Alist page size")?;
         let password = resolved.password.clone().unwrap_or_default();
         let search = query
             .search
@@ -1410,21 +1416,31 @@ impl DynamicFolder for AlistProvider {
                 .into_iter()
                 .filter_map(|file_item| {
                     let item_type = alist_directory_item_type(&file_item.name, file_item.is_dir)?;
+                    Some((file_item, item_type))
+                })
+                .map(|(file_item, item_type)| {
                     let full_item_path = join_alist_path(&file_item.parent, &file_item.name);
                     let item_relative_path =
-                        alist_relative_path_from_base(&resolved.path, &full_item_path)?;
+                        alist_relative_path_from_base(&resolved.path, &full_item_path).ok_or_else(
+                            || {
+                                ProviderError::ApiError(format!(
+                            "Alist search result path '{full_item_path}' is outside base path '{}'",
+                            resolved.path
+                        ))
+                            },
+                        )?;
 
-                    Some(DirectoryItem {
+                    Ok(DirectoryItem {
                         name: file_item.name,
                         item_type,
-                        target: Self::encode_target(&item_relative_path).ok()?,
+                        target: Self::encode_target(&item_relative_path)?,
                         size: Some(file_item.size),
                         thumbnail: None,
                         description: None,
                         modified_at: None,
                     })
                 })
-                .collect()
+                .collect::<Result<Vec<_>, ProviderError>>()?
         } else {
             let list_resp = client
                 .fs_list(synctv_media_providers::grpc::alist::FsListReq {
@@ -1443,16 +1459,19 @@ impl DynamicFolder for AlistProvider {
                 .into_iter()
                 .filter_map(|file_item| {
                     let item_type = alist_directory_item_type(&file_item.name, file_item.is_dir)?;
+                    Some((file_item, item_type))
+                })
+                .map(|(file_item, item_type)| {
                     let item_relative_path = if let Some(rel) = relative_path.as_deref() {
                         format!("{}/{}", rel.trim_end_matches('/'), file_item.name)
                     } else {
                         format!("/{}", file_item.name)
                     };
 
-                    Some(DirectoryItem {
+                    Ok(DirectoryItem {
                         name: file_item.name,
                         item_type,
-                        target: Self::encode_target(&item_relative_path).ok()?,
+                        target: Self::encode_target(&item_relative_path)?,
                         size: Some(file_item.size),
                         thumbnail: if file_item.thumb.is_empty() {
                             None
@@ -1460,10 +1479,10 @@ impl DynamicFolder for AlistProvider {
                             Some(file_item.thumb)
                         },
                         description: None,
-                        modified_at: Some(alist_modified_to_i64(file_item.modified)),
+                        modified_at: Some(alist_modified_to_i64(file_item.modified)?),
                     })
                 })
-                .collect()
+                .collect::<Result<Vec<_>, ProviderError>>()?
         };
 
         Ok(items)
@@ -1945,8 +1964,6 @@ mod tests {
         Arc::new(RemoteProviderManager::new(repo))
     }
 
-    // Note: Provider creation tests removed as they require ProviderClient setup
-
     #[test]
     fn test_detect_format() {
         assert_eq!(AlistProvider::detect_format("video.mp4"), "mp4");
@@ -1998,7 +2015,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_credential_dependencies_use_creator_credential() {
-        let provider = AlistProvider::new(fake_provider_instance_manager());
+        let provider =
+            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -2024,7 +2042,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider = AlistProvider::new(fake_provider_instance_manager());
+        let provider =
+            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -2044,7 +2063,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_search_falls_back_to_list_when_upstream_search_is_unavailable() {
-        let default_clients = ProviderClientManager::new();
+        let default_clients = ProviderClientManager::new_for_tests();
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(FakeAlistSearchUnavailableClient),
             default_clients.local_bilibili_client(),
@@ -2079,7 +2098,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_search_fallback_preserves_scope_filter() {
-        let default_clients = ProviderClientManager::new();
+        let default_clients = ProviderClientManager::new_for_tests();
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(FakeAlistSearchUnavailableClient),
             default_clients.local_bilibili_client(),
@@ -2129,7 +2148,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_alist_config_rejects_provider_instance_name() {
-        let provider = AlistProvider::new(fake_provider_instance_manager());
+        let provider =
+            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
         let config = json!({
             "path": "/media/movies/test.mp4",
             "provider_instance_name": "remote-alist-1",

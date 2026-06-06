@@ -212,11 +212,11 @@ fn u64_to_usize_saturating(value: u64) -> usize {
 }
 
 fn i64_to_usize_saturating(value: i64) -> usize {
-    usize::try_from(value).unwrap_or_default()
+    usize::try_from(value.max(0)).unwrap_or(usize::MAX)
 }
 
 fn i64_to_u64_saturating(value: i64) -> u64 {
-    u64::try_from(value).unwrap_or_default()
+    u64::try_from(value).unwrap_or(0)
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
@@ -616,11 +616,11 @@ pub struct ConnectionManager {
     /// startup wiring calls it more than once.
     disconnect_retry_started: Arc<std::sync::atomic::AtomicBool>,
     /// JoinHandle for the disconnect retry task so shutdown can await termination.
-    disconnect_retry_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    disconnect_retry_handle: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// JoinHandle for the TTL refresh task.
-    ttl_refresh_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    ttl_refresh_handle: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// JoinHandle for the pending Redis retries task.
-    pending_retries_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pending_retries_handle: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 
     /// Channel for queuing failed Redis counter operations for background retry.
     /// When a Redis INCR/DECR fails during register/unregister, the operation is
@@ -762,9 +762,9 @@ impl ConnectionManager {
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             disconnect_retry_cancel: Arc::new(disconnect_retry_cancel),
             disconnect_retry_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            disconnect_retry_handle: Arc::new(std::sync::Mutex::new(None)),
-            ttl_refresh_handle: Arc::new(std::sync::Mutex::new(None)),
-            pending_retries_handle: Arc::new(std::sync::Mutex::new(None)),
+            disconnect_retry_handle: Arc::new(parking_lot::Mutex::new(None)),
+            ttl_refresh_handle: Arc::new(parking_lot::Mutex::new(None)),
+            pending_retries_handle: Arc::new(parking_lot::Mutex::new(None)),
             pending_retries_tx,
             pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
             #[cfg(test)]
@@ -792,7 +792,7 @@ impl ConnectionManager {
         key_prefix: &str,
     ) -> Self {
         if let Some(redis_runtime) = redis_runtime {
-            Self::new(limits).with_redis_runtime(redis_runtime, key_prefix)
+            Self::new_with_redis_runtime(limits, redis_runtime, key_prefix)
         } else {
             let manager = Self::new(limits);
             manager.start();
@@ -811,10 +811,7 @@ impl ConnectionManager {
             return;
         }
         let handle = self.spawn_disconnect_retry_task((*self.disconnect_retry_cancel).clone());
-        *self
-            .disconnect_retry_handle
-            .lock()
-            .expect("disconnect retry handle mutex poisoned") = Some(handle);
+        *self.disconnect_retry_handle.lock() = Some(handle);
     }
 
     #[cfg(test)]
@@ -879,20 +876,9 @@ impl ConnectionManager {
 
     #[cfg(test)]
     pub(crate) fn background_tasks_running(&self) -> bool {
-        self.disconnect_retry_handle
-            .lock()
-            .expect("disconnect retry handle mutex poisoned")
-            .is_some()
-            || self
-                .ttl_refresh_handle
-                .lock()
-                .expect("ttl refresh handle mutex poisoned")
-                .is_some()
-            || self
-                .pending_retries_handle
-                .lock()
-                .expect("pending retries handle mutex poisoned")
-                .is_some()
+        self.disconnect_retry_handle.lock().is_some()
+            || self.ttl_refresh_handle.lock().is_some()
+            || self.pending_retries_handle.lock().is_some()
     }
 
     const fn redis_enabled(&self) -> bool {
@@ -901,16 +887,19 @@ impl ConnectionManager {
 
     async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
         let runtime = self.redis_conn.as_ref()?;
-        if let Ok(conn) =
-            tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await
-        {
-            Some(conn)
-        } else {
-            warn!(
-                timeout_ms = runtime.operation_timeout().as_millis(),
-                "Redis connection snapshot timed out"
-            );
-            None
+        match tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await {
+            Ok(Ok(conn)) => Some(conn),
+            Ok(Err(error)) => {
+                warn!(error = %error, "Redis connection snapshot failed");
+                None
+            }
+            Err(_) => {
+                warn!(
+                    timeout_ms = runtime.operation_timeout().as_millis(),
+                    "Redis connection snapshot timed out"
+                );
+                None
+            }
         }
     }
 
@@ -922,21 +911,32 @@ impl ConnectionManager {
             return Ok(None);
         };
 
-        if let Ok(conn) =
-            tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await
-        {
-            Ok(Some(conn))
-        } else {
-            warn!(
-                timeout_ms = runtime.operation_timeout().as_millis(),
-                "Redis connection snapshot timed out"
-            );
-            Err(unavailable_message.to_string())
+        match tokio::time::timeout(runtime.operation_timeout(), runtime.snapshot()).await {
+            Ok(Ok(conn)) => Ok(Some(conn)),
+            Ok(Err(error)) => {
+                warn!(error = %error, "Redis connection snapshot failed");
+                Err(unavailable_message.to_string())
+            }
+            Err(_) => {
+                warn!(
+                    timeout_ms = runtime.operation_timeout().as_millis(),
+                    "Redis connection snapshot timed out"
+                );
+                Err(unavailable_message.to_string())
+            }
         }
     }
 
     #[must_use]
-    pub(crate) fn with_redis_runtime(
+    pub(crate) fn new_with_redis_runtime(
+        limits: ConnectionLimits,
+        conn: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: &str,
+    ) -> Self {
+        Self::new(limits).configure_redis_runtime(conn, key_prefix)
+    }
+
+    fn configure_redis_runtime(
         mut self,
         conn: Arc<dyn RedisConnectionRuntime>,
         key_prefix: &str,
@@ -949,10 +949,7 @@ impl ConnectionManager {
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
         let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
-        *self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned") = Some(handle);
+        *self.ttl_refresh_handle.lock() = Some(handle);
 
         let rx = self
             .pending_retries_rx
@@ -967,10 +964,7 @@ impl ConnectionManager {
             rx
         };
         let handle = Self::spawn_pending_retries_task(conn, rx, cancel);
-        *self
-            .pending_retries_handle
-            .lock()
-            .expect("pending retries handle mutex poisoned") = Some(handle);
+        *self.pending_retries_handle.lock() = Some(handle);
 
         self
     }
@@ -991,7 +985,7 @@ impl ConnectionManager {
     fn with_redis(self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         let runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(DirectRedisConnectionRuntime::new(conn));
-        self.with_redis_runtime(runtime, key_prefix)
+        self.configure_redis_runtime(runtime, key_prefix)
     }
 
     /// Enable distributed connection counting via a shared Redis handle.
@@ -1007,7 +1001,7 @@ impl ConnectionManager {
     ) -> Self {
         let runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(SharedRedisConnectionRuntime::new(conn));
-        self.with_redis_runtime(runtime, key_prefix)
+        self.configure_redis_runtime(runtime, key_prefix)
     }
 
     /// Spawn a background task that retries failed Redis counter operations.
@@ -1048,29 +1042,57 @@ impl ConnectionManager {
                         }
 
                         let mut still_pending = Vec::new();
-                        let Ok(mut conn) =
-                            tokio::time::timeout(redis_conn.operation_timeout(), redis_conn.snapshot()).await
-                        else {
-                            warn!(
-                                timeout_ms = redis_conn.operation_timeout().as_millis(),
-                                pending_ops = pending.len(),
-                                "Redis connection snapshot timed out while retrying pending counter operations"
-                            );
-                            for (op, attempts) in pending.drain(..) {
-                                let next_attempt = attempts + 1;
-                                if next_attempt >= MAX_OP_RETRIES {
-                                    tracing::error!(
-                                        op = ?op,
-                                        attempts = next_attempt,
-                                        "ALERT: Dropping pending Redis counter operation after snapshot timeout. \
-                                         Distributed connection count may be inaccurate until TTL expiry."
-                                    );
-                                } else {
-                                    still_pending.push((op, next_attempt));
+                        let mut conn = match tokio::time::timeout(
+                            redis_conn.operation_timeout(),
+                            redis_conn.snapshot(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(conn)) => conn,
+                            Ok(Err(error)) => {
+                                warn!(
+                                    error = %error,
+                                    pending_ops = pending.len(),
+                                    "Redis connection snapshot failed while retrying pending counter operations"
+                                );
+                                for (op, attempts) in pending.drain(..) {
+                                    let next_attempt = attempts + 1;
+                                    if next_attempt >= MAX_OP_RETRIES {
+                                        tracing::error!(
+                                            op = ?op,
+                                            attempts = next_attempt,
+                                            "ALERT: Dropping pending Redis counter operation after snapshot failure. \
+                                             Distributed connection count may be inaccurate until TTL expiry."
+                                        );
+                                    } else {
+                                        still_pending.push((op, next_attempt));
+                                    }
                                 }
+                                pending = still_pending;
+                                continue;
                             }
-                            pending = still_pending;
-                            continue;
+                            Err(_) => {
+                                warn!(
+                                    timeout_ms = redis_conn.operation_timeout().as_millis(),
+                                    pending_ops = pending.len(),
+                                    "Redis connection snapshot timed out while retrying pending counter operations"
+                                );
+                                for (op, attempts) in pending.drain(..) {
+                                    let next_attempt = attempts + 1;
+                                    if next_attempt >= MAX_OP_RETRIES {
+                                        tracing::error!(
+                                            op = ?op,
+                                            attempts = next_attempt,
+                                            "ALERT: Dropping pending Redis counter operation after snapshot timeout. \
+                                             Distributed connection count may be inaccurate until TTL expiry."
+                                        );
+                                    } else {
+                                        still_pending.push((op, next_attempt));
+                                    }
+                                }
+                                pending = still_pending;
+                                continue;
+                            }
                         };
 
                         for (op, attempts) in pending.drain(..) {
@@ -1616,22 +1638,14 @@ impl ConnectionManager {
 
         let mut report = ShutdownReport::new();
 
-        let ttl_refresh_handle = self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned")
-            .take();
+        let ttl_refresh_handle = self.ttl_refresh_handle.lock().take();
         if let Some(handle) = ttl_refresh_handle {
             report.ttl_refresh = Some(
                 Self::await_shutdown_task("ttl refresh", Duration::from_secs(5), handle).await,
             );
         }
 
-        let pending_retries_handle = self
-            .pending_retries_handle
-            .lock()
-            .expect("pending retries handle mutex poisoned")
-            .take();
+        let pending_retries_handle = self.pending_retries_handle.lock().take();
         if let Some(handle) = pending_retries_handle {
             report.pending_retries = Some(
                 Self::await_shutdown_task("pending Redis retries", Duration::from_secs(5), handle)
@@ -1639,11 +1653,7 @@ impl ConnectionManager {
             );
         }
 
-        let disconnect_retry_handle = self
-            .disconnect_retry_handle
-            .lock()
-            .expect("disconnect retry handle mutex poisoned")
-            .take();
+        let disconnect_retry_handle = self.disconnect_retry_handle.lock().take();
         if let Some(handle) = disconnect_retry_handle {
             report.disconnect_retry = Some(
                 Self::await_shutdown_task("disconnect retry", Duration::from_secs(5), handle).await,
@@ -1664,30 +1674,15 @@ impl ConnectionManager {
         self.ttl_refresh_cancel.cancel();
         self.disconnect_retry_cancel.cancel();
 
-        if let Some(handle) = self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned")
-            .take()
-        {
+        if let Some(handle) = self.ttl_refresh_handle.lock().take() {
             handle.abort();
         }
 
-        if let Some(handle) = self
-            .pending_retries_handle
-            .lock()
-            .expect("pending retries handle mutex poisoned")
-            .take()
-        {
+        if let Some(handle) = self.pending_retries_handle.lock().take() {
             handle.abort();
         }
 
-        if let Some(handle) = self
-            .disconnect_retry_handle
-            .lock()
-            .expect("disconnect retry handle mutex poisoned")
-            .take()
-        {
+        if let Some(handle) = self.disconnect_retry_handle.lock().take() {
             handle.abort();
         }
     }
@@ -4474,18 +4469,12 @@ mod tests {
         }
 
         fn test_set_disconnect_retry_handle(&self, handle: tokio::task::JoinHandle<()>) {
-            *self
-                .disconnect_retry_handle
-                .lock()
-                .expect("disconnect retry handle mutex poisoned") = Some(handle);
+            *self.disconnect_retry_handle.lock() = Some(handle);
             self.disconnect_retry_started.store(true, Ordering::Release);
         }
 
         fn test_set_ttl_refresh_handle(&self, handle: tokio::task::JoinHandle<()>) {
-            *self
-                .ttl_refresh_handle
-                .lock()
-                .expect("ttl refresh handle mutex poisoned") = Some(handle);
+            *self.ttl_refresh_handle.lock() = Some(handle);
         }
     }
 
@@ -6190,8 +6179,11 @@ mod tests {
         let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
         let runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
-        let manager = ConnectionManager::new(ConnectionLimits::default())
-            .with_redis_runtime(runtime, &prefix);
+        let manager = ConnectionManager::new_with_redis_runtime(
+            ConnectionLimits::default(),
+            runtime,
+            &prefix,
+        );
 
         manager
             .register(
@@ -6566,11 +6558,7 @@ mod tests {
         let report = manager.shutdown().await;
 
         assert!(
-            manager
-                .disconnect_retry_handle
-                .lock()
-                .expect("disconnect retry handle mutex poisoned")
-                .is_none(),
+            manager.disconnect_retry_handle.lock().is_none(),
             "shutdown must drain the disconnect retry task handle"
         );
         assert_eq!(
@@ -6640,11 +6628,7 @@ mod tests {
             "shutdown should report timeout before forcing task abort"
         );
         assert!(
-            manager
-                .ttl_refresh_handle
-                .lock()
-                .expect("ttl refresh handle mutex poisoned")
-                .is_none(),
+            manager.ttl_refresh_handle.lock().is_none(),
             "shutdown must drain the timed-out task handle after aborting it"
         );
     }

@@ -11,9 +11,9 @@ use axum::{
 use futures::FutureExt;
 
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
-use crate::impls::EndpointRateLimitCategory;
+use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::providers::alist::{
-    GetBindsResponse, GetMeRequest, ListRequest, LoginRequest, LogoutRequest, SearchRequest,
+    GetBindsResponse, GetMeRequest, ListRequest, LogoutRequest, SearchRequest,
 };
 use crate::proto::providers::common::ProviderInstanceQuery;
 
@@ -47,7 +47,7 @@ pub fn alist_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/alist/login",
         tag = "Provider",
-        request_body = LoginRequest,
+        request_body = synctv_proto::http_serde::AlistLoginRequestDef,
         responses(
             (status = 200, description = "Alist login succeeded", body = crate::proto::providers::alist::LoginResponse),
             (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
@@ -67,10 +67,12 @@ pub fn alist_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<LoginRequest>,
+    Json(req): Json<synctv_proto::http_serde::AlistLoginRequestDef>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
+    let req = crate::proto::providers::alist::LoginRequest::try_from(req)
+        .map_err(ApiError::InvalidInput)?;
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(

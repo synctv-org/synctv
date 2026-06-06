@@ -6,12 +6,11 @@
 //! S1/S2 tests use `InMemoryTokenBlacklistStore` + `InMemoryBruteForceProtection` + real `JwtService`.
 //! S3/S7/S13 tests use testcontainers PG.
 //!
-//! Run with: cargo test --test `user_auth_service_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use opaque_ke::argon2::Argon2;
+use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
@@ -22,25 +21,58 @@ use sqlx::{PgPool, Row};
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
-    models::{OAuth2Provider, UserId},
-    repository::{SettingsRepository, UserOAuthProviderRepository, UserRepository},
+    models::{OAuth2Provider, SignupMethod, User, UserId},
+    repository::{
+        PasswordCredentialMaterial, SettingsRepository, UserEmailRepository,
+        UserOAuthProviderRepository, UserPasswordRepository, UserRepository,
+    },
     service::{
-        auth::{jwt::JwtService, TokenCredentialBinding, TokenType},
-        local_oauth_state_store, AuthFactorMethod, AuthenticatedLogin, BruteForceProtection,
-        InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs, OAuth2Service,
-        RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore, UserService,
+        auth::{jwt::JwtService, OpaquePasswordService, TokenCredentialBinding},
+        local_oauth_state_store, AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
+        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs,
+        OAuth2Service, OAuth2ServiceRuntime, RateLimiter, SettingsRegistry, SettingsService,
+        TokenBlacklistStore, UserService,
     },
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, opaque_login_user, opaque_register_user};
 
 struct TestOpaqueCipherSuite;
 
 impl CipherSuite for TestOpaqueCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
     type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, sha2_010::Sha512>;
-    type Ksf = Argon2<'static>;
+    type Ksf = OpaqueArgon2Ksf<'static>;
+}
+
+async fn create_user_with_password_fixture(
+    pool: &PgPool,
+    username: String,
+    email: Option<String>,
+    password: &str,
+) -> synctv_core::Result<User> {
+    let normalized_username = username.trim().to_lowercase();
+    let opaque_record = OpaquePasswordService::new_ephemeral_for_process().register_password(
+        format!("synctv:user:{normalized_username}").as_bytes(),
+        password,
+    )?;
+    let user = User::new(normalized_username, SignupMethod::Email);
+    let mut tx = pool.begin().await?;
+    let created = UserRepository::new(pool.clone())
+        .create_with_executor(&user, &mut *tx)
+        .await?;
+    UserEmailRepository::new(pool.clone())
+        .create_for_user_with_executor(&created, email.as_deref(), &mut *tx)
+        .await?;
+    UserPasswordRepository::new(pool.clone())
+        .create_for_user_with_executor(
+            &created,
+            PasswordCredentialMaterial::opaque_only(&opaque_record),
+            &mut *tx,
+        )
+        .await?;
+    tx.commit().await?;
+    Ok(created)
 }
 
 const JWT_SECRET: &str = "test-secret-key-for-user-auth-service-tests-long-enough-1234567890";
@@ -53,22 +85,21 @@ fn create_user_service_with_components(
     pool: &PgPool,
     username_cache: UsernameCache,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
+    runtime: synctv_core::service::user::UserServiceRuntimeOptions,
 ) -> UserService {
     let jwt = create_jwt_service();
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    let mut svc = UserService::new(
+    UserService::new_with_runtime(
         pool,
         jwt,
         username_cache,
-        PasswordComplexityConfig::default(),
         token_blacklist,
         key_builder,
         brute_force,
-    );
-    svc.enable_password_registration_for_tests();
-    svc
+        runtime,
+    )
 }
 
 fn create_user_service_with_blacklist(
@@ -76,13 +107,28 @@ fn create_user_service_with_blacklist(
     token_blacklist: Arc<dyn TokenBlacklistStore>,
 ) -> UserService {
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 1000, 0);
-    create_user_service_with_components(pool, username_cache, token_blacklist)
+    create_user_service_with_components(
+        pool,
+        username_cache,
+        token_blacklist,
+        default_test_user_runtime_options(),
+    )
 }
 
 fn create_user_service(pool: &PgPool) -> UserService {
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     create_user_service_with_blacklist(pool, token_blacklist)
+}
+
+fn default_test_user_runtime_options() -> synctv_core::service::user::UserServiceRuntimeOptions {
+    synctv_core::service::user::UserServiceRuntimeOptions {
+        password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
+            enabled: true,
+            need_review: false,
+        }),
+        ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+    }
 }
 
 fn oauth2_user_info(
@@ -104,16 +150,53 @@ fn oauth2_user_info(
     }
 }
 
+async fn oauth2_service_with_google_signup(pool: &PgPool) -> OAuth2Service {
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool.clone(),
+    ));
+    let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
+    let oauth2_configs: OAuth2ProviderConfigs = serde_json::json!({
+        "google": {
+            "type": "google",
+            "enable_signup": true,
+            "signup_need_review": false,
+            "config": {
+                "client_id": "google-client-id",
+                "client_secret": "google-client-secret",
+                "redirect_url": "https://app.example.com/oauth2/callback"
+            }
+        }
+    })
+    .to_string()
+    .parse()
+    .expect("OAuth2 provider configs should parse");
+    settings_registry
+        .oauth2_providers
+        .set(oauth2_configs)
+        .await
+        .expect("OAuth2 runtime settings should persist");
+
+    OAuth2Service::new_with_runtime(
+        UserOAuthProviderRepository::new(pool.clone()),
+        local_oauth_state_store(),
+        synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
+        SsrfGuard::strict_policy(),
+        false,
+        OAuth2ServiceRuntime {
+            settings_registry: Some(settings_registry),
+            ..OAuth2ServiceRuntime::default()
+        },
+    )
+    .expect("OAuth2 service should initialize")
+}
+
 struct FamilyRevocationFailingStore {
     inner: InMemoryTokenBlacklistStore,
 }
 
 #[async_trait::async_trait]
 impl TokenBlacklistStore for FamilyRevocationFailingStore {
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        self.inner.is_blacklisted(key).await
-    }
-
     async fn is_blacklisted_checked(&self, key: &str) -> synctv_core::Result<bool> {
         self.inner.is_blacklisted_checked(key).await
     }
@@ -126,8 +209,8 @@ impl TokenBlacklistStore for FamilyRevocationFailingStore {
         self.inner.blacklist_if_not_exists(key, ttl_secs).await
     }
 
-    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        self.inner.get_family_revoked_at(key).await
+    async fn get_family_revoked_at_checked(&self, key: &str) -> synctv_core::Result<Option<i64>> {
+        self.inner.get_family_revoked_at_checked(key).await
     }
 
     async fn set_family_revoked(
@@ -148,10 +231,6 @@ struct FamilyRevocationReadFailingStore {
 
 #[async_trait::async_trait]
 impl TokenBlacklistStore for FamilyRevocationReadFailingStore {
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        self.inner.is_blacklisted(key).await
-    }
-
     async fn is_blacklisted_checked(&self, key: &str) -> synctv_core::Result<bool> {
         self.inner.is_blacklisted_checked(key).await
     }
@@ -162,10 +241,6 @@ impl TokenBlacklistStore for FamilyRevocationReadFailingStore {
 
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> synctv_core::Result<bool> {
         self.inner.blacklist_if_not_exists(key, ttl_secs).await
-    }
-
-    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        self.inner.get_family_revoked_at(key).await
     }
 
     async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
@@ -269,7 +344,12 @@ fn create_user_service_with_failing_username_cache(pool: &PgPool) -> UserService
         1000,
         60,
     );
-    create_user_service_with_components(pool, username_cache, token_blacklist)
+    create_user_service_with_components(
+        pool,
+        username_cache,
+        token_blacklist,
+        default_test_user_runtime_options(),
+    )
 }
 
 async fn opaque_register(
@@ -305,7 +385,7 @@ async fn opaque_register(
         )
         .expect("client OPAQUE registration finish should succeed");
 
-    service
+    match service
         .finish_opaque_registration_with_control(
             &challenge.session_id,
             client_finish.message.serialize().to_vec(),
@@ -313,6 +393,18 @@ async fn opaque_register(
             None,
         )
         .await
+    {
+        Ok(AccountRegistrationOutcome::Registered {
+            user,
+            access_token,
+            refresh_token,
+            ..
+        }) => Ok((user, Some(access_token), Some(refresh_token))),
+        Ok(AccountRegistrationOutcome::PendingReview(_)) => Err(Error::Internal(
+            "opaque_register helper received pending review outcome".to_string(),
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 async fn opaque_update_password(
@@ -540,16 +632,14 @@ async fn test_refresh_token_happy_path() {
     let service = create_user_service(&pool);
 
     // Register a user
-    let (user, Some(access_token), Some(refresh_token)) = service
-        .register(
-            format!("refresh_user_{}", synctv_common::snanoid!(6)),
-            Some(format!("refresh_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (user, Some(access_token), Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("refresh_user_{}", synctv_common::snanoid!(6)),
+        Some(format!("refresh_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens from registration");
     };
 
@@ -585,16 +675,14 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("blacklist_user_{}", synctv_common::snanoid!(6)),
-            Some(format!("blacklist_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("blacklist_user_{}", synctv_common::snanoid!(6)),
+        Some(format!("blacklist_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -615,7 +703,10 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     let key_builder = KeyBuilder::new("test");
     let blacklist_key = key_builder.refresh_token_blacklist(&old_jti);
     assert!(
-        token_blacklist.is_blacklisted(&blacklist_key).await,
+        token_blacklist
+            .is_blacklisted_checked(&blacklist_key)
+            .await
+            .unwrap(),
         "Old JTI should be blacklisted after refresh"
     );
 }
@@ -630,19 +721,17 @@ async fn test_refresh_token_fails_closed_when_family_revocation_read_fails() {
         });
     let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("family_read_fail_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "family_read_fail_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("family_read_fail_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "family_read_fail_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -662,16 +751,14 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
     let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("replay_user_{}", synctv_common::snanoid!(6)),
-            Some(format!("replay_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("replay_user_{}", synctv_common::snanoid!(6)),
+        Some(format!("replay_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -703,74 +790,6 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_legacy_refresh_token_replay_revokes_legacy_descendants() {
-    let (_container, pool) = create_test_pool().await;
-    let token_blacklist: Arc<dyn TokenBlacklistStore> =
-        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
-    let service = create_user_service_with_blacklist(&pool, token_blacklist);
-
-    let (user, _access, Some(_refresh_token)) = service
-        .register(
-            format!("legacy_replay_user_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "legacy_replay_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
-        panic!("Expected tokens");
-    };
-
-    let jwt = create_jwt_service();
-    let legacy_refresh = jwt
-        .sign_token_with_auth_context_and_session(
-            &user.id,
-            TokenType::Refresh,
-            0,
-            None,
-            None,
-            &TokenCredentialBinding::Password { version: 0 },
-        )
-        .expect("legacy refresh token should be signed");
-    let legacy_claims = jwt
-        .verify_refresh_token(&legacy_refresh)
-        .expect("legacy refresh token should verify");
-    assert!(
-        legacy_claims.sid.is_none(),
-        "legacy refresh token should not have a session id"
-    );
-
-    let (_new_access, new_refresh) = service
-        .refresh_token(legacy_refresh.clone())
-        .await
-        .expect("legacy refresh should rotate successfully");
-    let new_claims = jwt
-        .verify_refresh_token(&new_refresh)
-        .expect("rotated legacy refresh token should verify");
-    assert!(
-        new_claims.sid.is_none(),
-        "rotated legacy refresh token must stay in the legacy revocation scope"
-    );
-
-    let replay_result = service.refresh_token(legacy_refresh).await;
-    assert!(
-        replay_result.is_err(),
-        "replayed legacy refresh token should revoke the legacy token family"
-    );
-
-    let descendant_result = service.refresh_token(new_refresh).await;
-    assert!(
-        descendant_result.is_err(),
-        "legacy refresh descendant should be rejected after family revocation"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_logout_session_revocation_blocks_only_current_refresh_session() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
@@ -782,18 +801,17 @@ async fn test_logout_session_revocation_blocks_only_current_refresh_session() {
         "logout_session_{}@test.com",
         synctv_common::snanoid!(6)
     ));
-    let (user, Some(first_access), Some(first_refresh)) = service
-        .register(username.clone(), email, "StrongPass1".to_string(), None)
-        .await
-        .expect("Registration should succeed")
+    let (user, Some(first_access), Some(first_refresh)) =
+        opaque_register_user(&service, username.clone(), email, "StrongPass1")
+            .await
+            .expect("Registration should succeed")
     else {
         panic!("Expected tokens");
     };
     let AuthenticatedLogin::Complete {
         refresh_token: second_refresh,
         ..
-    } = service
-        .login(username, "StrongPass1".to_string(), None)
+    } = opaque_login_user(&service, username, "StrongPass1")
         .await
         .expect("Second login should succeed")
     else {
@@ -807,7 +825,14 @@ async fn test_logout_session_revocation_blocks_only_current_refresh_session() {
     let revoked_at = access_claims.iat.saturating_add(1);
 
     service
-        .revoke_refresh_token_session(&user.id, access_claims.sid.as_deref(), revoked_at)
+        .revoke_refresh_token_session(
+            &user.id,
+            access_claims
+                .sid
+                .as_deref()
+                .expect("access token should carry sid"),
+            revoked_at,
+        )
         .await
         .expect("Logout session revocation should persist");
 
@@ -831,16 +856,14 @@ async fn test_refresh_token_version_mismatch_rejected() {
     let service = create_user_service(&pool);
 
     // Register a user
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("pv_user_{}", synctv_common::snanoid!(6)),
-            Some(format!("pv_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("pv_user_{}", synctv_common::snanoid!(6)),
+        Some(format!("pv_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -853,8 +876,7 @@ async fn test_refresh_token_version_mismatch_rejected() {
         .sub
         .parse::<UserId>()
         .expect("valid numeric user id claim");
-    service
-        .set_password(&user_id, "NewStrongPass1")
+    opaque_update_password(&service, &user_id, "StrongPass1", "NewStrongPass1")
         .await
         .expect("Password change should succeed");
 
@@ -864,7 +886,11 @@ async fn test_refresh_token_version_mismatch_rejected() {
         result.is_err(),
         "Refresh with old password version should be rejected"
     );
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+    let error = result.unwrap_err();
+    assert!(
+        matches!(error, Error::Authentication(_)),
+        "expected Authentication, got {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -873,27 +899,24 @@ async fn test_refresh_token_rejects_any_password_version_mismatch() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
 
-    let (user, _access, Some(_refresh_token)) = service
-        .register(
-            format!("pv_strict_{}", synctv_common::snanoid!(6)),
-            Some(format!("pv_strict_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (user, _access, Some(_refresh_token)) = opaque_register_user(
+        &service,
+        format!("pv_strict_{}", synctv_common::snanoid!(6)),
+        Some(format!("pv_strict_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
     let jwt = create_jwt_service();
     let mismatched_refresh = jwt
-        .sign_token_with_auth_context_and_session(
+        .sign_refresh_token_with_session(
             &user.id,
-            TokenType::Refresh,
             99,
             None,
-            Some("strict-password-version-session"),
+            "strict-password-version-session",
             &TokenCredentialBinding::Password { version: 99 },
         )
         .expect("mismatched refresh token should be signed");
@@ -912,19 +935,17 @@ async fn test_refresh_token_banned_user_rejected() {
     let service = create_user_service(&pool);
 
     // Register a user and get refresh token
-    let (user, _access, Some(refresh_token)) = service
-        .register(
-            format!("banned_refresh_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "banned_refresh_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("banned_refresh_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "banned_refresh_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -936,7 +957,11 @@ async fn test_refresh_token_banned_user_rejected() {
     // Try to refresh
     let result = service.refresh_token(refresh_token).await;
     assert!(result.is_err(), "Banned user should not be able to refresh");
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+    let error = result.unwrap_err();
+    assert!(
+        matches!(error, Error::Authentication(_)),
+        "expected Authentication, got {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -946,19 +971,17 @@ async fn test_refresh_token_deleted_user_rejected() {
     let service = create_user_service(&pool);
 
     // Register a user
-    let (user, _access, Some(refresh_token)) = service
-        .register(
-            format!("deleted_refresh_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "deleted_refresh_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("deleted_refresh_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "deleted_refresh_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -974,7 +997,11 @@ async fn test_refresh_token_deleted_user_rejected() {
         result.is_err(),
         "Deleted user should not be able to refresh"
     );
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+    let error = result.unwrap_err();
+    assert!(
+        matches!(error, Error::Authentication(_)),
+        "expected Authentication, got {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -986,19 +1013,17 @@ async fn test_refresh_token_family_revocation_timestamp_blocks_older_tokens() {
     let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
-    let (_user, _access, Some(refresh_token_1)) = service
-        .register(
-            format!("family_rev_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "family_rev_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token_1)) = opaque_register_user(
+        &service,
+        format!("family_rev_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "family_rev_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -1036,19 +1061,17 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
         });
     let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("family_lookup_fail_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "family_lookup_fail_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("family_lookup_fail_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "family_lookup_fail_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected refresh token");
     };
 
@@ -1064,23 +1087,22 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_plain_password_login_uses_opaque_credential_by_default() {
+async fn test_opaque_registration_persists_login_credential() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
 
     let username = format!("plain_password_default_{}", synctv_common::snanoid!(6));
-    service
-        .register(
-            username.clone(),
-            Some(format!(
-                "plain_password_default_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("password registration should create a user");
+    opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "plain_password_default_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("OPAQUE registration should create a user");
 
     let created = service
         .get_user_by_username(&username)
@@ -1091,21 +1113,13 @@ async fn test_plain_password_login_uses_opaque_credential_by_default() {
     let opaque_identifier: Option<Vec<u8>> = row.try_get("opaque_credential_identifier").unwrap();
     assert!(
         opaque_record.is_some() && opaque_identifier.is_some(),
-        "password registration must persist OPAQUE credential material"
+        "OPAQUE registration must persist OPAQUE credential material"
     );
 
-    let result = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
-    assert!(
-        matches!(result, Ok(AuthenticatedLogin::Complete { .. })),
-        "plain password login must verify against OPAQUE credential material"
-    );
-
-    let opaque_result = opaque_login(&service, username, "StrongPass1").await;
+    let opaque_result = opaque_login_user(&service, username, "StrongPass1").await;
     assert!(
         opaque_result.is_ok(),
-        "standard OPAQUE login must use the same password credential"
+        "OPAQUE login must use the persisted password credential"
     );
 }
 
@@ -1117,27 +1131,24 @@ async fn test_login_banned_user_rejected() {
 
     // Register
     let username = format!("banned_login_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "banned_login_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "banned_login_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     UserRepository::new(pool.clone())
         .ban(&user.id, None, Some("test ban".to_string()))
         .await
         .expect("Failed to ban user");
 
-    let result = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
+    let result = opaque_login_user(&service, username, "StrongPass1").await;
     assert!(result.is_err(), "Banned user should not be able to login");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
@@ -1149,18 +1160,17 @@ async fn test_login_rejected_user_rejected() {
     let service = create_user_service(&pool);
 
     let username = format!("rejected_login_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "rejected_login_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "rejected_login_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     sqlx::query(
         r"
@@ -1196,9 +1206,7 @@ async fn test_login_rejected_user_rejected() {
         .await
         .expect("Failed to disable rejected test user");
 
-    let result = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
+    let result = opaque_login_user(&service, username, "StrongPass1").await;
     assert!(result.is_err(), "Rejected user should not be able to login");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
@@ -1211,18 +1219,17 @@ async fn test_login_soft_deleted_user_rejected() {
 
     // Register
     let username = format!("deleted_login_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "deleted_login_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "deleted_login_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     // Soft-delete
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
@@ -1231,14 +1238,16 @@ async fn test_login_soft_deleted_user_rejected() {
         .await
         .expect("Failed to soft-delete");
 
-    let result = service
-        .login(username, "StrongPass1".to_string(), None)
-        .await;
+    let result = opaque_login_user(&service, username, "StrongPass1").await;
     assert!(
         result.is_err(),
         "Soft-deleted user should not be able to login"
     );
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+    let error = result.unwrap_err();
+    assert!(
+        matches!(error, Error::Authentication(_)),
+        "expected Authentication, got {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -1248,15 +1257,14 @@ async fn test_login_email_and_oauth2_user_types_allowed() {
     let service = create_user_service(&pool);
 
     let email_user = format!("email_allowed_{}", synctv_common::snanoid!(6));
-    let (_user_with_email, _, _) = service
-        .register(
-            email_user.clone(),
-            Some(format!("{email_user}@test.com")),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (_user_with_email, _, _) = opaque_register_user(
+        &service,
+        email_user.clone(),
+        Some(format!("{email_user}@test.com")),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
     let oauth_user = service
@@ -1264,14 +1272,11 @@ async fn test_login_email_and_oauth2_user_types_allowed() {
         .await
         .expect("OAuth2 user creation should succeed");
 
-    service
-        .set_password(&oauth_user.id, "StrongPass1")
+    opaque_reset_password_after_external_verification(&service, &oauth_user.id, "StrongPass1")
         .await
-        .expect("Setting password should succeed");
+        .expect("Setting password through OPAQUE reset should succeed");
 
-    let email_result = service
-        .login(email_user, "StrongPass1".to_string(), None)
-        .await;
+    let email_result = opaque_login_user(&service, email_user, "StrongPass1").await;
 
     let oauth_result = opaque_login(&service, oauth_user.username.clone(), "StrongPass1").await;
 
@@ -1296,15 +1301,14 @@ async fn test_delete_user_already_deleted_guard() {
     let service = create_user_service(&pool);
 
     // Register
-    let (user, _, _) = service
-        .register(
-            format!("del_guard_{}", synctv_common::snanoid!(6)),
-            Some(format!("del_guard_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        format!("del_guard_{}", synctv_common::snanoid!(6)),
+        Some(format!("del_guard_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     // First delete should succeed
     service
@@ -1333,15 +1337,14 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
     let service = create_user_service(&pool);
 
     // Register
-    let (user, _, _) = service
-        .register(
-            format!("del_oauth_{}", synctv_common::snanoid!(6)),
-            Some(format!("del_oauth_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        format!("del_oauth_{}", synctv_common::snanoid!(6)),
+        Some(format!("del_oauth_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     // Delete should succeed (even without oauth2 mappings the transaction completes)
     service
@@ -1362,35 +1365,32 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
     );
 }
 
-// S7: UserService::set_password
+// S7: forced password reset
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_password_bumps_version() {
+async fn test_force_password_reset_revokes_password_credential_and_bumps_version() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
 
-    // Register
-    let (user, _, _) = service
-        .register(
-            format!("setpw_{}", synctv_common::snanoid!(6)),
-            Some(format!("setpw_{}@test.com", synctv_common::snanoid!(6))),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        format!("setpw_{}", synctv_common::snanoid!(6)),
+        Some(format!("setpw_{}@test.com", synctv_common::snanoid!(6))),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let old_version: i32 = load_password_credential_row(&pool, user.id)
         .await
         .try_get("version")
         .unwrap();
 
-    // Admin set password (no old password needed)
     let _updated_user = service
-        .set_password(&user.id, "AdminNewPass1")
+        .force_password_reset(&user.id)
         .await
-        .expect("Set password should succeed");
+        .expect("forced password reset should succeed");
     let after_version: i32 = load_password_credential_row(&pool, user.id)
         .await
         .try_get("version")
@@ -1399,14 +1399,14 @@ async fn test_set_password_bumps_version() {
     assert_eq!(
         after_version,
         old_version + 1,
-        "Password version should be incremented by set_password"
+        "Password version should be incremented by forced reset"
     );
 
     let row = load_password_credential_row(&pool, user.id).await;
     let opaque_record: Option<Vec<u8>> = row.try_get("opaque_record").unwrap();
     assert!(
-        opaque_record.is_some(),
-        "admin set_password must persist OPAQUE credential material"
+        opaque_record.is_none(),
+        "forced password reset must revoke OPAQUE credential material"
     );
 }
 
@@ -1449,15 +1449,13 @@ async fn test_opaque_registration_creates_opaque_only_password_credential() {
         "OPAQUE-only registration must count as usable password authentication"
     );
 
-    let plain_login = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let password_login = opaque_login_user(&service, username.clone(), "StrongPass1").await;
     assert!(
-        plain_login.is_ok(),
-        "plain password login should work for OPAQUE-only registrations through OPAQUE verification"
+        password_login.is_ok(),
+        "OPAQUE login should work for OPAQUE-only registrations"
     );
 
-    let opaque_login_result = opaque_login(&service, username, "StrongPass1").await;
+    let opaque_login_result = opaque_login_user(&service, username, "StrongPass1").await;
     assert!(
         opaque_login_result.is_ok(),
         "OPAQUE login must work for OPAQUE-only registrations"
@@ -1471,13 +1469,7 @@ async fn test_opaque_only_password_counts_as_first_factor_without_plaintext_mfa(
     let service = create_user_service(&pool);
     let username = format!("opaque_mfa_{}", synctv_common::snanoid!(6));
     let email = format!("opaque_mfa_{}@test.com", synctv_common::snanoid!(6));
-    let user = service
-        .create_user_with_role(
-            username.clone(),
-            Some(email),
-            "StrongPass1".to_string(),
-            None,
-        )
+    let (user, _, _) = opaque_register_user(&service, username.clone(), Some(email), "StrongPass1")
         .await
         .expect("user creation should succeed");
 
@@ -1485,17 +1477,15 @@ async fn test_opaque_only_password_counts_as_first_factor_without_plaintext_mfa(
         .get_user_preferences(&user.id)
         .await
         .expect("preferences should load");
-    assert!(
-        factors.password,
-        "OPAQUE-only password should count as a local password first factor"
-    );
+    assert!(factors.password);
     assert!(factors.email);
     assert!(factors.supports_two_factor());
 
-    service
-        .set_two_factor_enabled(&user.id, true)
-        .await
-        .expect("email + OPAQUE-only password should enable 2FA");
+    let result = service.set_two_factor_enabled(&user.id, true).await;
+    assert!(
+        result.is_ok(),
+        "OPAQUE password plus email should allow enabling 2FA"
+    );
 
     let login = opaque_login_outcome(&service, username, "StrongPass1")
         .await
@@ -1524,18 +1514,17 @@ async fn test_opaque_password_update_replaces_opaque_password_credential() {
     let service = create_user_service(&pool);
 
     let username = format!("opaque_update_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "opaque_update_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("password registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "opaque_update_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("password registration should succeed");
 
     let before = load_password_credential_row(&pool, user.id).await;
     let before_opaque_record: Option<Vec<u8>> = before.try_get("opaque_record").unwrap();
@@ -1569,18 +1558,14 @@ async fn test_opaque_password_update_replaces_opaque_password_credential() {
         "OPAQUE-only password update must count as usable password authentication"
     );
 
-    let old_plain_login = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
-    let new_plain_login = service
-        .login(username.clone(), "NewStrongPass1".to_string(), None)
-        .await;
+    let old_password_login = opaque_login_user(&service, username.clone(), "StrongPass1").await;
+    let new_password_login = opaque_login_user(&service, username.clone(), "NewStrongPass1").await;
     assert!(
-        old_plain_login.is_err() && new_plain_login.is_ok(),
-        "plain password login should use the updated OPAQUE-only password credential"
+        old_password_login.is_err() && new_password_login.is_ok(),
+        "OPAQUE login should use the updated password credential"
     );
 
-    let opaque_login_result = opaque_login(&service, username, "NewStrongPass1").await;
+    let opaque_login_result = opaque_login_user(&service, username, "NewStrongPass1").await;
     assert!(
         opaque_login_result.is_ok(),
         "OPAQUE login must work with the updated OPAQUE-only password credential"
@@ -1594,18 +1579,17 @@ async fn test_opaque_password_reset_replaces_opaque_password_credential() {
     let service = create_user_service(&pool);
 
     let username = format!("opaque_reset_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "opaque_reset_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("password registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "opaque_reset_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("password registration should succeed");
 
     let before = load_password_credential_row(&pool, user.id).await;
     let before_opaque_record: Option<Vec<u8>> = before.try_get("opaque_record").unwrap();
@@ -1633,18 +1617,14 @@ async fn test_opaque_password_reset_replaces_opaque_password_credential() {
         "OPAQUE password reset must persist the new OPAQUE credential"
     );
 
-    let old_plain_login = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
-    let new_plain_login = service
-        .login(username.clone(), "NewStrongPass1".to_string(), None)
-        .await;
+    let old_password_login = opaque_login_user(&service, username.clone(), "StrongPass1").await;
+    let new_password_login = opaque_login_user(&service, username.clone(), "NewStrongPass1").await;
     assert!(
-        old_plain_login.is_err() && new_plain_login.is_ok(),
-        "plain password login should use the reset OPAQUE-only password credential"
+        old_password_login.is_err() && new_password_login.is_ok(),
+        "OPAQUE login should use the reset password credential"
     );
 
-    let opaque_login_result = opaque_login(&service, username, "NewStrongPass1").await;
+    let opaque_login_result = opaque_login_user(&service, username, "NewStrongPass1").await;
     assert!(
         opaque_login_result.is_ok(),
         "OPAQUE login must work with the reset OPAQUE-only password credential"
@@ -1658,18 +1638,17 @@ async fn test_opaque_password_update_requires_current_credential_proof() {
     let service = create_user_service(&pool);
 
     let username = format!("opaque_update_proof_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "opaque_update_proof_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("password registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "opaque_update_proof_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("password registration should succeed");
 
     let mut rng = OsRng;
     let login_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, b"WrongStrongPass1")
@@ -1712,9 +1691,7 @@ async fn test_opaque_password_update_requires_current_credential_proof() {
         "OPAQUE password update must reject requests that cannot prove the current credential"
     );
 
-    let old_password_login = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let old_password_login = opaque_login_user(&service, username.clone(), "StrongPass1").await;
     assert!(
         old_password_login.is_ok(),
         "failed OPAQUE password update must not replace the existing password credential"
@@ -1734,18 +1711,17 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
     let service = create_user_service(&pool);
 
     let username = format!("opaque_passkey_update_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "opaque_passkey_update_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("password registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "opaque_passkey_update_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("password registration should succeed");
 
     let (session_id, registration_upload) =
         pending_passkey_opaque_update_upload(&service, &user.id, "NewStrongPass1")
@@ -1764,11 +1740,9 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
         "pending passkey sessions must not be finishable through generic external verification"
     );
 
-    let plain_login = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let password_login = opaque_login_user(&service, username.clone(), "StrongPass1").await;
     assert!(
-        plain_login.is_ok(),
+        password_login.is_ok(),
         "failed passkey-bypass attempt must leave the original password intact"
     );
 
@@ -1793,15 +1767,13 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
         "passkey-verified OPAQUE update must leave usable password authentication"
     );
 
-    let old_plain_login = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let old_password_login = opaque_login_user(&service, username.clone(), "StrongPass1").await;
     assert!(
-        old_plain_login.is_err(),
-        "old plain password must stop working after passkey-verified OPAQUE update"
+        old_password_login.is_err(),
+        "old password must stop working after passkey-verified OPAQUE update"
     );
 
-    let opaque_login_result = opaque_login(&service, username, "NewStrongPass1").await;
+    let opaque_login_result = opaque_login_user(&service, username, "NewStrongPass1").await;
     assert!(
         opaque_login_result.is_ok(),
         "new OPAQUE credential must work after passkey-verified password update"
@@ -1818,45 +1790,43 @@ async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
     let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
     let username = format!("setpw_fail_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "setpw_fail_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "setpw_fail_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
-    let result = service.set_password(&user.id, "AdminNewPass1").await;
+    let result = service.force_password_reset(&user.id).await;
     assert!(
         result.is_ok(),
-        "Password updates should rely on version, not fail on best-effort family revocation persistence"
+        "Password reset should rely on version, not fail on best-effort family revocation persistence"
     );
 
-    let login_old = service
-        .login(username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let login_old = opaque_login_user(&service, username.clone(), "StrongPass1").await;
     assert!(
         login_old.is_err(),
         "Old password must stop working after version is updated"
     );
 
-    let login_new = service
-        .login(username.clone(), "AdminNewPass1".to_string(), None)
-        .await;
+    let login_new = opaque_login_user(&service, username.clone(), "AdminNewPass1").await;
     assert!(
-        login_new.is_ok(),
-        "plain password login should use the admin-set OPAQUE-only password credential"
+        login_new.is_err(),
+        "Forced reset should wait for the user-owned OPAQUE reset flow"
     );
 
-    let opaque_login_new = opaque_login(&service, username, "AdminNewPass1").await;
+    opaque_reset_password_after_external_verification(&service, &user.id, "AdminNewPass1")
+        .await
+        .expect("external verification should install replacement password");
+    let opaque_login_new = opaque_login_user(&service, username, "AdminNewPass1").await;
     assert!(
         opaque_login_new.is_ok(),
-        "New OPAQUE password must become active even when best-effort family revocation persistence fails"
+        "New OPAQUE password must become active through reset flow"
     );
 }
 
@@ -1867,15 +1837,14 @@ async fn test_username_registration_and_login_are_case_insensitive() {
     let service = create_user_service(&pool);
     let suffix = synctv_common::snanoid!(6);
 
-    let (user, _, _) = service
-        .register(
-            format!("CaseUser_{suffix}"),
-            Some(format!("case_user_{suffix}@test.com")),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        format!("CaseUser_{suffix}"),
+        Some(format!("case_user_{suffix}@test.com")),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     assert_eq!(
         user.username,
@@ -1883,26 +1852,20 @@ async fn test_username_registration_and_login_are_case_insensitive() {
         "Stored username should use the canonical lowercase form"
     );
 
-    let duplicate = service
-        .register(
-            format!("CASEUSER_{suffix}"),
-            Some(format!("case_user_dup_{suffix}@test.com")),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await;
+    let duplicate = opaque_register_user(
+        &service,
+        format!("CASEUSER_{suffix}"),
+        Some(format!("case_user_dup_{suffix}@test.com")),
+        "StrongPass1",
+    )
+    .await;
     assert!(
         matches!(duplicate, Err(Error::AlreadyExists(_))),
         "Case variants of the same username must collide"
     );
 
     let (logged_in_user, _, _) = expect_complete_login(
-        service
-            .login(
-                format!("cAsEuSeR_{suffix}"),
-                "StrongPass1".to_string(),
-                None,
-            )
+        opaque_login_user(&service, format!("cAsEuSeR_{suffix}"), "StrongPass1")
             .await
             .expect("Login should accept case variants of the canonical username"),
     );
@@ -1923,18 +1886,17 @@ async fn test_update_profile_updates_username_only() {
 
     let old_username = format!("profile_atomic_{}", synctv_common::snanoid!(6));
     let new_username = format!("profile_atomic_new_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            old_username.clone(),
-            Some(format!(
-                "profile_atomic_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        old_username.clone(),
+        Some(format!(
+            "profile_atomic_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let before_version: i32 = load_password_credential_row(&pool, user.id)
         .await
@@ -1955,17 +1917,13 @@ async fn test_update_profile_updates_username_only() {
         "Username-only profile update must not increment version"
     );
 
-    let login_old = service
-        .login(old_username, "StrongPass1".to_string(), None)
-        .await;
+    let login_old = opaque_login_user(&service, old_username, "StrongPass1").await;
     assert!(
         login_old.is_err(),
         "Old username must stop working after a successful profile update"
     );
 
-    let login_new = service
-        .login(new_username.to_uppercase(), "StrongPass1".to_string(), None)
-        .await;
+    let login_new = opaque_login_user(&service, new_username.to_uppercase(), "StrongPass1").await;
     assert!(
         login_new.is_ok(),
         "Existing password must remain active with the new username after profile update"
@@ -1979,18 +1937,17 @@ async fn test_update_profile_rejects_empty_update() {
     let service = create_user_service(&pool);
 
     let old_username = format!("profile_rollback_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            old_username.clone(),
-            Some(format!(
-                "profile_rollback_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        old_username.clone(),
+        Some(format!(
+            "profile_rollback_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let result = service.update_profile(&user.id, None).await;
 
@@ -2009,9 +1966,7 @@ async fn test_update_profile_rejects_empty_update() {
         "Username must not change when profile update is rejected"
     );
 
-    let login_old = service
-        .login(old_username, "StrongPass1".to_string(), None)
-        .await;
+    let login_old = opaque_login_user(&service, old_username, "StrongPass1").await;
     assert!(
         login_old.is_ok(),
         "Original credentials must remain valid after a rejected combined profile update"
@@ -2029,18 +1984,17 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
 
     let old_username = format!("profile_revoke_{}", synctv_common::snanoid!(6));
     let new_username = format!("profile_revoke_new_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
-        .register(
-            old_username.clone(),
-            Some(format!(
-                "profile_revoke_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        old_username.clone(),
+        Some(format!(
+            "profile_revoke_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed");
 
     let updated = service
         .update_profile(&user.id, Some(new_username.clone()))
@@ -2058,17 +2012,13 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
     );
     assert_eq!(updated.username, persisted.username);
 
-    let login_old = service
-        .login(old_username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let login_old = opaque_login_user(&service, old_username.clone(), "StrongPass1").await;
     assert!(
         login_old.is_err(),
         "Original credentials must stop working after a successful combined profile update"
     );
 
-    let login_new = service
-        .login(new_username, "StrongPass1".to_string(), None)
-        .await;
+    let login_new = opaque_login_user(&service, new_username, "StrongPass1").await;
     assert!(
         login_new.is_ok(),
         "Existing password must remain active after a successful profile update"
@@ -2082,18 +2032,17 @@ async fn test_register_succeeds_when_username_cache_write_fails() {
     let service = create_user_service_with_failing_username_cache(&pool);
 
     let username = format!("cache_fail_register_{}", synctv_common::snanoid!(6));
-    let (user, access_token, refresh_token) = service
-        .register(
-            username.clone(),
-            Some(format!(
-                "cache_fail_register_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration must succeed even when username cache write fails");
+    let (user, access_token, refresh_token) = opaque_register_user(
+        &service,
+        username.clone(),
+        Some(format!(
+            "cache_fail_register_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration must succeed even when username cache write fails");
 
     assert_eq!(user.username, username.to_lowercase());
     assert!(access_token.is_some());
@@ -2112,21 +2061,17 @@ async fn test_finalize_registration_succeeds_when_username_cache_write_fails() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service_with_failing_username_cache(&pool);
 
-    let mut tx = pool.begin().await.expect("Transaction should start");
-    let user = service
-        .register_with_executor(
-            format!("cache_fail_finalize_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "cache_fail_finalize_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            synctv_core::models::SignupMethod::Email,
-            &mut tx,
-        )
-        .await
-        .expect("User creation should succeed");
-    tx.commit().await.expect("Transaction should commit");
+    let user = create_user_with_password_fixture(
+        &pool,
+        format!("cache_fail_finalize_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "cache_fail_finalize_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("User creation should succeed");
 
     let (access_token, refresh_token) = service
         .finalize_registration(&user)
@@ -2151,7 +2096,6 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
                 "cache_fail_admin_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
-            "StrongPass1".to_string(),
             Some(synctv_core::models::UserRole::Admin),
         )
         .await
@@ -2163,23 +2107,37 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
         .expect("Created admin user must be durable in the database");
     assert_eq!(persisted.id, created.id);
     assert_eq!(persisted.role, synctv_core::models::UserRole::Admin);
-
-    let row = load_password_credential_row(&pool, created.id).await;
-    let opaque_record: Option<Vec<u8>> = row.try_get("opaque_record").unwrap();
-    assert!(
-        opaque_record.is_some(),
-        "admin-created users must persist OPAQUE credential material"
+    assert_eq!(
+        persisted.signup_method,
+        synctv_core::models::SignupMethod::AdminCreated
     );
 
-    let plain_login = service
-        .login(created.username.clone(), "StrongPass1".to_string(), None)
-        .await;
+    let password_repository = UserPasswordRepository::new(pool.clone());
+    let password_state = password_repository
+        .get_state(&created.id)
+        .await
+        .expect("password state lookup should succeed");
+    let has_opaque_credential = password_repository
+        .has_opaque_credential(&created.id)
+        .await
+        .expect("password credential lookup should succeed");
+    assert_eq!(password_state.version, 0);
     assert!(
-        plain_login.is_ok(),
-        "admin-created users should be able to use plain password login through OPAQUE verification"
+        !has_opaque_credential,
+        "admin-created users must wait for OPAQUE reset before credential material exists"
     );
 
-    let opaque_login_result = opaque_login(&service, created.username.clone(), "StrongPass1").await;
+    let password_login = opaque_login_user(&service, created.username.clone(), "StrongPass1").await;
+    assert!(
+        password_login.is_err(),
+        "admin-created users should need OPAQUE reset before password login"
+    );
+
+    opaque_reset_password_after_external_verification(&service, &created.id, "StrongPass1")
+        .await
+        .expect("external verification should initialize admin-created password");
+    let opaque_login_result =
+        opaque_login_user(&service, created.username.clone(), "StrongPass1").await;
     assert!(
         opaque_login_result.is_ok(),
         "admin-created users must be able to use OPAQUE login"
@@ -2198,7 +2156,6 @@ async fn test_create_user_with_initial_banned_status_persists_ban_record() {
                 "initial_banned_reviewer_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
-            "StrongPass1".to_string(),
             Some(synctv_core::models::UserRole::Admin),
             Some(synctv_core::models::UserStatus::Active),
             None,
@@ -2213,7 +2170,6 @@ async fn test_create_user_with_initial_banned_status_persists_ban_record() {
                 "initial_banned_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
-            "StrongPass1".to_string(),
             Some(synctv_core::models::UserRole::User),
             Some(synctv_core::models::UserStatus::Banned),
             Some(&reviewer.id),
@@ -2238,18 +2194,17 @@ async fn test_get_username_falls_back_to_database_when_cache_read_fails() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service_with_failing_username_cache(&pool);
 
-    let (user, _, _) = service
-        .register(
-            format!("cache_fail_lookup_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "cache_fail_lookup_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration must succeed");
+    let (user, _, _) = opaque_register_user(
+        &service,
+        format!("cache_fail_lookup_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "cache_fail_lookup_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration must succeed");
 
     let username = service
         .get_username(&user.id)
@@ -2393,13 +2348,7 @@ async fn test_create_or_load_by_oauth2_empty_username_uses_provider_id() {
 async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_oauth2_users() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(&pool);
-    let oauth_service = OAuth2Service::new(
-        UserOAuthProviderRepository::new(pool.clone()),
-        local_oauth_state_store(),
-        synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
-        false,
-    )
-    .expect("OAuth2 service should initialize");
+    let oauth_service = oauth2_service_with_google_signup(&pool).await;
 
     let provider = OAuth2Provider::Google;
     let user_info = synctv_core::service::OAuth2UserInfo {
@@ -2515,14 +2464,18 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
         .set(oauth2_configs)
         .await
         .expect("OAuth2 runtime settings should be persisted");
-    let oauth_service = OAuth2Service::new(
+    let oauth_service = OAuth2Service::new_with_runtime(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
         synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
+        SsrfGuard::strict_policy(),
         false,
+        OAuth2ServiceRuntime {
+            settings_registry: Some(settings_registry),
+            ..OAuth2ServiceRuntime::default()
+        },
     )
-    .expect("OAuth2 service should initialize")
-    .with_settings_registry(settings_registry);
+    .expect("OAuth2 service should initialize");
 
     let provider = OAuth2Provider::GitHub;
     let user_info = oauth2_user_info(
@@ -2589,14 +2542,18 @@ async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_ema
         .set(oauth2_configs)
         .await
         .expect("OAuth2 runtime settings should be persisted");
-    let oauth_service = OAuth2Service::new(
+    let oauth_service = OAuth2Service::new_with_runtime(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
         synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
+        SsrfGuard::strict_policy(),
         false,
+        OAuth2ServiceRuntime {
+            settings_registry: Some(settings_registry),
+            ..OAuth2ServiceRuntime::default()
+        },
     )
-    .expect("OAuth2 service should initialize")
-    .with_settings_registry(settings_registry);
+    .expect("OAuth2 service should initialize");
 
     let shared_email = format!(
         "oauth_pending_email_{}@test.com",
@@ -2605,13 +2562,19 @@ async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_ema
     sqlx::query(
         r"
         INSERT INTO user_registration_requests (
-            username, email, signup_method, status, requested_at
+            username, email, opaque_record, opaque_credential_identifier,
+            opaque_ciphersuite, opaque_server_setup_version,
+            signup_method, status, requested_at
         )
-        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
         ",
     )
     .bind(format!("pending_email_seed_{}", synctv_common::snanoid!(6)))
     .bind(shared_email.to_uppercase())
+    .bind(b"pending-email-test-opaque-record".as_slice())
+    .bind(b"pending-email-test-opaque-id".as_slice())
+    .bind("opaque-ristretto255-sha512-argon2id")
+    .bind(1_i32)
     .bind(i16::from(synctv_core::models::SignupMethod::Email))
     .bind(i16::from(synctv_core::models::ReviewStatus::Pending))
     .execute(&pool)
@@ -2684,24 +2647,27 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
         .set(oauth2_configs)
         .await
         .expect("OAuth2 runtime settings should be persisted");
-    let oauth_service = OAuth2Service::new(
+    let oauth_service = OAuth2Service::new_with_runtime(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
         synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
+        SsrfGuard::strict_policy(),
         false,
+        OAuth2ServiceRuntime {
+            settings_registry: Some(settings_registry),
+            ..OAuth2ServiceRuntime::default()
+        },
     )
-    .expect("OAuth2 service should initialize")
-    .with_settings_registry(settings_registry);
+    .expect("OAuth2 service should initialize");
 
-    user_service
-        .register(
-            "oauth_review_collision_user".to_string(),
-            Some("oauth_review_collision_local@test.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("seed local user should be created");
+    opaque_register_user(
+        &user_service,
+        "oauth_review_collision_user",
+        Some("oauth_review_collision_local@test.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("seed local user should be created");
 
     let provider = OAuth2Provider::GitHub;
     let user_info = oauth2_user_info(
@@ -2747,23 +2713,16 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
 async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collision() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(&pool);
-    let oauth_service = OAuth2Service::new(
-        UserOAuthProviderRepository::new(pool.clone()),
-        local_oauth_state_store(),
-        synctv_core::oauth2::ProviderRegistry::new(),
-        false,
-    )
-    .expect("OAuth2 service should initialize");
+    let oauth_service = oauth2_service_with_google_signup(&pool).await;
 
-    user_service
-        .register(
-            "oauth_collision_user".to_string(),
-            Some("local_collision@test.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("seed local user should be created");
+    opaque_register_user(
+        &user_service,
+        "oauth_collision_user",
+        Some("local_collision@test.com".to_string()),
+        "StrongPass1",
+    )
+    .await
+    .expect("seed local user should be created");
 
     let provider = OAuth2Provider::Google;
     let user_info = oauth2_user_info(
@@ -2816,19 +2775,17 @@ async fn test_refresh_token_rate_limiting_per_user() {
     let service = create_user_service(&pool);
 
     // Register and get initial tokens
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("rate_limit_refresh_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "rate_limit_refresh_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("rate_limit_refresh_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "rate_limit_refresh_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens from registration");
     };
 
@@ -2858,7 +2815,7 @@ async fn test_refresh_token_rate_limiting_per_user() {
 
     assert!(
         rate_limited,
-        "Refresh token endpoint should be rate limited after {success_count} requests (VULNERABILITY: no rate limiting)"
+        "Refresh token endpoint should be rate limited after {success_count} requests"
     );
 
     // Should have had at least some successful refreshes before hitting limit
@@ -2868,27 +2825,7 @@ async fn test_refresh_token_rate_limiting_per_user() {
     );
 }
 
-// S1.6: refresh_token concurrent refresh race condition tests
 /// Test that concurrent refresh of the same token triggers family revocation.
-///
-/// RACE CONDITION VULNERABILITY:
-/// The original implementation has a TOCTOU (Time-Of-Check-Time-Of-Use) race:
-/// 1. Request A: `is_blacklisted(jti)` -> false
-/// 2. Request B: `is_blacklisted(jti)` -> false (A hasn't blacklisted yet)
-/// 3. Request A: blacklist(jti) -> success, issues new token
-/// 4. Request B: blacklist(jti) -> success (upsert), issues new token
-///
-/// Both requests succeed, but B should have detected the replay and triggered
-/// family revocation instead.
-///
-/// SECURITY IMPACT:
-/// - Attacker with stolen token can get a valid new token
-/// - Token theft detection is bypassed
-/// - Legitimate user is NOT protected
-///
-/// FIX:
-/// Use atomic `blacklist_if_not_exists` that returns whether the key was
-/// newly inserted (first use) or already existed (replay detected).
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_concurrent_refresh_race_condition() {
@@ -2902,19 +2839,17 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
     let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("concurrent_race_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "concurrent_race_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("concurrent_race_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "concurrent_race_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -2960,7 +2895,7 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
     assert_eq!(
         successes, 1,
         "Exactly ONE concurrent refresh should succeed, got {successes} successes and {failures} failures. \
-         RACE CONDITION: multiple requests bypassed the blacklist check!"
+         Multiple successful refreshes would mean refresh-token replay detection failed."
     );
     assert_eq!(
         failures, 9,
@@ -2978,19 +2913,17 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
     let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("family_rev_race_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "family_rev_race_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("family_rev_race_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "family_rev_race_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens");
     };
 
@@ -3029,25 +2962,31 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_rate_limit_recovers() {
     let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(&pool);
-    service.set_refresh_rate_limiter_for_tests(RateLimiter::local_only(
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 1000, 0);
+    let mut runtime = default_test_user_runtime_options();
+    runtime.refresh_rate_limiter = Some(Arc::new(RateLimiter::local_only(
         "test-refresh-recover-short-window:".to_string(),
-    ));
-    service.set_refresh_rate_limit_config_for_tests(1, 1);
+    )));
+    runtime.refresh_rate_limit_config = Some(synctv_core::service::user::RefreshRateLimitConfig {
+        requests: 1,
+        window_secs: 1,
+    });
+    let service =
+        create_user_service_with_components(&pool, username_cache, token_blacklist, runtime);
 
-    let (_user, _access, Some(refresh_token)) = service
-        .register(
-            format!("rate_limit_recover_{}", synctv_common::snanoid!(6)),
-            Some(format!(
-                "rate_limit_recover_{}@test.com",
-                synctv_common::snanoid!(6)
-            )),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Registration should succeed")
-    else {
+    let (_user, _access, Some(refresh_token)) = opaque_register_user(
+        &service,
+        format!("rate_limit_recover_{}", synctv_common::snanoid!(6)),
+        Some(format!(
+            "rate_limit_recover_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        "StrongPass1",
+    )
+    .await
+    .expect("Registration should succeed") else {
         panic!("Expected tokens from registration");
     };
 

@@ -73,15 +73,22 @@ impl UsernameCache {
     /// * `key_prefix` - L2 key prefix (e.g., "synctv:username:")
     /// * `memory_cache_size` - Maximum number of entries in memory cache
     /// * `ttl_seconds` - Cache TTL in L2 (0 = no expiration)
-    #[must_use]
     pub fn new(
         l2: Arc<dyn CacheL2Backend>,
         key_prefix: String,
         memory_cache_size: usize,
         ttl_seconds: u64,
     ) -> Self {
-        // TieredCache::new returns Result but only fails on construction errors
-        // which won't happen with valid parameters. Unwrap is safe here.
+        Self::new_with_invalidation(l2, key_prefix, memory_cache_size, ttl_seconds, None)
+    }
+
+    pub fn new_with_invalidation(
+        l2: Arc<dyn CacheL2Backend>,
+        key_prefix: String,
+        memory_cache_size: usize,
+        ttl_seconds: u64,
+        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+    ) -> Self {
         let inner = TieredCache::new(
             l2,
             memory_cache_size as u64,
@@ -89,17 +96,15 @@ impl UsernameCache {
             ttl_seconds,
             key_prefix,
             "username".to_string(),
-        )
-        .expect("Failed to create TieredCache for UsernameCache");
+        );
 
         Self {
             inner,
-            invalidation_service: None,
+            invalidation_service,
         }
     }
 
     /// Create a username cache for local-only operation without shared L2 state.
-    #[must_use]
     pub fn local_only(key_prefix: String, memory_cache_size: usize, ttl_seconds: u64) -> Self {
         Self::new(
             crate::cache::local_l2_cache_backend(),
@@ -107,13 +112,6 @@ impl UsernameCache {
             memory_cache_size,
             ttl_seconds,
         )
-    }
-
-    /// Set the cache invalidation service for cross-replica sync
-    #[must_use]
-    pub fn with_invalidation_service(mut self, service: Arc<dyn CacheInvalidationRuntime>) -> Self {
-        self.invalidation_service = Some(service);
-        self
     }
 
     /// Get username for a user ID
@@ -245,14 +243,32 @@ mod tests {
         UserId::expect_positive(id)
     }
 
-    #[tokio::test]
-    async fn test_memory_cache_only() {
-        let cache = UsernameCache::new(
+    fn test_username_cache(capacity: usize, ttl_seconds: u64) -> UsernameCache {
+        UsernameCache::new(
             Arc::new(crate::cache::NoopCacheL2),
             "test:".to_string(),
-            10,
-            0,
-        );
+            capacity,
+            ttl_seconds,
+        )
+    }
+
+    fn test_username_cache_with_invalidation(
+        capacity: usize,
+        ttl_seconds: u64,
+        invalidation_service: Arc<dyn CacheInvalidationRuntime>,
+    ) -> UsernameCache {
+        UsernameCache::new_with_invalidation(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            capacity,
+            ttl_seconds,
+            Some(invalidation_service),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_memory_cache_only() {
+        let cache = test_username_cache(10, 0);
 
         let user_id = create_test_user_id(97_001);
 
@@ -271,12 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_lookup() {
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            10,
-            0,
-        );
+        let cache = test_username_cache(10, 0);
 
         let user1 = create_test_user_id(97_002);
         let user2 = create_test_user_id(97_003);
@@ -297,12 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_memory() {
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            10,
-            0,
-        );
+        let cache = test_username_cache(10, 0);
 
         let user_id = create_test_user_id(97_005);
         cache.set(&user_id, "alice").await.unwrap();
@@ -314,12 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_by_id() {
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            10,
-            0,
-        );
+        let cache = test_username_cache(10, 0);
 
         let user_id = create_test_user_id(97_006);
         cache.set(&user_id, "alice").await.unwrap();
@@ -338,13 +339,7 @@ mod tests {
             "test:cache:invalidate:stream".to_string(),
         ));
 
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            100,
-            0,
-        )
-        .with_invalidation_service(invalidation_service);
+        let cache = test_username_cache_with_invalidation(100, 0, invalidation_service);
 
         let user_id = create_test_user_id(97_007);
 
@@ -368,13 +363,7 @@ mod tests {
             "test:cache:invalidate:stream".to_string(),
         ));
 
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            100,
-            0,
-        )
-        .with_invalidation_service(invalidation_service);
+        let cache = test_username_cache_with_invalidation(100, 0, invalidation_service);
 
         let mut entries = HashMap::new();
         entries.insert(create_test_user_id(97_008), "alice".to_string());
@@ -416,13 +405,7 @@ mod tests {
 
         let mut receiver = invalidation_service.subscribe();
 
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            100,
-            0,
-        )
-        .with_invalidation_service(invalidation_service);
+        let cache = test_username_cache_with_invalidation(100, 0, invalidation_service);
 
         let user_id = create_test_user_id(97_013);
 
@@ -442,12 +425,7 @@ mod tests {
 
     #[test]
     fn test_l1_ttl_matches_five_minutes() {
-        let cache = UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            10,
-            0,
-        );
+        let cache = test_username_cache(10, 0);
 
         assert_eq!(
             cache.l1_ttl(),

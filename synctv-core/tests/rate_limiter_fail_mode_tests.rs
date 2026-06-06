@@ -23,7 +23,6 @@
 //! - Maintains strict global limits at the cost of availability
 //! - Appropriate for: authentication, password checks, security-critical operations
 //!
-//! Run with: cargo test -p synctv-core --test rate_limiter_fail_mode_tests
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;

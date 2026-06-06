@@ -1,4 +1,4 @@
-use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -22,13 +22,14 @@ use crate::{
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
-        EmailBindRepository, PasswordCredentialMaterial, ReviewRepository, RoomMemberRepository,
-        UserEmailRepository, UserOAuthProviderRepository, UserPasswordRepository,
-        UserPreferencesRepository, UserRepository, WebAuthnCredentialRepository,
+        EmailBindRepository, EmailRegistrationTokenRepository, PasswordCredentialMaterial,
+        ReviewRepository, RoomMemberRepository, UserEmailRepository, UserOAuthProviderRepository,
+        UserPasswordRepository, UserPreferencesRepository, UserRepository,
+        WebAuthnCredentialRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenAuthContext,
-        TokenBlacklistStore, TokenCredentialBinding, TokenType,
+        TokenBlacklistStore, TokenCredentialBinding,
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     service::session_store::RedisJsonSessionStore,
@@ -54,6 +55,24 @@ pub enum RegistrationMode {
 pub struct RegistrationPolicy {
     pub enabled: bool,
     pub need_review: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingAccountRegistration {
+    pub review_request_id: UserId,
+    pub username: String,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum AccountRegistrationOutcome {
+    Registered {
+        user: User,
+        email: Option<String>,
+        access_token: String,
+        refresh_token: String,
+    },
+    PendingReview(PendingAccountRegistration),
 }
 
 impl RegistrationMode {
@@ -97,7 +116,7 @@ const USER_REGISTRATION_PENDING_LOCK_NS: i32 = 20_260_406;
 const OAUTH2_PENDING_REGISTRATION_LOCK_NS: i32 = 20_260_407;
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
-    u64::try_from(value.max(0)).unwrap_or_default()
+    u64::try_from(value.max(0)).unwrap_or(0)
 }
 
 fn user_avatar_storage_scope(user_id: UserId) -> String {
@@ -129,7 +148,6 @@ struct PendingRegistrationRequest {
     signup_method: SignupMethod,
 }
 
-#[derive(sqlx::FromRow)]
 struct PendingRegistrationRequestRow {
     username: String,
     email: Option<String>,
@@ -397,9 +415,7 @@ pub fn opaque_login_session_store_from_shared_state_profile(
             ))
         }
         SharedStateMode::SharedBestEffort => Ok(shared_opaque_login_session_store(
-            profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.best_effort_shared_runtime("single-use OPAQUE login session storage")?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_opaque_login_session_store()),
@@ -419,9 +435,7 @@ pub fn opaque_registration_session_store_from_shared_state_profile(
             ))
         }
         SharedStateMode::SharedBestEffort => Ok(shared_opaque_registration_session_store(
-            profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.best_effort_shared_runtime("single-use OPAQUE registration session storage")?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_opaque_registration_session_store()),
@@ -440,9 +454,7 @@ pub fn mfa_session_store_from_shared_state_profile(
             ))
         }
         SharedStateMode::SharedBestEffort => Ok(shared_mfa_session_store(
-            profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.best_effort_shared_runtime("single-use MFA session storage")?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_mfa_session_store()),
@@ -463,8 +475,7 @@ pub fn sensitive_verification_session_store_from_shared_state_profile(
         }
         SharedStateMode::SharedBestEffort => Ok(shared_sensitive_verification_session_store(
             profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+                .best_effort_shared_runtime("single-use sensitive verification session storage")?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_sensitive_verification_session_store()),
@@ -991,9 +1002,9 @@ impl SensitiveVerificationSessionStore for RedisSensitiveVerificationSessionStor
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RefreshRateLimitConfig {
-    requests: u32,
-    window_secs: u64,
+pub struct RefreshRateLimitConfig {
+    pub requests: u32,
+    pub window_secs: u64,
 }
 
 impl Default for RefreshRateLimitConfig {
@@ -1112,13 +1123,12 @@ pub struct UserService {
     pub(crate) user_email_repository: UserEmailRepository,
     pub(crate) user_password_repository: UserPasswordRepository,
     email_bind_repository: EmailBindRepository,
+    email_registration_token_repository: EmailRegistrationTokenRepository,
     pub(crate) user_preferences_repository: UserPreferencesRepository,
     jwt_service: JwtService,
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
     cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
-    /// Password complexity configuration from config file
-    password_complexity: PasswordComplexityConfig,
     /// Brute-force protection for login attempts
     brute_force: Arc<dyn BruteForceProtectionService>,
     /// Token blacklist store for refresh token rotation (Redis or in-memory)
@@ -1131,9 +1141,10 @@ pub struct UserService {
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     /// Optional settings registry for registration policy and email whitelist.
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
-    /// Explicit registration policy override for tests that exercise public
-    /// registration flows without bootstrapping runtime settings.
-    password_registration_policy_override_for_tests: Option<RegistrationPolicy>,
+    /// Explicit password registration policy override for embedders that
+    /// manage signup policy outside the runtime settings registry.
+    password_registration_policy_override: Option<RegistrationPolicy>,
+    password_complexity: PasswordComplexityConfig,
     opaque_password_service: Arc<OpaquePasswordService>,
     opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
@@ -1144,12 +1155,17 @@ pub struct UserService {
     file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
-#[derive(Default)]
 pub struct UserServiceRuntimeOptions {
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub refresh_rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
+    pub refresh_rate_limit_config: Option<RefreshRateLimitConfig>,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
-    pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
+    pub password_registration_policy_override: Option<RegistrationPolicy>,
+    /// Stable OPAQUE server setup used for password registration, login, and reset.
+    ///
+    /// Composition roots for real deployments must inject a service derived from
+    /// the configured `security.opaque_server_setup_secret`.
+    pub opaque_password_service: Arc<OpaquePasswordService>,
     pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
     pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
     pub mfa_session_store: Option<Arc<dyn MfaSessionStore>>,
@@ -1160,13 +1176,35 @@ pub struct UserServiceRuntimeOptions {
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
+impl UserServiceRuntimeOptions {
+    #[must_use]
+    pub fn test_defaults() -> Self {
+        Self {
+            cache_invalidation: None,
+            refresh_rate_limiter: None,
+            refresh_rate_limit_config: None,
+            settings_registry: None,
+            password_registration_policy_override: None,
+            opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
+            opaque_login_session_store: None,
+            opaque_registration_session_store: None,
+            mfa_session_store: None,
+            sensitive_verification_session_store: None,
+            realtime_outbox: None,
+            permission_service: None,
+            version_fence: None,
+            file_storage_service: None,
+        }
+    }
+}
+
 pub struct UserServiceDependencies {
     pub jwt_service: JwtService,
     pub username_cache: UsernameCache,
-    pub password_complexity: PasswordComplexityConfig,
     pub token_blacklist: Arc<dyn TokenBlacklistStore>,
     pub key_builder: KeyBuilder,
     pub brute_force: Arc<dyn BruteForceProtectionService>,
+    pub password_complexity: PasswordComplexityConfig,
 }
 
 impl std::fmt::Debug for UserService {
@@ -1178,15 +1216,46 @@ impl std::fmt::Debug for UserService {
 }
 
 impl UserService {
-    fn email_domain_allowed_by_whitelist(email: &str, whitelist: &str) -> bool {
-        let domain = email
-            .rsplit_once('@')
-            .map(|(_, domain)| domain.trim().to_ascii_lowercase())
-            .unwrap_or_default();
+    fn normalized_email_domain(email: &str) -> Result<String> {
+        let (_, domain) = email.trim().rsplit_once('@').ok_or_else(|| {
+            Error::InvalidInput("Email must include a domain for whitelist validation".to_string())
+        })?;
+        let domain = domain.trim().to_ascii_lowercase();
+        if domain.is_empty() {
+            return Err(Error::InvalidInput(
+                "Email must include a domain for whitelist validation".to_string(),
+            ));
+        }
+        Ok(domain)
+    }
+
+    fn email_domain_allowed_by_whitelist(email: &str, whitelist: &str) -> Result<bool> {
+        let domain = Self::normalized_email_domain(email)?;
         let allowed_domains =
             crate::service::SettingsRegistry::normalize_email_whitelist_domains(whitelist);
 
-        allowed_domains.is_empty() || allowed_domains.iter().any(|allowed| allowed == &domain)
+        Ok(allowed_domains.is_empty() || allowed_domains.iter().any(|allowed| allowed == &domain))
+    }
+
+    fn validate_email_whitelist_policy(&self, email: &str) -> Result<()> {
+        let Some(registry) = self.settings_registry.as_ref() else {
+            return Ok(());
+        };
+        if registry.email_whitelist_enabled.get()? {
+            let whitelist = registry.email_whitelist.get()?;
+            if !Self::email_domain_allowed_by_whitelist(email, &whitelist)? {
+                return Err(Error::InvalidInput(
+                    "Email domain is not allowed for registration".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_password(&self, password: &str) -> Result<()> {
+        crate::validation::PasswordValidator::from_config(&self.password_complexity)
+            .validate(password)
+            .map_err(|error| Error::InvalidInput(error.to_string()))
     }
 
     fn opaque_credential_identifier_for_new_user(username: &str) -> Vec<u8> {
@@ -1195,17 +1264,6 @@ impl UserService {
 
     fn opaque_credential_identifier_for_user_id(user_id: &UserId) -> Vec<u8> {
         format!("synctv:user-id:{}", user_id.as_i64()).into_bytes()
-    }
-
-    fn build_password_credentials_for_new_user(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<OpaquePasswordRecord> {
-        self.opaque_password_service.register_password(
-            &Self::opaque_credential_identifier_for_new_user(username),
-            password,
-        )
     }
 
     fn normalize_login_identifier(identifier: &str) -> String {
@@ -1237,22 +1295,6 @@ impl UserService {
                 .map(|user_with_email| user_with_email.user))
         } else {
             self.repository.get_by_username(&normalized).await
-        }
-    }
-
-    async fn get_by_login_identifier_with_password_credential(
-        &self,
-        identifier: &str,
-    ) -> Result<Option<crate::repository::UserWithPasswordCredential>> {
-        let normalized = Self::normalize_login_identifier(identifier);
-        if normalized.contains('@') {
-            self.user_password_repository
-                .get_by_email_with_credential(&normalized)
-                .await
-        } else {
-            self.user_password_repository
-                .get_by_username_with_credential(&normalized)
-                .await
         }
     }
 
@@ -1405,20 +1447,20 @@ impl UserService {
         }
 
         let session_id = synctv_common::snanoid!(32);
-        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
+        let access_token = self
+            .jwt_service
+            .sign_access_token_with_auth_context_and_session(
+                &user.id,
+                password_version,
+                issue_context.auth_context,
+                Some(&session_id),
+                issue_context.credential_binding,
+            )?;
+        let refresh_token = self.jwt_service.sign_refresh_token_with_session(
             &user.id,
-            TokenType::Access,
             password_version,
             issue_context.auth_context,
-            Some(&session_id),
-            issue_context.credential_binding,
-        )?;
-        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
-            &user.id,
-            TokenType::Refresh,
-            password_version,
-            issue_context.auth_context,
-            Some(&session_id),
+            &session_id,
             issue_context.credential_binding,
         )?;
 
@@ -2265,9 +2307,9 @@ impl UserService {
             let mut modified_room_ids: Vec<RoomId> = entries_by_room.keys().copied().collect();
             modified_room_ids.sort_unstable();
             for room_id in modified_room_ids {
-                let entries = entries_by_room
-                    .get(&room_id)
-                    .expect("room id collected from map keys must exist");
+                let Some(entries) = entries_by_room.get(&room_id) else {
+                    continue;
+                };
                 deleted_playlists += entries.playlist_ids.len();
                 let impact = self
                     .delete_owned_entries_in_room_in_tx(
@@ -2749,22 +2791,7 @@ impl UserService {
         provider_user_id: &str,
         username: &str,
     ) -> Result<(String, Vec<String>)> {
-        let sanitized_username = username
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-            .collect::<String>()
-            .trim()
-            .to_lowercase();
-
-        let base_username = if sanitized_username.is_empty() {
-            format!(
-                "user_{}",
-                &provider_user_id[..provider_user_id.len().min(20)]
-            )
-        } else {
-            sanitized_username
-        };
-
+        let base_username = Self::normalize_oauth2_username_base(provider_user_id, username);
         Self::validate_username(&base_username)?;
 
         let max_attempts = 10;
@@ -2784,6 +2811,24 @@ impl UserService {
         Ok((base_username, candidates))
     }
 
+    fn normalize_oauth2_username_base(provider_user_id: &str, username: &str) -> String {
+        let normalized = username
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .collect::<String>()
+            .trim()
+            .to_lowercase();
+
+        if normalized.is_empty() {
+            format!(
+                "user_{}",
+                &provider_user_id[..provider_user_id.len().min(20)]
+            )
+        } else {
+            normalized
+        }
+    }
+
     pub(crate) async fn cache_oauth2_username_best_effort(&self, user_id: &UserId, username: &str) {
         self.cache_username_best_effort(user_id, username, "create_or_load_by_oauth2")
             .await;
@@ -2799,21 +2844,24 @@ impl UserService {
         }
     }
 
+    /// Build a service with test fixture runtime dependencies.
+    ///
+    /// Composition roots should use `new_with_brute_force_service_and_runtime`
+    /// and inject a stable `OpaquePasswordService` plus shared session stores
+    /// from the configured shared-state profile.
     #[must_use]
-    pub fn new(
+    pub fn new_for_tests(
         pool: &PgPool,
         jwt_service: JwtService,
         username_cache: UsernameCache,
-        password_complexity: PasswordComplexityConfig,
         token_blacklist: Arc<dyn TokenBlacklistStore>,
         key_builder: KeyBuilder,
         brute_force: impl BruteForceProtectionService + 'static,
     ) -> Self {
-        Self::new_with_brute_force_service(
+        Self::new_with_brute_force_service_for_tests(
             pool,
             jwt_service,
             username_cache,
-            password_complexity,
             token_blacklist,
             key_builder,
             Arc::new(brute_force),
@@ -2821,11 +2869,34 @@ impl UserService {
     }
 
     #[must_use]
-    pub fn new_with_brute_force_service(
+    pub fn new_with_runtime(
         pool: &PgPool,
         jwt_service: JwtService,
         username_cache: UsernameCache,
-        password_complexity: PasswordComplexityConfig,
+        token_blacklist: Arc<dyn TokenBlacklistStore>,
+        key_builder: KeyBuilder,
+        brute_force: impl BruteForceProtectionService + 'static,
+        runtime: UserServiceRuntimeOptions,
+    ) -> Self {
+        Self::new_with_brute_force_service_and_runtime(
+            pool,
+            UserServiceDependencies {
+                jwt_service,
+                username_cache,
+                token_blacklist,
+                key_builder,
+                brute_force: Arc::new(brute_force),
+                password_complexity: PasswordComplexityConfig::default(),
+            },
+            runtime,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_brute_force_service_for_tests(
+        pool: &PgPool,
+        jwt_service: JwtService,
+        username_cache: UsernameCache,
         token_blacklist: Arc<dyn TokenBlacklistStore>,
         key_builder: KeyBuilder,
         brute_force: Arc<dyn BruteForceProtectionService>,
@@ -2835,12 +2906,12 @@ impl UserService {
             UserServiceDependencies {
                 jwt_service,
                 username_cache,
-                password_complexity,
                 token_blacklist,
                 key_builder,
                 brute_force,
+                password_complexity: PasswordComplexityConfig::default(),
             },
-            UserServiceRuntimeOptions::default(),
+            UserServiceRuntimeOptions::test_defaults(),
         )
     }
 
@@ -2853,10 +2924,10 @@ impl UserService {
         let UserServiceDependencies {
             jwt_service,
             username_cache,
-            password_complexity,
             token_blacklist,
             key_builder,
             brute_force,
+            password_complexity,
         } = dependencies;
 
         // Default to a local limiter; composition roots can inject any
@@ -2873,22 +2944,23 @@ impl UserService {
             user_email_repository: UserEmailRepository::new(pool.clone()),
             user_password_repository: UserPasswordRepository::new(pool.clone()),
             email_bind_repository: EmailBindRepository::new(pool.clone()),
+            email_registration_token_repository: EmailRegistrationTokenRepository::new(
+                pool.clone(),
+            ),
             user_preferences_repository: UserPreferencesRepository::new(pool.clone()),
             jwt_service,
             username_cache,
             cache_invalidation: runtime.cache_invalidation,
-            password_complexity,
             brute_force,
             token_blacklist,
             key_builder,
             refresh_rate_limiter,
-            refresh_rate_limit_config: RefreshRateLimitConfig::default(),
+            refresh_rate_limit_config: runtime.refresh_rate_limit_config.unwrap_or_default(),
             realtime_outbox: runtime.realtime_outbox,
             settings_registry: runtime.settings_registry,
-            password_registration_policy_override_for_tests: None,
-            opaque_password_service: runtime
-                .opaque_password_service
-                .unwrap_or_else(|| Arc::new(OpaquePasswordService::new_ephemeral_for_process())),
+            password_registration_policy_override: runtime.password_registration_policy_override,
+            password_complexity,
+            opaque_password_service: runtime.opaque_password_service,
             opaque_login_session_store: runtime
                 .opaque_login_session_store
                 .unwrap_or_else(local_opaque_login_session_store),
@@ -2905,37 +2977,6 @@ impl UserService {
             file_storage_service: runtime.file_storage_service,
             consistency: ConsistencyCoordinator::new(version_fence),
         }
-    }
-
-    pub fn set_opaque_password_service(&mut self, service: Arc<OpaquePasswordService>) {
-        self.opaque_password_service = service;
-    }
-
-    /// Allow tests to exercise password registration without loosening the
-    /// production default, which remains closed unless runtime settings opt in.
-    pub const fn enable_password_registration_for_tests(&mut self) {
-        self.password_registration_policy_override_for_tests = Some(RegistrationPolicy {
-            enabled: true,
-            need_review: false,
-        });
-    }
-
-    pub fn set_refresh_rate_limiter_for_tests<T>(&mut self, limiter: T)
-    where
-        T: RequestRateLimiterService + 'static,
-    {
-        self.refresh_rate_limiter = Arc::new(limiter);
-    }
-
-    pub const fn set_refresh_rate_limit_config_for_tests(
-        &mut self,
-        requests: u32,
-        window_secs: u64,
-    ) {
-        self.refresh_rate_limit_config = RefreshRateLimitConfig {
-            requests,
-            window_secs,
-        };
     }
 
     async fn has_pending_registration_request(
@@ -3106,36 +3147,74 @@ impl UserService {
         signup_method: SignupMethod,
     ) -> Result<User> {
         let mut tx = self.repository.pool().begin().await?;
-        Self::lock_pending_registration_identity(&mut tx, username, None).await?;
-        if self
-            .has_pending_registration_request_with_executor(username, None, &mut *tx)
-            .await?
+        Self::lock_pending_registration_identity(&mut tx, username, email).await?;
+        let email_exists = match email {
+            Some(email) => self.user_email_repository.email_exists(email).await?,
+            None => false,
+        };
+        if self.repository.get_by_username(username).await?.is_some()
+            || email_exists
+            || self
+                .has_pending_registration_request_with_executor(username, email, &mut *tx)
+                .await?
         {
             return Err(Error::AlreadyExists(
                 synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
             ));
         }
 
-        let request_id = sqlx::query_scalar::<_, UserId>(
-            r"
+        let request_id = Self::create_registration_request_with_executor(
+            username,
+            email,
+            opaque_record,
+            signup_method,
+            &mut *tx,
+        )
+        .await?;
+        tx.commit().await?;
+
+        let mut user =
+            User::new_with_status(username.to_string(), signup_method, UserStatus::Active);
+        user.id = request_id;
+        Ok(user)
+    }
+
+    async fn create_registration_request_with_executor<'e, E>(
+        username: &str,
+        email: Option<&str>,
+        opaque_record: &OpaquePasswordRecord,
+        signup_method: SignupMethod,
+        executor: E,
+    ) -> Result<UserId>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if !matches!(signup_method, SignupMethod::Email | SignupMethod::Password) {
+            return Err(Error::InvalidInput(
+                "OPAQUE registration request requires email or password signup method".to_string(),
+            ));
+        }
+
+        let request_id = sqlx::query_scalar!(
+            r#"
             INSERT INTO user_registration_requests (
                 username, email, opaque_record,
                 opaque_credential_identifier, opaque_ciphersuite,
                 opaque_server_setup_version, signup_method, status, requested_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
-            RETURNING id
-            ",
+            RETURNING id AS "id: UserId"
+            "#,
+            username,
+            email,
+            &opaque_record.record,
+            &opaque_record.credential_identifier,
+            opaque_record.ciphersuite.as_str(),
+            opaque_record.server_setup_version,
+            i16::from(signup_method),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(username)
-        .bind(email)
-        .bind(&opaque_record.record)
-        .bind(&opaque_record.credential_identifier)
-        .bind(opaque_record.ciphersuite.as_str())
-        .bind(opaque_record.server_setup_version)
-        .bind(i16::from(signup_method))
-        .bind(i16::from(ReviewStatus::Pending))
-        .fetch_one(&mut *tx)
+        .fetch_one(executor)
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
@@ -3145,12 +3224,7 @@ impl UserService {
             }
             _ => Error::Database(e),
         })?;
-        tx.commit().await?;
-
-        let mut user =
-            User::new_with_status(username.to_string(), signup_method, UserStatus::Active);
-        user.id = request_id;
-        Ok(user)
+        Ok(request_id)
     }
 
     pub(crate) async fn create_oauth2_registration_request_with_executor<'e, E>(
@@ -3213,10 +3287,16 @@ impl UserService {
             .internal_with_err("Failed to serialize WebAuthn passkey")?;
 
         let mut tx = self.repository.pool().begin().await?;
-        Self::lock_pending_registration_identity(&mut tx, username, None).await?;
-        if self
-            .has_pending_registration_request_with_executor(username, None, &mut *tx)
-            .await?
+        Self::lock_pending_registration_identity(&mut tx, username, email).await?;
+        let email_exists = match email {
+            Some(email) => self.user_email_repository.email_exists(email).await?,
+            None => false,
+        };
+        if self.repository.get_by_username(username).await?.is_some()
+            || email_exists
+            || self
+                .has_pending_registration_request_with_executor(username, email, &mut *tx)
+                .await?
         {
             return Err(Error::AlreadyExists(
                 synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
@@ -3300,15 +3380,16 @@ impl UserService {
         request_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRegistrationRequest>> {
-        let row = sqlx::query_as::<_, PendingRegistrationRequestRow>(
-            r"SELECT username,
+        let row = sqlx::query_as!(
+            PendingRegistrationRequestRow,
+            r#"SELECT username,
                    email,
                    opaque_record,
                    opaque_credential_identifier,
                    opaque_ciphersuite,
                    opaque_server_setup_version,
-                   signup_method,
-                   oauth2_provider_type AS oauth2_provider,
+                   signup_method AS "signup_method: SignupMethod",
+                   oauth2_provider_type AS "oauth2_provider: crate::models::OAuth2ProviderTypeName",
                    oauth2_provider_instance_name,
                    oauth2_provider_issuer,
                    oauth2_provider_user_id,
@@ -3321,10 +3402,10 @@ impl UserService {
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_optional(&mut **tx)
         .await?;
 
@@ -3345,6 +3426,14 @@ impl UserService {
                 .map(serde_json::from_value)
                 .transpose()
                 .internal_with_err("Failed to deserialize pending WebAuthn passkey")?;
+            let oauth2_email_trusted = match row.signup_method {
+                SignupMethod::OAuth2 => row.oauth2_email_trusted.ok_or_else(|| {
+                    Error::Internal(
+                        "OAuth2 registration request is missing email trust state".to_string(),
+                    )
+                })?,
+                _ => false,
+            };
             Ok(PendingRegistrationRequest {
                 username: row.username,
                 email: row.email,
@@ -3358,7 +3447,7 @@ impl UserService {
                 oauth2_provider_user_id: row.oauth2_provider_user_id,
                 oauth2_provider_username: row.oauth2_provider_username,
                 oauth2_avatar_url: row.oauth2_avatar_url,
-                oauth2_email_trusted: row.oauth2_email_trusted.unwrap_or(false),
+                oauth2_email_trusted,
                 webauthn_credential_id: row.webauthn_credential_id,
                 webauthn_passkey,
                 webauthn_credential_name: row.webauthn_credential_name,
@@ -3390,11 +3479,15 @@ impl UserService {
 
         if self
             .repository
-            .get_by_username(&request.username)
+            .get_by_username_with_executor(&request.username, &mut *tx)
             .await?
             .is_some()
             || match approved_email.as_deref() {
-                Some(email) => self.user_email_repository.email_exists(email).await?,
+                Some(email) => {
+                    self.user_email_repository
+                        .email_exists_with_executor(email, &mut *tx)
+                        .await?
+                }
                 None => false,
             }
         {
@@ -3404,7 +3497,17 @@ impl UserService {
         }
 
         let user = User::new(request.username.clone(), request.signup_method);
-        let created = match request.signup_method {
+        let created = self
+            .repository
+            .create_with_executor(&user, &mut *tx)
+            .await
+            .map_err(Self::map_registration_identity_conflict)?;
+        self.user_email_repository
+            .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
+            .await
+            .map_err(Self::map_registration_identity_conflict)?;
+
+        match request.signup_method {
             SignupMethod::OAuth2 => {
                 let Some(provider) = request.oauth2_provider.as_ref() else {
                     return Err(Error::InvalidInput(
@@ -3422,14 +3525,6 @@ impl UserService {
                         "OAuth2 registration request is missing provider instance name".to_string(),
                     ));
                 };
-
-                let created = self
-                    .repository
-                    .create_with_executor(&user, &mut *tx)
-                    .await?;
-                self.user_email_repository
-                    .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
-                    .await?;
 
                 let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
                     provider: provider.clone(),
@@ -3453,8 +3548,6 @@ impl UserService {
                         &mut *tx,
                     )
                     .await?;
-
-                created
             }
             SignupMethod::WebAuthn => {
                 let passkey = request.webauthn_passkey.as_ref().ok_or_else(|| {
@@ -3474,13 +3567,6 @@ impl UserService {
                     ));
                 }
 
-                let created = self
-                    .repository
-                    .create_with_executor(&user, &mut *tx)
-                    .await?;
-                self.user_email_repository
-                    .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
-                    .await?;
                 WebAuthnCredentialRepository::new(self.repository.pool().clone())
                     .create_with_executor(
                         &created.id,
@@ -3489,8 +3575,6 @@ impl UserService {
                         &mut *tx,
                     )
                     .await?;
-
-                created
             }
             _ => {
                 let opaque_record = OpaquePasswordRecord {
@@ -3518,13 +3602,6 @@ impl UserService {
                         )
                     })?,
                 };
-                let created = self
-                    .repository
-                    .create_with_executor(&user, &mut *tx)
-                    .await?;
-                self.user_email_repository
-                    .create_for_user_with_executor(&created, approved_email.as_deref(), &mut *tx)
-                    .await?;
                 self.user_password_repository
                     .create_for_user_with_executor(
                         &created,
@@ -3532,9 +3609,8 @@ impl UserService {
                         &mut *tx,
                     )
                     .await?;
-                created
             }
-        };
+        }
 
         let approved = ReviewRepository::approve_user_registration_with_executor(
             &mut *tx,
@@ -3649,28 +3725,24 @@ impl UserService {
                 return Err(error);
             }
 
-            if let Some(ref registry) = self.settings_registry {
-                let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
-                if whitelist_enabled {
-                    let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
-                    if !Self::email_domain_allowed_by_whitelist(email_addr, &whitelist_str) {
-                        self.record_registration_bruteforce_failure(client_ip, control)
-                            .await;
-                        return Err(Error::InvalidInput(
-                            "Email domain is not allowed for registration".to_string(),
-                        ));
-                    }
-                }
+            if let Err(error) = self.validate_email_whitelist_policy(email_addr) {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
             }
         }
 
-        if self.repository.get_by_username(&username).await?.is_some() {
+        let email_conflicts = match email {
+            Some(email_addr) => self.user_email_repository.email_exists(email_addr).await?,
+            None => false,
+        };
+        if self.repository.get_by_username(&username).await?.is_some() || email_conflicts {
             return Err(Error::AlreadyExists(
                 synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
             ));
         }
         if self
-            .has_pending_registration_request(&username, None)
+            .has_pending_registration_request(&username, email)
             .await?
         {
             return Err(Error::AlreadyExists(
@@ -3681,45 +3753,45 @@ impl UserService {
         Ok(())
     }
 
-    pub(crate) fn registration_policy(&self, mode: RegistrationMode) -> RegistrationPolicy {
+    pub(crate) fn registration_policy(&self, mode: RegistrationMode) -> Result<RegistrationPolicy> {
         if let RegistrationMode::Password = mode {
-            if let Some(policy) = self.password_registration_policy_override_for_tests {
-                return policy;
+            if let Some(policy) = self.password_registration_policy_override {
+                return Ok(policy);
             }
         }
 
         let Some(registry) = self.settings_registry.as_ref() else {
-            return RegistrationPolicy {
+            return Ok(RegistrationPolicy {
                 enabled: false,
                 need_review: false,
-            };
+            });
         };
 
-        match mode {
+        Ok(match mode {
             RegistrationMode::Password => RegistrationPolicy {
-                enabled: registry.enable_password_signup.get().unwrap_or(false),
-                need_review: registry.password_signup_need_review.get().unwrap_or(false),
+                enabled: registry.enable_password_signup.get()?,
+                need_review: registry.password_signup_need_review.get()?,
             },
             RegistrationMode::Email => RegistrationPolicy {
-                enabled: registry.enable_email_signup.get().unwrap_or(false),
-                need_review: registry.email_signup_need_review.get().unwrap_or(false),
+                enabled: registry.enable_email_signup.get()?,
+                need_review: registry.email_signup_need_review.get()?,
             },
             RegistrationMode::OAuth2 => RegistrationPolicy {
                 enabled: false,
                 need_review: false,
             },
             RegistrationMode::WebAuthn => RegistrationPolicy {
-                enabled: registry.enable_webauthn_signup.get().unwrap_or(false),
-                need_review: registry.webauthn_signup_need_review.get().unwrap_or(false),
+                enabled: registry.enable_webauthn_signup.get()?,
+                need_review: registry.webauthn_signup_need_review.get()?,
             },
-        }
+        })
     }
 
     pub(crate) fn ensure_registration_review_supported(
         &self,
         mode: RegistrationMode,
     ) -> Result<RegistrationPolicy> {
-        let policy = self.registration_policy(mode);
+        let policy = self.registration_policy(mode)?;
         if !policy.enabled {
             return Err(Error::Authorization(format!(
                 "{} registration is disabled",
@@ -3735,152 +3807,36 @@ impl UserService {
         Ok(policy)
     }
 
-    /// Register a new user
-    ///
-    /// Uniqueness of username/email is enforced atomically by the database
-    /// UNIQUE constraints, avoiding any check-then-act (TOCTOU) race condition.
-    ///
-    /// Per-IP brute-force protection is applied before processing: repeated failed
-    /// registration attempts (e.g., validation errors, username conflicts) from the
-    /// same IP are throttled using the same tiers as `login()`.
-    pub async fn register(
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_password_registration_with_opaque_record(
         &self,
         username: String,
         email: Option<String>,
-        password: String,
-        client_ip: Option<std::net::IpAddr>,
-    ) -> Result<(User, Option<String>, Option<String>)> {
-        self.register_with_control(username, email, password, client_ip, None)
-            .await
-    }
-
-    pub async fn register_with_control(
-        &self,
-        username: String,
-        email: Option<String>,
-        password: String,
-        client_ip: Option<std::net::IpAddr>,
+        opaque_record: OpaquePasswordRecord,
+        registration_policy: RegistrationPolicy,
+        client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, Option<String>, Option<String>)> {
-        let registration_policy =
-            self.ensure_registration_review_supported(RegistrationMode::Password)?;
-
-        // Check per-IP brute-force before any processing. This throttles automated
-        // mass-registration attempts (credential stuffing, spam account creation).
-        // Use a fixed key instead of the attacker-controlled username to prevent
-        // bypassing per-account lockout by varying the username on each attempt.
-        self.brute_force
-            .check_allowed_with_control(
-                synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
-                client_ip,
-                control,
-            )
-            .await?;
-
-        let username = match Self::normalize_username_for_storage(&username) {
-            Ok(username) => username,
-            Err(error) => {
-                self.record_registration_bruteforce_failure(client_ip, control)
-                    .await;
-                return Err(error);
-            }
-        };
-
-        // Validate input - record failures for validation errors (potential attacks)
-        if let Some(ref email) = email {
-            if let Err(e) = Self::validate_email(email) {
-                if let Err(err) = self
-                    .brute_force
-                    .record_failure_with_control(
-                        synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
-                        client_ip,
-                        control,
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %err, "Failed to record registration brute-force failure");
-                }
-                return Err(e);
-            }
-        }
-        if let Err(e) = self.validate_password(&password) {
-            if let Err(err) = self
-                .brute_force
-                .record_failure_with_control(
-                    synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
-                    client_ip,
-                    control,
-                )
-                .await
-            {
-                tracing::warn!(error = %err, "Failed to record registration brute-force failure");
-            }
-            return Err(e);
-        }
-
-        // Check email whitelist setting from the settings registry.
-        // If email whitelist is enabled, the registration email domain must be in the whitelist.
-        if let Some(ref email_addr) = email {
-            if let Some(ref registry) = self.settings_registry {
-                let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
-                if whitelist_enabled {
-                    let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
-                    if !Self::email_domain_allowed_by_whitelist(email_addr, &whitelist_str) {
-                        if let Err(err) = self
-                            .brute_force
-                            .record_failure_with_control(
-                                synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
-                                client_ip,
-                                control,
-                            )
-                            .await
-                        {
-                            tracing::warn!(error = %err, "Failed to record registration brute-force failure");
-                        }
-                        return Err(Error::InvalidInput(
-                            "Email domain is not allowed for registration".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Fast-path duplicate checks before Argon2 hashing.
-        // We still rely on the database UNIQUE constraints for atomic race-safe
-        // enforcement. This pre-check only avoids expensive hashing for requests
-        // that are already known to fail with `AlreadyExists`.
-        if self.repository.get_by_username(&username).await?.is_some() {
-            return Err(Error::AlreadyExists(
-                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-            ));
-        }
-        if self
-            .has_pending_registration_request(&username, None)
-            .await?
-        {
-            return Err(Error::AlreadyExists(
-                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-            ));
-        }
-
-        let opaque_record = self.build_password_credentials_for_new_user(&username, &password)?;
-
-        // Signup review is an approval workflow. Pending registrations live in
-        // `user_registration_requests` and create a `users` row after approval.
-        // A login email identity is written by a trusted provider or bind confirm.
+        cache_reason: &'static str,
+    ) -> Result<AccountRegistrationOutcome> {
         if registration_policy.need_review {
             let pending_user = self
                 .create_registration_request(
                     &username,
                     email.as_deref(),
                     &opaque_record,
-                    SignupMethod::Email,
+                    SignupMethod::Password,
                 )
                 .await?;
-            return Ok((pending_user, None, None));
+            return Ok(AccountRegistrationOutcome::PendingReview(
+                PendingAccountRegistration {
+                    review_request_id: pending_user.id,
+                    username: pending_user.username,
+                    email,
+                },
+            ));
         }
 
-        let user = User::new(username.clone(), SignupMethod::Email);
+        let user = User::new(username.clone(), SignupMethod::Password);
         let created_user = match async {
             let mut tx = self.repository.pool().begin().await?;
             let created_user = self
@@ -3904,33 +3860,20 @@ impl UserService {
         {
             Ok(created_user) => created_user,
             Err(Error::AlreadyExists(_)) => {
-                // Don't record failure for AlreadyExists - user just picked a taken username
                 return Err(Error::AlreadyExists(
                     synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
                 ));
             }
-            Err(e) => {
-                // Record failure for other database errors (could indicate attack)
-                if let Err(err) = self
-                    .brute_force
-                    .record_failure_with_control(
-                        synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
-                        client_ip,
-                        control,
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %err, "Failed to record registration brute-force failure");
-                }
-                return Err(e);
+            Err(error) => {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
             }
         };
 
-        // Populate username cache
-        self.cache_username_best_effort(&created_user.id, &username, "register")
+        self.cache_username_best_effort(&created_user.id, &username, cache_reason)
             .await;
 
-        // Generate JWT tokens (role will be fetched from DB on each request)
         let session_id = synctv_common::snanoid!(32);
         let password_version = self
             .user_password_repository
@@ -3938,24 +3881,360 @@ impl UserService {
             .await?
             .version;
         let credential_binding = password_binding(password_version);
-        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
+        let access_token = self
+            .jwt_service
+            .sign_access_token_with_auth_context_and_session(
+                &created_user.id,
+                password_version,
+                None,
+                Some(&session_id),
+                &credential_binding,
+            )?;
+        let refresh_token = self.jwt_service.sign_refresh_token_with_session(
             &created_user.id,
-            TokenType::Access,
             password_version,
             None,
-            Some(&session_id),
-            &credential_binding,
-        )?;
-        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
-            &created_user.id,
-            TokenType::Refresh,
-            password_version,
-            None,
-            Some(&session_id),
+            &session_id,
             &credential_binding,
         )?;
 
-        Ok((created_user, Some(access_token), Some(refresh_token)))
+        Ok(AccountRegistrationOutcome::Registered {
+            user: created_user,
+            email,
+            access_token,
+            refresh_token,
+        })
+    }
+
+    fn map_registration_identity_conflict(error: Error) -> Error {
+        match error {
+            Error::AlreadyExists(_) => Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ),
+            other => other,
+        }
+    }
+
+    pub(crate) fn is_username_conflict(error: &Error) -> bool {
+        matches!(error, Error::AlreadyExists(message) if message.contains("Username"))
+    }
+
+    pub async fn register_with_direct_password_transport_with_control(
+        &self,
+        username: String,
+        email: Option<String>,
+        password: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AccountRegistrationOutcome> {
+        let registration_policy =
+            self.ensure_registration_review_supported(RegistrationMode::Password)?;
+        let username = Self::normalize_username_for_storage(&username)?;
+        self.validate_password(&password)?;
+
+        self.validate_registration_identity_with_control(
+            &username,
+            email.as_deref(),
+            client_ip,
+            control,
+        )
+        .await?;
+
+        let credential_identifier = Self::opaque_credential_identifier_for_new_user(&username);
+        let opaque_record = self
+            .opaque_password_service
+            .register_password(&credential_identifier, &password)?;
+
+        self.complete_password_registration_with_opaque_record(
+            username,
+            email,
+            opaque_record,
+            registration_policy,
+            client_ip,
+            control,
+            "direct_password_register",
+        )
+        .await
+    }
+
+    pub async fn create_email_registration_token_with_control(
+        &self,
+        username: String,
+        email: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        self.ensure_registration_review_supported(RegistrationMode::Email)?;
+        let username = Self::normalize_username_for_storage(&username)?;
+        Self::validate_email(&email)?;
+        self.validate_email_whitelist_policy(&email)?;
+
+        self.validate_registration_identity_with_control(
+            &username,
+            Some(&email),
+            client_ip,
+            control,
+        )
+        .await?;
+
+        let token = synctv_common::snanoid!(64);
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
+        self.email_registration_token_repository
+            .create_or_replace_unused(&token, &username, &email, expires_at)
+            .await?;
+
+        Ok(token)
+    }
+
+    pub async fn complete_email_registration_with_direct_password_transport_with_control(
+        &self,
+        email_token: &str,
+        password: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AccountRegistrationOutcome> {
+        let registration_policy =
+            self.ensure_registration_review_supported(RegistrationMode::Email)?;
+        self.validate_password(&password)?;
+
+        let (created_user, username, email) = match async {
+            let mut tx = self.repository.pool().begin().await?;
+            let token_record =
+                EmailRegistrationTokenRepository::lock_valid_for_update_with_executor(
+                    email_token,
+                    &mut tx,
+                )
+                .await?
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                    )
+                })?;
+            let username = Self::normalize_username_for_storage(&token_record.username)?;
+            let email = token_record.email;
+
+            Self::lock_pending_registration_identity(&mut tx, &username, Some(&email)).await?;
+
+            if self
+                .repository
+                .get_by_username_with_executor(&username, &mut *tx)
+                .await?
+                .is_some()
+                || self
+                    .user_email_repository
+                    .email_exists_with_executor(&email, &mut *tx)
+                    .await?
+                || self
+                    .has_pending_registration_request_with_executor(
+                        &username,
+                        Some(&email),
+                        &mut *tx,
+                    )
+                    .await?
+            {
+                return Err(Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                ));
+            }
+
+            let credential_identifier = Self::opaque_credential_identifier_for_new_user(&username);
+            let opaque_record = self
+                .opaque_password_service
+                .register_password(&credential_identifier, &password)?;
+
+            let user = User::new(username.clone(), SignupMethod::Email);
+            let created_user = if registration_policy.need_review {
+                let request_id = Self::create_registration_request_with_executor(
+                    &username,
+                    Some(&email),
+                    &opaque_record,
+                    SignupMethod::Email,
+                    &mut *tx,
+                )
+                .await?;
+                let mut pending_user = User::new_with_status(
+                    username.clone(),
+                    SignupMethod::Email,
+                    UserStatus::Active,
+                );
+                pending_user.id = request_id;
+                pending_user
+            } else {
+                let created_user = self
+                    .repository
+                    .create_with_executor(&user, &mut *tx)
+                    .await
+                    .map_err(Self::map_registration_identity_conflict)?;
+                self.user_email_repository
+                    .create_for_user_with_executor(&created_user, Some(&email), &mut *tx)
+                    .await
+                    .map_err(Self::map_registration_identity_conflict)?;
+                self.user_password_repository
+                    .create_for_user_with_executor(
+                        &created_user,
+                        PasswordCredentialMaterial::opaque_only(&opaque_record),
+                        &mut *tx,
+                    )
+                    .await?;
+                created_user
+            };
+
+            let used_rows =
+                EmailRegistrationTokenRepository::mark_used_with_executor(email_token, &mut tx)
+                    .await?;
+            if used_rows != 1 {
+                return Err(Error::InvalidInput(
+                    synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                ));
+            }
+            tx.commit().await?;
+            Ok::<_, Error>((created_user, username, email))
+        }
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
+            }
+        };
+
+        if registration_policy.need_review {
+            return Ok(AccountRegistrationOutcome::PendingReview(
+                PendingAccountRegistration {
+                    review_request_id: created_user.id,
+                    username,
+                    email: Some(email),
+                },
+            ));
+        }
+
+        self.cache_username_best_effort(
+            &created_user.id,
+            &username,
+            "email_direct_password_register",
+        )
+        .await;
+
+        let session_id = synctv_common::snanoid!(32);
+        let password_version = self
+            .user_password_repository
+            .get_state(&created_user.id)
+            .await?
+            .version;
+        let credential_binding = password_binding(password_version);
+        let access_token = self
+            .jwt_service
+            .sign_access_token_with_auth_context_and_session(
+                &created_user.id,
+                password_version,
+                None,
+                Some(&session_id),
+                &credential_binding,
+            )?;
+        let refresh_token = self.jwt_service.sign_refresh_token_with_session(
+            &created_user.id,
+            password_version,
+            None,
+            &session_id,
+            &credential_binding,
+        )?;
+
+        Ok(AccountRegistrationOutcome::Registered {
+            user: created_user,
+            email: Some(email),
+            access_token,
+            refresh_token,
+        })
+    }
+
+    pub async fn delete_unused_email_registration_token(&self, token: &str) -> Result<u64> {
+        self.email_registration_token_repository
+            .delete_unused_token(token)
+            .await
+    }
+
+    pub async fn login_with_direct_password_transport_with_control(
+        &self,
+        identifier: String,
+        password: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AuthenticatedLogin> {
+        let normalized_identifier = Self::normalize_login_identifier(&identifier);
+        self.brute_force
+            .check_allowed_with_control(&normalized_identifier, client_ip, control)
+            .await?;
+
+        let maybe_user = self.get_by_login_identifier(&normalized_identifier).await?;
+        let Some(user) = maybe_user else {
+            let _ = self
+                .opaque_password_service
+                .verify_dummy_password(&password);
+            self.record_login_failure_for_bruteforce(
+                &normalized_identifier,
+                false,
+                client_ip,
+                control,
+                "direct password",
+            )
+            .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let Some(opaque_credential) = self
+            .user_password_repository
+            .get_opaque_credential(&user.id)
+            .await?
+        else {
+            let _ = self
+                .opaque_password_service
+                .verify_dummy_password(&password);
+            self.record_login_failure_for_bruteforce(
+                &normalized_identifier,
+                true,
+                client_ip,
+                control,
+                "direct password",
+            )
+            .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let verified = self
+            .opaque_password_service
+            .verify_password(&opaque_credential.record, &password)?;
+        if !verified {
+            self.record_login_failure_for_bruteforce(
+                &normalized_identifier,
+                true,
+                client_ip,
+                control,
+                "direct password",
+            )
+            .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        let credential_state = self
+            .user_password_repository
+            .get_state(&user.id)
+            .await
+            .map_err(|error| match error {
+                Error::NotFound(_) => Error::Authentication("Authentication failed".to_string()),
+                other => other,
+            })?;
+        let credential_binding = password_binding(credential_state.version);
+        self.complete_authenticated_login_with_control(
+            user,
+            AuthFactorMethod::Password,
+            credential_binding,
+            &normalized_identifier,
+            client_ip,
+            control,
+        )
+        .await
     }
 
     pub async fn start_opaque_registration_with_control(
@@ -4006,7 +4285,7 @@ impl UserService {
         registration_upload: Vec<u8>,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, Option<String>, Option<String>)> {
+    ) -> Result<AccountRegistrationOutcome> {
         let Some(session) = self
             .opaque_registration_session_store
             .consume(session_id)
@@ -4035,128 +4314,30 @@ impl UserService {
         let registration_policy =
             self.ensure_registration_review_supported(RegistrationMode::Password)?;
 
-        if registration_policy.need_review {
-            let pending_user = self
-                .create_registration_request(
-                    &username,
-                    email.as_deref(),
-                    &opaque_record,
-                    SignupMethod::Email,
-                )
-                .await?;
-            return Ok((pending_user, None, None));
-        }
-
-        let user = User::new(username.clone(), SignupMethod::Email);
-        let created_user = match async {
-            let mut tx = self.repository.pool().begin().await?;
-            let created_user = self
-                .repository
-                .create_with_executor(&user, &mut *tx)
-                .await?;
-            self.user_email_repository
-                .create_for_user_with_executor(&created_user, email.as_deref(), &mut *tx)
-                .await?;
-            self.user_password_repository
-                .create_for_user_with_executor(
-                    &created_user,
-                    PasswordCredentialMaterial::opaque_only(&opaque_record),
-                    &mut *tx,
-                )
-                .await?;
-            tx.commit().await?;
-            Ok::<_, Error>(created_user)
-        }
+        self.complete_password_registration_with_opaque_record(
+            username,
+            email,
+            opaque_record,
+            registration_policy,
+            client_ip,
+            control,
+            "opaque_register",
+        )
         .await
-        {
-            Ok(created_user) => created_user,
-            Err(Error::AlreadyExists(_)) => {
-                return Err(Error::AlreadyExists(
-                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                ));
-            }
-            Err(error) => {
-                self.record_registration_bruteforce_failure(client_ip, control)
-                    .await;
-                return Err(error);
-            }
-        };
-
-        self.cache_username_best_effort(&created_user.id, &username, "opaque_register")
-            .await;
-
-        let session_id = synctv_common::snanoid!(32);
-        let password_version = self
-            .user_password_repository
-            .get_state(&created_user.id)
-            .await?
-            .version;
-        let credential_binding = password_binding(password_version);
-        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
-            &created_user.id,
-            TokenType::Access,
-            password_version,
-            None,
-            Some(&session_id),
-            &credential_binding,
-        )?;
-        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
-            &created_user.id,
-            TokenType::Refresh,
-            password_version,
-            None,
-            Some(&session_id),
-            &credential_binding,
-        )?;
-
-        Ok((created_user, Some(access_token), Some(refresh_token)))
-    }
-
-    /// Register a new user inside a caller-owned transaction.
-    pub async fn register_with_executor(
-        &self,
-        username: String,
-        email: Option<String>,
-        password: String,
-        signup_method: SignupMethod,
-        executor: &mut PgConnection,
-    ) -> Result<User> {
-        let username = Self::normalize_username_for_storage(&username)?;
-        if let Some(ref email) = email {
-            Self::validate_email(email)?;
-        }
-        self.validate_password(&password)?;
-        let opaque_record = self.build_password_credentials_for_new_user(&username, &password)?;
-        let user = User::new(username, signup_method);
-        let created_user = self
-            .repository
-            .create_with_executor(&user, &mut *executor)
-            .await?;
-        self.user_email_repository
-            .create_for_user_with_executor(&created_user, email.as_deref(), &mut *executor)
-            .await?;
-        self.user_password_repository
-            .create_for_user_with_executor(
-                &created_user,
-                PasswordCredentialMaterial::opaque_only(&opaque_record),
-                &mut *executor,
-            )
-            .await?;
-        Ok(created_user)
     }
 
     /// Create a user with a specific role (for admin user creation).
     ///
-    /// Validates input, hashes the password, creates the user with the given
-    /// role atomically, and populates the username cache.
+    /// Validates input, creates the user with the given role atomically, and
+    /// populates the username cache. Password credentials are installed through
+    /// the OPAQUE password reset flow.
     pub async fn create_user_with_role(
         &self,
         username: String,
         email: Option<String>,
-        password: String,
         role: Option<crate::models::UserRole>,
     ) -> Result<User> {
-        self.create_user_with_role_and_status(username, email, password, role, None, None)
+        self.create_user_with_role_and_status(username, email, role, None, None)
             .await
     }
 
@@ -4164,7 +4345,21 @@ impl UserService {
         &self,
         username: String,
         email: Option<String>,
-        password: String,
+        role: Option<crate::models::UserRole>,
+        status: Option<crate::models::UserStatus>,
+        banned_by: Option<&UserId>,
+    ) -> Result<User> {
+        self.create_user_with_optional_direct_password(
+            username, email, None, role, status, banned_by,
+        )
+        .await
+    }
+
+    pub async fn create_user_with_optional_direct_password(
+        &self,
+        username: String,
+        email: Option<String>,
+        password: Option<String>,
         role: Option<crate::models::UserRole>,
         status: Option<crate::models::UserStatus>,
         banned_by: Option<&UserId>,
@@ -4173,13 +4368,26 @@ impl UserService {
         if let Some(ref email) = email {
             Self::validate_email(email)?;
         }
-        self.validate_password(&password)?;
+        if let Some(password) = password.as_deref() {
+            self.validate_password(password)?;
+        }
 
-        let opaque_record = self.opaque_password_service.register_password(
-            &Self::opaque_credential_identifier_for_new_user(&username),
-            &password,
-        )?;
-        let mut user = User::new(username.clone(), SignupMethod::Email);
+        let opaque_record = password
+            .as_deref()
+            .map(|password| {
+                let credential_identifier =
+                    Self::opaque_credential_identifier_for_new_user(&username);
+                self.opaque_password_service
+                    .register_password(&credential_identifier, password)
+            })
+            .transpose()?;
+
+        let signup_method = if opaque_record.is_some() {
+            SignupMethod::Password
+        } else {
+            SignupMethod::AdminCreated
+        };
+        let mut user = User::new(username.clone(), signup_method);
         if let Some(role) = role {
             user.role = role;
         }
@@ -4190,17 +4398,21 @@ impl UserService {
         let created_user = self
             .repository
             .create_with_executor(&user, &mut *tx)
-            .await?;
+            .await
+            .map_err(Self::map_registration_identity_conflict)?;
         self.user_email_repository
             .create_for_user_with_executor(&created_user, email.as_deref(), &mut *tx)
-            .await?;
-        self.user_password_repository
-            .create_for_user_with_executor(
-                &created_user,
-                PasswordCredentialMaterial::opaque_only(&opaque_record),
-                &mut *tx,
-            )
-            .await?;
+            .await
+            .map_err(Self::map_registration_identity_conflict)?;
+        if let Some(opaque_record) = opaque_record.as_ref() {
+            self.user_password_repository
+                .create_for_user_with_executor(
+                    &created_user,
+                    PasswordCredentialMaterial::opaque_only(opaque_record),
+                    &mut *tx,
+                )
+                .await?;
+        }
         if user.status == crate::models::UserStatus::Banned {
             sqlx::query!(
                 r#"
@@ -4227,7 +4439,7 @@ impl UserService {
         self.cache_username_best_effort(
             &created_user.id,
             &username,
-            "create_user_with_role_and_status",
+            "create_user_with_optional_direct_password",
         )
         .await;
         Ok(created_user)
@@ -4242,132 +4454,25 @@ impl UserService {
             .await?
             .version;
         let credential_binding = password_binding(password_version);
-        let access_token = self.jwt_service.sign_token_with_auth_context_and_session(
+        let access_token = self
+            .jwt_service
+            .sign_access_token_with_auth_context_and_session(
+                &user.id,
+                password_version,
+                None,
+                Some(&session_id),
+                &credential_binding,
+            )?;
+        let refresh_token = self.jwt_service.sign_refresh_token_with_session(
             &user.id,
-            TokenType::Access,
             password_version,
             None,
-            Some(&session_id),
-            &credential_binding,
-        )?;
-        let refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
-            &user.id,
-            TokenType::Refresh,
-            password_version,
-            None,
-            Some(&session_id),
+            &session_id,
             &credential_binding,
         )?;
         self.cache_username_best_effort(&user.id, &user.username, "finalize_registration")
             .await;
         Ok((access_token, refresh_token))
-    }
-
-    /// Login user
-    ///
-    /// Timing-safe: always performs password verification regardless of user existence
-    /// to prevent username enumeration via response time analysis.
-    ///
-    /// Includes per-account and per-IP brute-force protection: after repeated failures,
-    /// accounts/IPs are temporarily locked with exponential backoff (1min / 5min / 15min).
-    ///
-    /// ## Failure Type Differentiation
-    ///
-    /// To prevent attackers from locking out legitimate users by trying random usernames:
-    /// - "User doesn't exist" → Only IP-level tracking (username doesn't exist to attack)
-    /// - "Wrong password for existing user" → Both username and IP tracking
-    /// - "Account banned/pending/deleted" → Both username and IP tracking (prevents enumeration)
-    pub async fn login(
-        &self,
-        identifier: String,
-        password: String,
-        client_ip: Option<std::net::IpAddr>,
-    ) -> Result<AuthenticatedLogin> {
-        self.login_with_control(identifier, password, client_ip, None)
-            .await
-    }
-
-    pub async fn login_with_control(
-        &self,
-        identifier: String,
-        password: String,
-        client_ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<AuthenticatedLogin> {
-        let normalized_identifier = Self::normalize_login_identifier(&identifier);
-
-        // Check brute-force lockout before expensive Argon2 verification.
-        // This applies to all usernames (existing or not) to prevent
-        // distributed attacks while also saving CPU on locked accounts.
-        self.brute_force
-            .check_allowed_with_control(&normalized_identifier, client_ip, control)
-            .await?;
-
-        // Get user and password credential material by username or email in one query.
-        let maybe_user = self
-            .get_by_login_identifier_with_password_credential(&normalized_identifier)
-            .await?;
-
-        let user_existed = maybe_user.is_some();
-
-        // Always perform OPAQUE verification to prevent timing side-channels
-        // between accounts with credentials, accounts without credentials, and absent accounts.
-        let (is_valid, user, password_version) = if let Some(user_with_credential) = maybe_user {
-            let password_version = user_with_credential.credential_state.version;
-            let opaque_valid = if let Some(opaque_credential) = user_with_credential.opaque {
-                self.opaque_password_service
-                    .verify_password(&opaque_credential.record, &password)?
-            } else {
-                self.opaque_password_service
-                    .verify_dummy_password(&password)?
-            };
-            (
-                opaque_valid,
-                Some(user_with_credential.user),
-                password_version,
-            )
-        } else {
-            let _ = self
-                .opaque_password_service
-                .verify_dummy_password(&password)?;
-            (false, None, 0)
-        };
-
-        // After constant-time verification, check all failure conditions
-        let user = match user {
-            Some(u) if is_valid => u,
-            _ => {
-                // Differentiate failure types:
-                // - User doesn't exist: Only record IP-level failure to prevent
-                // attackers from locking out legitimate usernames
-                // - Wrong password for existing user: Record both username and IP
-                let record_result = if user_existed {
-                    // User existed but wrong password - record both username and IP
-                    self.brute_force
-                        .record_failure_with_control(&normalized_identifier, client_ip, control)
-                        .await
-                } else {
-                    // User didn't exist - only record IP-level failure
-                    self.brute_force
-                        .record_ip_failure_with_control(client_ip, control)
-                        .await
-                };
-                if let Err(e) = record_result {
-                    tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
-                }
-                return Err(Error::Authentication("Authentication failed".to_string()));
-            }
-        };
-
-        self.complete_authenticated_login_with_control(
-            user,
-            AuthFactorMethod::Password,
-            password_binding(password_version),
-            &normalized_identifier,
-            client_ip,
-            control,
-        )
-        .await
     }
 
     pub async fn start_opaque_login_with_control(
@@ -4472,6 +4577,24 @@ impl UserService {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) {
+        self.record_login_failure_for_bruteforce(
+            brute_force_key,
+            user_existed,
+            client_ip,
+            control,
+            "external",
+        )
+        .await;
+    }
+
+    async fn record_login_failure_for_bruteforce(
+        &self,
+        brute_force_key: &str,
+        user_existed: bool,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+        login_flow: &'static str,
+    ) {
         let record_result = if user_existed {
             self.brute_force
                 .record_failure_with_control(brute_force_key, client_ip, control)
@@ -4482,7 +4605,7 @@ impl UserService {
                 .await
         };
         if let Err(error) = record_result {
-            tracing::warn!(error = %error, "Failed to record external login failure for brute-force tracking");
+            tracing::warn!(error = %error, login_flow, "Failed to record login failure for brute-force tracking");
         }
     }
 
@@ -4529,18 +4652,14 @@ impl UserService {
             .finish_login(&session.server_login_state, &credential_finalization);
 
         let (Ok(_session_key), Some(user_id)) = (finish_result, session.user_id) else {
-            let record_result = if session.user_existed {
-                self.brute_force
-                    .record_failure_with_control(&session.brute_force_key, client_ip, control)
-                    .await
-            } else {
-                self.brute_force
-                    .record_ip_failure_with_control(client_ip, control)
-                    .await
-            };
-            if let Err(e) = record_result {
-                tracing::warn!(error = %e, "Failed to record OPAQUE login failure for brute-force tracking");
-            }
+            self.record_login_failure_for_bruteforce(
+                &session.brute_force_key,
+                session.user_existed,
+                client_ip,
+                control,
+                "opaque",
+            )
+            .await;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -4733,15 +4852,16 @@ impl UserService {
         let credential_binding = self
             .validate_refresh_credential_binding(&claims, &user.id, password_version)
             .await?;
+        let session_id = claims
+            .sid
+            .as_deref()
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
         // Refresh Token Rotation: check blacklist and family revocation
         {
             let old_jti = &claims.jti;
 
-            // Check if the refresh token family for this login session has been
-            // revoked. Older tokens without a session id fall back to the
-            // user-wide key used before sid was introduced.
-            let family_key = self.refresh_token_family_key(&user_id, claims.sid.as_deref());
+            let family_key = self.refresh_token_family_key(&user_id, session_id);
             let family_revoked_at = self
                 .token_blacklist
                 .get_family_revoked_at_checked(&family_key)
@@ -4806,18 +4926,17 @@ impl UserService {
             Some("oauth2") => Some(TokenAuthContext::OAuth2),
             _ => None,
         };
-        let session_id = claims.sid.as_deref();
-        let new_access_token = self.jwt_service.sign_token_with_auth_context_and_session(
+        let new_access_token = self
+            .jwt_service
+            .sign_access_token_with_auth_context_and_session(
+                &user.id,
+                password_version,
+                token_auth_context,
+                Some(session_id),
+                &credential_binding,
+            )?;
+        let new_refresh_token = self.jwt_service.sign_refresh_token_with_session(
             &user.id,
-            TokenType::Access,
-            password_version,
-            token_auth_context,
-            session_id,
-            &credential_binding,
-        )?;
-        let new_refresh_token = self.jwt_service.sign_token_with_auth_context_and_session(
-            &user.id,
-            TokenType::Refresh,
             password_version,
             token_auth_context,
             session_id,
@@ -4833,9 +4952,7 @@ impl UserService {
         user_id: &UserId,
         current_password_version: i32,
     ) -> Result<TokenCredentialBinding> {
-        let credential_binding = claims
-            .credential_binding()
-            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let credential_binding = claims.credential_binding()?;
         match credential_binding {
             TokenCredentialBinding::Password { version } => {
                 if version != current_password_version {
@@ -5048,29 +5165,15 @@ impl UserService {
         Ok(updated)
     }
 
-    /// Set user password (admin use, no old password required)
+    /// Revoke a user's password credential and invalidate password-bound tokens.
     ///
-    /// After updating the password, all existing access and refresh tokens for the
-    /// user are invalidated by incrementing `password_version` in the same database
-    /// write. Refresh flows re-load the user and reject tokens whose embedded
-    /// password version is stale, so no extra pre-commit side effect is needed.
-    pub async fn set_password(&self, user_id: &UserId, new_password: &str) -> Result<User> {
-        // Validate new password
-        self.validate_password(new_password)?;
-
-        let opaque_record = self.opaque_password_service.register_password(
-            &Self::opaque_credential_identifier_for_user_id(user_id),
-            new_password,
-        )?;
-
+    /// The next password is installed through the OPAQUE password reset flow, so
+    /// operators never receive or submit the user's replacement password.
+    pub async fn force_password_reset(&self, user_id: &UserId) -> Result<User> {
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
 
         self.user_password_repository
-            .update_with_executor(
-                user_id,
-                PasswordCredentialMaterial::opaque_only(&opaque_record),
-                &mut *tx,
-            )
+            .update_with_executor(user_id, PasswordCredentialMaterial::none(), &mut *tx)
             .await?;
         let updated_user = self
             .repository
@@ -5083,7 +5186,35 @@ impl UserService {
         // Invalidate user cache across all replicas
         self.notify_user_invalidation(user_id).await;
 
-        tracing::info!("Password updated for user {user_id}");
+        tracing::info!("Password credential revoked for user {user_id}");
+
+        Ok(updated_user)
+    }
+
+    pub async fn set_direct_password(&self, user_id: &UserId, password: &str) -> Result<User> {
+        self.validate_password(password)?;
+        let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
+        let opaque_record = self
+            .opaque_password_service
+            .register_password(&credential_identifier, password)?;
+
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        self.user_password_repository
+            .update_with_executor(
+                user_id,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                &mut *tx,
+            )
+            .await?;
+        let updated_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+        tx.commit().await?;
+
+        self.notify_user_invalidation(user_id).await;
+        tracing::info!("Direct password credential updated for user {user_id}");
 
         Ok(updated_user)
     }
@@ -5683,9 +5814,16 @@ impl UserService {
         verification_id: &str,
     ) -> Result<User> {
         let email = self.validate_email_bind_target(user_id, email).await?;
+        let mut tx = self.repository.pool().begin().await?;
+
+        let email = self
+            .email_bind_repository
+            .lock_valid_for_update_with_executor(user_id, &email, token, &mut *tx)
+            .await?;
+
         self.consume_sensitive_operation_verification(user_id, verification_id)
             .await?;
-        let mut tx = self.repository.pool().begin().await?;
+
         let (email, now) = self
             .email_bind_repository
             .consume_with_executor(user_id, &email, token, &mut *tx)
@@ -5693,7 +5831,8 @@ impl UserService {
         let updated_user = self
             .user_email_repository
             .upsert_with_executor(user_id, &email, now, &mut *tx)
-            .await?
+            .await
+            .map_err(Self::map_registration_identity_conflict)?
             .user;
         tx.commit().await?;
         self.notify_user_invalidation(user_id).await;
@@ -5760,8 +5899,6 @@ impl UserService {
     }
 
     pub async fn unbind_email(&self, user_id: &UserId, verification_id: &str) -> Result<User> {
-        self.consume_sensitive_operation_verification(user_id, verification_id)
-            .await?;
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
         let current_user = self
             .repository
@@ -5771,7 +5908,7 @@ impl UserService {
 
         if self
             .user_email_repository
-            .get_email(user_id)
+            .get_email_with_executor(user_id, &mut *tx)
             .await?
             .is_none()
         {
@@ -5814,6 +5951,8 @@ impl UserService {
             ));
         }
 
+        self.consume_sensitive_operation_verification(user_id, verification_id)
+            .await?;
         let updated_user = self
             .user_email_repository
             .delete_with_executor(user_id, chrono::Utc::now(), &mut *tx)
@@ -5829,21 +5968,13 @@ impl UserService {
         let email = email.trim().to_ascii_lowercase();
         Self::validate_email(&email)?;
 
-        if let Some(ref registry) = self.settings_registry {
-            let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
-            if whitelist_enabled {
-                let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
-                if !Self::email_domain_allowed_by_whitelist(&email, &whitelist_str) {
-                    return Err(Error::InvalidInput(
-                        "Email domain is not allowed for registration".to_string(),
-                    ));
-                }
-            }
-        }
+        self.validate_email_whitelist_policy(&email)?;
 
         if let Some(existing) = self.user_email_repository.get_by_email(&email).await? {
             if existing.user.id != *user_id {
-                return Err(Error::AlreadyExists("Email already taken".to_string()));
+                return Err(Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                ));
             }
         }
 
@@ -5897,7 +6028,7 @@ impl UserService {
     pub async fn revoke_refresh_token_session(
         &self,
         user_id: &UserId,
-        session_id: Option<&str>,
+        session_id: &str,
         revoked_at: i64,
     ) -> Result<()> {
         let key = self.refresh_token_family_key(user_id, session_id);
@@ -5910,15 +6041,9 @@ impl UserService {
             .await
     }
 
-    fn refresh_token_family_key(&self, user_id: &UserId, session_id: Option<&str>) -> String {
-        match session_id {
-            Some(session_id) if !session_id.is_empty() => self
-                .key_builder
-                .refresh_token_session_revoked(&user_id.to_string(), session_id),
-            _ => self
-                .key_builder
-                .refresh_token_family_revoked(&user_id.to_string()),
-        }
+    fn refresh_token_family_key(&self, user_id: &UserId, session_id: &str) -> String {
+        self.key_builder
+            .refresh_token_session_revoked(&user_id.to_string(), session_id)
     }
 
     /// Close the currently authenticated user's own account.
@@ -6341,8 +6466,7 @@ impl UserService {
 
                     return Ok(created_user);
                 }
-                Err(Error::AlreadyExists(ref msg))
-                    if msg.contains("username") || msg.contains("Username") => {}
+                Err(ref error) if Self::is_username_conflict(error) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -6368,13 +6492,6 @@ impl UserService {
         }
         crate::validation::EmailValidator::new()
             .validate(email)
-            .map_err(|e| Error::InvalidInput(e.to_string()))
-    }
-
-    /// Validate password with complexity requirements from config
-    fn validate_password(&self, password: &str) -> Result<()> {
-        crate::validation::PasswordValidator::from_config(&self.password_complexity)
-            .validate(password)
             .map_err(|e| Error::InvalidInput(e.to_string()))
     }
 
@@ -6466,8 +6583,7 @@ impl UserService {
     /// Get the access token duration in seconds from the JWT service
     ///
     /// Used by `OAuth2` token response to report the correct `expires_in` value.
-    #[must_use]
-    pub fn access_token_duration_seconds(&self) -> i64 {
+    pub fn access_token_duration_seconds(&self) -> Result<i64> {
         self.jwt_service.access_token_duration_seconds()
     }
 
@@ -6725,19 +6841,20 @@ mod tests {
         let key_builder = crate::cache::KeyBuilder::default();
         let brute_force = crate::service::BruteForceProtection::in_memory("test:".to_string());
 
-        let mut user_service = UserService::new(
+        let user_service = UserService::new_with_runtime(
             &pool,
             jwt_service,
             username_cache,
-            crate::config::PasswordComplexityConfig::default(),
             token_blacklist,
             key_builder,
             brute_force,
+            UserServiceRuntimeOptions {
+                refresh_rate_limiter: Some(Arc::new(
+                    RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
+                )),
+                ..UserServiceRuntimeOptions::test_defaults()
+            },
         );
-
-        user_service.set_refresh_rate_limiter_for_tests(Arc::new(
-            RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
-        ));
 
         let result = user_service
             .refresh_rate_limiter
@@ -6764,11 +6881,10 @@ mod tests {
         let key_builder = crate::cache::KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-        let mut user_service = super::UserService::new(
+        let mut user_service = super::UserService::new_for_tests(
             &pool,
             jwt_service,
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             key_builder,
             brute_force,
@@ -6786,200 +6902,6 @@ mod tests {
         );
     }
 
-    /// Test that successful OAuth2 login resets the brute-force counter for the provider user ID.
-    ///
-    /// This verifies the behavior described in `UserService::login_oauth2`:
-    /// after a successful OAuth2 login, the brute-force counter for the provider_user_id
-    /// should be reset so that future login attempts start with a clean slate.
-    #[tokio::test]
-    async fn test_oauth2_login_resets_brute_force_counter_for_provider_user_id() {
-        use crate::cache::KeyBuilder;
-
-        // Create an in-memory brute-force protection instance
-        // Note: BruteForceProtection::in_memory uses this prefix directly in KeyBuilder::new()
-        let prefix = "test_oauth2_reset";
-        let key_builder = KeyBuilder::new(prefix);
-        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
-        let provider_user_id = "github:12345";
-        let client_ip: Option<std::net::IpAddr> = Some(std::net::IpAddr::V4(
-            std::net::Ipv4Addr::new(192, 168, 1, 1),
-        ));
-
-        // Simulate some failed login attempts
-        for _ in 0..3 {
-            brute_force
-                .record_failure(provider_user_id, client_ip)
-                .await
-                .unwrap();
-        }
-
-        // Verify that failures were recorded using the prefixed key
-        let tracker = brute_force.username_tracker();
-        let prefixed_key = key_builder.login_attempts(provider_user_id);
-        let (count_before, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
-        assert_eq!(count_before, 3, "Should have 3 failures recorded");
-
-        // Simulate successful OAuth2 login by resetting the counter
-        // (this is what happens in login_oauth2 on success)
-        brute_force.reset(provider_user_id).await.unwrap();
-
-        // Verify counter was reset
-        let (count_after, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
-        assert_eq!(
-            count_after, 0,
-            "Counter should be reset to 0 after successful OAuth2 login"
-        );
-    }
-
-    /// Test that successful OAuth2 login resets the brute-force counter for the client IP.
-    ///
-    /// This verifies that the IP-based brute-force counter is also reset after
-    /// a successful OAuth2 login, allowing future attempts from the same IP.
-    #[tokio::test]
-    async fn test_oauth2_login_resets_brute_force_counter_for_client_ip() {
-        use crate::cache::KeyBuilder;
-
-        let prefix = "test_oauth2_ip_reset";
-        let key_builder = KeyBuilder::new(prefix);
-        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
-        let provider_user_id = "github:67890";
-        let client_ip: std::net::IpAddr =
-            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
-
-        // Simulate some failed login attempts from this IP
-        for _ in 0..5 {
-            brute_force
-                .record_failure(provider_user_id, Some(client_ip))
-                .await
-                .unwrap();
-        }
-
-        // Verify that IP failures were recorded using the prefixed key
-        let ip_tracker = brute_force.ip_tracker();
-        let ip_key = key_builder.login_attempts_ip(&client_ip.to_string());
-        let (count_before, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
-        assert_eq!(count_before, 5, "Should have 5 IP failures recorded");
-
-        // Simulate successful OAuth2 login by resetting the IP counter
-        brute_force.reset_ip(&client_ip).await.unwrap();
-
-        // Verify IP counter was reset
-        let (count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
-        assert_eq!(
-            count_after, 0,
-            "IP counter should be reset to 0 after successful OAuth2 login"
-        );
-    }
-
-    /// Test that failed OAuth2 login (e.g., user is banned) increments the brute-force counter.
-    ///
-    /// This verifies that when an OAuth2 login fails due to user status issues,
-    /// the brute-force counter is incremented to prevent brute-forcing against locked accounts.
-    #[tokio::test]
-    async fn test_oauth2_login_failure_increments_brute_force_counter() {
-        use crate::cache::KeyBuilder;
-
-        let prefix = "test_oauth2_failure";
-        let key_builder = KeyBuilder::new(prefix);
-        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
-        let provider_user_id = "google:99999";
-        let client_ip: Option<std::net::IpAddr> =
-            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 16, 0, 1)));
-
-        // Simulate a failed OAuth2 login attempt (user banned/pending/deleted)
-        // The login_oauth2 method calls record_failure on failure
-        brute_force
-            .record_failure(provider_user_id, client_ip)
-            .await
-            .unwrap();
-
-        // Verify counter was incremented using the prefixed key
-        let tracker = brute_force.username_tracker();
-        let prefixed_key = key_builder.login_attempts(provider_user_id);
-        let (count, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
-        assert_eq!(
-            count, 1,
-            "Counter should be incremented after failed OAuth2 login"
-        );
-    }
-
-    /// Test that brute-force check happens before OAuth2 token issuance.
-    ///
-    /// This verifies that the check_allowed method is called before processing
-    /// an OAuth2 login, preventing locked-out users from getting tokens.
-    #[tokio::test]
-    async fn test_oauth2_login_checks_brute_force_before_token_issuance() {
-        let brute_force = BruteForceProtection::in_memory("test_oauth2_check".to_string());
-        let provider_user_id = "discord:11111";
-        let client_ip: Option<std::net::IpAddr> = Some(std::net::IpAddr::V4(
-            std::net::Ipv4Addr::new(192, 168, 100, 1),
-        ));
-
-        // Record enough failures to trigger lockout (5 is the tier1 threshold)
-        for _ in 0..5 {
-            brute_force
-                .record_failure(provider_user_id, client_ip)
-                .await
-                .unwrap();
-        }
-
-        // Verify that check_allowed now returns an error
-        let result = brute_force.check_allowed(provider_user_id, client_ip).await;
-        assert!(result.is_err(), "Should be locked out after 5 failures");
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Too many failed login attempts"),
-            "Error should mention lockout: {err_msg}"
-        );
-    }
-
-    /// Test that brute-force counters for both provider_user_id and IP are independently tracked.
-    ///
-    /// This verifies that resetting the provider_user_id counter does not affect the IP counter
-    /// and vice versa.
-    #[tokio::test]
-    async fn test_oauth2_login_resets_counters_independently() {
-        use crate::cache::KeyBuilder;
-
-        let prefix = "test_oauth2_independent";
-        let key_builder = KeyBuilder::new(prefix);
-        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
-        let provider_user_id = "github:22222";
-        let client_ip: std::net::IpAddr =
-            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 10, 10, 10));
-
-        // Record failures
-        for _ in 0..3 {
-            brute_force
-                .record_failure(provider_user_id, Some(client_ip))
-                .await
-                .unwrap();
-        }
-
-        // Reset only the provider_user_id counter
-        brute_force.reset(provider_user_id).await.unwrap();
-
-        // Verify provider_user_id counter is reset using prefixed key
-        let tracker = brute_force.username_tracker();
-        let user_key = key_builder.login_attempts(provider_user_id);
-        let (user_count, _) = tracker.get_attempts(&user_key).await.unwrap();
-        assert_eq!(user_count, 0, "Provider user ID counter should be reset");
-
-        // Verify IP counter is NOT reset
-        let ip_tracker = brute_force.ip_tracker();
-        let ip_key = key_builder.login_attempts_ip(&client_ip.to_string());
-        let (ip_count, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
-        assert_eq!(ip_count, 3, "IP counter should still have 3 failures");
-
-        // Now reset the IP counter
-        brute_force.reset_ip(&client_ip).await.unwrap();
-
-        // Verify IP counter is now reset
-        let (ip_count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
-        assert_eq!(ip_count_after, 0, "IP counter should be reset");
-    }
-
     #[test]
     fn test_sign_in_method_count_includes_active_oauth2() {
         let factors = UserAuthFactors {
@@ -6995,6 +6917,28 @@ mod tests {
             email: true,
         };
         assert_eq!(UserService::sign_in_method_count(&factors, 2), 5);
+    }
+
+    #[test]
+    fn test_oauth2_username_candidates_normalize_external_display_name() {
+        let (base, candidates) =
+            UserService::oauth2_username_candidates("provider_user_123", " User@Special.Name! ")
+                .unwrap();
+
+        assert_eq!(base, "userspecialname");
+        assert_eq!(candidates.len(), 10);
+        assert_eq!(candidates[0], base);
+        assert!(candidates[1].starts_with("userspecialname_"));
+    }
+
+    #[test]
+    fn test_oauth2_username_candidates_fallback_to_provider_id() {
+        let (base, candidates) =
+            UserService::oauth2_username_candidates("provider_user_id_longer_than_limit", "@@@!!!")
+                .unwrap();
+
+        assert_eq!(base, "user_provider_user_id_lon");
+        assert_eq!(candidates[0], base);
     }
 
     #[test]
@@ -7043,19 +6987,26 @@ mod tests {
         assert!(UserService::email_domain_allowed_by_whitelist(
             "alice@example.com",
             "@example.com"
-        ));
-        assert!(UserService::email_domain_allowed_by_whitelist(
-            "alice@example.com",
-            "Example.COM"
-        ));
-        assert!(UserService::email_domain_allowed_by_whitelist(
-            "alice@example.com",
-            ""
-        ));
-        assert!(!UserService::email_domain_allowed_by_whitelist(
-            "alice@example.com",
-            "other.com"
-        ));
+        )
+        .unwrap());
+        assert!(
+            UserService::email_domain_allowed_by_whitelist("alice@example.com", "Example.COM")
+                .unwrap()
+        );
+        assert!(UserService::email_domain_allowed_by_whitelist("alice@example.com", "").unwrap());
+        assert!(
+            !UserService::email_domain_allowed_by_whitelist("alice@example.com", "other.com")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_email_domain_allowed_by_whitelist_rejects_missing_domain() {
+        let error = UserService::email_domain_allowed_by_whitelist("alice", "example.com")
+            .expect_err("email whitelist checks require an email domain");
+        assert!(error
+            .to_string()
+            .contains("Email must include a domain for whitelist validation"));
     }
 
     #[tokio::test]

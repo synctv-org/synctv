@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT u.id AS \"user_id!: UserId\",\n                   COALESCE(apc.changed_at, u.created_at) AS \"changed_at!\",\n                   COALESCE(apc.version, 0) AS \"version!\"\n            FROM users u\n            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id\n            WHERE u.id = $1 AND u.deleted_at IS NULL\n            FOR UPDATE OF u\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "version!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "f3a27f814b10936b2db176fedd3ae988799e0f355576438039f03ad86d5381e3"
+}

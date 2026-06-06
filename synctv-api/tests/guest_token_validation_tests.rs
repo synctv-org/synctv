@@ -19,13 +19,9 @@ use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklist
 
 // Shared guest-token validation requirement tests.
 
-/// Document the security requirement: guest-token validation must check blacklist.
-///
-/// This test verifies that when the GuestTokenValidator is used correctly,
-/// a blacklisted guest token is rejected. This is the expected behavior
-/// that the shared validation path must implement.
+/// Guest-token validation rejects blacklisted tokens.
 #[tokio::test]
-async fn test_security_requirement_blacklisted_token_must_be_rejected() {
+async fn test_shared_validation_rejects_blacklisted_guest_token() {
     let validator = create_test_validator_with_blacklist();
     let jwt = create_test_jwt_service();
     let room_id = RoomId::new();
@@ -37,67 +33,47 @@ async fn test_security_requirement_blacklisted_token_must_be_rejected() {
     let claims = jwt.verify_guest_token(&token).unwrap();
     validator.blacklist_token(&claims.jti, 3600).await.unwrap();
 
-    // SECURITY REQUIREMENT: This MUST fail
-    // Any transport path relying on shared guest-token validation should reject this token.
     let result = validator.validate_async(&token).await;
     assert!(
         result.is_err(),
-        "SECURITY REQUIREMENT: Blacklisted guest tokens MUST be rejected by the shared validation path"
+        "blacklisted guest tokens must be rejected by the shared validation path"
     );
 }
 
-/// Document the security requirement: guest-token validation must check guest version.
-///
-/// This test verifies that when the room's guest version is incremented,
-/// old guest tokens are invalidated. This allows room-wide revocation
-/// (e.g., when room settings change).
+/// Guest-token validation rejects tokens issued before a room guest-version bump.
 #[tokio::test]
-async fn test_security_requirement_outdated_version_must_be_rejected() {
+async fn test_shared_validation_rejects_outdated_guest_version() {
     let validator = create_test_validator_with_blacklist();
     let jwt = create_test_jwt_service();
     let room_id = RoomId::new();
 
-    // Issue a token with version 1
     let token = jwt.sign_guest_token_with_version(&room_id, 1).unwrap();
 
-    // SECURITY REQUIREMENT: When room version is 5, token with version 1 MUST fail
-    // Shared validation should check the room's current guest version.
     let result = validator.validate_with_version_async(&token, 5).await;
     assert!(
         result.is_err(),
-        "SECURITY REQUIREMENT: Guest tokens with outdated version MUST be rejected"
+        "guest tokens with outdated versions must be rejected"
     );
 }
 
 #[tokio::test]
-async fn test_security_requirement_policy_change_revokes_default_guest_tokens() {
+async fn test_guest_version_bump_revokes_default_guest_tokens() {
     let validator = create_test_validator_with_blacklist();
     let jwt = create_test_jwt_service();
     let room_id = RoomId::new();
 
-    // Legacy/default issuance path signs guest tokens with gv = 0.
     let token = jwt.sign_guest_token(&room_id).unwrap();
 
-    // Once room guest version is bumped after a policy change, the old token
-    // must be rejected by the same shared validation path used by transports.
     let result = validator.validate_with_version_async(&token, 1).await;
     assert!(
         result.is_err(),
-        "SECURITY REQUIREMENT: default guest tokens must be rejected after room-wide guest version bump"
+        "default guest tokens must be rejected after a room-wide guest version bump"
     );
 }
 
-/// Document the security requirement: both checks must be performed together.
-///
-/// The shared validation path must perform BOTH checks in the correct order:
-/// 1. JWT signature verification
-/// 2. Blacklist check
-/// 3. Guest version check (if room has guest versioning enabled)
-///
-/// A token that passes the JWT check but fails either blacklist or version
-/// check must be rejected.
+/// Guest-token validation applies blacklist and guest-version checks together.
 #[tokio::test]
-async fn test_security_requirement_both_checks_must_be_performed() {
+async fn test_blacklist_and_guest_version_checks_are_both_applied() {
     let validator = create_test_validator_with_blacklist();
     let jwt = create_test_jwt_service();
     let room_id = RoomId::new();
@@ -105,24 +81,21 @@ async fn test_security_requirement_both_checks_must_be_performed() {
     let token = jwt.sign_guest_token_with_version(&room_id, 3).unwrap();
     let claims = jwt.verify_guest_token(&token).unwrap();
 
-    // Case 1: Token not blacklisted, version OK - SHOULD PASS
     let result = validator.validate_with_version_async(&token, 3).await;
     assert!(result.is_ok(), "Token should pass when both checks succeed");
 
-    // Case 2: Token blacklisted, version OK - MUST FAIL
     validator.blacklist_token(&claims.jti, 3600).await.unwrap();
     let result = validator.validate_with_version_async(&token, 3).await;
     assert!(
         result.is_err(),
-        "SECURITY REQUIREMENT: Blacklisted token must be rejected even if version is OK"
+        "blacklisted token must be rejected even if the guest version matches"
     );
 
-    // Case 3: Token not blacklisted (fresh), version outdated - MUST FAIL
     let new_token = jwt.sign_guest_token_with_version(&room_id, 1).unwrap();
     let result = validator.validate_with_version_async(&new_token, 10).await;
     assert!(
         result.is_err(),
-        "SECURITY REQUIREMENT: Token with outdated version must be rejected even if not blacklisted"
+        "outdated guest token must be rejected even when it is not blacklisted"
     );
 }
 
@@ -140,11 +113,7 @@ fn create_test_validator_with_blacklist() -> GuestTokenValidator {
     let blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
     let kb = KeyBuilder::new("test");
-    GuestTokenValidator::new(jwt).with_blacklist(blacklist, kb)
-}
-
-fn create_test_validator_without_blacklist() -> GuestTokenValidator {
-    GuestTokenValidator::new(create_test_jwt_service())
+    GuestTokenValidator::new(jwt, blacklist, kb)
 }
 
 // Blacklist Validation Tests
@@ -204,33 +173,6 @@ async fn test_blacklisted_guest_token_is_rejected() {
     );
 }
 
-/// Test that validation works without blacklist configured (graceful degradation).
-///
-/// When no blacklist store is configured, validation should still work
-/// (only JWT verification), but blacklist_token calls should fail.
-#[tokio::test]
-async fn test_validation_without_blacklist_configured() {
-    let validator = create_test_validator_without_blacklist();
-    let jwt = create_test_jwt_service();
-    let room_id = RoomId::new();
-
-    let token = jwt.sign_guest_token(&room_id).unwrap();
-
-    // Validation should succeed (JWT-only mode)
-    let result = validator.validate_async(&token).await;
-    assert!(
-        result.is_ok(),
-        "Guest token should pass validation in JWT-only mode"
-    );
-
-    // Blacklist operation should fail (no store configured)
-    let blacklist_result = validator.blacklist_token("some_jti", 3600).await;
-    assert!(
-        blacklist_result.is_err(),
-        "Blacklist operation should fail when no store is configured"
-    );
-}
-
 // Room Guest Version Tests
 
 /// Test that tokens with outdated guest version are rejected.
@@ -239,7 +181,7 @@ async fn test_validation_without_blacklist_configured() {
 /// guest_version is incremented. Tokens with an older version should be rejected.
 #[tokio::test]
 async fn test_outdated_guest_version_is_rejected() {
-    let validator = create_test_validator_without_blacklist();
+    let validator = create_test_validator_with_blacklist();
     let jwt = create_test_jwt_service();
     let room_id = RoomId::new();
 
@@ -283,7 +225,7 @@ async fn test_outdated_guest_version_is_rejected() {
 /// As long as the room's guest version is also 0, they should pass.
 #[tokio::test]
 async fn test_default_version_token_passes_when_room_version_is_zero() {
-    let validator = create_test_validator_without_blacklist();
+    let validator = create_test_validator_with_blacklist();
     let jwt = create_test_jwt_service();
     let room_id = RoomId::new();
 
@@ -349,19 +291,3 @@ async fn test_combined_blacklist_and_version_check() {
 }
 
 // Structural Tests
-
-/// Test that GuestTokenValidator reports blacklist status correctly.
-#[test]
-fn test_validator_has_blacklist_flag() {
-    let with_blacklist = create_test_validator_with_blacklist();
-    assert!(
-        with_blacklist.has_blacklist(),
-        "Validator with blacklist should report has_blacklist=true"
-    );
-
-    let without_blacklist = create_test_validator_without_blacklist();
-    assert!(
-        !without_blacklist.has_blacklist(),
-        "Validator without blacklist should report has_blacklist=false"
-    );
-}

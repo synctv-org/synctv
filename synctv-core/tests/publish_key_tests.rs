@@ -2,7 +2,6 @@
 //!
 //! Tests token validation, expiration, and JTI store deduplication.
 //!
-//! Run with: cargo test --test `publish_key_tests`
 //! Run Docker tests: cargo test --test `publish_key_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
@@ -21,12 +20,7 @@ fn create_jwt_service() -> JwtService {
 }
 
 fn create_service() -> PublishKeyService {
-    PublishKeyService::new(create_jwt_service(), 24)
-}
-
-fn create_service_with_short_ttl() -> PublishKeyService {
-    // 0-hour TTL to generate already-expired tokens for testing
-    PublishKeyService::new(create_jwt_service(), 0)
+    PublishKeyService::new(create_jwt_service(), 24).expect("publish key service should build")
 }
 
 // Token expiration tests
@@ -34,18 +28,27 @@ fn create_service_with_short_ttl() -> PublishKeyService {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_validate_expired_token_rejected() {
-    let service = create_service_with_short_ttl();
+    let jwt_service = create_jwt_service();
+    let service =
+        PublishKeyService::new(jwt_service.clone(), 24).expect("publish key service should build");
     let room_id = RoomId::new();
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
+    let now = chrono::Utc::now().timestamp();
+    let token = jwt_service
+        .sign_custom(&serde_json::json!({
+            "room_id": room_id.to_string(),
+            "media_id": media_id.to_string(),
+            "user_id": user_id.to_string(),
+            "perm_live_control": true,
+            "iat": now - 7200,
+            "exp": now - 3600,
+            "jti": "expired_publish_key_test",
+        }))
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
-
-    let result = service.validate_publish_key(&key.token).await;
+    let result = service.validate_publish_key(&token).await;
     assert!(result.is_err(), "Expired token should be rejected");
     if let Err(synctv_core::Error::Authentication(msg)) = result {
         assert!(

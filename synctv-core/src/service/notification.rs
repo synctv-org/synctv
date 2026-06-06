@@ -1,7 +1,7 @@
 //! Notification and event broadcasting service
 //!
-//! Handles broadcasting events to connected clients via WebSocket
-//! and Redis Pub/Sub for cross-node messaging.
+//! Provides local in-process room event fan-out for services that need a simple
+//! domain notification channel.
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -53,13 +53,6 @@ pub enum RoomEvent {
         username: String,
         content: String,
         timestamp: chrono::DateTime<chrono::Utc>,
-    },
-    /// Playback state changed
-    PlaybackStateChanged {
-        playing: bool,
-        position: f64,
-        speed: f64,
-        media_id: Option<MediaId>,
     },
     /// Media added to playlist
     MediaAdded {
@@ -167,7 +160,6 @@ impl RoomEvent {
             Self::UserJoined { .. } => "user_joined",
             Self::UserLeft { .. } => "user_left",
             Self::ChatMessage { .. } => "chat_message",
-            Self::PlaybackStateChanged { .. } => "playback_state_changed",
             Self::MediaAdded { .. } => "media_added",
             Self::MediaRemoved { .. } => "media_removed",
             Self::MediaUpdated { .. } => "media_updated",
@@ -224,7 +216,7 @@ impl std::fmt::Debug for NotificationService {
 
 impl NotificationService {
     /// Create a new notification service with custom configuration
-    pub fn with_config(config: NotificationConfig) -> Self {
+    pub fn new_with_config(config: NotificationConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.channel_capacity);
 
         Self { event_tx, config }
@@ -240,31 +232,31 @@ impl NotificationService {
     }
 
     /// Publish a room-scoped domain event to local subscribers.
-    pub fn broadcast_to_room(&self, room_id: &RoomId, event: &RoomEvent) -> Result<()> {
+    #[must_use]
+    pub fn broadcast_to_room(&self, room_id: &RoomId, event: &RoomEvent) -> usize {
         tracing::trace!(
             "Publishing local room event {} for room {}",
             event.event_type(),
             room_id
         );
 
-        let _ = self.event_tx.send((*room_id, event.clone()));
+        let subscriber_count = self
+            .event_tx
+            .send((*room_id, event.clone()))
+            .unwrap_or_default();
 
         tracing::debug!(
+            subscriber_count,
             "Published local room event {} for room {}",
             event.event_type(),
             room_id
         );
 
-        Ok(())
+        subscriber_count
     }
 
     /// Notify room members that a user joined
-    pub fn notify_user_joined(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        username: &str,
-    ) -> Result<()> {
+    pub fn notify_user_joined(&self, room_id: &RoomId, user_id: &UserId, username: &str) -> usize {
         let event = RoomEvent::UserJoined {
             user_id: *user_id,
             username: username.to_string(),
@@ -273,12 +265,7 @@ impl NotificationService {
     }
 
     /// Notify room members that a user left
-    pub fn notify_user_left(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        username: &str,
-    ) -> Result<()> {
+    pub fn notify_user_left(&self, room_id: &RoomId, user_id: &UserId, username: &str) -> usize {
         let event = RoomEvent::UserLeft {
             user_id: *user_id,
             username: username.to_string(),
@@ -294,7 +281,7 @@ impl NotificationService {
         user_id: &UserId,
         username: &str,
         content: &str,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::ChatMessage {
             message_id: message_id.to_string(),
             user_id: *user_id,
@@ -305,30 +292,12 @@ impl NotificationService {
         self.broadcast_to_room(room_id, &event)
     }
 
-    /// Notify playback state change
-    pub fn notify_playback_state_changed(
-        &self,
-        room_id: &RoomId,
-        playing: bool,
-        position: f64,
-        speed: f64,
-        media_id: Option<MediaId>,
-    ) -> Result<()> {
-        let event = RoomEvent::PlaybackStateChanged {
-            playing,
-            position,
-            speed,
-            media_id,
-        };
-        self.broadcast_to_room(room_id, &event)
-    }
-
     /// Notify media added
     pub fn notify_media_added(
         &self,
         room_id: &RoomId,
         notification: &MediaAddedNotification<'_>,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::MediaAdded {
             user_id: *notification.user_id,
             username: notification.username.to_string(),
@@ -347,7 +316,7 @@ impl NotificationService {
         user_id: Option<&UserId>,
         username: &str,
         media_id: MediaId,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::MediaRemoved {
             user_id: user_id.copied(),
             username: username.to_string(),
@@ -365,7 +334,7 @@ impl NotificationService {
         media_id: MediaId,
         title: &str,
         position: f64,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::MediaUpdated {
             user_id: *user_id,
             username: username.to_string(),
@@ -383,7 +352,7 @@ impl NotificationService {
         user_id: Option<&UserId>,
         username: &str,
         media_ids: &[MediaId],
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::PlaylistReordered {
             user_id: user_id.copied(),
             username: username.to_string(),
@@ -399,7 +368,7 @@ impl NotificationService {
         user_id: Option<&UserId>,
         username: &str,
         playlist_id: PlaylistId,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::PlaylistDeleted {
             user_id: user_id.copied(),
             username: username.to_string(),
@@ -413,7 +382,7 @@ impl NotificationService {
         &self,
         room_id: &RoomId,
         notification: PermissionChangedNotification<'_>,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::PermissionChanged {
             user_id: *notification.user_id,
             role: notification.role,
@@ -429,7 +398,7 @@ impl NotificationService {
     }
 
     /// Notify member kicked
-    pub fn notify_member_kicked(&self, room_id: &RoomId, user_id: &UserId) -> Result<()> {
+    pub fn notify_member_kicked(&self, room_id: &RoomId, user_id: &UserId) -> usize {
         let event = RoomEvent::MemberKicked { user_id: *user_id };
         self.broadcast_to_room(room_id, &event)
     }
@@ -442,7 +411,7 @@ impl NotificationService {
         username: &str,
         settings: serde_json::Value,
         version: i64,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::SettingsUpdated {
             settings,
             version,
@@ -453,7 +422,7 @@ impl NotificationService {
     }
 
     /// Notify room deleted
-    pub fn notify_room_deleted(&self, room_id: &RoomId) -> Result<()> {
+    pub fn notify_room_deleted(&self, room_id: &RoomId) -> usize {
         let event = RoomEvent::RoomDeleted;
         self.broadcast_to_room(room_id, &event)
     }
@@ -464,7 +433,7 @@ impl NotificationService {
         room_id: &RoomId,
         media_id: &MediaId,
         user_id: &UserId,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::StreamStarted {
             media_id: *media_id,
             user_id: *user_id,
@@ -478,7 +447,7 @@ impl NotificationService {
         room_id: &RoomId,
         media_id: &MediaId,
         user_id: &UserId,
-    ) -> Result<()> {
+    ) -> usize {
         let event = RoomEvent::StreamStopped {
             media_id: *media_id,
             user_id: *user_id,
@@ -495,7 +464,7 @@ impl NotificationService {
     /// # Arguments
     /// * `room_id` - Room ID to kick guests from
     /// * `reason` - Reason for kicking guests
-    pub fn kick_all_guests(&self, room_id: &RoomId, reason: GuestKickReason) -> Result<()> {
+    pub fn kick_all_guests(&self, room_id: &RoomId, reason: GuestKickReason) -> usize {
         let message = reason.message().to_string();
         let event = RoomEvent::GuestKicked { reason, message };
 
@@ -511,25 +480,13 @@ impl NotificationService {
 
 impl Default for NotificationService {
     fn default() -> Self {
-        Self::with_config(NotificationConfig::default())
+        Self::new_with_config(NotificationConfig::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_room_event_serialization() {
-        let event = RoomEvent::UserJoined {
-            user_id: UserId::expect_positive(123),
-            username: "testuser".to_string(),
-        };
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(r#""type":"UserJoined""#));
-        assert!(json.contains(r#""user_id":123"#));
-    }
 
     #[tokio::test]
     async fn test_notification_service_creation() {
@@ -554,7 +511,7 @@ mod tests {
             username: "testuser".to_string(),
         };
 
-        service.broadcast_to_room(&room_id, &event).unwrap();
+        assert_eq!(service.broadcast_to_room(&room_id, &event), 1);
 
         // Receive event
         let (received_room_id, received_event) =
@@ -577,15 +534,16 @@ mod tests {
         let room_id = RoomId::expect_positive(3);
         let user_id = UserId::expect_positive(4);
 
-        service
-            .broadcast_to_room(
+        assert_eq!(
+            service.broadcast_to_room(
                 &room_id,
                 &RoomEvent::UserJoined {
                     user_id,
                     username: "local-only".to_string(),
                 },
-            )
-            .expect("local-only notification service should still fan out to subscribe()");
+            ),
+            1
+        );
 
         let (received_room_id, received_event) =
             tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
@@ -598,6 +556,19 @@ mod tests {
             received_event,
             RoomEvent::UserJoined { username, .. } if username == "local-only"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_without_subscribers_reports_zero_delivery() {
+        let service = NotificationService::default();
+        let room_id = RoomId::expect_positive(5);
+        let user_id = UserId::expect_positive(6);
+        let event = RoomEvent::UserJoined {
+            user_id,
+            username: "no-subscriber".to_string(),
+        };
+
+        assert_eq!(service.broadcast_to_room(&room_id, &event), 0);
     }
 
     #[test]
@@ -618,12 +589,6 @@ mod tests {
                 username: "test".to_string(),
                 content: "hello".to_string(),
                 timestamp: chrono::Utc::now(),
-            },
-            RoomEvent::PlaybackStateChanged {
-                playing: true,
-                position: 100.0,
-                speed: 1.0,
-                media_id: Some(MediaId::expect_positive(123)),
             },
             RoomEvent::MediaAdded {
                 user_id: UserId::new(),

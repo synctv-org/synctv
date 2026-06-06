@@ -13,8 +13,8 @@
 //!
 //! **Key Invariant**: A blacklisted token is NEVER incorrectly allowed because:
 //! - PG write must succeed before blacklist() returns Ok
-//! - is_blacklisted() always falls back to PG on cache miss/failure
-//! - is_blacklisted_checked() returns Err on PG failure (fail-closed)
+//! - is_blacklisted_checked() always falls back to PG on cache miss/failure
+//! - is_blacklisted_checked() returns Err on PG failure
 //!
 //! **Run with**: cargo test --test tiered_blacklist_consistency_tests -- --nocapture
 #![allow(clippy::unwrap_used)]
@@ -34,7 +34,7 @@ use synctv_core::service::TokenBlacklistStore;
 struct MockPgStore {
     /// Blacklisted keys stored in memory (simulates PG)
     data: std::sync::RwLock<std::collections::HashSet<String>>,
-    /// Number of is_blacklisted calls (for verifying PG fallback behavior)
+    /// Number of blacklist read calls (for verifying PG fallback behavior)
     is_blacklisted_calls: AtomicU64,
     /// Number of blacklist calls
     blacklist_calls: AtomicU64,
@@ -63,19 +63,9 @@ impl MockPgStore {
 
 #[async_trait]
 impl TokenBlacklistStore for MockPgStore {
-    async fn is_blacklisted(&self, key: &str) -> bool {
-        self.is_blacklisted_calls.fetch_add(1, Ordering::SeqCst);
-        if self.failing.load(Ordering::SeqCst) {
-            // Fail-open: return false on error (standard is_blacklisted behavior)
-            return false;
-        }
-        self.data.read().unwrap().contains(key)
-    }
-
     async fn is_blacklisted_checked(&self, key: &str) -> synctv_core::Result<bool> {
         self.is_blacklisted_calls.fetch_add(1, Ordering::SeqCst);
         if self.failing.load(Ordering::SeqCst) {
-            // Fail-closed: return Err on error (security-critical check behavior)
             return Err(synctv_core::Error::Internal("PG unavailable".to_string()));
         }
         Ok(self.data.read().unwrap().contains(key))
@@ -108,8 +98,8 @@ impl TokenBlacklistStore for MockPgStore {
         }
     }
 
-    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-        None
+    async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
+        Ok(None)
     }
 
     async fn set_family_revoked(
@@ -138,7 +128,9 @@ async fn test_blacklist_pg_write_must_succeed() {
 
     // Verify: PG has the entry
     assert!(
-        pg.is_blacklisted("jti:must_be_in_pg").await,
+        pg.is_blacklisted_checked("jti:must_be_in_pg")
+            .await
+            .unwrap(),
         "PG must have the blacklisted token after successful blacklist()"
     );
 }
@@ -161,8 +153,7 @@ async fn test_blacklist_returns_err_on_pg_failure() {
 
 /// Test 3: is_blacklisted_checked() returns Err on PG failure (fail-closed)
 ///
-/// For security-critical checks, we must not return false when we can't verify.
-/// Returning Err allows the caller to decide whether to fail-open or fail-closed.
+/// Storage failures must surface as errors so authentication code can fail closed.
 #[tokio::test]
 async fn test_is_blacklisted_checked_fail_closed_on_pg_failure() {
     let pg = Arc::new(MockPgStore::new());
@@ -180,7 +171,7 @@ async fn test_is_blacklisted_checked_fail_closed_on_pg_failure() {
 ///
 /// Scenario:
 /// 1. Replica A blacklists token (PG succeeds, Redis write fails)
-/// 2. Replica B queries is_blacklisted (L1 miss, L2 miss, PG hit)
+/// 2. Replica B queries is_blacklisted_checked (L1 miss, L2 miss, PG hit)
 ///
 /// Result: Replica B correctly identifies token as blacklisted via PG fallback.
 #[tokio::test]
@@ -199,7 +190,10 @@ async fn test_multi_replica_consistency_via_pg_fallback() {
     // Replica B: Query the same token
     // In a real system, this would go: L1 miss -> L2 miss/fail -> PG hit
     // Here we simulate the PG fallback behavior directly
-    let is_blacklisted = shared_pg.is_blacklisted("jti:cross_replica").await;
+    let is_blacklisted = shared_pg
+        .is_blacklisted_checked("jti:cross_replica")
+        .await
+        .unwrap();
 
     assert!(
         is_blacklisted,
@@ -238,7 +232,7 @@ async fn test_blacklist_if_not_exists_atomicity_via_pg() {
     );
 
     // Token should be blacklisted
-    assert!(pg.is_blacklisted(key).await);
+    assert!(pg.is_blacklisted_checked(key).await.unwrap());
 }
 
 /// Test 6: blacklist_if_not_exists returns Err on PG failure
@@ -272,7 +266,10 @@ async fn test_negative_cache_does_not_prevent_eventual_consistency() {
     let pg = Arc::new(MockPgStore::new());
 
     // Query for unknown token -> returns false
-    assert!(!pg.is_blacklisted("jti:eventual_test").await);
+    assert!(!pg
+        .is_blacklisted_checked("jti:eventual_test")
+        .await
+        .unwrap());
     assert_eq!(pg.is_blacklisted_call_count(), 1);
 
     // Blacklist the token (simulates another replica doing this)
@@ -280,7 +277,9 @@ async fn test_negative_cache_does_not_prevent_eventual_consistency() {
 
     // Query again - should hit PG and find the token
     assert!(
-        pg.is_blacklisted("jti:eventual_test").await,
+        pg.is_blacklisted_checked("jti:eventual_test")
+            .await
+            .unwrap(),
         "After blacklist, query should find the token"
     );
     assert_eq!(
@@ -318,7 +317,7 @@ async fn test_concurrent_blacklist_maintains_consistency() {
 
     // Token should be blacklisted
     assert!(
-        pg.is_blacklisted(key).await,
+        pg.is_blacklisted_checked(key).await.unwrap(),
         "Token should be blacklisted after concurrent operations"
     );
 }
@@ -357,10 +356,8 @@ async fn test_concurrent_blacklist_if_not_exists_atomicity() {
         handle.await.unwrap();
     }
 
-    // With our mock, the atomicity depends on the implementation
-    // Since we're not using real DB transactions, we just verify the token is blacklisted
     assert!(
-        pg.is_blacklisted(key).await,
+        pg.is_blacklisted_checked(key).await.unwrap(),
         "Token should be blacklisted after concurrent blacklist_if_not_exists"
     );
 }
@@ -373,7 +370,7 @@ async fn test_consistency_matrix() {
     // Scenario 1: Normal operation (PG up)
     let pg1 = Arc::new(MockPgStore::new());
     pg1.blacklist("jti:normal", 3600).await.unwrap();
-    assert!(pg1.is_blacklisted("jti:normal").await);
+    assert!(pg1.is_blacklisted_checked("jti:normal").await.unwrap());
     assert!(pg1.is_blacklisted_checked("jti:normal").await.unwrap());
 
     // Scenario 2: PG down - blacklist fails
@@ -389,7 +386,7 @@ async fn test_consistency_matrix() {
 
     pg3.set_failing(false); // PG recovers
     pg3.blacklist("jti:recovery", 3600).await.unwrap();
-    assert!(pg3.is_blacklisted("jti:recovery").await);
+    assert!(pg3.is_blacklisted_checked("jti:recovery").await.unwrap());
 }
 
 // Security Property Tests
@@ -460,10 +457,10 @@ async fn doc_test_blacklist_write_path() {
     // Step 2 & 3: Redis and L1 writes are best-effort/always succeed
     // (In real implementation, Redis failure is logged but ignored)
 
-    assert!(pg.is_blacklisted("jti:doc_test").await);
+    assert!(pg.is_blacklisted_checked("jti:doc_test").await.unwrap());
 }
 
-/// Doc Test 2: Document the read path of TieredTokenBlacklistStore::is_blacklisted()
+/// Doc Test 2: Document the read path of TieredTokenBlacklistStore::is_blacklisted_checked()
 ///
 /// Expected behavior:
 /// 1. Check L1 cache (if hit and not expired, return immediately)
@@ -471,28 +468,27 @@ async fn doc_test_blacklist_write_path() {
 /// 3. Check PG (populate L1 and L2, return result)
 ///
 /// On L2 failure: Log warning, fall through to PG
-/// On PG failure: Return false (fail-open for regular is_blacklisted)
+/// On PG failure: return Err so callers fail closed.
 #[tokio::test]
 async fn doc_test_is_blacklisted_read_path() {
     let pg = Arc::new(MockPgStore::new());
 
     // First query: L1 miss, L2 miss, PG miss -> return false
-    assert!(!pg.is_blacklisted("jti:read_path").await);
+    assert!(!pg.is_blacklisted_checked("jti:read_path").await.unwrap());
     assert_eq!(pg.is_blacklisted_call_count(), 1);
 
     // Blacklist the token
     pg.blacklist("jti:read_path", 3600).await.unwrap();
 
     // Second query: L1 miss (in mock), PG hit -> return true
-    assert!(pg.is_blacklisted("jti:read_path").await);
+    assert!(pg.is_blacklisted_checked("jti:read_path").await.unwrap());
     assert_eq!(pg.is_blacklisted_call_count(), 2);
 }
 
 /// Doc Test 3: Document is_blacklisted_checked() fail-closed semantics
 ///
 /// Expected behavior:
-/// Same as is_blacklisted(), but on PG failure, return Err instead of false.
-/// This allows security-critical code to fail-closed.
+/// PG failures return Err so security-sensitive callers fail closed.
 #[tokio::test]
 async fn doc_test_is_blacklisted_checked_fail_closed() {
     let pg = Arc::new(MockPgStore::new());

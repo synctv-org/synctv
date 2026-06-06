@@ -3,7 +3,6 @@
 //! Tests the `RedisOAuthStateStore`: store, consume, TTL expiry,
 //! and atomic single-use consumption under concurrency.
 //!
-//! Run with: cargo test --test `oauth2_state_store_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -124,9 +123,6 @@ async fn test_redis_oauth_state_ttl_expiry() {
     let ttl = std::time::Duration::from_secs(1);
 
     store.store("ttl_token", &state, ttl).await.unwrap();
-
-    // Immediately available
-    // (Don't consume -- just verify we can store with short TTL)
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 

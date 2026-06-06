@@ -30,19 +30,16 @@ pub struct CacheManager {
 impl CacheManager {
     /// Create a new cache manager
     #[must_use]
-    pub const fn new(user_cache: Arc<UserCache>, room_cache: Arc<RoomCache>) -> Self {
+    pub const fn new(
+        user_cache: Arc<UserCache>,
+        room_cache: Arc<RoomCache>,
+        username_cache: Option<Arc<UsernameCache>>,
+    ) -> Self {
         Self {
             user_cache,
             room_cache,
-            username_cache: None,
+            username_cache,
         }
-    }
-
-    /// Set the username cache for cross-replica invalidation
-    #[must_use]
-    pub fn with_username_cache(mut self, username_cache: Arc<UsernameCache>) -> Self {
-        self.username_cache = Some(username_cache);
-        self
     }
 
     /// Start listening for cross-replica cache invalidation messages
@@ -214,22 +211,27 @@ mod tests {
 
     fn make_caches() -> (Arc<UserCache>, Arc<RoomCache>) {
         let l2 = crate::cache::local_l2_cache_backend();
-        let user_cache =
-            Arc::new(UserCache::new(l2.clone(), 100, 5, 0, "test:user:".to_string()).unwrap());
-        let room_cache = Arc::new(RoomCache::new(l2, 100, 5, 0, "test:room:".to_string()).unwrap());
+        let user_cache = Arc::new(UserCache::new(
+            l2.clone(),
+            100,
+            5,
+            0,
+            "test:user:".to_string(),
+        ));
+        let room_cache = Arc::new(RoomCache::new(l2, 100, 5, 0, "test:room:".to_string()));
         (user_cache, room_cache)
     }
 
     #[tokio::test]
     async fn test_cache_manager_creation() {
         let (user_cache, room_cache) = make_caches();
-        let _manager = CacheManager::new(user_cache, room_cache);
+        let _manager = CacheManager::new(user_cache, room_cache, None);
     }
 
     #[tokio::test]
     async fn test_clear_all_l1() {
         let (user_cache, room_cache) = make_caches();
-        let manager = CacheManager::new(user_cache, room_cache);
+        let manager = CacheManager::new(user_cache, room_cache, None);
         // This should not panic
         manager.clear_all_l1();
     }
@@ -237,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_listener_user() {
         let (user_cache, room_cache) = make_caches();
-        let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
+        let manager = CacheManager::new(user_cache.clone(), room_cache.clone(), None);
 
         let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new(
             "test-node".to_string(),
@@ -275,7 +277,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_listener_room() {
         let (user_cache, room_cache) = make_caches();
-        let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
+        let manager = CacheManager::new(user_cache.clone(), room_cache.clone(), None);
 
         let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new(
             "test-node".to_string(),
@@ -313,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_listener_all() {
         let (user_cache, room_cache) = make_caches();
-        let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
+        let manager = CacheManager::new(user_cache.clone(), room_cache.clone(), None);
 
         let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new(
             "test-node".to_string(),

@@ -121,7 +121,12 @@ async fn wait_for_outbox_signal(listener: &mut Option<sqlx::postgres::PgListener
                 );
                 *listener = None;
             }
-            Err(_) => {}
+            Err(_) => {
+                debug!(
+                    timeout_ms = IDLE_POLL_INTERVAL.as_millis(),
+                    "Realtime outbox dispatcher polling interval elapsed without notification"
+                );
+            }
         }
         return;
     }
@@ -144,7 +149,14 @@ async fn dispatch_event(
                 error = %error,
                 "Dead-lettering malformed realtime outbox event"
             );
-            let _ = outbox.mark_failed(&event.id, i32::MAX - 1, &message).await;
+            if let Err(mark_error) = outbox.mark_failed(&event.id, i32::MAX - 1, &message).await {
+                error!(
+                    outbox_id = %event.id,
+                    event_type = %event.event_type,
+                    error = %mark_error,
+                    "Failed to dead-letter malformed realtime outbox event"
+                );
+            }
             return;
         }
     };
@@ -159,7 +171,15 @@ async fn dispatch_event(
     // deduplicator. If Redis publish fails, the outbox row is retried with the
     // same event id; poisoning dedup here would make the retry skip local
     // lifecycle side effects on this replica.
-    let _ = realtime_manager.broadcast_local_outbox_side_effect(realtime_event.clone());
+    let local_side_effects =
+        realtime_manager.broadcast_local_outbox_side_effect(realtime_event.clone());
+    if local_side_effects == 0 {
+        debug!(
+            outbox_id = %event.id,
+            event_type = %realtime_event.event_type(),
+            "Realtime outbox event had no local lifecycle side-effect consumers"
+        );
+    }
 
     match realtime_manager
         .publish_only_confirmed(realtime_event.clone(), PUBLISH_CONFIRMATION_TIMEOUT)

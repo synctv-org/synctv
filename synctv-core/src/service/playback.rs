@@ -13,7 +13,10 @@ use crate::{
         VersionFenceReservation, VersionFenceStore,
     },
     models::{MediaId, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings, UserId},
-    repository::RoomPlaybackStateRepository,
+    repository::{
+        realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
+        RoomPlaybackStateRepository,
+    },
     service::{media::MediaService, permission::PermissionService, UserService},
     Error, Result,
 };
@@ -22,6 +25,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+pub type RealtimeOutboxPlaybackStateEventFactory =
+    Arc<dyn Fn(&RoomPlaybackState) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct SwitchPlaybackTarget {
@@ -46,6 +52,69 @@ impl PlaybackSourceExpectation {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackStatePatch {
+    pub playing: Option<bool>,
+    pub position: Option<f64>,
+    pub speed: Option<f64>,
+}
+
+impl PlaybackStatePatch {
+    #[must_use]
+    pub const fn new(playing: Option<bool>, position: Option<f64>, speed: Option<f64>) -> Self {
+        Self {
+            playing,
+            position,
+            speed,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PlaybackUpdateRequest {
+    pub room_id: RoomId,
+    pub actor_user_id: UserId,
+    pub patch: PlaybackStatePatch,
+    pub expected_version: Option<i64>,
+    pub expected_source: Option<PlaybackSourceExpectation>,
+    pub outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+}
+
+impl PlaybackUpdateRequest {
+    #[must_use]
+    pub const fn new(room_id: RoomId, actor_user_id: UserId, patch: PlaybackStatePatch) -> Self {
+        Self {
+            room_id,
+            actor_user_id,
+            patch,
+            expected_version: None,
+            expected_source: None,
+            outbox_event_factory: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_expected_version(mut self, expected_version: Option<i64>) -> Self {
+        self.expected_version = expected_version;
+        self
+    }
+
+    #[must_use]
+    pub fn with_expected_source(mut self, expected_source: PlaybackSourceExpectation) -> Self {
+        self.expected_source = Some(expected_source);
+        self
+    }
+
+    #[must_use]
+    pub fn with_outbox(
+        mut self,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Self {
+        self.outbox_event_factory = outbox_event_factory;
+        self
+    }
+}
+
 #[derive(Debug)]
 enum NextTarget {
     Static(crate::models::Media),
@@ -53,46 +122,6 @@ enum NextTarget {
         playlist_id: PlaylistId,
         target: Vec<u8>,
     },
-}
-
-/// Result of a realtime broadcast operation.
-///
-/// Indicates whether the event was delivered to local subscribers and/or Redis.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BroadcastResult {
-    /// Number of local WebSocket subscribers that received the event
-    pub local_sent: usize,
-    /// Whether the event was successfully published to Redis
-    pub redis_sent: bool,
-    /// Whether this is a single-node deployment (no broadcast needed)
-    pub single_node: bool,
-}
-
-impl BroadcastResult {
-    /// Check if the broadcast reached any destination (or single-node mode where
-    /// no broadcast is needed).
-    #[must_use]
-    pub const fn is_success(&self) -> bool {
-        self.single_node || self.local_sent > 0 || self.redis_sent
-    }
-
-    /// Whether the broadcast reached at least one local destination but failed
-    /// to publish to Redis in distributed mode.
-    #[must_use]
-    pub const fn should_warn_missing_redis_delivery(&self) -> bool {
-        !self.single_node && self.is_success() && !self.redis_sent
-    }
-
-    /// Create a result for single-node mode where no cluster broadcast is needed.
-    /// This is considered a success because there are no remote replicas to notify.
-    #[must_use]
-    pub const fn single_node() -> Self {
-        Self {
-            local_sent: 0,
-            redis_sent: false,
-            single_node: true,
-        }
-    }
 }
 
 /// Response from a seek operation.
@@ -219,19 +248,6 @@ fn previous_progress_position_for_source_transition(
     }
 }
 
-/// Trait for broadcasting playback state changes to realtime replicas.
-///
-/// This abstracts over the realtime transport so that `synctv-core` does not
-/// depend on the runtime implementation. The implementation lives in the
-/// application wiring layer.
-pub trait PlaybackBroadcaster: Send + Sync {
-    /// Broadcast a playback state change to other realtime replicas.
-    ///
-    /// Returns a `BroadcastResult` indicating whether the broadcast succeeded.
-    /// Implementations should be non-blocking but report success/failure.
-    fn broadcast_playback_state(&self, state: &RoomPlaybackState) -> BroadcastResult;
-}
-
 /// Playback management service
 ///
 /// Responsible for playback state coordination and optimistic locking.
@@ -255,12 +271,10 @@ impl PlaybackInvalidationRuntime {
 #[derive(Clone)]
 pub struct PlaybackService {
     playback_repo: RoomPlaybackStateRepository,
+    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     permission_service: PermissionService,
     media_service: MediaService,
     user_service: UserService,
-    /// Optional realtime broadcaster for cross-replica sync (interior mutability
-    /// so the broadcaster can be wired after Arc<RoomService> is already cloned)
-    realtime_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
     /// L1 in-memory cache for playback state, keyed by `room_id`
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
     /// Optional L2 cache (Redis) for cross-replica consistency.
@@ -307,12 +321,14 @@ impl PlaybackService {
             None,
             None,
             None,
+            None,
         )
     }
 
     /// Create a playback service with optional cache runtime dependencies wired
     /// at construction time.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_runtime(
         playback_repo: RoomPlaybackStateRepository,
         permission_service: PermissionService,
@@ -321,16 +337,17 @@ impl PlaybackService {
         invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
         l2_cache: Option<PlaybackStateCache>,
         version_fence: Option<Arc<dyn VersionFenceStore>>,
+        realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     ) -> Self {
         let version_fence =
             version_fence.unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
 
         Self {
             playback_repo,
+            realtime_outbox,
             permission_service,
             media_service,
             user_service,
-            realtime_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
             playback_cache: Arc::new(
                 moka::future::CacheBuilder::new(Self::DEFAULT_CACHE_SIZE)
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
@@ -360,24 +377,6 @@ impl PlaybackService {
             ))),
             Err(error) => Err(error),
         }
-    }
-
-    /// Set the realtime broadcaster for cross-replica playback state sync.
-    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
-    pub fn set_realtime_broadcaster(&self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
-        *self.realtime_broadcaster.write() = Some(broadcaster);
-    }
-
-    /// Set the cache invalidation service and start listening for cross-replica invalidation.
-    ///
-    /// When another replica updates playback state and broadcasts an invalidation
-    /// message, this node's local L1 cache entry for that room is evicted so the
-    /// next read fetches fresh data from the DB.
-    ///
-    /// Call [`start`](Self::start) explicitly during app bootstrap to surface
-    /// startup errors and after [`shutdown`](Self::shutdown) to restart the listener.
-    pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        self.invalidation_service = Some(service);
     }
 
     pub const fn has_invalidation_service(&self) -> bool {
@@ -468,59 +467,74 @@ impl PlaybackService {
             .await;
     }
 
-    async fn persist_playback_update(
-        &self,
-        state: &RoomPlaybackState,
-        observed_version: i64,
-    ) -> Result<RoomPlaybackState> {
-        self.persist_playback_update_with_previous_progress(state, observed_version, None)
-            .await
-    }
-
     async fn persist_playback_update_with_previous_progress(
         &self,
         state: &RoomPlaybackState,
         observed_version: i64,
         previous_progress_position: Option<f64>,
+        outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         let reservation = self
             .begin_playback_write_from_db_version(&state.room_id, observed_version)
             .await?;
-        if let Some(reservation) = &reservation {
-            match self
-                .playback_repo
-                .update_with_exact_version_and_previous_progress(
-                    state,
-                    reservation.version,
-                    previous_progress_position,
-                )
-                .await
-            {
-                Ok(updated_state) => {
-                    self.finalize_committed_playback_write_best_effort(
-                        &state.room_id,
-                        Some(reservation),
-                        updated_state.version,
-                        "persist_playback_update",
-                    )
-                    .await;
-                    Ok(updated_state)
-                }
-                Err(error) => {
-                    self.abort_playback_write(&state.room_id, Some(reservation))
-                        .await;
-                    Err(error)
-                }
-            }
-        } else {
+        let new_version = reservation
+            .as_ref()
+            .map_or(state.version + 1, |reservation| reservation.version);
+        let mut tx = self.playback_repo.pool().begin().await?;
+        let result = async {
             let updated_state = self
                 .playback_repo
-                .update_with_exact_version_and_previous_progress(
+                .update_with_exact_version_executor_and_previous_progress(
                     state,
-                    state.version + 1,
+                    new_version,
                     previous_progress_position,
+                    &mut tx,
                 )
                 .await?;
+            if let Some(outbox) = &self.realtime_outbox {
+                if let Some(event) = outbox_event_factory
+                    .map(|factory| factory(&updated_state))
+                    .transpose()?
+                {
+                    outbox.insert_with_executor(&event, &mut *tx).await?;
+                }
+            }
+            Ok(updated_state)
+        }
+        .await;
+
+        let updated_state = match result {
+            Ok(updated_state) => {
+                if let Err(error) = tx.commit().await {
+                    self.abort_playback_write(&state.room_id, reservation.as_ref())
+                        .await;
+                    return Err(error.into());
+                }
+                updated_state
+            }
+            Err(error) => {
+                if let Err(rollback_error) = tx.rollback().await {
+                    tracing::warn!(
+                        room_id = %state.room_id,
+                        error = %rollback_error,
+                        "Failed to roll back playback update transaction"
+                    );
+                }
+                self.abort_playback_write(&state.room_id, reservation.as_ref())
+                    .await;
+                return Err(error);
+            }
+        };
+
+        if let Some(reservation) = &reservation {
+            self.finalize_committed_playback_write_best_effort(
+                &state.room_id,
+                Some(reservation),
+                updated_state.version,
+                "persist_playback_update",
+            )
+            .await;
+        } else {
             self.finalize_committed_playback_write_best_effort(
                 &state.room_id,
                 None,
@@ -528,8 +542,8 @@ impl PlaybackService {
                 "persist_playback_update",
             )
             .await;
-            Ok(updated_state)
         }
+        Ok(updated_state)
     }
 
     async fn write_playback_cache(&self, state: &RoomPlaybackState) {
@@ -785,65 +799,9 @@ impl PlaybackService {
         }
     }
 
-    /// Set the L2 cache (Redis) for cross-replica consistency.
-    ///
-    /// When configured, L1 cache misses will check L2 before falling back to DB.
-    /// This provides a fallback when PubSub invalidation messages are lost.
-    pub fn set_l2_cache(&mut self, cache: PlaybackStateCache) {
-        *self.l2_cache.write() = Some(cache);
-    }
-
     #[cfg(test)]
     pub(crate) fn has_l2_cache(&self) -> bool {
         self.l2_cache.read().is_some()
-    }
-
-    /// Broadcast a playback state change to local clients and realtime replicas.
-    ///
-    /// Uses the realtime broadcaster as the single broadcast path. The broadcaster
-    /// delivers the event
-    /// to local WebSocket subscribers (via the in-process message hub) AND
-    /// publishes to Redis for remote replicas in one step.
-    ///
-    /// The `notification_service` path is intentionally not used here: calling
-    /// it in addition to the realtime broadcaster would cause local clients to
-    /// receive the same `PlaybackStateChanged` event twice.
-    ///
-    /// Returns `BroadcastResult` indicating whether the broadcast succeeded.
-    /// Logs warnings on partial/complete failure for monitoring.
-    fn broadcast_state_change(&self, state: &RoomPlaybackState) -> BroadcastResult {
-        // Single broadcast path: realtime broadcaster handles both local delivery
-        // (via the in-process message hub) and remote delivery (via Redis pub/sub).
-        // Do NOT also call notification_service here — that would send the event
-        // to local WebSocket clients a second time.
-        if let Some(ref broadcaster) = *self.realtime_broadcaster.read() {
-            let result = broadcaster.broadcast_playback_state(state);
-
-            // Log warning if broadcast failed to reach any destination
-            if !result.is_success() {
-                tracing::warn!(
-                    room_id = %state.room_id,
-                    local_sent = result.local_sent,
-                    redis_sent = result.redis_sent,
-                    "Playback state broadcast failed to reach any destination; \
-                     other replicas may have stale playback state (up to {}s cache TTL)",
-                    Self::DEFAULT_CACHE_TTL_SECS
-                );
-            } else if result.should_warn_missing_redis_delivery() {
-                // Partial failure: local clients got it, but Redis publish failed
-                tracing::warn!(
-                    room_id = %state.room_id,
-                    local_sent = result.local_sent,
-                    "Playback state broadcast reached local clients but failed to publish to Redis; \
-                     other replicas may have stale playback state"
-                );
-            }
-
-            return result;
-        }
-
-        // No broadcaster configured (single-node mode) - return success
-        BroadcastResult::single_node()
     }
 
     /// Broadcast playback state update to other replicas with exponential backoff retry.
@@ -1201,8 +1159,6 @@ impl PlaybackService {
             })
             .await?;
 
-        // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -1224,16 +1180,11 @@ impl PlaybackService {
         position: f64,
     ) -> Result<SeekResponse> {
         let result = self
-            .update_multiple_internal(
+            .update_playback_state(PlaybackUpdateRequest::new(
                 room_id,
                 user_id,
-                None,
-                Some(position),
-                None,
-                None,
-                None,
-                false,
-            )
+                PlaybackStatePatch::new(None, Some(position), None),
+            ))
             .await;
 
         match result {
@@ -1291,8 +1242,6 @@ impl PlaybackService {
             })
             .await?;
 
-        // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -1309,8 +1258,29 @@ impl PlaybackService {
         playlist_id: Option<PlaylistId>,
         target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
-        self.switch_internal(room_id, user_id, media_id, playlist_id, target, false)
+        self.switch_with_outbox(room_id, user_id, media_id, playlist_id, target, None)
             .await
+    }
+
+    pub async fn switch_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        self.switch_internal(
+            room_id,
+            user_id,
+            media_id,
+            playlist_id,
+            target,
+            false,
+            outbox_event_factory,
+        )
+        .await
     }
 
     /// Management-only playback switch that is authorized outside the room permission graph.
@@ -1324,8 +1294,29 @@ impl PlaybackService {
         playlist_id: Option<PlaylistId>,
         target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
-        self.switch_internal(room_id, actor_user_id, media_id, playlist_id, target, true)
+        self.admin_switch_with_outbox(room_id, actor_user_id, media_id, playlist_id, target, None)
             .await
+    }
+
+    pub async fn admin_switch_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        self.switch_internal(
+            room_id,
+            actor_user_id,
+            media_id,
+            playlist_id,
+            target,
+            true,
+            outbox_event_factory,
+        )
+        .await
     }
 
     /// Play next media in playlist (auto-play next episode)
@@ -1565,6 +1556,7 @@ impl PlaybackService {
                         &updated_state,
                         observed_version,
                         previous_progress_position,
+                        None,
                     )
                     .await?;
                 self.write_playback_cache(&saved_state).await;
@@ -1580,7 +1572,6 @@ impl PlaybackService {
                     "Auto-played next media"
                 );
 
-                self.broadcast_state_change(&saved_state);
                 Ok(Some(saved_state))
             },
         )
@@ -1663,17 +1654,35 @@ impl PlaybackService {
     where
         F: Fn(&mut RoomPlaybackState),
     {
-        self.update_state_checked(room_id, |state| {
-            update_fn(state);
-            Ok(())
-        })
-        .await
+        self.update_state_with_outbox(room_id, update_fn, None)
+            .await
     }
 
-    async fn update_state_checked<F>(
+    pub async fn update_state_with_outbox<F>(
         &self,
         room_id: RoomId,
         update_fn: F,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState>
+    where
+        F: Fn(&mut RoomPlaybackState),
+    {
+        self.update_state_checked_with_outbox(
+            room_id,
+            |state| {
+                update_fn(state);
+                Ok(())
+            },
+            outbox_event_factory,
+        )
+        .await
+    }
+
+    async fn update_state_checked_with_outbox<F>(
+        &self,
+        room_id: RoomId,
+        update_fn: F,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState>
     where
         F: Fn(&mut RoomPlaybackState) -> Result<()>,
@@ -1684,8 +1693,8 @@ impl PlaybackService {
             Self::UPDATE_STATE_RETRY_EXHAUSTED,
             || {
                 let update_fn = &update_fn;
+                let outbox_event_factory = outbox_event_factory.clone();
                 async move {
-                    // Get current state (lazy-init: only INSERT if row doesn't exist yet)
                     let mut state = match self.playback_repo.get(&room_id).await? {
                         Some(s) => s,
                         None => self.playback_repo.create_or_get(&room_id).await?,
@@ -1693,7 +1702,6 @@ impl PlaybackService {
 
                     let observed_version = state.version;
                     let previous_state = state.clone();
-                    // Apply update
                     update_fn(&mut state)?;
                     let previous_progress_position =
                         previous_progress_position_for_source_transition(&previous_state, &state);
@@ -1703,11 +1711,11 @@ impl PlaybackService {
                             &state,
                             observed_version,
                             previous_progress_position,
+                            outbox_event_factory.as_ref(),
                         )
                         .await?;
                     self.write_playback_cache(&updated_state).await;
 
-                    // Broadcast updated state to other replicas with retry
                     self.broadcast_invalidation_with_retry(
                         &room_id,
                         &updated_state,
@@ -1724,7 +1732,17 @@ impl PlaybackService {
 
     /// Reset playback to initial state
     pub async fn reset(&self, room_id: RoomId, user_id: UserId) -> Result<RoomPlaybackState> {
-        self.reset_internal(room_id, user_id, false).await
+        self.reset_with_outbox(room_id, user_id, None).await
+    }
+
+    pub async fn reset_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        self.reset_internal(room_id, user_id, false, outbox_event_factory)
+            .await
     }
 
     /// Management-only playback reset that bypasses room membership-derived permissions.
@@ -1735,13 +1753,24 @@ impl PlaybackService {
         room_id: RoomId,
         actor_user_id: UserId,
     ) -> Result<RoomPlaybackState> {
-        self.reset_internal(room_id, actor_user_id, true).await
+        self.admin_reset_with_outbox(room_id, actor_user_id, None)
+            .await
+    }
+
+    pub async fn admin_reset_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<RoomPlaybackState> {
+        self.reset_internal(room_id, actor_user_id, true, outbox_event_factory)
+            .await
     }
 
     pub async fn broadcast_playback_reset_after_force_delete(
         &self,
         state: RoomPlaybackState,
-    ) -> BroadcastResult {
+    ) -> RoomPlaybackState {
         self.invalidate_playback_cache(&state.room_id).await;
         self.broadcast_invalidation_with_retry(
             &state.room_id,
@@ -1749,14 +1778,23 @@ impl PlaybackService {
             "broadcast_playback_reset_after_force_delete",
         )
         .await;
-        self.broadcast_state_change(&state)
+        state
     }
 
     pub async fn reset_playback_for_creator(
         &self,
         creator_id: &UserId,
     ) -> Result<Vec<RoomPlaybackState>> {
-        let states = if self.consistency.is_authoritative() {
+        self.reset_playback_for_creator_with_outbox(creator_id, None)
+            .await
+    }
+
+    pub async fn reset_playback_for_creator_with_outbox(
+        &self,
+        creator_id: &UserId,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<Vec<RoomPlaybackState>> {
+        let states = {
             let mut tx = self.playback_repo.pool().begin().await?;
             let impacted_states = self
                 .playback_repo
@@ -1793,9 +1831,18 @@ impl PlaybackService {
                             &state,
                             reserved_version,
                             previous_progress_position,
-                            &mut *tx,
+                            &mut tx,
                         )
                         .await?;
+                    if let Some(outbox) = &self.realtime_outbox {
+                        if let Some(event) = outbox_event_factory
+                            .as_ref()
+                            .map(|factory| factory(&updated))
+                            .transpose()?
+                        {
+                            outbox.insert_with_executor(&event, &mut *tx).await?;
+                        }
+                    }
                     reset_states.push(updated);
                 }
                 Ok(())
@@ -1827,10 +1874,6 @@ impl PlaybackService {
                 .await;
             }
             reset_states
-        } else {
-            self.playback_repo
-                .reset_playback_for_creator(creator_id)
-                .await?
         };
 
         for state in &states {
@@ -1841,7 +1884,6 @@ impl PlaybackService {
                 "reset_playback_for_creator",
             )
             .await;
-            self.broadcast_state_change(state);
         }
 
         Ok(states)
@@ -1862,9 +1904,10 @@ impl PlaybackService {
     /// Get current playback position
     pub async fn get_position(&self, room_id: &RoomId) -> Result<f64> {
         let state = self.get_state(room_id).await?;
-        Ok(state.position)
+        Ok(state.computed_position())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn switch_internal(
         &self,
         room_id: RoomId,
@@ -1873,6 +1916,7 @@ impl PlaybackService {
         playlist_id: Option<PlaylistId>,
         target: Vec<u8>,
         bypass_room_permissions: bool,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         if !bypass_room_permissions {
             self.permission_service
@@ -1892,18 +1936,21 @@ impl PlaybackService {
 
         if target.media_id.is_none() && target.playlist_id.is_none() {
             let state = self
-                .update_state(room_id, |state| {
-                    state.playing_media_id = None;
-                    state.playing_playlist_id = None;
-                    state.target = Vec::new();
-                    state.position = 0.0;
-                    state.speed = 1.0;
-                    state.is_playing = false;
-                    state.updated_at = chrono::Utc::now();
-                })
+                .update_state_with_outbox(
+                    room_id,
+                    |state| {
+                        state.playing_media_id = None;
+                        state.playing_playlist_id = None;
+                        state.target = Vec::new();
+                        state.position = 0.0;
+                        state.speed = 1.0;
+                        state.is_playing = false;
+                        state.updated_at = chrono::Utc::now();
+                    },
+                    outbox_event_factory,
+                )
                 .await?;
 
-            self.broadcast_state_change(&state);
             return Ok(state);
         }
 
@@ -1946,19 +1993,20 @@ impl PlaybackService {
         }
 
         let state = self
-            .update_state(room_id, |state| {
-                state.playing_media_id.clone_from(&target.media_id);
-                state.playing_playlist_id.clone_from(&target.playlist_id);
-                state.target.clone_from(&target.target);
-                state.position = 0.0;
-                state.is_playing = true;
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            })
+            .update_state_with_outbox(
+                room_id,
+                |state| {
+                    state.playing_media_id.clone_from(&target.media_id);
+                    state.playing_playlist_id.clone_from(&target.playlist_id);
+                    state.target.clone_from(&target.target);
+                    state.position = 0.0;
+                    state.is_playing = true;
+                    state.updated_at = chrono::Utc::now();
+                },
+                outbox_event_factory,
+            )
             .await?;
 
-        // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -1967,6 +2015,7 @@ impl PlaybackService {
         room_id: RoomId,
         user_id: UserId,
         bypass_room_permissions: bool,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         if !bypass_room_permissions {
             self.permission_service
@@ -1979,19 +2028,21 @@ impl PlaybackService {
         }
 
         let state = self
-            .update_state(room_id, |state| {
-                state.is_playing = false;
-                state.position = 0.0;
-                state.speed = 1.0;
-                state.playing_media_id = None;
-                state.playing_playlist_id = None;
-                state.target = Vec::new();
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            })
+            .update_state_with_outbox(
+                room_id,
+                |state| {
+                    state.is_playing = false;
+                    state.position = 0.0;
+                    state.speed = 1.0;
+                    state.playing_media_id = None;
+                    state.playing_playlist_id = None;
+                    state.target = Vec::new();
+                    state.updated_at = chrono::Utc::now();
+                },
+                outbox_event_factory,
+            )
             .await?;
 
-        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -2018,7 +2069,6 @@ impl PlaybackService {
             })
             .await?;
 
-        self.broadcast_state_change(&state);
         Ok(Some(state))
     }
 
@@ -2028,139 +2078,41 @@ impl PlaybackService {
         Ok(state.speed)
     }
 
-    /// Update multiple playback properties at once
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update_multiple(
+    pub async fn update_playback_state(
         &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
+        request: PlaybackUpdateRequest,
     ) -> Result<RoomPlaybackState> {
-        self.update_multiple_with_version(room_id, user_id, playing, position, speed, None)
-            .await
+        self.update_playback_state_internal(request, false).await
     }
 
-    /// Like `update_multiple`, but accepts an optional `expected_version` for CAS
-    /// (compare-and-swap) semantics.
-    ///
-    /// When `expected_version` is `Some(v)`, the current playback version is read
-    /// from the database and compared with `v`. If they differ, the call returns
-    /// `Error::OptimisticLockConflict` immediately without attempting the update.
-    /// This lets the caller detect stale state before the internal retry loop
-    /// silently resolves the conflict.
-    ///
-    /// When `expected_version` is `None`, the update proceeds directly through
-    /// the internal retry loop (last-writer-wins).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update_multiple_with_version(
+    /// Management-only multi-field playback update. Callers must validate
+    /// global admin/root identity before this bypasses room membership checks.
+    pub async fn admin_update_playback_state(
         &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        expected_version: Option<i64>,
+        request: PlaybackUpdateRequest,
     ) -> Result<RoomPlaybackState> {
-        self.update_multiple_internal(
-            room_id,
-            user_id,
-            playing,
-            position,
-            speed,
-            expected_version,
-            None,
-            false,
-        )
-        .await
+        self.update_playback_state_internal(request, true).await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update_multiple_checked_source_with_version(
+    async fn update_playback_state_internal(
         &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        expected_version: Option<i64>,
-        expected_source: PlaybackSourceExpectation,
-    ) -> Result<RoomPlaybackState> {
-        self.update_multiple_internal(
-            room_id,
-            user_id,
-            playing,
-            position,
-            speed,
-            expected_version,
-            Some(expected_source),
-            false,
-        )
-        .await
-    }
-
-    /// Management-only multi-field playback update that bypasses room membership
-    /// permissions. Callers must validate global admin/root identity before use.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn admin_update_multiple_with_version(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        expected_version: Option<i64>,
-    ) -> Result<RoomPlaybackState> {
-        self.update_multiple_internal(
-            room_id,
-            actor_user_id,
-            playing,
-            position,
-            speed,
-            expected_version,
-            None,
-            true,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn admin_update_multiple_checked_source_with_version(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        expected_version: Option<i64>,
-        expected_source: PlaybackSourceExpectation,
-    ) -> Result<RoomPlaybackState> {
-        self.update_multiple_internal(
-            room_id,
-            actor_user_id,
-            playing,
-            position,
-            speed,
-            expected_version,
-            Some(expected_source),
-            true,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn update_multiple_internal(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        expected_version: Option<i64>,
-        expected_source: Option<PlaybackSourceExpectation>,
+        request: PlaybackUpdateRequest,
         bypass_permission: bool,
     ) -> Result<RoomPlaybackState> {
+        let PlaybackUpdateRequest {
+            room_id,
+            actor_user_id,
+            patch,
+            expected_version,
+            expected_source,
+            outbox_event_factory,
+        } = request;
+        let PlaybackStatePatch {
+            playing,
+            position,
+            speed,
+        } = patch;
+
         // Check permissions based on what's being updated
         let mut required_permissions = Vec::new();
         if playing.is_some() {
@@ -2174,7 +2126,7 @@ impl PlaybackService {
         }
         if !required_permissions.is_empty() && !bypass_permission {
             self.permission_service
-                .check_permissions(&room_id, &user_id, &required_permissions)
+                .check_permissions(&room_id, &actor_user_id, &required_permissions)
                 .await?;
         }
 
@@ -2232,7 +2184,12 @@ impl PlaybackService {
             let observed_version = state.version;
             apply_update(&mut state);
             let updated_state = self
-                .persist_playback_update(&state, observed_version)
+                .persist_playback_update_with_previous_progress(
+                    &state,
+                    observed_version,
+                    None,
+                    outbox_event_factory.as_ref(),
+                )
                 .await?;
             self.write_playback_cache(&updated_state).await;
 
@@ -2241,18 +2198,21 @@ impl PlaybackService {
 
             updated_state
         } else if position.is_some() {
-            self.update_state_checked(room_id, |state| {
-                validate_position_update_source(state)?;
-                apply_update(state);
-                Ok(())
-            })
+            self.update_state_checked_with_outbox(
+                room_id,
+                |state| {
+                    validate_position_update_source(state)?;
+                    apply_update(state);
+                    Ok(())
+                },
+                outbox_event_factory,
+            )
             .await?
         } else {
-            self.update_state(room_id, apply_update).await?
+            self.update_state_with_outbox(room_id, apply_update, outbox_event_factory)
+                .await?
         };
 
-        // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state);
         Ok(state)
     }
 }
@@ -2261,7 +2221,6 @@ impl PlaybackService {
 mod tests {
     use super::*;
     use crate::cache::{CacheInvalidationService, CacheL2Backend, KeyBuilder, UsernameCache};
-    use crate::config::PasswordComplexityConfig;
     use crate::models::{RoomId, SignupMethod, User, UserRole, UserStatus};
     use crate::repository::{
         MediaRepository, PlaylistRepository, ProviderInstanceRepository,
@@ -2344,16 +2303,14 @@ mod tests {
     fn make_user_service(pool: &PgPool) -> UserService {
         let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-        let password_complexity = PasswordComplexityConfig::default();
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let key_builder = KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             jwt_service,
             username_cache,
-            password_complexity,
             token_blacklist,
             key_builder,
             brute_force,
@@ -2382,17 +2339,27 @@ mod tests {
 
     fn make_playback_service_for_lifecycle_tests(
     ) -> (PlaybackService, Arc<CacheInvalidationService>) {
+        make_playback_service_for_lifecycle_tests_with_l2(None)
+    }
+
+    fn make_playback_service_for_lifecycle_tests_with_l2(
+        l2_cache: Option<PlaybackStateCache>,
+    ) -> (PlaybackService, Arc<CacheInvalidationService>) {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
             .expect("lazy postgres pool for unit tests should build");
         let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
-        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
+            .expect("permission service should build");
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let providers_manager = Arc::new(
+            ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build"),
+        );
         let media_service = MediaService::new(
             MediaRepository::new(pool.clone()),
             PlaylistRepository::new(pool.clone()),
@@ -2401,16 +2368,20 @@ mod tests {
             NotificationService::default(),
         );
         let user_service = make_user_service(&pool);
-        let playback_service = PlaybackService::new(
-            RoomPlaybackStateRepository::new(pool.clone()),
-            permission_service,
-            media_service,
-            user_service,
-        );
         let invalidation_service = Arc::new(CacheInvalidationService::new(
             "node-test".to_string(),
             "synctv:test:cache:invalidate".to_string(),
         ));
+        let playback_service = PlaybackService::new_with_runtime(
+            RoomPlaybackStateRepository::new(pool.clone()),
+            permission_service,
+            media_service,
+            user_service,
+            Some(invalidation_service.clone()),
+            l2_cache,
+            None,
+            None,
+        );
         (playback_service, invalidation_service)
     }
 
@@ -2420,13 +2391,17 @@ mod tests {
             .expect("lazy postgres pool for unit tests should build");
         let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
-        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
+            .expect("permission service should build");
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let providers_manager = Arc::new(
+            ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build"),
+        );
         let media_service = MediaService::new(
             MediaRepository::new(pool.clone()),
             PlaylistRepository::new(pool.clone()),
@@ -2453,25 +2428,23 @@ mod tests {
             .expect("lazy postgres pool for unit tests should build");
         let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
-        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
+            .expect("permission service should build");
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let providers_manager = Arc::new(
+            ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build"),
+        );
         let media_service = MediaService::new(
             MediaRepository::new(pool.clone()),
             PlaylistRepository::new(pool.clone()),
             permission_service.clone(),
             providers_manager,
             NotificationService::default(),
-        );
-        let mut service = PlaybackService::new(
-            RoomPlaybackStateRepository::new(pool.clone()),
-            permission_service,
-            media_service,
-            make_user_service(&pool),
         );
         let l2_backend = Arc::new(CountingL2Backend::default());
         let l2_cache = PlaybackStateCache::new(
@@ -2480,9 +2453,17 @@ mod tests {
             PlaybackService::DEFAULT_CACHE_TTL_SECS,
             60,
             "test:playback:l1-refresh:".to_string(),
-        )
-        .expect("playback L2 cache should build");
-        service.set_l2_cache(l2_cache);
+        );
+        let service = PlaybackService::new_with_runtime(
+            RoomPlaybackStateRepository::new(pool.clone()),
+            permission_service,
+            media_service,
+            make_user_service(&pool),
+            None,
+            Some(l2_cache),
+            None,
+            None,
+        );
 
         let room_id = RoomId::expect_positive(10_004);
         let cache_key = room_id.to_string();
@@ -2603,19 +2584,39 @@ mod tests {
     }
 
     #[test]
-    fn test_update_state_constants() {
-        assert_eq!(PlaybackService::MAX_RETRIES, 5);
-        assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
+    fn test_switch_target_source_shape_matches_progress_schema() {
+        assert!(validate_switch_target(&SwitchPlaybackTarget {
+            media_id: Some(MediaId::expect_positive(30_010)),
+            playlist_id: None,
+            target: Vec::new(),
+        })
+        .is_ok());
+        assert!(validate_switch_target(&SwitchPlaybackTarget {
+            media_id: None,
+            playlist_id: Some(PlaylistId::expect_positive(40_010)),
+            target: b"dynamic-target".to_vec(),
+        })
+        .is_ok());
+        assert!(validate_switch_target(&SwitchPlaybackTarget {
+            media_id: Some(MediaId::expect_positive(30_011)),
+            playlist_id: None,
+            target: b"static-media-must-not-have-target".to_vec(),
+        })
+        .is_err());
+        assert!(validate_switch_target(&SwitchPlaybackTarget {
+            media_id: None,
+            playlist_id: Some(PlaylistId::expect_positive(40_011)),
+            target: Vec::new(),
+        })
+        .is_err());
     }
 
     #[tokio::test]
     async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop() {
-        let (mut playback_service, invalidation_service) =
-            make_playback_service_for_lifecycle_tests();
+        let (playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::expect_positive(10_001);
         let cache_key = room_id.to_string();
 
-        playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
             .start()
             .await
@@ -2658,12 +2659,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() {
-        let (mut playback_service, invalidation_service) =
-            make_playback_service_for_lifecycle_tests();
+        let (playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::expect_positive(10_002);
         let cache_key = room_id.to_string();
 
-        playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
             .start()
             .await
@@ -2709,12 +2708,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_activates_invalidation_listener_after_wiring_service() {
-        let (mut playback_service, invalidation_service) =
-            make_playback_service_for_lifecycle_tests();
+        let (playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::expect_positive(10_003);
         let cache_key = room_id.to_string();
 
-        playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
             .start()
             .await
@@ -2766,9 +2763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_started_invalidation_listener_uses_l2_cache_wired_after_start() {
-        let (mut playback_service, invalidation_service) =
-            make_playback_service_for_lifecycle_tests();
+    async fn test_started_invalidation_listener_uses_configured_l2_cache() {
         let backend = Arc::new(CountingL2Backend::default());
         let l2_cache = PlaybackStateCache::new(
             backend.clone(),
@@ -2776,11 +2771,11 @@ mod tests {
             5,
             60,
             "synctv:test:playback:".to_string(),
-        )
-        .expect("test playback L2 cache should build");
+        );
+        let (playback_service, invalidation_service) =
+            make_playback_service_for_lifecycle_tests_with_l2(Some(l2_cache));
         let room_id = RoomId::expect_positive(10_004);
 
-        playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
             .start()
             .await
@@ -2793,8 +2788,6 @@ mod tests {
         })
         .await
         .expect("start() should mark playback invalidation listener as running");
-
-        playback_service.set_l2_cache(l2_cache);
 
         invalidation_service
             .broadcast_all(InvalidationMessage::PlaybackState {
@@ -2809,7 +2802,7 @@ mod tests {
             }
         })
         .await
-        .expect("listener should invalidate L2 even when L2 is wired after explicit start");
+        .expect("listener should invalidate configured L2 cache");
 
         playback_service.shutdown().await;
     }
@@ -2844,13 +2837,17 @@ mod tests {
 
         let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
         let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
-        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
+            .expect("permission service should build");
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let providers_manager = Arc::new(
+            ProvidersManager::new(provider_instance_manager)
+                .expect("providers manager should build"),
+        );
         let media_service = MediaService::new(
             MediaRepository::new(pool.clone()),
             PlaylistRepository::new(pool.clone()),
@@ -2866,6 +2863,7 @@ mod tests {
             None,
             None,
             Some(fence.clone()),
+            None,
         );
         let domain = CacheDomain::Playback { room_id: room.id };
         assert_eq!(
@@ -2994,8 +2992,9 @@ mod tests {
             }
         }
 
+        #[allow(clippy::cast_precision_loss)]
         fn version_to_position(version: i64) -> f64 {
-            f64::from(i32::try_from(version).unwrap_or(i32::MAX)) * 10.0
+            version as f64 * 10.0
         }
 
         /// Test: When cache is empty, incoming state should be inserted
@@ -3239,254 +3238,5 @@ mod tests {
             assert_eq!(cached.version, 10);
             assert!((cached.position - 100.0).abs() < f64::EPSILON);
         }
-    }
-
-    /// Tests for the broadcast_invalidation_with_retry helper
-    mod broadcast_retry_tests {
-        #[test]
-        fn test_broadcast_retry_delays_are_exponential() {
-            // The broadcast retry pattern uses delays [50, 100, 200] ms
-            let delays = [50u64, 100, 200];
-            assert_eq!(delays.len(), 3, "Should have 3 retry attempts");
-            assert_eq!(delays[1], delays[0] * 2, "Second delay should be 2x first");
-            assert_eq!(delays[2], delays[1] * 2, "Third delay should be 2x second");
-        }
-    }
-
-    /// Tests for update_state retry mechanism boundary conditions.
-    ///
-    /// These tests verify the retry logic in PlaybackService::update_state:
-    /// - MAX_RETRIES = 5
-    /// - On OptimisticLockConflict, retry with exponential backoff + jitter
-    /// - After MAX_RETRIES, return Internal error with "maximum retry attempts" message
-    mod update_state_retry_boundary_tests {
-        use super::*;
-
-        /// Simulate the retry loop logic from update_state
-        /// Returns Ok(attempts_used) on success, Err("max_retries") on exhaustion
-        fn simulate_retry_loop(
-            conflict_count: usize,
-            max_retries: u32,
-        ) -> std::result::Result<u32, &'static str> {
-            for attempt in 0..max_retries {
-                // Simulate conflict on first `conflict_count` attempts
-                if (attempt as usize) < conflict_count {
-                    // Conflict occurred
-                    if attempt + 1 >= max_retries {
-                        return Err("maximum retry attempts");
-                    }
-                    // Would apply backoff here in real code
-                    continue;
-                }
-                // Success
-                return Ok(attempt + 1);
-            }
-            Err("maximum retry attempts")
-        }
-
-        /// Test: With 0 conflicts, update succeeds on first attempt
-        #[test]
-        fn test_retry_succeeds_immediately_with_no_conflicts() {
-            let result = simulate_retry_loop(0, PlaybackService::MAX_RETRIES);
-            assert_eq!(
-                result,
-                Ok(1),
-                "Should succeed on first attempt with no conflicts"
-            );
-        }
-
-        /// Test: With 1 conflict, update succeeds on second attempt (within MAX_RETRIES)
-        #[test]
-        fn test_retry_succeeds_after_one_conflict() {
-            let result = simulate_retry_loop(1, PlaybackService::MAX_RETRIES);
-            assert_eq!(
-                result,
-                Ok(2),
-                "Should succeed on second attempt after 1 conflict"
-            );
-        }
-
-        /// Test: With 2 conflicts, update succeeds on third attempt
-        #[test]
-        fn test_retry_succeeds_after_two_conflicts() {
-            let result = simulate_retry_loop(2, PlaybackService::MAX_RETRIES);
-            assert_eq!(
-                result,
-                Ok(3),
-                "Should succeed on third attempt after 2 conflicts"
-            );
-        }
-
-        /// Test: With 4 conflicts, update still succeeds on the fifth attempt.
-        #[test]
-        fn test_retry_succeeds_after_four_conflicts() {
-            let result = simulate_retry_loop(4, PlaybackService::MAX_RETRIES);
-            assert_eq!(
-                result,
-                Ok(5),
-                "Should succeed on fifth attempt after 4 conflicts"
-            );
-        }
-
-        /// Test: With 5 conflicts (equal to MAX_RETRIES), update fails.
-        #[test]
-        fn test_retry_fails_after_five_conflicts() {
-            let result = simulate_retry_loop(5, PlaybackService::MAX_RETRIES);
-            assert!(
-                result.is_err(),
-                "Should fail after 5 conflicts (equal to MAX_RETRIES)"
-            );
-            assert_eq!(result, Err("maximum retry attempts"));
-        }
-
-        /// Test: With more conflicts than MAX_RETRIES, update fails
-        #[test]
-        fn test_retry_fails_with_excessive_conflicts() {
-            let result = simulate_retry_loop(10, PlaybackService::MAX_RETRIES);
-            assert!(
-                result.is_err(),
-                "Should fail when conflicts exceed MAX_RETRIES"
-            );
-        }
-
-        /// Test: Verify backoff calculation matches the formula:
-        /// delay = base * 2^attempt + jitter
-        #[test]
-        fn test_backoff_calculation_formula() {
-            let base_ms = PlaybackService::BACKOFF_BASE_MS;
-
-            // Attempt 0: backoff = 5 * 1 = 5ms, jitter = 0..5
-            let backoff_0 = base_ms; // 5
-            assert_eq!(backoff_0, 5);
-
-            // Attempt 1: backoff = 5 * 2 = 10ms, jitter = 0..5
-            let backoff_1 = base_ms * (1 << 1); // 10
-            assert_eq!(backoff_1, 10);
-
-            // Attempt 2: backoff = 5 * 4 = 20ms, jitter = 0..5
-            let backoff_2 = base_ms * (1 << 2); // 20
-            assert_eq!(backoff_2, 20);
-
-            // Attempt 3: backoff = 5 * 8 = 40ms, jitter = 0..5
-            let backoff_3 = base_ms * (1 << 3); // 40
-            assert_eq!(backoff_3, 40);
-        }
-
-        /// Test: Total possible delay before exhaustion
-        /// With 5 retries and backoffs of ~5, ~10, ~20, ~40 ms (+ jitter),
-        /// total delay is approximately 75-95ms.
-        #[test]
-        fn test_total_delay_before_exhaustion() {
-            let base_ms = PlaybackService::BACKOFF_BASE_MS;
-
-            // Calculate total backoff (without jitter) before the final attempt.
-            let total_backoff: u64 = (0..PlaybackService::MAX_RETRIES - 1)
-                .map(|attempt| base_ms * (1 << attempt))
-                .sum();
-
-            assert_eq!(
-                total_backoff, 75,
-                "Total backoff before exhaustion should be ~75ms"
-            );
-
-            // With max jitter (5ms per backoff), total could be up to 95ms.
-            let max_total = total_backoff + (base_ms * u64::from(PlaybackService::MAX_RETRIES - 1));
-            assert_eq!(max_total, 95, "Max total with jitter should be ~95ms");
-        }
-
-        /// Test: Jitter range is correct (0 to BACKOFF_BASE_MS exclusive)
-        #[test]
-        fn test_jitter_range() {
-            let base_ms = PlaybackService::BACKOFF_BASE_MS;
-            // The jitter is: rand::rng().random_range(0..BACKOFF_BASE_MS)
-            // Which means jitter is in range [0, BACKOFF_BASE_MS)
-            assert!(base_ms > 0, "BASE_MS should be positive for jitter to work");
-        }
-
-        /// Test: Verify the error message on exhaustion contains "maximum retry attempts"
-        #[test]
-        fn test_exhaustion_error_message_format() {
-            let error_msg = PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED;
-            assert!(
-                crate::service::optimistic_retry::is_retry_exhausted(
-                    &Error::Internal(error_msg.to_string()),
-                    error_msg,
-                ),
-                "Exact playback exhaustion error should be detected"
-            );
-        }
-
-        /// Test: Seek operation returns degraded response on retry exhaustion
-        /// The seek() method should only degrade on the exact retry exhaustion
-        /// error produced by the playback update path.
-        #[test]
-        fn test_seek_returns_degraded_response_on_exhaustion() {
-            let is_degraded = crate::service::optimistic_retry::is_retry_exhausted(
-                &Error::Internal(PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED.to_string()),
-                PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED,
-            );
-
-            assert!(
-                is_degraded,
-                "Exact retry exhaustion error should trigger degraded response"
-            );
-        }
-
-        /// Test: unrelated Internal errors that merely contain the same phrase
-        /// must not trigger degraded seek handling.
-        #[test]
-        fn test_seek_does_not_degrade_on_partial_message_match() {
-            let noisy_error = Error::Internal(format!(
-                "unexpected wrapper: {} while doing something else",
-                PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED
-            ));
-
-            assert!(
-                !crate::service::optimistic_retry::is_retry_exhausted(
-                    &noisy_error,
-                    PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED,
-                ),
-                "Partial message matches should not trigger degraded response"
-            );
-        }
-
-        /// Test: Non-retry errors should not trigger retry mechanism
-        #[test]
-        fn test_non_retry_errors_bubble_up() {
-            use crate::Error;
-
-            // Errors other than OptimisticLockConflict should immediately return
-            let other_errors = vec![
-                Error::NotFound("Room not found".to_string()),
-                Error::Authorization("No permission".to_string()),
-                Error::InvalidInput("Invalid speed".to_string()),
-            ];
-
-            for error in other_errors {
-                // These should NOT be retried
-                let should_retry = matches!(error, Error::OptimisticLockConflict);
-                assert!(!should_retry, "Non-optimistic-lock errors should not retry");
-            }
-        }
-
-        const _: () = assert!(
-            PlaybackService::MAX_RETRIES >= 2,
-            "MAX_RETRIES should be at least 2 for contention handling"
-        );
-
-        const _: () = assert!(
-            PlaybackService::MAX_RETRIES <= 5,
-            "MAX_RETRIES should be at most 5 to avoid excessive latency"
-        );
-
-        const _: () = assert!(
-            PlaybackService::BACKOFF_BASE_MS >= 1,
-            "BACKOFF_BASE_MS should be at least 1ms"
-        );
-
-        const _: () = assert!(
-            PlaybackService::BACKOFF_BASE_MS <= 50,
-            "BACKOFF_BASE_MS should be at most 50ms"
-        );
     }
 }

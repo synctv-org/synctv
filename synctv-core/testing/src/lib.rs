@@ -40,5 +40,6 @@ pub use services::{
     create_test_jwt_service_with_secret, create_test_request_rate_limiter,
     create_test_room_service, create_test_streaming_publish_key_service,
     create_test_token_blacklist_store, create_test_token_blacklist_store_service,
-    create_test_user_service, create_test_websocket_ticket_service,
+    create_test_user_service, create_test_websocket_ticket_service, opaque_login_user,
+    opaque_login_user_with_challenge, opaque_register_user, opaque_register_user_with_client_ip,
 };

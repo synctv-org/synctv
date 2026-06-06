@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
-use opaque_ke::argon2::Argon2;
+use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
@@ -11,11 +11,11 @@ use opaque_ke::{
 use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
         auth::{BruteForceProtection, JwtService},
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Config,
@@ -32,7 +32,7 @@ struct TestOpaqueCipherSuite;
 impl CipherSuite for TestOpaqueCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
     type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, sha2_010::Sha512>;
-    type Ksf = Argon2<'static>;
+    type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
 fn make_user(username: &str) -> User {
@@ -59,11 +59,10 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        PasswordComplexityConfig::default(),
         token_blacklist,
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test:user".to_string()),
@@ -196,21 +195,33 @@ async fn finish_opaque_room_login(
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
+    rate_limiter: Option<Arc<dyn synctv_core::service::RequestRateLimiterService>>,
 ) -> synctv_api::impls::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
 
-    synctv_api::impls::ClientApiImpl::new(
-        user_service,
-        room_service,
-        connection_manager,
-        Arc::new(Config::default()),
-        None,
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    synctv_api::impls::ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            user_service,
+            room_service,
+            connection_service: connection_manager,
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        synctv_api::impls::ClientApiRuntime {
+            rate_limiter,
+            ..synctv_api::impls::ClientApiRuntime::test_disabled()
+        },
     )
 }
 
@@ -267,7 +278,10 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let owner = user_repo
         .create(&make_user("password_registration_owner"))
         .await
@@ -293,8 +307,8 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
         .await
         .unwrap();
 
-    let client_api = make_client_api(user_service, room_service.clone());
-    let codec = synctv_api::PublicIdCodec::default_for_tests();
+    let client_api = make_client_api(user_service, room_service.clone(), None);
+    let codec = synctv_api::PublicIdCodec::plain();
     let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
     let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
     let (_session_id, finish_req) = opaque_room_password_registration_upload(
@@ -338,7 +352,10 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let owner = user_repo
         .create(&make_user("password_login_owner"))
         .await
@@ -368,8 +385,8 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         .await
         .unwrap();
 
-    let client_api = make_client_api(user_service, room_service.clone());
-    let codec = synctv_api::PublicIdCodec::default_for_tests();
+    let client_api = make_client_api(user_service, room_service.clone(), None);
+    let codec = synctv_api::PublicIdCodec::plain();
     let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
     let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
 
@@ -443,10 +460,17 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
-    room_service.set_brute_force_service(BruteForceProtection::in_memory(
-        "test:room-password".to_string(),
-    ));
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        (*user_service).clone(),
+        RoomServiceOptions {
+            brute_force_service: Some(Arc::new(BruteForceProtection::in_memory(
+                "test:room-password".to_string(),
+            ))),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
     let room_service = Arc::new(room_service);
 
     let owner = user_repo.create(&make_user("room_owner")).await.unwrap();
@@ -462,11 +486,17 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .await
         .unwrap();
 
-    let client_api = make_client_api(user_service, room_service.clone()).with_rate_limiter(
-        synctv_core::service::rate_limit::RateLimiter::local_only("api:room-password:".to_string()),
+    let client_api = make_client_api(
+        user_service,
+        room_service.clone(),
+        Some(Arc::new(
+            synctv_core::service::rate_limit::RateLimiter::local_only(
+                "api:room-password:".to_string(),
+            ),
+        )),
     );
 
-    let room_public_id = synctv_api::PublicIdCodec::default_for_tests()
+    let room_public_id = synctv_api::PublicIdCodec::plain()
         .encode_room_id(room.id)
         .unwrap();
 
@@ -523,10 +553,17 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
-    room_service.set_brute_force_service(BruteForceProtection::in_memory(
-        "test:room-password-preissued".to_string(),
-    ));
+    let room_service = RoomService::new_with_options(
+        pool.clone(),
+        (*user_service).clone(),
+        RoomServiceOptions {
+            brute_force_service: Some(Arc::new(BruteForceProtection::in_memory(
+                "test:room-password-preissued".to_string(),
+            ))),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build");
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
@@ -548,12 +585,16 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
         .await
         .unwrap();
 
-    let client_api = make_client_api(user_service, room_service.clone()).with_rate_limiter(
-        synctv_core::service::rate_limit::RateLimiter::local_only(
-            "api:room-password-preissued:".to_string(),
-        ),
+    let client_api = make_client_api(
+        user_service,
+        room_service.clone(),
+        Some(Arc::new(
+            synctv_core::service::rate_limit::RateLimiter::local_only(
+                "api:room-password-preissued:".to_string(),
+            ),
+        )),
     );
-    let room_public_id = synctv_api::PublicIdCodec::default_for_tests()
+    let room_public_id = synctv_api::PublicIdCodec::plain()
         .encode_room_id(room.id)
         .unwrap();
     let client_ip = "192.168.1.102";

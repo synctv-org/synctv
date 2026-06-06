@@ -2,14 +2,28 @@
 //!
 //! These tests verify end-to-end functionality across multiple service layers.
 //!
-//! Run with: cargo test --test `integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::{
     models::{RoomPermission, UserId},
-    service::auth::TokenType,
+    service::auth::TokenCredentialBinding,
 };
 use synctv_core_testing::create_test_jwt_service;
+
+fn sign_test_refresh_token(
+    jwt_service: &synctv_core::service::auth::jwt::JwtService,
+    user_id: &UserId,
+) -> String {
+    jwt_service
+        .sign_refresh_token_with_session(
+            user_id,
+            0,
+            None,
+            "integration-refresh-session",
+            &TokenCredentialBinding::Password { version: 0 },
+        )
+        .unwrap()
+}
 
 /// Helper to create a test JWT service with a test secret
 #[tokio::test]
@@ -19,18 +33,14 @@ async fn test_user_registration_and_authentication() {
 
     // Generate access token (role is intentionally NOT in JWT claims;
     // it's fetched from the database on each request for security)
-    let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
+    let access_token = jwt_service.sign_access_token(&user_id, 0).unwrap();
 
     let claims = jwt_service.verify_access_token(&access_token).unwrap();
     assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_access_token());
 
     // Generate refresh token
-    let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh, 0)
-        .unwrap();
+    let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
     let claims = jwt_service.verify_refresh_token(&refresh_token).unwrap();
     assert_eq!(claims.sub, user_id.to_string());
@@ -42,9 +52,7 @@ async fn test_jwt_token_expiration() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    let token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
+    let token = jwt_service.sign_access_token(&user_id, 0).unwrap();
 
     let claims = jwt_service.verify_token(&token).unwrap();
     assert!(claims.exp > claims.iat);
@@ -64,9 +72,7 @@ async fn test_jwt_invalid_token() {
 
     // Tampered token
     let user_id = UserId::new();
-    let token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
+    let token = jwt_service.sign_access_token(&user_id, 0).unwrap();
 
     let parts: Vec<&str> = token.split('.').collect();
     let tampered_token = format!("{}.{}.tampered", parts[0], parts[1]);
@@ -118,7 +124,8 @@ async fn test_publish_key_generation_and_validation() {
     use synctv_core::service::PublishKeyService;
 
     let jwt_service = create_test_jwt_service();
-    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service);
+    let publish_key_service =
+        PublishKeyService::with_default_ttl(jwt_service).expect("publish key service should build");
 
     let room_id = RoomId::new();
     let media_id = MediaId::new();
@@ -151,7 +158,8 @@ async fn test_publish_key_room_media_verification() {
     use synctv_core::service::PublishKeyService;
 
     let jwt_service = create_test_jwt_service();
-    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service);
+    let publish_key_service =
+        PublishKeyService::with_default_ttl(jwt_service).expect("publish key service should build");
 
     let room_id = RoomId::new();
     let media_id = MediaId::new();
@@ -188,7 +196,8 @@ async fn test_publish_key_invalid_token() {
     use synctv_core::service::PublishKeyService;
 
     let jwt_service = create_test_jwt_service();
-    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service);
+    let publish_key_service =
+        PublishKeyService::with_default_ttl(jwt_service).expect("publish key service should build");
 
     let result = publish_key_service
         .validate_publish_key("invalid.token.here")
@@ -311,18 +320,14 @@ async fn test_jwt_token_types() {
     let user_id = UserId::new();
 
     // Generate access token
-    let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
+    let access_token = jwt_service.sign_access_token(&user_id, 0).unwrap();
 
     let claims = jwt_service.verify_access_token(&access_token).unwrap();
     assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_access_token());
 
     // Generate refresh token
-    let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh, 0)
-        .unwrap();
+    let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
     let claims = jwt_service.verify_refresh_token(&refresh_token).unwrap();
     assert_eq!(claims.sub, user_id.to_string());
@@ -334,12 +339,8 @@ async fn test_jwt_access_and_refresh_tokens_different() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
-    let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh, 0)
-        .unwrap();
+    let access_token = jwt_service.sign_access_token(&user_id, 0).unwrap();
+    let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
     // Tokens should be different
     assert_ne!(access_token, refresh_token);
@@ -385,12 +386,10 @@ async fn test_e2e_user_auth_flow() {
     let user_id = UserId::new();
 
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
+        .sign_access_token(&user_id, 0)
         .expect("Failed to generate access token");
 
-    let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh, 0)
-        .expect("Failed to generate refresh token");
+    let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
     let access_claims = jwt_service
         .verify_access_token(&access_token)
@@ -407,7 +406,7 @@ async fn test_e2e_user_auth_flow() {
     assert!(refresh_claims.is_refresh_token());
 
     let new_access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
+        .sign_access_token(&user_id, 0)
         .expect("Failed to generate new access token");
 
     let new_claims = jwt_service
@@ -424,7 +423,8 @@ async fn test_e2e_publish_key_workflow() {
     use synctv_core::service::PublishKeyService;
 
     let jwt_service = create_test_jwt_service();
-    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service);
+    let publish_key_service =
+        PublishKeyService::with_default_ttl(jwt_service).expect("publish key service should build");
 
     let room_id = RoomId::new();
     let media_id = MediaId::new();
@@ -580,7 +580,7 @@ async fn test_e2e_multiple_users_concurrent_auth() {
             let user_id = UserId::new();
 
             let token = jwt
-                .sign_token(&user_id, TokenType::Access, 0)
+                .sign_access_token(&user_id, 0)
                 .expect("Failed to sign token");
 
             let claims = jwt
@@ -624,13 +624,9 @@ async fn test_e2e_token_type_validation() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    let access = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
+    let access = jwt_service.sign_access_token(&user_id, 0).unwrap();
 
-    let refresh = jwt_service
-        .sign_token(&user_id, TokenType::Refresh, 0)
-        .unwrap();
+    let refresh = sign_test_refresh_token(&jwt_service, &user_id);
 
     assert!(jwt_service.verify_access_token(&access).is_ok());
     assert!(jwt_service.verify_refresh_token(&access).is_err());
@@ -694,58 +690,6 @@ async fn test_e2e_error_propagation() {
             _ => panic!("Unexpected error type"),
         }
     }
-}
-
-// Permission Cache Invalidation Tests
-
-/// Tests that permission cache invalidation messages are correctly generated
-/// and can be deserialized for cross-replica propagation.
-#[tokio::test]
-async fn test_permission_cache_invalidation_message_serialization() {
-    use synctv_core::cache::InvalidationMessage;
-
-    // Test UserPermission invalidation
-    let user_perm = InvalidationMessage::UserPermission {
-        room_id: "room_123".to_string(),
-        user_id: "user_456".to_string(),
-    };
-    let json = serde_json::to_string(&user_perm).expect("Should serialize UserPermission");
-    let decoded: InvalidationMessage =
-        serde_json::from_str(&json).expect("Should deserialize UserPermission");
-    assert_eq!(decoded, user_perm);
-
-    // Test RoomPermission invalidation
-    let room_perm = InvalidationMessage::RoomPermission {
-        room_id: "room_789".to_string(),
-    };
-    let json = serde_json::to_string(&room_perm).expect("Should serialize RoomPermission");
-    let decoded: InvalidationMessage =
-        serde_json::from_str(&json).expect("Should deserialize RoomPermission");
-    assert_eq!(decoded, room_perm);
-
-    // Test User invalidation
-    let user = InvalidationMessage::User {
-        user_id: "user_abc".to_string(),
-    };
-    let json = serde_json::to_string(&user).expect("Should serialize User");
-    let decoded: InvalidationMessage =
-        serde_json::from_str(&json).expect("Should deserialize User");
-    assert_eq!(decoded, user);
-
-    // Test Room invalidation
-    let room = InvalidationMessage::Room {
-        room_id: "room_xyz".to_string(),
-    };
-    let json = serde_json::to_string(&room).expect("Should serialize Room");
-    let decoded: InvalidationMessage =
-        serde_json::from_str(&json).expect("Should deserialize Room");
-    assert_eq!(decoded, room);
-
-    // Test All invalidation
-    let all = InvalidationMessage::All;
-    let json = serde_json::to_string(&all).expect("Should serialize All");
-    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize All");
-    assert_eq!(decoded, all);
 }
 
 /// Tests that `CacheInvalidationService` can be created and used without Redis

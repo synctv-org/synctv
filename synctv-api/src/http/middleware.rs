@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::LazyLock;
 
-use super::{AppError, AppState};
+use super::{optional_header_str, AppError, AppState};
 
 tokio::task_local! {
     pub static CURRENT_REQUEST_ID: String;
@@ -39,22 +39,27 @@ where
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
             .map(|info| info.0.ip());
-        let client_ip = peer_ip.map(|peer_ip| {
-            crate::client_ip::extract_client_ip_from_headers(
-                &app_state.config,
-                peer_ip,
-                &parts.headers,
-            )
-        });
+        let client_ip = peer_ip
+            .map(|peer_ip| {
+                crate::client_ip::extract_client_ip_from_headers(
+                    &app_state.config,
+                    peer_ip,
+                    &parts.headers,
+                )
+                .map_err(|error| AppError::bad_request(error.to_string()))
+            })
+            .transpose()?;
         let authorization = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let user_agent = parts
-            .headers
-            .get(axum::http::header::USER_AGENT)
-            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                value
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|_| AppError::invalid_authorization_header_non_utf8())
+            })
+            .transpose()?;
+        let user_agent = optional_header_str(&parts.headers, &axum::http::header::USER_AGENT)?
             .map(str::to_owned);
 
         Ok(Self(

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH deleted AS (\n                DELETE FROM auth_token_blacklist\n                WHERE expires_at < CURRENT_TIMESTAMP\n                RETURNING 1\n            )\n            SELECT COUNT(*)::BIGINT AS \"deleted_count!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "deleted_count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "13454141e822ccff4834737f1697d65af65bb62a70753521e78cb9650bc342d9"
+}

@@ -28,7 +28,7 @@
 use parking_lot::RwLock;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -111,7 +111,7 @@ pub trait SettingProvider: Send + Sync {
     fn key(&self) -> &str;
 
     /// Default raw value serialized using the setting's display representation.
-    fn default_raw(&self) -> String;
+    fn default_raw(&self) -> Result<String>;
 
     /// Get raw string value
     fn get_raw(&self) -> Option<String>;
@@ -174,15 +174,19 @@ pub struct SettingsStorage {
 }
 
 impl SettingsStorage {
+    fn serialize_setting_value<T>(key: &str, value: &T) -> Result<String>
+    where
+        T: Display,
+    {
+        let mut output = String::new();
+        fmt::write(&mut output, format_args!("{value}"))
+            .map_err(|_| crate::Error::Internal(format!("Failed to serialize setting '{key}'")))?;
+        Ok(output)
+    }
+
     #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
-        let setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>> =
-            Arc::new(RwLock::new(HashMap::default()));
-
-        // Share the providers map with SettingsService so that its `update()`
-        // and `update_batch()` methods can validate values before persisting.
-        settings_service.set_providers(setting_providers.clone());
-
+        let setting_providers = settings_service.providers();
         Self {
             inner: Arc::new(RwLock::new(HashMap::default())),
             settings_service,
@@ -347,23 +351,26 @@ impl SettingsStorage {
     #[must_use]
     pub fn validate(&self, key: &str, value: &str) -> bool {
         self.get_provider(key)
-            .is_none_or(|p| p.is_valid_raw(value).is_ok())
+            .is_some_and(|p| p.is_valid_raw(value).is_ok())
     }
 
     /// List all registered settings together with their default raw values.
     ///
     /// The returned vector is sorted by key to keep admin/API output stable.
-    #[must_use]
-    pub fn registered_defaults(&self) -> Vec<(String, String)> {
+    pub fn registered_defaults(&self) -> Result<Vec<(String, String)>> {
         let mut entries: Vec<(String, String)> = self
             .setting_providers
             .read()
             .values()
             .filter(|provider| provider.user_visible())
-            .map(|provider| (provider.key().to_string(), provider.default_raw()))
-            .collect();
+            .map(|provider| {
+                provider
+                    .default_raw()
+                    .map(|raw| (provider.key().to_string(), raw))
+            })
+            .collect::<Result<Vec<_>>>()?;
         entries.sort_by(|left, right| left.0.cmp(&right.0));
-        entries
+        Ok(entries)
     }
 
     /// List all registered keys, including runtime-managed hidden settings.
@@ -513,21 +520,15 @@ where
 
         if needs_update {
             // Raw value changed (or first load), re-parse
-            let key = self.key;
-            let value = new_raw.as_ref().map_or_else(
-                || self.default_value.clone(),
-                |raw| {
-                    raw.parse().unwrap_or_else(|e| {
-                        warn!(
-                            key = key,
-                            raw_value = %raw,
-                            error = %e,
-                            "Failed to parse setting value, using default"
-                        );
-                        self.default_value.clone()
-                    })
-                },
-            );
+            let value = match new_raw.as_ref() {
+                Some(raw) => raw.parse().map_err(|error| {
+                    crate::Error::InvalidInput(format!(
+                        "Invalid persisted value for setting '{}': {error}",
+                        self.key
+                    ))
+                })?,
+                None => self.default_value.clone(),
+            };
 
             // Update both caches
             *self.cache.write() = Some(value.clone());
@@ -535,12 +536,21 @@ where
 
             Ok(value)
         } else {
-            // Raw value unchanged, return cached value
-            let cache = self.cache.read();
-            Ok(cache
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| self.default_value.clone()))
+            if let Some(value) = self.cache.read().as_ref().cloned() {
+                return Ok(value);
+            }
+
+            let value = match new_raw.as_ref() {
+                Some(raw) => raw.parse().map_err(|error| {
+                    crate::Error::InvalidInput(format!(
+                        "Invalid persisted value for setting '{}': {error}",
+                        self.key
+                    ))
+                })?,
+                None => self.default_value.clone(),
+            };
+            *self.cache.write() = Some(value.clone());
+            Ok(value)
         }
     }
 
@@ -551,7 +561,7 @@ where
             validator(&value)?;
         }
         // Convert to string using standard Display trait
-        let str_value = value.to_string();
+        let str_value = SettingsStorage::serialize_setting_value(self.key, &value)?;
         self.storage.set_raw(self.key, str_value).await?;
         Ok(())
     }
@@ -576,7 +586,7 @@ where
         if let Some(validator) = self.validator.read().as_ref() {
             validator(&value)?;
         }
-        let str_value = value.to_string();
+        let str_value = SettingsStorage::serialize_setting_value(self.key, &value)?;
         self.storage
             .set_raw_internal_if_missing(self.key, str_value)
             .await?;
@@ -592,7 +602,8 @@ where
         if let Some(validator) = self.validator.read().as_ref() {
             validator(value)?;
         }
-        self.storage.set_raw_for_test(self.key, value.to_string());
+        let str_value = SettingsStorage::serialize_setting_value(self.key, value)?;
+        self.storage.set_raw_for_test(self.key, str_value);
         Ok(())
     }
 
@@ -635,8 +646,8 @@ where
         self.key
     }
 
-    fn default_raw(&self) -> String {
-        self.default_value.to_string()
+    fn default_raw(&self) -> Result<String> {
+        SettingsStorage::serialize_setting_value(self.key, &self.default_value)
     }
 
     fn get_raw(&self) -> Option<String> {
@@ -859,13 +870,12 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_validate_unknown_key_passes() {
+    fn test_storage_validate_unknown_key_rejects() {
         let harness = test_storage_harness();
         let storage = harness.storage;
-        // No settings registered
         assert!(
-            storage.validate("unknown.key", "anything"),
-            "Unknown keys should pass validation"
+            !storage.validate("unknown.key", "anything"),
+            "unknown keys should fail validation"
         );
     }
 

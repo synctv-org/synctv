@@ -27,15 +27,17 @@ use crate::{
         EditChatMessageEventRequest,
     },
     service::{
-        audit::AuditService, notification::NotificationService, ContentFilter, PermissionService,
-        RateLimitConfig, RequestRateLimiterService, RoomSettingsService, UserService,
+        audit::{AuditEventParams, AuditService},
+        notification::NotificationService,
+        ContentFilter, PermissionService, RateLimitConfig, RequestRateLimiterService,
+        RoomSettingsService, UserService,
     },
     Error, Result,
 };
 
 use super::file_storage::{
-    DisabledFileStorageService, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
-    FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY,
+    FileStorageCleanupOrigin, FileStorageContext, FileStorageService, FILE_OWNERSHIP_PROOF_KEY,
+    FILE_UPLOAD_TOKEN_KEY,
 };
 use super::file_upload_policies::chat_image_upload_policy;
 
@@ -58,6 +60,39 @@ pub const MAX_CHAT_MESSAGE_CHARS: usize = 500;
 pub const MAX_CHAT_IMAGES_PER_MESSAGE: usize = 10;
 const CHAT_REACTION_DETAIL_CACHE_TTL_SECS: u64 = 5;
 const CHAT_REACTION_DETAIL_CACHE_CAPACITY: u64 = 1024;
+
+fn max_messages_to_keep_count(max_messages: u64) -> Result<i32> {
+    i32::try_from(max_messages)
+        .map_err(|_| Error::InvalidInput("chat max_messages exceeds i32::MAX".to_string()))
+}
+
+fn validate_chat_playback_query(
+    query: ChatPlaybackMessagesQuery,
+) -> Result<ChatPlaybackMessagesQuery> {
+    let query = query.normalize();
+    if query.media_id.is_none() && query.playlist_id.is_none() && query.target.is_none() {
+        return Err(Error::InvalidInput(
+            "chat playback query requires a media id, playlist id, or target".to_string(),
+        ));
+    }
+    if !query.position_seconds.is_finite()
+        || query.position_seconds < 0.0
+        || !query.before_seconds.is_finite()
+        || query.before_seconds < 0.0
+        || !query.after_seconds.is_finite()
+        || query.after_seconds < 0.0
+    {
+        return Err(Error::InvalidInput(
+            "chat playback query time window must be non-negative finite seconds".to_string(),
+        ));
+    }
+    if !(1..=500).contains(&query.limit) {
+        return Err(Error::InvalidInput(
+            "chat playback query limit must be between 1 and 500".to_string(),
+        ));
+    }
+    Ok(query)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ChatReactionDetailCacheKey {
@@ -103,6 +138,7 @@ pub struct ChatDependencies {
     pub permission_service: PermissionService,
     pub room_settings_service: RoomSettingsService,
     pub user_service: Arc<UserService>,
+    pub file_storage_service: Arc<dyn FileStorageService>,
     pub audit_service: Option<Arc<AuditService>>,
     pub notification_service: NotificationService,
 }
@@ -130,6 +166,7 @@ impl ChatService {
             permission_service,
             room_settings_service,
             user_service,
+            file_storage_service,
             audit_service,
             notification_service,
         } = dependencies;
@@ -142,7 +179,7 @@ impl ChatService {
             permission_service,
             room_settings_service,
             user_service,
-            file_storage_service: Arc::new(DisabledFileStorageService),
+            file_storage_service,
             audit_service,
             notification_service,
             reaction_detail_cache: AsyncCache::builder()
@@ -151,15 +188,6 @@ impl ChatService {
                 .support_invalidation_closures()
                 .build(),
         }
-    }
-
-    #[must_use]
-    pub fn with_file_storage_service(
-        mut self,
-        file_storage_service: Arc<dyn FileStorageService>,
-    ) -> Self {
-        self.file_storage_service = file_storage_service;
-        self
     }
 
     #[must_use]
@@ -294,6 +322,20 @@ impl ChatService {
         let room_id = request.room_id;
         let user_id = request.user_id;
 
+        validate_client_message_id(request.client_message_id.as_deref())?;
+        validate_chat_metadata(&request.metadata)?;
+        validate_chat_images(&request.images)?;
+        if request.content.trim().is_empty() && request.images.is_empty() {
+            return Err(Error::InvalidInput(
+                "empty chat message: content or image is required".to_string(),
+            ));
+        }
+        if request.content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
+            return Err(Error::InvalidInput(format!(
+                "Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"
+            )));
+        }
+
         // Check CHAT permission
         self.permission_service
             .check_permission(&room_id, &user_id, crate::models::RoomPermission::CHAT)
@@ -307,8 +349,6 @@ impl ChatService {
             ));
         }
 
-        validate_client_message_id(request.client_message_id.as_deref())?;
-        validate_chat_metadata(&request.metadata)?;
         let request_hash = chat_send_request_hash(&request)?;
         if let Some(client_message_id) = request.client_message_id.as_deref() {
             if let Some(event) = self
@@ -346,7 +386,6 @@ impl ChatService {
             return Err(Error::RateLimited(format!("Chat rate limit exceeded: {e}")));
         }
 
-        validate_chat_images(&request.images)?;
         let storage_scope = chat_file_storage_scope(room_id, user_id);
         request.images = self
             .file_storage_service
@@ -362,17 +401,6 @@ impl ChatService {
         validate_chat_images(&request.images)?;
         strip_internal_chat_image_metadata(&mut request.images);
 
-        if request.content.trim().is_empty() && request.images.is_empty() {
-            return Err(Error::InvalidInput(
-                "empty chat message: content or image is required".to_string(),
-            ));
-        }
-
-        if request.content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
-            return Err(Error::InvalidInput(format!(
-                "Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"
-            )));
-        }
         let reply_to_message_created_at = self
             .ensure_reply_target_visible(&room_id, request.reply_to_message_id)
             .await?;
@@ -431,19 +459,19 @@ impl ChatService {
         );
 
         if created.inserted {
-            if let Err(e) = self.notification_service.notify_chat_message(
+            let subscriber_count = self.notification_service.notify_chat_message(
                 &room_id,
                 &event.message.message.id.to_string(),
                 &user_id,
                 &username,
                 &filtered_content,
-            ) {
-                error!(
+            );
+            if subscriber_count == 0 {
+                debug!(
                     room_id = %room_id,
                     user_id = %user_id,
                     message_id = %event.message.message.id,
-                    error = %e,
-                    "Failed to publish chat message room event"
+                    "Chat message room event had no local subscribers"
                 );
             }
         }
@@ -536,22 +564,7 @@ impl ChatService {
         query: ChatPlaybackMessagesQuery,
         viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatMessageWithImages>> {
-        if query.media_id.is_none() && query.playlist_id.is_none() && query.target_hash.is_none() {
-            return Err(Error::InvalidInput(
-                "chat playback query requires a media id, playlist id, or target".to_string(),
-            ));
-        }
-        if !query.position_seconds.is_finite()
-            || query.position_seconds < 0.0
-            || !query.before_seconds.is_finite()
-            || query.before_seconds < 0.0
-            || !query.after_seconds.is_finite()
-            || query.after_seconds < 0.0
-        {
-            return Err(Error::InvalidInput(
-                "chat playback query time window must be non-negative finite seconds".to_string(),
-            ));
-        }
+        let query = validate_chat_playback_query(query)?;
         self.chat_repository
             .list_playback_messages_for_viewer(&query, viewer_user_id)
             .await
@@ -700,19 +713,22 @@ impl ChatService {
             .get_read_state(&request.room_id, &request.user_id)
             .await?;
 
-        let state = if read_state_covers_message(current.as_ref(), &message, event.as_ref()) {
-            current.expect("read_state_covers_message only returns true for Some state")
-        } else {
-            self.chat_repository
-                .upsert_read_state(
-                    &request.room_id,
-                    &request.user_id,
-                    message.id,
-                    message.created_at,
-                    event.as_ref().map(|event| event.event.event_id.as_str()),
-                    event.as_ref().map(|event| event.sequence),
-                )
-                .await?
+        let state = match current {
+            Some(state) if read_state_covers_message(Some(&state), &message, event.as_ref()) => {
+                state
+            }
+            _ => {
+                self.chat_repository
+                    .upsert_read_state(
+                        &request.room_id,
+                        &request.user_id,
+                        message.id,
+                        message.created_at,
+                        event.as_ref().map(|event| event.event.event_id.as_str()),
+                        event.as_ref().map(|event| event.sequence),
+                    )
+                    .await?
+            }
         };
         let unread_count = self
             .chat_repository
@@ -759,6 +775,19 @@ impl ChatService {
         &self,
         request: EditChatMessage,
     ) -> Result<ChatMessageEventOutcome> {
+        validate_client_operation_id(request.client_operation_id.as_deref())?;
+        validate_chat_metadata(&request.metadata)?;
+        if request.content.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "Message content cannot be empty".to_string(),
+            ));
+        }
+        if request.content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
+            return Err(Error::InvalidInput(format!(
+                "Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"
+            )));
+        }
+
         self.permission_service
             .check_permission(
                 &request.room_id,
@@ -767,8 +796,6 @@ impl ChatService {
             )
             .await?;
 
-        validate_client_operation_id(request.client_operation_id.as_deref())?;
-        validate_chat_metadata(&request.metadata)?;
         let request_hash = chat_edit_request_hash(&request)?;
         if let Some(client_operation_id) = request.client_operation_id.as_deref() {
             if let Some(event) = self
@@ -787,17 +814,6 @@ impl ChatService {
                     inserted: false,
                 });
             }
-        }
-
-        if request.content.trim().is_empty() {
-            return Err(Error::InvalidInput(
-                "Message content cannot be empty".to_string(),
-            ));
-        }
-        if request.content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
-            return Err(Error::InvalidInput(format!(
-                "Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"
-            )));
         }
 
         let current = self
@@ -1201,7 +1217,7 @@ impl ChatService {
         // Cleanup old messages
         let deleted = self
             .chat_repository
-            .cleanup_old_messages(room_id, max_messages.try_into().unwrap_or(i32::MAX))
+            .cleanup_old_messages(room_id, max_messages_to_keep_count(max_messages)?)
             .await?;
 
         if deleted > 0 {
@@ -1245,7 +1261,7 @@ impl ChatService {
         let deleted = self
             .chat_repository
             .cleanup_all_rooms(
-                max_messages.try_into().unwrap_or(i32::MAX),
+                max_messages_to_keep_count(max_messages)?,
                 activity_window_minutes,
             )
             .await?;
@@ -1409,16 +1425,24 @@ impl ChatService {
 
         let actor_username = match self.user_service.get_username(&request.user_id).await {
             Ok(Some(username)) => username,
-            Ok(None) => String::new(),
+            Ok(None) => {
+                warn!(
+                    room_id = %request.room_id,
+                    message_id = %request.message_id,
+                    actor_user_id = %request.user_id,
+                    "skipped chat delete audit because actor user was not found"
+                );
+                return;
+            }
             Err(error) => {
                 warn!(
                     room_id = %request.room_id,
                     message_id = %request.message_id,
                     actor_user_id = %request.user_id,
                     error = %error,
-                    "failed to load username for chat delete audit"
+                    "skipped chat delete audit because actor username lookup failed"
                 );
-                String::new()
+                return;
             }
         };
         let target_id = format!("{}:{}", request.room_id, request.message_id);
@@ -1434,16 +1458,16 @@ impl ChatService {
         });
 
         if let Err(error) = audit
-            .log(
-                request.user_id.to_string(),
+            .log(AuditEventParams {
+                actor_id: request.user_id.to_string(),
                 actor_username,
-                AuditAction::ChatMessageDeleted,
-                AuditTargetType::ChatMessage,
-                Some(target_id),
+                action: AuditAction::ChatMessageDeleted,
+                target_type: AuditTargetType::ChatMessage,
+                target_id: Some(target_id),
                 details,
-                None,
-                None,
-            )
+                ip_address: None,
+                user_agent: None,
+            })
             .await
         {
             warn!(
@@ -1690,15 +1714,14 @@ mod tests {
     use super::*;
     use crate::{
         cache::{KeyBuilder, UsernameCache},
-        config::PasswordComplexityConfig,
         models::{SignupMethod, User},
         repository::{
             FileStorageRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
             UserRepository,
         },
         service::{
-            auth::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore, RateLimiter,
-            RoomService,
+            auth::JwtService, BruteForceProtection, DisabledFileStorageService,
+            InMemoryTokenBlacklistStore, RateLimiter, RoomService,
         },
     };
     use tokio::sync::Barrier;
@@ -1847,11 +1870,10 @@ mod tests {
     }
 
     fn test_user_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> Arc<UserService> {
-        Arc::new(UserService::new(
+        Arc::new(UserService::new_for_tests(
             pool,
             JwtService::new("test-secret-key-for-chat-service-tests-32-chars").expect("jwt"),
             username_cache,
-            PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
@@ -1888,14 +1910,89 @@ mod tests {
         );
     }
 
+    fn playback_query_with_context() -> ChatPlaybackMessagesQuery {
+        ChatPlaybackMessagesQuery {
+            room_id: RoomId::expect_positive(1),
+            media_id: Some(crate::models::MediaId::expect_positive(2)),
+            playlist_id: None,
+            target: None,
+            position_seconds: 10.0,
+            before_seconds: 1.0,
+            after_seconds: 2.0,
+            limit: 100,
+            include_deleted: false,
+        }
+    }
+
+    #[test]
+    fn chat_playback_query_normalize_treats_empty_target_as_absent() {
+        let query = ChatPlaybackMessagesQuery {
+            media_id: None,
+            target: Some(Vec::new()),
+            ..playback_query_with_context()
+        }
+        .normalize();
+
+        assert!(query.target.is_none());
+    }
+
+    #[test]
+    fn validate_chat_playback_query_rejects_empty_context_after_normalize() {
+        let query = ChatPlaybackMessagesQuery {
+            media_id: None,
+            target: Some(Vec::new()),
+            ..playback_query_with_context()
+        };
+
+        assert!(matches!(
+            validate_chat_playback_query(query),
+            Err(Error::InvalidInput(message)) if message.contains("requires")
+        ));
+    }
+
+    #[test]
+    fn validate_chat_playback_query_rejects_invalid_limit() {
+        let zero = ChatPlaybackMessagesQuery {
+            limit: 0,
+            ..playback_query_with_context()
+        };
+        let too_large = ChatPlaybackMessagesQuery {
+            limit: 501,
+            ..playback_query_with_context()
+        };
+
+        assert!(matches!(
+            validate_chat_playback_query(zero),
+            Err(Error::InvalidInput(message)) if message.contains("limit")
+        ));
+        assert!(matches!(
+            validate_chat_playback_query(too_large),
+            Err(Error::InvalidInput(message)) if message.contains("limit")
+        ));
+    }
+
     fn test_chat_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> ChatService {
-        let permission_service = PermissionService::new(
+        test_chat_service_with_file_storage(
+            pool,
+            username_cache,
+            Arc::new(DisabledFileStorageService),
+        )
+    }
+
+    fn test_chat_service_with_file_storage(
+        pool: &sqlx::PgPool,
+        username_cache: UsernameCache,
+        file_storage_service: Arc<dyn FileStorageService>,
+    ) -> ChatService {
+        let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
-            None,
-            PermissionService::DEFAULT_CACHE_SIZE,
-            PermissionService::DEFAULT_CACHE_TTL_SECS,
-        );
+            crate::service::permission::PermissionServiceRuntime {
+                room_settings_repo: Some(RoomSettingsRepository::new(pool.clone())),
+                ..Default::default()
+            },
+        )
+        .expect("permission service should build");
         let room_settings_service = RoomSettingsService::new(
             RoomSettingsRepository::new(pool.clone()),
             None,
@@ -1915,6 +2012,7 @@ mod tests {
                 permission_service,
                 room_settings_service,
                 user_service: test_user_service(pool, username_cache),
+                file_storage_service,
                 audit_service: None,
                 notification_service: NotificationService::default(),
             },
@@ -2025,11 +2123,14 @@ mod tests {
             .await
             .expect("user should be created");
         let username_cache = UsernameCache::local_only("test:chat:username:".to_string(), 100, 60);
-        let service =
-            test_chat_service(&pool, username_cache.clone()).with_file_storage_service(Arc::new(
+        let service = test_chat_service_with_file_storage(
+            &pool,
+            username_cache.clone(),
+            Arc::new(
                 S3CompatibleFileStorageService::new(test_s3_file_storage_config())
                     .expect("S3 file storage config should be valid"),
-            ));
+            ),
+        );
 
         assert_eq!(
             username_cache
@@ -2193,14 +2294,15 @@ mod tests {
             ))
             .await
             .expect("user should be created");
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:database-image:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (_room, _) = room_service
             .create_room(
                 "Database Image Room".to_string(),
@@ -2345,7 +2447,7 @@ mod tests {
             ))
             .await
             .expect("user should be created");
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
@@ -2356,7 +2458,8 @@ mod tests {
                 ),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (_room, _) = room_service
             .create_room(
                 "Database Image Checksum Room".to_string(),
@@ -2619,9 +2722,8 @@ mod tests {
             )
             .await
             .expect("object registry should be written");
-        let service = S3CompatibleFileStorageService::new(config)
+        let service = S3CompatibleFileStorageService::new_with_repository(config, Some(repository))
             .expect("S3 file storage config should be valid")
-            .with_repository(repository)
             .with_operator(operator);
 
         let mut session = service
@@ -2732,7 +2834,9 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let username_cache =
             UsernameCache::local_only("test:chat:image-token-strip:".to_string(), 100, 60);
-        let service = test_chat_service(&pool, username_cache.clone()).with_file_storage_service(
+        let service = test_chat_service_with_file_storage(
+            &pool,
+            username_cache.clone(),
             Arc::new(DatabaseFileStorageService::new(
                 "database",
                 Arc::new(FileStorageRepository::new(pool.clone())),
@@ -2748,14 +2852,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:image-token-strip:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Image Token Strip Room".to_string(),
@@ -2837,8 +2942,11 @@ mod tests {
     async fn custom_file_storage_can_normalize_image_metadata() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let username_cache = UsernameCache::local_only("test:chat:image:".to_string(), 100, 60);
-        let service = test_chat_service(&pool, username_cache.clone())
-            .with_file_storage_service(Arc::new(PrefixingFileStorageService));
+        let service = test_chat_service_with_file_storage(
+            &pool,
+            username_cache.clone(),
+            Arc::new(PrefixingFileStorageService),
+        );
         let user_repository = Arc::new(UserRepository::new(pool.clone()));
         let user = user_repository
             .create(&User::new(
@@ -2848,14 +2956,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:image:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Image Storage Room".to_string(),
@@ -2921,8 +3030,8 @@ mod tests {
         let username_cache =
             UsernameCache::local_only("test:chat:delete-image:".to_string(), 100, 60);
         let storage = Arc::new(RecordingFileStorageService::default());
-        let service = test_chat_service(&pool, username_cache.clone())
-            .with_file_storage_service(storage.clone());
+        let service =
+            test_chat_service_with_file_storage(&pool, username_cache.clone(), storage.clone());
         let user_repository = Arc::new(UserRepository::new(pool.clone()));
         let user = user_repository
             .create(&User::new(
@@ -2932,14 +3041,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:delete-image:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Delete Image Room".to_string(),
@@ -3022,14 +3132,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:idempotent-send:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Idempotent Send Room".to_string(),
@@ -3085,38 +3196,36 @@ mod tests {
             1
         );
 
-        let message_count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let message_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_messages
             WHERE room_id = $1 AND user_id = $2 AND client_message_id = $3
-            ",
+            "#,
             room.id.as_i64(),
             user.id.as_i64(),
             "same-client-message-id"
         )
         .fetch_one(&pool)
         .await
-        .expect("message count should load")
-        .unwrap_or(0);
+        .expect("message count should load");
         assert_eq!(message_count, 1);
 
-        let event_count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let event_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_message_events
             WHERE room_id = $1
               AND message_id = $2
               AND event_type = $3
-            ",
+            "#,
             room.id.as_i64(),
             first.message.message.id,
             "chat_message_created"
         )
         .fetch_one(&pool)
         .await
-        .expect("event count should load")
-        .unwrap_or(0);
+        .expect("event count should load");
         assert_eq!(event_count, 1);
     }
 
@@ -3135,14 +3244,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:concurrent-edit:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Concurrent Edit Room".to_string(),
@@ -3213,22 +3323,21 @@ mod tests {
             1
         );
 
-        let edit_event_count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let edit_event_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_message_events
             WHERE room_id = $1
               AND message_id = $2
               AND event_type = $3
-            ",
+            "#,
             room.id.as_i64(),
             created.message.message.id,
             "chat_message_edited"
         )
         .fetch_one(&pool)
         .await
-        .expect("edit event count should load")
-        .unwrap_or(0);
+        .expect("edit event count should load");
         assert_eq!(edit_event_count, 1);
     }
 
@@ -3247,14 +3356,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:concurrent-delete:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Concurrent Delete Room".to_string(),
@@ -3324,22 +3434,21 @@ mod tests {
             1
         );
 
-        let delete_event_count = sqlx::query_scalar_unchecked!(
-            r"
-            SELECT COUNT(*)
+        let delete_event_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_message_events
             WHERE room_id = $1
               AND message_id = $2
               AND event_type = $3
-            ",
+            "#,
             room.id.as_i64(),
             created.message.message.id,
             "chat_message_deleted"
         )
         .fetch_one(&pool)
         .await
-        .expect("delete event count should load")
-        .unwrap_or(0);
+        .expect("delete event count should load");
         assert_eq!(delete_event_count, 1);
     }
 
@@ -3371,14 +3480,15 @@ mod tests {
             .set(&member.id, &member.username)
             .await
             .unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:reactions:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Reaction Room".to_string(),
@@ -3576,14 +3686,15 @@ mod tests {
             .set(&reader.id, &reader.username)
             .await
             .unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:read-state:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Read State Room".to_string(),
@@ -3736,14 +3847,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:context:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Context Room".to_string(),
@@ -3812,14 +3924,15 @@ mod tests {
             .await
             .expect("user should be created");
         username_cache.set(&user.id, &user.username).await.unwrap();
-        let room_service = RoomService::new(
+        let room_service = RoomService::new_for_tests(
             pool.clone(),
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only("test:chat:text-validation:room:".to_string(), 100, 60),
             ))
             .clone(),
-        );
+        )
+        .expect("room service should build");
         let (room, _) = room_service
             .create_room(
                 "Text Validation Room".to_string(),

@@ -36,7 +36,7 @@ impl RoomSettingsCache {
         l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
-    ) -> Result<Self> {
+    ) -> Self {
         let inner = TieredCache::new(
             l2,
             l1_max_capacity,
@@ -44,8 +44,8 @@ impl RoomSettingsCache {
             l2_ttl_seconds,
             key_prefix,
             "room_settings".to_string(),
-        )?;
-        Ok(Self { inner })
+        );
+        Self { inner }
     }
 
     pub async fn get(&self, room_id: &RoomId) -> Result<Option<RoomSettingsSnapshot>> {
@@ -195,8 +195,7 @@ mod tests {
             60,
             60,
             "tenant-a:room_settings:".to_string(),
-        )
-        .expect("cache should build");
+        );
         let room_id = RoomId::expect_positive(42);
 
         cache
@@ -223,8 +222,7 @@ mod tests {
             60,
             60,
             "tenant-a:room_settings:".to_string(),
-        )
-        .expect("cache should build");
+        );
 
         cache.clear().await;
 

@@ -282,7 +282,9 @@ impl EmailTokenRepository {
         .execute(&self.pool)
         .await?;
 
-        Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
+        usize::try_from(result.rows_affected()).map_err(|_| {
+            Error::Internal("expired email token delete count exceeds usize::MAX".to_string())
+        })
     }
 }
 

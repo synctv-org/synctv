@@ -142,4 +142,38 @@ impl EmailBindRepository {
 
         Ok((email, now))
     }
+
+    pub async fn lock_valid_for_update_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        email: &str,
+        token: &str,
+        executor: E,
+    ) -> Result<String>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let token_hash = Self::hash_token(token);
+
+        sqlx::query_scalar!(
+            r"
+            SELECT email
+            FROM auth_email_bind_requests
+            WHERE token = $1
+              AND user_id = $2
+              AND LOWER(email) = LOWER($3)
+              AND used_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
+            FOR UPDATE
+            ",
+            token_hash,
+            user_id as &UserId,
+            email,
+        )
+        .fetch_optional(executor)
+        .await?
+        .ok_or_else(|| {
+            Error::InvalidInput(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
+        })
+    }
 }

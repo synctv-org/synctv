@@ -152,8 +152,7 @@ async fn test_health_monitor_start_and_shutdown() {
         .await;
 
     let monitor = HealthMonitor::new(registry, 60);
-    let handle = monitor.start().unwrap();
-    monitor.set_join_handle(handle);
+    monitor.start().unwrap();
 
     // Let it run briefly
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;

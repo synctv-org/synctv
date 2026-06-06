@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT tablename AS \"tablename!\"\n             FROM pg_tables\n             WHERE schemaname = 'public'\n               AND tablename LIKE 'notifications_%'\n               AND tablename != 'notifications_default'\n               AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'\n               AND tablename < $1\n             ORDER BY tablename\n             ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tablename!",
+        "type_info": "Name"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "8d3fcd48f25eb0b2dd9c38a42cd95747bb6a0cf01aa6d614d2a2ed4f49079496"
+}

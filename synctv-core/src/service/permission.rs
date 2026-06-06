@@ -23,7 +23,7 @@ use crate::{
         RoomSettings, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    service::{global_settings::PermissionSet, SettingsRegistry},
+    service::SettingsRegistry,
     Error, Result,
 };
 
@@ -204,7 +204,6 @@ pub struct PermissionService {
     degradation_started: Arc<parking_lot::Mutex<Option<Instant>>>,
     /// Shared lifecycle state for invalidation listener tasks.
     invalidation_runtime: Arc<PermissionInvalidationRuntime>,
-    version_fence: Arc<dyn VersionFenceStore>,
     consistency: ConsistencyCoordinator,
 }
 
@@ -269,7 +268,6 @@ impl PermissionService {
             runtime.cache_ttl_secs,
             runtime.member_permission_cache_key_prefix.clone(),
         )
-        .expect("failed to create member permission cache")
     }
 
     fn build_room_settings_cache(runtime: &PermissionServiceRuntime) -> RoomSettingsCache {
@@ -283,18 +281,17 @@ impl PermissionService {
             runtime.cache_ttl_secs,
             runtime.room_settings_cache_key_prefix.clone(),
         )
-        .expect("failed to create permission room settings cache")
     }
 
     /// Create a new permission service with caching
-    #[must_use]
     pub fn new(
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
         cache_size: u64,
         cache_ttl_secs: u64,
-    ) -> Self {
+    ) -> Result<Self> {
+        let room_settings_repo = RoomSettingsRepository::new(room_repo.pool().clone());
         Self::new_with_runtime(
             member_repo,
             room_repo,
@@ -302,6 +299,7 @@ impl PermissionService {
                 settings_registry,
                 cache_size,
                 cache_ttl_secs,
+                room_settings_repo: Some(room_settings_repo),
                 ..PermissionServiceRuntime::default()
             },
         )
@@ -309,12 +307,11 @@ impl PermissionService {
 
     /// Create a permission service with all optional runtime collaborators wired
     /// at construction time.
-    #[must_use]
     pub fn new_with_runtime(
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
         runtime: PermissionServiceRuntime,
-    ) -> Self {
+    ) -> Result<Self> {
         let version_fence = runtime
             .version_fence
             .clone()
@@ -322,7 +319,7 @@ impl PermissionService {
         let member_permission_cache = Self::build_member_permission_cache(&runtime);
         let room_settings_cache = Self::build_room_settings_cache(&runtime);
 
-        Self {
+        Ok(Self {
             member_repo,
             room_repo,
             room_settings_repo: runtime.room_settings_repo,
@@ -340,48 +337,17 @@ impl PermissionService {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            version_fence: version_fence.clone(),
             consistency: ConsistencyCoordinator::new(version_fence),
-        }
-    }
-
-    /// Create a new permission service with cache invalidation support
-    ///
-    /// This enables cross-replica cache invalidation via Redis Pub/Sub.
-    /// When one node invalidates a permission cache, all other nodes are notified.
-    ///
-    /// On Pub/Sub lag, `invalidate_all()` is rate-limited to at most once per
-    /// `FLUSH_RATE_LIMIT_SECS` seconds. Between flushes, the service falls back
-    /// to `check_permission_no_cache` for all requests to avoid cache storms.
-    #[must_use]
-    pub fn with_invalidation(
-        member_repo: RoomMemberRepository,
-        room_repo: RoomRepository,
-        settings_registry: Option<Arc<SettingsRegistry>>,
-        cache_size: u64,
-        cache_ttl_secs: u64,
-        invalidation_service: Arc<dyn CacheInvalidationRuntime>,
-    ) -> Self {
-        Self::new_with_runtime(
-            member_repo,
-            room_repo,
-            PermissionServiceRuntime {
-                settings_registry,
-                cache_size,
-                cache_ttl_secs,
-                invalidation_service: Some(invalidation_service),
-                ..PermissionServiceRuntime::default()
-            },
-        )
+        })
     }
 
     /// Create a permission service without caching
-    #[must_use]
     pub fn without_cache(
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let room_settings_repo = RoomSettingsRepository::new(room_repo.pool().clone());
         Self::new_with_runtime(
             member_repo,
             room_repo,
@@ -389,6 +355,7 @@ impl PermissionService {
                 settings_registry,
                 cache_size: 1,
                 cache_ttl_secs: 1,
+                room_settings_repo: Some(room_settings_repo),
                 ..PermissionServiceRuntime::default()
             },
         )
@@ -424,15 +391,6 @@ impl PermissionService {
 
     fn invalidation_service(&self) -> Option<Arc<dyn CacheInvalidationRuntime>> {
         self.invalidation_service.service.read().clone()
-    }
-
-    pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        *self.invalidation_service.service.write() = Some(service);
-    }
-
-    pub fn set_version_fence_store(&mut self, store: Arc<dyn VersionFenceStore>) {
-        self.version_fence = store.clone();
-        self.consistency = ConsistencyCoordinator::new(store);
     }
 
     fn permission_domain(room_id: &RoomId, user_id: &UserId) -> CacheDomain {
@@ -572,11 +530,6 @@ impl PermissionService {
 
     pub fn has_invalidation_service(&self) -> bool {
         self.invalidation_service().is_some()
-    }
-
-    /// Replace the global settings registry used for role defaults.
-    pub fn set_settings_registry(&mut self, registry: Arc<SettingsRegistry>) {
-        self.settings_registry = Some(registry);
     }
 
     #[cfg(test)]
@@ -849,18 +802,13 @@ impl PermissionService {
         }
     }
 
-    /// Set the room settings repository
-    pub fn set_room_settings_repo(&mut self, repo: RoomSettingsRepository) {
-        self.room_settings_repo = Some(repo);
-    }
-
     /// Check if room settings repository is configured
     ///
-    /// Returns `true` if a room settings repository has been set via
-    /// `set_room_settings_repo()`, `false` otherwise.
+    /// Returns `true` if a room settings repository was provided through
+    /// `PermissionServiceRuntime`, `false` otherwise.
     ///
-    /// When `false`, permission checks will fall back to default `RoomSettings`,
-    /// which may ignore room-specific permission customizations.
+    /// When `false`, strong permission checks fail because room settings are
+    /// part of the authoritative permission model.
     #[must_use]
     pub const fn has_room_settings_repo(&self) -> bool {
         self.room_settings_repo.is_some()
@@ -868,8 +816,8 @@ impl PermissionService {
 
     /// Log a warning if `room_settings_repo` is not configured
     ///
-    /// Call this during application startup to ensure operators are aware
-    /// that room-specific permission settings will be ignored.
+    /// Call this during application startup to surface invalid service wiring
+    /// before authorization requests start failing.
     ///
     /// # Example
     ///
@@ -885,8 +833,8 @@ impl PermissionService {
         if !self.has_room_settings_repo() {
             tracing::warn!(
                 "PermissionService started without room_settings_repo; \
-                 all rooms will use default permission settings. \
-                 Call set_room_settings_repo() to enable room-specific permissions."
+                 strong permission checks will fail. \
+                 Provide room_settings_repo through PermissionServiceRuntime."
             );
         }
     }
@@ -949,55 +897,27 @@ impl PermissionService {
             .effective_for_member(member, room_settings)
     }
 
-    async fn runtime_permission_defaults_strong(&self) -> RuntimePermissionDefaults {
-        async fn read_default(
-            registry: &SettingsRegistry,
-            key: &str,
-            fallback: PermissionSet,
-        ) -> RoomPermissionSet {
-            registry
-                .storage
-                .settings_service()
-                .get(key)
-                .await
-                .ok()
-                .and_then(|setting| setting.value.parse::<PermissionSet>().ok())
-                .map_or_else(|| fallback.bits(), |permissions| permissions.bits())
-        }
-
+    fn runtime_permission_defaults_strong(&self) -> Result<RuntimePermissionDefaults> {
         let Some(registry) = &self.settings_registry else {
-            return RuntimePermissionDefaults::compiled();
+            return Ok(RuntimePermissionDefaults::compiled());
         };
 
-        RuntimePermissionDefaults {
-            admin: read_default(
-                registry,
-                "permissions.admin_default",
-                PermissionSet::admin_default(),
-            )
-            .await,
-            member: read_default(
-                registry,
-                "permissions.member_default",
-                PermissionSet::member_default(),
-            )
-            .await,
-            guest: read_default(
-                registry,
-                "permissions.guest_default",
-                PermissionSet::guest_default(),
-            )
-            .await,
-        }
+        Ok(RuntimePermissionDefaults {
+            admin: registry.admin_default_permissions.get()?.bits(),
+            member: registry.member_default_permissions.get()?.bits(),
+            guest: registry.guest_default_permissions.get()?.bits(),
+        })
     }
 
-    async fn effective_member_permissions_strong(
+    fn effective_member_permissions_strong(
         &self,
         member: &RoomMember,
         room_settings: &RoomSettings,
-    ) -> RoomPermissionSet {
-        EffectivePermissionCalculator::new(self.runtime_permission_defaults_strong().await)
-            .effective_for_member(member, room_settings)
+    ) -> Result<RoomPermissionSet> {
+        Ok(
+            EffectivePermissionCalculator::new(self.runtime_permission_defaults_strong()?)
+                .effective_for_member(member, room_settings),
+        )
     }
 
     #[must_use]
@@ -1127,21 +1047,15 @@ impl PermissionService {
             })?;
 
         // Get room settings for role defaults
-        let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
-            settings_repo.get(room_id).await?
-        } else {
-            tracing::warn!(
-                room_id = %room_id,
-                user_id = %user_id,
-                "room_settings_repo not configured, using default RoomSettings; \
-                 room-specific permission settings will be ignored"
-            );
-            RoomSettings::default()
-        };
+        let settings_repo = self.room_settings_repo.as_ref().ok_or_else(|| {
+            Error::Internal(
+                "PermissionService is missing room_settings_repo for strong permission checks"
+                    .to_string(),
+            )
+        })?;
+        let room_settings = settings_repo.get(room_id).await?;
 
-        Ok(self
-            .effective_member_permissions_strong(&member, &room_settings)
-            .await)
+        self.effective_member_permissions_strong(&member, &room_settings)
     }
 
     async fn load_member_permission_source(
@@ -1266,15 +1180,13 @@ impl PermissionService {
     }
 
     async fn refresh_room_settings_source(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
-        let (settings, version) = if let Some(ref settings_repo) = self.room_settings_repo {
-            settings_repo.get_with_version(room_id).await?
-        } else {
-            tracing::warn!(
-                room_id = %room_id,
-                "room_settings_repo not configured, using default RoomSettings"
-            );
-            (RoomSettings::default(), 0)
-        };
+        let settings_repo = self.room_settings_repo.as_ref().ok_or_else(|| {
+            Error::Internal(
+                "PermissionService is missing room_settings_repo for room settings refresh"
+                    .to_string(),
+            )
+        })?;
+        let (settings, version) = settings_repo.get_with_version(room_id).await?;
         let snapshot = RoomSettingsSnapshot { settings, version };
         self.consistency
             .repair_after_db_read(&Self::room_settings_domain(room_id), snapshot.version)
@@ -1375,15 +1287,12 @@ impl PermissionService {
             .refresh_member_permission_source(room_id, user_id)
             .await?;
         let settings = self.refresh_room_settings_source(room_id).await?;
-        Ok(self
-            .effective_member_permissions_strong(&source.to_room_member(), &settings.settings)
-            .await)
+        self.effective_member_permissions_strong(&source.to_room_member(), &settings.settings)
     }
 
     /// Get user's effective permissions with strong-read semantics.
     ///
-    /// Authorization must not depend on async invalidation delivery. For now,
-    /// the strong path uses the database as the authoritative source and then
+    /// Authorization uses the database as the authoritative source and then
     /// refreshes local cache for eventually-consistent callers.
     pub async fn get_user_permissions_strong(
         &self,
@@ -1407,12 +1316,10 @@ impl PermissionService {
                         fence.room_settings_fence_key.as_deref(),
                     )
                     .await?;
-                return Ok(self
-                    .effective_member_permissions_strong(
-                        &source.to_room_member(),
-                        &settings.settings,
-                    )
-                    .await);
+                return self.effective_member_permissions_strong(
+                    &source.to_room_member(),
+                    &settings.settings,
+                );
             }
             Ok(None) => {
                 ConsistencyCoordinator::record_db_fallback(
@@ -1454,9 +1361,7 @@ impl PermissionService {
                 "Failed to seed permission version fences after DB strong read"
             );
         }
-        Ok(self
-            .effective_member_permissions_strong(&source.to_room_member(), &settings.settings)
-            .await)
+        self.effective_member_permissions_strong(&source.to_room_member(), &settings.settings)
     }
 
     /// Get user's permissions during degraded mode (Pub/Sub lag)
@@ -1699,7 +1604,6 @@ impl PermissionService {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::cache::CacheKey;
@@ -1766,93 +1670,43 @@ mod tests {
         }
     }
 
-    // Helper to create a PermissionService using tokio runtime for PgPool
-    // Note: This function should NOT be called from within an async context
-    // (e.g., inside rt.block_on()). Use make_service_async() instead.
-    fn make_service() -> PermissionService {
-        // PgPool::connect_lazy requires a tokio runtime context
+    fn make_service_from_pool(
+        pool: sqlx::PgPool,
+        runtime: PermissionServiceRuntime,
+    ) -> PermissionService {
+        PermissionService::new_with_runtime(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool),
+            PermissionServiceRuntime {
+                cache_size: 10,
+                cache_ttl_secs: 60,
+                member_permission_cache_key_prefix: "member_permission:".to_string(),
+                room_settings_cache_key_prefix: "room_settings:".to_string(),
+                ..runtime
+            },
+        )
+        .expect("permission service should build")
+    }
+
+    fn make_service_with_runtime(runtime: PermissionServiceRuntime) -> PermissionService {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let pool = rt.block_on(async {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
         });
-        PermissionService {
-            member_repo: RoomMemberRepository::new(pool.clone()),
-            room_repo: RoomRepository::new(pool),
-            room_settings_repo: None,
-            member_permission_cache: MemberPermissionCache::new(
-                Arc::new(NoopCacheL2),
-                10,
-                60,
-                60,
-                "member_permission:".to_string(),
-            )
-            .unwrap(),
-            room_settings_cache: RoomSettingsCache::new(
-                Arc::new(NoopCacheL2),
-                10,
-                60,
-                60,
-                "room_settings:".to_string(),
-            )
-            .unwrap(),
-            settings_registry: None,
-            invalidation_service: Arc::new(SharedInvalidationService::default()),
-            cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(
-                Instant::now()
-                    .checked_sub(Duration::from_secs(
-                        PermissionService::FLUSH_RATE_LIMIT_SECS,
-                    ))
-                    .unwrap_or(Instant::now()),
-            )),
-            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
-            invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
-            consistency: ConsistencyCoordinator::new(Arc::new(crate::cache::NoopVersionFenceStore)),
-        }
+        make_service_from_pool(pool, runtime)
     }
 
-    // Helper to create a PermissionService within an async context
-    // This should be called from inside rt.block_on() or async tests
-    fn make_service_async() -> PermissionService {
-        // PgPool::connect_lazy requires a tokio runtime context
-        // When called from within an async context, we can use the current context
+    fn make_service() -> PermissionService {
+        make_service_with_runtime(PermissionServiceRuntime::default())
+    }
+
+    fn make_service_async_with_runtime(runtime: PermissionServiceRuntime) -> PermissionService {
         let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
-        PermissionService {
-            member_repo: RoomMemberRepository::new(pool.clone()),
-            room_repo: RoomRepository::new(pool),
-            room_settings_repo: None,
-            member_permission_cache: MemberPermissionCache::new(
-                Arc::new(NoopCacheL2),
-                10,
-                60,
-                60,
-                "member_permission:".to_string(),
-            )
-            .unwrap(),
-            room_settings_cache: RoomSettingsCache::new(
-                Arc::new(NoopCacheL2),
-                10,
-                60,
-                60,
-                "room_settings:".to_string(),
-            )
-            .unwrap(),
-            settings_registry: None,
-            invalidation_service: Arc::new(SharedInvalidationService::default()),
-            cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(
-                Instant::now()
-                    .checked_sub(Duration::from_secs(
-                        PermissionService::FLUSH_RATE_LIMIT_SECS,
-                    ))
-                    .unwrap_or(Instant::now()),
-            )),
-            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
-            invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
-            consistency: ConsistencyCoordinator::new(Arc::new(crate::cache::NoopVersionFenceStore)),
-        }
+        make_service_from_pool(pool, runtime)
+    }
+
+    fn make_service_async() -> PermissionService {
+        make_service_async_with_runtime(PermissionServiceRuntime::default())
     }
 
     fn make_member(role: RoomRole) -> RoomMember {
@@ -1878,7 +1732,8 @@ mod tests {
             None,
             PermissionService::DEFAULT_CACHE_SIZE,
             PermissionService::DEFAULT_CACHE_TTL_SECS,
-        );
+        )
+        .expect("permission service should build");
         assert!(
             !service.consistency.is_authoritative(),
             "standalone PermissionService::new must not create a private authoritative fence"
@@ -1888,7 +1743,8 @@ mod tests {
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool),
             PermissionServiceRuntime::default(),
-        );
+        )
+        .expect("permission service should build");
         assert!(
             !service.consistency.is_authoritative(),
             "new_with_runtime without an explicit shared fence must remain non-authoritative"
@@ -1908,9 +1764,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_removed_member_seed_uses_lifecycle_version_and_invalidation_does_not_advance() {
-        let mut service = make_service_async();
         let fence = Arc::new(RecordingVersionFenceStore::default());
-        service.set_version_fence_store(fence.clone());
+        let service = make_service_async_with_runtime(PermissionServiceRuntime {
+            version_fence: Some(fence.clone()),
+            ..PermissionServiceRuntime::default()
+        });
         let room_id = RoomId::expect_positive(1);
         let user_id = UserId::expect_positive(2);
         let domain = PermissionService::permission_domain(&room_id, &user_id);
@@ -1935,9 +1793,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_added_member_seed_does_not_advance_permission_fence() {
-        let mut service = make_service_async();
         let fence = Arc::new(RecordingVersionFenceStore::default());
-        service.set_version_fence_store(fence.clone());
+        let service = make_service_async_with_runtime(PermissionServiceRuntime {
+            version_fence: Some(fence.clone()),
+            ..PermissionServiceRuntime::default()
+        });
         let room_id = RoomId::expect_positive(1);
         let user_id = UserId::expect_positive(2);
         let domain = PermissionService::permission_domain(&room_id, &user_id);
@@ -1975,8 +1835,10 @@ mod tests {
 
     #[test]
     fn test_room_level_add_permissions_for_member() {
-        let mut settings = RoomSettings::default();
-        settings.member_added_permissions = MemberAddedPermissions(RoomMemberPermissionBits::CHAT);
+        let settings = RoomSettings {
+            member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::CHAT),
+            ..RoomSettings::default()
+        };
         let perms = PermissionService::calculate_role_default_permissions_from_base(
             &RoomRole::Member,
             &settings,
@@ -1988,9 +1850,10 @@ mod tests {
     #[test]
     fn test_room_level_remove_permissions_for_member() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.member_removed_permissions =
-            MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
+        let settings = RoomSettings {
+            member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Member, &settings);
         assert!(!perms.has(crate::models::RoomPermission::CHAT));
         assert!(perms.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
@@ -1999,11 +1862,13 @@ mod tests {
     #[test]
     fn test_room_level_add_and_remove_for_admin() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.admin_added_permissions =
-            AdminAddedPermissions(RoomAdminPermissionBits::PLAY_CONTROL);
-        settings.admin_removed_permissions =
-            AdminRemovedPermissions(RoomAdminPermissionBits::KICK_MEMBER);
+        let settings = RoomSettings {
+            admin_added_permissions: AdminAddedPermissions(RoomAdminPermissionBits::PLAY_CONTROL),
+            admin_removed_permissions: AdminRemovedPermissions(
+                RoomAdminPermissionBits::KICK_MEMBER,
+            ),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
         assert!(perms.has(crate::models::RoomPermission::PLAY_CONTROL));
         assert!(!perms.has(crate::models::RoomPermission::KICK_MEMBER));
@@ -2012,8 +1877,10 @@ mod tests {
     #[test]
     fn test_room_overrides_do_not_affect_creator() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.admin_removed_permissions = AdminRemovedPermissions(RoomAdminPermissionBits::ALL);
+        let settings = RoomSettings {
+            admin_removed_permissions: AdminRemovedPermissions(RoomAdminPermissionBits::ALL),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Creator, &settings);
         assert_eq!(perms.0, RoomPermissionSet::all().0);
     }
@@ -2075,11 +1942,11 @@ mod tests {
     #[test]
     fn test_three_layer_permission_chain() {
         // Layer 2: Room adds USE_WEBRTC, removes CHAT
-        let mut settings = RoomSettings::default();
-        settings.member_added_permissions =
-            MemberAddedPermissions(RoomMemberPermissionBits::USE_WEBRTC);
-        settings.member_removed_permissions =
-            MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
+        let settings = RoomSettings {
+            member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
+            member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
+            ..RoomSettings::default()
+        };
         let role_default = PermissionService::calculate_role_default_permissions_from_base(
             &RoomRole::Member,
             &settings,
@@ -2158,8 +2025,10 @@ mod tests {
     #[test]
     fn test_room_rejects_chat_for_guest() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.guest_added_permissions = GuestAddedPermissions(1 << 21);
+        let settings = RoomSettings {
+            guest_added_permissions: GuestAddedPermissions(1 << 21),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         assert!(!perms.has(crate::models::RoomPermission::CHAT));
         assert!(!perms.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
@@ -2168,9 +2037,10 @@ mod tests {
     #[test]
     fn test_room_adds_webrtc_for_guest() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.guest_added_permissions =
-            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
+        let settings = RoomSettings {
+            guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         assert!(perms.has(crate::models::RoomPermission::USE_WEBRTC));
         assert!(!perms.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
@@ -2179,8 +2049,10 @@ mod tests {
     #[test]
     fn test_room_removes_view_media_resources_for_guest() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.guest_removed_permissions = GuestRemovedPermissions(1 << 21);
+        let settings = RoomSettings {
+            guest_removed_permissions: GuestRemovedPermissions(1 << 21),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         assert!(!perms.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
     }
@@ -2199,9 +2071,10 @@ mod tests {
 
         // Layer 1: Global defaults for Guest (no media resource permissions)
         // Layer 2: Room adds WebRTC for guests
-        let mut settings = RoomSettings::default();
-        settings.guest_added_permissions =
-            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
+        let settings = RoomSettings {
+            guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+            ..RoomSettings::default()
+        };
         let role_default = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         assert!(!role_default.has(crate::models::RoomPermission::VIEW_MEDIA_RESOURCES));
         assert!(role_default.has(crate::models::RoomPermission::USE_WEBRTC));
@@ -2219,9 +2092,12 @@ mod tests {
         let service = make_service();
 
         // Layer 2: Room removes KICK_MEMBER for admins
-        let mut settings = RoomSettings::default();
-        settings.admin_removed_permissions =
-            AdminRemovedPermissions(RoomAdminPermissionBits::KICK_MEMBER);
+        let settings = RoomSettings {
+            admin_removed_permissions: AdminRemovedPermissions(
+                RoomAdminPermissionBits::KICK_MEMBER,
+            ),
+            ..RoomSettings::default()
+        };
         let role_default = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
         assert!(!role_default.has(crate::models::RoomPermission::KICK_MEMBER));
         assert!(role_default.has(crate::models::RoomPermission::SET_MEMBER_PERMISSIONS));
@@ -2251,11 +2127,11 @@ mod tests {
     #[test]
     fn test_creator_always_all_regardless_of_room_settings() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        // Try to restrict creator via room settings
-        settings.admin_removed_permissions = AdminRemovedPermissions(RoomAdminPermissionBits::ALL);
-        settings.member_removed_permissions =
-            MemberRemovedPermissions(RoomMemberPermissionBits::ALL);
+        let settings = RoomSettings {
+            admin_removed_permissions: AdminRemovedPermissions(RoomAdminPermissionBits::ALL),
+            member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::ALL),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Creator, &settings);
         assert_eq!(perms.0, RoomPermissionSet::all().0);
     }
@@ -2299,12 +2175,11 @@ mod tests {
     #[test]
     fn test_room_level_add_and_remove_same_permission_for_member() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        // Both add and remove CHAT at room level:
-        // Result: (default | add) & ~remove => CHAT is removed
-        settings.member_added_permissions = MemberAddedPermissions(RoomMemberPermissionBits::CHAT);
-        settings.member_removed_permissions =
-            MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
+        let settings = RoomSettings {
+            member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::CHAT),
+            member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Member, &settings);
         // Remove is applied after add, so CHAT should be absent
         assert!(!perms.has(crate::models::RoomPermission::CHAT));
@@ -2313,11 +2188,11 @@ mod tests {
     #[test]
     fn test_room_level_add_and_remove_same_permission_for_guest() {
         let service = make_service();
-        let mut settings = RoomSettings::default();
-        settings.guest_added_permissions =
-            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
-        settings.guest_removed_permissions =
-            GuestRemovedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
+        let settings = RoomSettings {
+            guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+            guest_removed_permissions: GuestRemovedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+            ..RoomSettings::default()
+        };
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         // Remove wins over add
         assert!(!perms.has(crate::models::RoomPermission::USE_WEBRTC));
@@ -2350,28 +2225,36 @@ mod tests {
     }
 
     #[test]
-    fn test_has_room_settings_repo_returns_true_after_set() {
-        let mut service = make_service();
-
-        // Create a RoomSettingsRepository
+    fn test_has_room_settings_repo_returns_true_when_configured() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let pool = rt.block_on(async {
+        let member_pool = rt.block_on(async {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
         });
-        let settings_repo = RoomSettingsRepository::new(pool);
+        let room_pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let settings_pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let member_repo = RoomMemberRepository::new(member_pool);
+        let room_repo = RoomRepository::new(room_pool);
+        let settings_repo = RoomSettingsRepository::new(settings_pool);
 
-        // Initially false
-        assert!(!service.has_room_settings_repo());
+        let service = PermissionService::new_with_runtime(
+            member_repo,
+            room_repo,
+            PermissionServiceRuntime {
+                room_settings_repo: Some(settings_repo),
+                ..PermissionServiceRuntime::default()
+            },
+        )
+        .expect("permission service should build");
 
-        // Set the repository
-        service.set_room_settings_repo(settings_repo);
-
-        // Now returns true
         assert!(service.has_room_settings_repo());
     }
 
     #[test]
-    fn test_without_cache_has_no_room_settings_repo() {
+    fn test_without_cache_builds_room_settings_repo_from_room_pool() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let pool = rt.block_on(async {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
@@ -2381,20 +2264,22 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
         }));
 
-        let service = PermissionService::without_cache(member_repo, room_repo, None);
-        assert!(!service.has_room_settings_repo());
+        let service = PermissionService::without_cache(member_repo, room_repo, None)
+            .expect("permission service should build");
+        assert!(service.has_room_settings_repo());
     }
 
     #[test]
-    fn test_set_invalidation_service_propagates_to_clones() {
-        let mut service = make_service();
-        let cloned = service.clone();
+    fn test_invalidation_service_configured_at_construction_propagates_to_clones() {
         let invalidation_service = Arc::new(crate::cache::CacheInvalidationService::new(
             "permission-clone-node".to_string(),
             "permission-clone-stream".to_string(),
         ));
-
-        service.set_invalidation_service(invalidation_service);
+        let service = make_service_with_runtime(PermissionServiceRuntime {
+            invalidation_service: Some(invalidation_service),
+            ..PermissionServiceRuntime::default()
+        });
+        let cloned = service.clone();
 
         assert!(
             service.has_invalidation_service(),
@@ -2404,30 +2289,6 @@ mod tests {
             cloned.has_invalidation_service(),
             "cloned permission services must share the injected invalidation service"
         );
-    }
-
-    #[test]
-    fn test_set_room_settings_repo_can_be_called_multiple_times() {
-        let mut service = make_service();
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let pool1 = rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        });
-        let pool2 = rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        });
-
-        let settings_repo1 = RoomSettingsRepository::new(pool1);
-        let settings_repo2 = RoomSettingsRepository::new(pool2);
-
-        // Set first repo
-        service.set_room_settings_repo(settings_repo1);
-        assert!(service.has_room_settings_repo());
-
-        // Replace with second repo - should work without panicking
-        service.set_room_settings_repo(settings_repo2);
-        assert!(service.has_room_settings_repo());
     }
 
     #[test]
@@ -2460,9 +2321,7 @@ mod tests {
         );
     }
 
-    /// Helper to create a PermissionService with invalidation service for tests
-    /// This version creates services without needing a nested runtime.
-    fn make_service_with_invalidation_no_rt() -> (
+    fn make_service_with_invalidation() -> (
         PermissionService,
         Arc<crate::cache::CacheInvalidationService>,
     ) {
@@ -2481,25 +2340,46 @@ mod tests {
             "test-stream".to_string(),
         ));
 
-        let service = PermissionService::with_invalidation(
+        let service = PermissionService::new_with_runtime(
             member_repo,
             room_repo,
-            None,
-            10,
-            60,
-            invalidation_service.clone(),
-        );
+            PermissionServiceRuntime {
+                cache_size: 10,
+                cache_ttl_secs: 60,
+                invalidation_service: Some(invalidation_service.clone()),
+                ..PermissionServiceRuntime::default()
+            },
+        )
+        .expect("permission service should build");
 
         (service, invalidation_service)
     }
 
+    fn permission_service_with_invalidation(
+        member_repo: RoomMemberRepository,
+        room_repo: RoomRepository,
+        invalidation_service: Arc<dyn CacheInvalidationRuntime>,
+    ) -> PermissionService {
+        PermissionService::new_with_runtime(
+            member_repo,
+            room_repo,
+            PermissionServiceRuntime {
+                cache_size: 10,
+                cache_ttl_secs: 60,
+                invalidation_service: Some(invalidation_service),
+                ..PermissionServiceRuntime::default()
+            },
+        )
+        .expect("permission service should build")
+    }
+
     #[tokio::test]
-    async fn test_with_invalidation_does_not_start_tasks_until_explicit_start() {
-        let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+    async fn test_runtime_invalidation_does_not_start_tasks_until_explicit_start() {
+        let (service, _invalidation_service) = make_service_with_invalidation();
 
         assert!(
             !service.invalidation_tasks_started(),
-            "with_invalidation must not spawn background tasks during construction"
+            "permission service construction must not spawn background tasks"
         );
 
         service.start().await.expect("start should succeed");
@@ -2519,7 +2399,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_degraded_mode_auto_recovers_after_timeout_and_flushes_caches() {
-        let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+        let (service, _invalidation_service) = make_service_with_invalidation();
 
         service.cache_degraded.store(true, Ordering::Release);
         *service.degradation_started.lock() = Some(
@@ -2546,7 +2426,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_degraded_mode_recovers_on_invalidation_message() {
-        let (service, invalidation_service) = make_service_with_invalidation_no_rt();
+        let (service, invalidation_service) = make_service_with_invalidation();
 
         service.cache_degraded.store(true, Ordering::Release);
         *service.degradation_started.lock() = Some(Instant::now());
@@ -2615,7 +2495,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_can_restart_after_shutdown() {
-        let (service, invalidation_service) = make_service_with_invalidation_no_rt();
+        let (service, invalidation_service) = make_service_with_invalidation();
 
         service.start().await.expect("initial start should succeed");
         service.shutdown().await;
@@ -2646,7 +2526,7 @@ mod tests {
     fn test_invalidate_cache_local_clear_works() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+            let (service, _invalidation_service) = make_service_with_invalidation();
             let room_id = RoomId::expect_positive(1);
             let user_id = UserId::expect_positive(1);
             let cache_key = MemberPermissionKey::new(room_id, user_id);
@@ -2688,7 +2568,7 @@ mod tests {
     fn test_invalidate_room_cache_local_clear_works() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let (service, invalidation_service) = make_service_with_invalidation_no_rt();
+            let (service, invalidation_service) = make_service_with_invalidation();
             let mut receiver = invalidation_service.subscribe();
             let room_id = RoomId::expect_positive(1);
 
@@ -2719,7 +2599,7 @@ mod tests {
     fn test_clear_cache_local_clear_works() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+            let (service, _invalidation_service) = make_service_with_invalidation();
             let room_id = RoomId::expect_positive(1);
             let user_id = UserId::expect_positive(1);
             let cache_key = MemberPermissionKey::new(room_id, user_id);
@@ -2791,12 +2671,9 @@ mod tests {
                 sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
             );
 
-            let service = PermissionService::with_invalidation(
+            let service = permission_service_with_invalidation(
                 member_repo,
                 room_repo,
-                None,
-                10,
-                60,
                 invalidation_service.clone(),
             );
 
@@ -2863,12 +2740,9 @@ mod tests {
                 sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
             );
 
-            let service = PermissionService::with_invalidation(
+            let service = permission_service_with_invalidation(
                 member_repo,
                 room_repo,
-                None,
-                10,
-                60,
                 invalidation_service.clone(),
             );
 
@@ -2927,12 +2801,9 @@ mod tests {
                 sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
             );
 
-            let service = PermissionService::with_invalidation(
+            let service = permission_service_with_invalidation(
                 member_repo,
                 room_repo,
-                None,
-                10,
-                60,
                 invalidation_service.clone(),
             );
 

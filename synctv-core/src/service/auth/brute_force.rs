@@ -72,7 +72,7 @@ static RECORD_FAILURE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
             if ok and state and state.count then
                 count = tonumber(state.count) or 0
             else
-                count = tonumber(raw) or 0
+                return redis.error_reply('invalid brute-force attempt state')
             end
         end
         count = count + 1
@@ -307,12 +307,26 @@ const IP_LOCKOUT_SECS: u64 = 600;
 /// TTL for the per-IP failure counter (10 minutes).
 pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 
-fn nonnegative_i64_to_u64(value: i64) -> u64 {
-    u64::try_from(value.max(0)).unwrap_or_default()
+fn nonnegative_elapsed_secs(now: i64, last_failure_at: i64) -> u64 {
+    u64::try_from(now.saturating_sub(last_failure_at)).unwrap_or(0)
 }
 
-fn u64_to_i64_saturating(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn u64_to_i64(value: u64, field: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::InvalidInput(format!("{field} exceeds i64::MAX")))
+}
+
+fn parse_redis_attempt_state(key: &str, raw: &str) -> Result<(u64, i64)> {
+    if let Ok(state) = serde_json::from_str::<BruteForceState>(raw) {
+        return Ok((state.count, state.last_failure_at));
+    }
+    tracing::error!(
+        key = %key,
+        raw_len = raw.len(),
+        "Invalid brute-force attempt state in Redis"
+    );
+    Err(Error::ServiceUnavailable(
+        "Brute-force protection state is invalid; please try again later".to_string(),
+    ))
 }
 
 async fn run_with_control<T, F>(control: Option<&ExecutionControl>, future: F) -> Result<T>
@@ -799,12 +813,8 @@ impl AttemptTracker for RedisAttemptTracker {
 
         match redis_result {
             Ok(Some(raw)) => {
-                if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
-                    self.clear_degraded();
-                    return Ok((state.count, state.last_failure_at));
-                }
                 self.clear_degraded();
-                Ok((0, 0))
+                parse_redis_attempt_state(key, &raw)
             }
             Ok(None) => {
                 self.clear_degraded();
@@ -838,7 +848,7 @@ impl AttemptTracker for RedisAttemptTracker {
             RECORD_FAILURE_SCRIPT
                 .key(key)
                 .arg(now)
-                .arg(u64_to_i64_saturating(ttl_secs))
+                .arg(u64_to_i64(ttl_secs, "brute-force record TTL")?)
                 .invoke_async(&mut conn),
         )
         .await
@@ -1048,9 +1058,7 @@ impl BruteForceProtection {
                 profile.key_prefix().to_string(),
             )),
             SharedStateMode::SharedBestEffort => Ok(Self::with_redis_runtime(
-                profile
-                    .shared_runtime()
-                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.best_effort_shared_runtime("brute-force protection state")?,
                 profile.key_prefix().to_string(),
             )),
             SharedStateMode::LocalOnly => Ok(Self::in_memory(profile.key_prefix().to_string())),
@@ -1118,13 +1126,6 @@ impl BruteForceProtection {
         } else {
             None
         }
-    }
-
-    /// Test-only method to check lockout duration for a given attempt count.
-    #[cfg(test)]
-    #[must_use]
-    pub const fn lockout_duration_for_test(&self, attempts: u64) -> Option<u64> {
-        self.lockout_duration_with_config(attempts)
     }
 
     /// Test-only accessor for the username tracker.
@@ -1202,7 +1203,7 @@ impl BruteForceProtection {
                 run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
-                let elapsed = nonnegative_i64_to_u64(now - ip_last_failure_at);
+                let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
                 if elapsed < self.config.ip_lockout_secs {
                     let remaining = self.config.ip_lockout_secs - elapsed;
                     tracing::warn!(
@@ -1224,7 +1225,7 @@ impl BruteForceProtection {
         let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
-            let elapsed = nonnegative_i64_to_u64(now - last_failure_at);
+            let elapsed = nonnegative_elapsed_secs(now, last_failure_at);
             if elapsed < lockout_secs {
                 let remaining = lockout_secs - elapsed;
                 tracing::warn!(
@@ -1350,7 +1351,7 @@ impl BruteForceProtection {
                 run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
-                let elapsed = nonnegative_i64_to_u64(now - ip_last_failure_at);
+                let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
                 if elapsed < self.config.ip_lockout_secs {
                     let remaining = self.config.ip_lockout_secs - elapsed;
                     tracing::warn!(
@@ -1537,7 +1538,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1601,7 +1602,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1631,29 +1632,29 @@ mod tests {
     #[test]
     fn test_lockout_duration_standard_thresholds() {
         let protection = BruteForceProtection::in_memory("test".to_string());
-        assert_eq!(protection.lockout_duration_for_test(4), None);
+        assert_eq!(protection.lockout_duration_with_config(4), None);
         assert_eq!(
-            protection.lockout_duration_for_test(5),
+            protection.lockout_duration_with_config(5),
             Some(TIER1_LOCKOUT_SECS)
         );
         assert_eq!(
-            protection.lockout_duration_for_test(9),
+            protection.lockout_duration_with_config(9),
             Some(TIER1_LOCKOUT_SECS)
         );
         assert_eq!(
-            protection.lockout_duration_for_test(10),
+            protection.lockout_duration_with_config(10),
             Some(TIER2_LOCKOUT_SECS)
         );
         assert_eq!(
-            protection.lockout_duration_for_test(14),
+            protection.lockout_duration_with_config(14),
             Some(TIER2_LOCKOUT_SECS)
         );
         assert_eq!(
-            protection.lockout_duration_for_test(15),
+            protection.lockout_duration_with_config(15),
             Some(TIER3_LOCKOUT_SECS)
         );
         assert_eq!(
-            protection.lockout_duration_for_test(100),
+            protection.lockout_duration_with_config(100),
             Some(TIER3_LOCKOUT_SECS)
         );
     }
@@ -1766,5 +1767,25 @@ mod tests {
             }
             other => panic!("expected ServiceUnavailable, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_redis_attempt_state_accepts_json_state() {
+        let raw = r#"{"count":7,"last_failure_at":12345}"#;
+        let parsed =
+            parse_redis_attempt_state("login:user", raw).expect("valid JSON state should parse");
+
+        assert_eq!(parsed, (7, 12345));
+    }
+
+    #[test]
+    fn test_parse_redis_attempt_state_rejects_corrupt_state() {
+        let err = parse_redis_attempt_state("login:user", "{bad json")
+            .expect_err("corrupt state should fail closed");
+
+        assert!(
+            matches!(err, Error::ServiceUnavailable(ref message) if message.contains("state is invalid")),
+            "unexpected error: {err}"
+        );
     }
 }

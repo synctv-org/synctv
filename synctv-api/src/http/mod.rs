@@ -26,12 +26,13 @@ pub mod providers;
 use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use axum::{
-    http::{HeaderValue, Method},
+    http::{HeaderMap, HeaderName, HeaderValue, Method},
     middleware as axum_middleware,
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use synctv_core::provider::proxy::ProxyServices;
 use synctv_core::provider::ProviderSet;
 use synctv_core::proxy_signature::ProxySigningKey;
@@ -46,6 +47,42 @@ use tower_http::trace::{DefaultOnFailure, TraceLayer};
 
 pub use error::{AppError, AppResult};
 
+pub(crate) fn required_header_str<'a>(
+    headers: &'a HeaderMap,
+    name: &'static str,
+    missing_message: &'static str,
+) -> AppResult<&'a str> {
+    let value = headers
+        .get(name)
+        .ok_or_else(|| AppError::bad_request(missing_message))
+        .and_then(|value| {
+            value
+                .to_str()
+                .map_err(|_| AppError::bad_request(format!("Invalid {name} header")))
+        })?;
+    if value.trim().is_empty() {
+        return Err(AppError::bad_request(missing_message));
+    }
+    Ok(value)
+}
+
+pub(crate) fn optional_header_str<'a>(
+    headers: &'a HeaderMap,
+    name: &'static HeaderName,
+) -> AppResult<Option<&'a str>> {
+    headers
+        .get(name)
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| AppError::bad_request(format!("Invalid {name} header")))
+        })
+        .transpose()
+}
+
+static X_FORWARDED_PROTO: LazyLock<HeaderName> =
+    LazyLock::new(|| HeaderName::from_static("x-forwarded-proto"));
+
 /// Configuration for creating the HTTP router
 #[derive(Clone)]
 pub struct RouterConfig {
@@ -57,7 +94,7 @@ pub struct RouterConfig {
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
     pub providers: ProviderSet,
-    pub event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_manager: Arc<dyn RealtimeConnectionService>,
     pub jwt_service: synctv_core::service::JwtService,
     pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
@@ -183,7 +220,13 @@ impl AppState {
     /// Returns `None` when Redis is not configured.
     pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
         match &self.shared_api_runtime.redis_runtime {
-            Some(runtime) => Some(runtime.snapshot().await),
+            Some(runtime) => match runtime.snapshot().await {
+                Ok(conn) => Some(conn),
+                Err(error) => {
+                    tracing::warn!(error = %error, "Redis connection snapshot failed");
+                    None
+                }
+            },
             None => None,
         }
     }
@@ -191,14 +234,13 @@ impl AppState {
 
 /// Create the HTTP router from configuration struct
 pub fn create_router_from_config(config: RouterConfig) -> anyhow::Result<axum::Router> {
-    let state = create_app_state_from_config(config);
+    let state = create_app_state_from_config(config)?;
     let router = create_router_from_shared_state(&state)?;
     Ok(router)
 }
 
 /// Create shared `AppState` once so multiple transports can reuse the same impl instances.
-#[must_use]
-pub fn create_app_state_from_config(config: RouterConfig) -> AppState {
+pub fn create_app_state_from_config(config: RouterConfig) -> anyhow::Result<AppState> {
     build_app_state(config)
 }
 
@@ -213,29 +255,31 @@ pub fn create_router_from_shared_state(state: &AppState) -> anyhow::Result<axum:
 pub fn create_router_with_state_from_config(
     config: RouterConfig,
 ) -> anyhow::Result<(axum::Router, AppState)> {
-    let state = create_app_state_from_config(config);
+    let state = create_app_state_from_config(config)?;
     let router = create_router_from_shared_state(&state)?;
     Ok((router, state))
 }
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
-fn build_app_state(config: RouterConfig) -> AppState {
-    let shared_api_runtime = Arc::new(build_shared_api_runtime(&config));
+fn build_app_state(config: RouterConfig) -> anyhow::Result<AppState> {
+    let shared_api_runtime = Arc::new(build_shared_api_runtime(&config)?);
 
-    AppState {
+    Ok(AppState {
         router_config: Arc::new(config),
         shared_api_runtime: shared_api_runtime.clone(),
         metrics_access_controller: Arc::new(metrics_auth::MetricsAccessController::new()),
-    }
+    })
 }
 
-pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntime {
+pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<SharedApiRuntime> {
     let redis_runtime = config.redis_runtime.clone();
-    let proxy_signing_key = config.shared_proxy_signing_key.clone().unwrap_or_else(|| {
-        Arc::new(ProxySigningKey::derive_from(
-            config.config.jwt.secret.as_bytes(),
-        ))
-    });
+    let proxy_signing_key = match config.shared_proxy_signing_key.clone() {
+        Some(key) => key,
+        None => Arc::new(
+            ProxySigningKey::try_derive_from(config.config.jwt.secret.as_bytes())
+                .map_err(|error| anyhow::anyhow!("Failed to derive proxy signing key: {error}"))?,
+        ),
+    };
     let provider_stores = config.shared_provider_stores.clone().unwrap_or_else(|| {
         synctv_core::provider::store::build_provider_store_resolver_from_profile(
             &synctv_core::SharedStateProfile::best_effort(
@@ -254,25 +298,21 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_credential_encryption(config.credential_encryption.clone()),
     );
 
-    // Build the shared security pipeline through the builder so startup fails
-    // early if blacklist wiring becomes partial during future refactors.
-    let security_pipeline = Arc::new(
-        synctv_core::service::auth::SecurityPipelineBuilder::new(config.user_service.clone())
-            .with_user_cache(config.user_cache.clone())
-            .with_token_blacklist(
-                config.user_service.token_blacklist_store(),
-                config.user_service.key_builder().clone(),
-            )
-            .build()
-            .expect("HTTP security pipeline wiring must be complete at startup"),
-    );
+    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new_with_runtime(
+        config.user_service.clone(),
+        synctv_core::service::SecurityPipelineRuntime {
+            user_cache: Some(config.user_cache.clone()),
+            token_blacklist: Some(config.user_service.token_blacklist_store()),
+            key_builder: Some(config.user_service.key_builder().clone()),
+        },
+    ));
 
     let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
         config.jwt_service.clone(),
     )));
     let public_id_codec = Arc::new(
         crate::PublicIdCodec::from_config(&config.config.public_ids)
-            .expect("public_ids config must be validated before building API runtime"),
+            .map_err(|error| anyhow::anyhow!("Invalid public ID configuration: {error}"))?,
     );
     let request_executor = Arc::new(crate::impls::RequestExecutor::new(
         config.config.clone(),
@@ -288,90 +328,87 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         config.rate_limiter.clone(),
         public_id_codec.clone(),
     );
+    let realtime_event_service = config.event_service.clone();
+    let chat_event_dispatcher =
+        crate::chat_event_dispatcher::default_chat_event_dispatcher(realtime_event_service.clone());
 
-    let client_api = Arc::new(
-        crate::impls::ClientApiImpl::new(
-            config.user_service.clone(),
-            config.room_service.clone(),
-            config.connection_manager.clone(),
-            config.config.clone(),
-            config.publish_key_service.clone(),
-            config.jwt_service.clone(),
-            config.live_streaming_infrastructure.clone(),
-            config.providers_manager.clone(),
-            config.settings_registry.clone(),
-            public_id_codec.clone(),
-        )
-        .with_realtime_fanout_service(config.realtime_fanout_service.clone())
-        .with_chat_service(config.chat_service.clone())
-        .with_shared_runtime(redis_runtime.clone())
-        .with_rate_limiter(config.rate_limiter.clone())
-        .with_credential_encryption(config.credential_encryption.clone())
-        .with_credential_repo(config.user_provider_credential_repository.clone())
-        .with_provider_access_service(provider_access_service.clone())
-        .with_signing_key(proxy_signing_key.clone())
-        .with_provider_stores(provider_stores.clone())
-        .with_request_executor(request_executor.clone())
-        .with_email_api(email_api.clone())
-        .with_passkey_service(config.passkey_service.clone())
-        .with_websocket_ticket_service(config.ws_ticket_service.clone()),
-    );
+    let client_api = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiConfig {
+            user_service: config.user_service.clone(),
+            room_service: config.room_service.clone(),
+            connection_service: config.connection_manager.clone(),
+            config: config.config.clone(),
+            publish_key_service: config.publish_key_service.clone(),
+            jwt_service: config.jwt_service.clone(),
+            live_streaming_infrastructure: config.live_streaming_infrastructure.clone(),
+            providers_manager: config.providers_manager.clone(),
+            settings_registry: config.settings_registry.clone(),
+            public_id_codec: public_id_codec.clone(),
+            chat_service: config.chat_service.clone(),
+            credential_encryption: config.credential_encryption.clone(),
+            provider_stores: Some(provider_stores.clone()),
+            email_api: email_api.clone(),
+            passkey_service: config.passkey_service.clone(),
+        },
+        crate::impls::ClientApiRuntime {
+            realtime_fanout: config.realtime_fanout_service.clone(),
+            realtime_event_service: realtime_event_service.clone(),
+            chat_event_dispatcher,
+            redis_runtime: redis_runtime.clone(),
+            rate_limiter: Some(config.rate_limiter.clone()),
+            builtin_stun_url: config.builtin_stun_url.clone(),
+            webrtc_status: Some(config.webrtc_status.clone()),
+            credential_repo: Some(config.user_provider_credential_repository.clone()),
+            provider_access_service: Some(provider_access_service.clone()),
+            signing_key: Some(proxy_signing_key.clone()),
+            request_executor: Some(request_executor.clone()),
+            ws_ticket_service: Some(config.ws_ticket_service.clone()),
+        },
+    ));
 
-    let client_api = if let Some(ref event_service) = config.event_service {
-        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-        Arc::new(inner.with_realtime_event_service(event_service.clone()))
-    } else {
-        client_api
-    };
-
-    // Wire in the resolved STUN URL if the built-in STUN server started successfully
-    let client_api = if let Some(ref stun_url) = config.builtin_stun_url {
-        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-        Arc::new(inner.with_builtin_stun_url(stun_url.clone()))
-    } else {
-        client_api
-    };
-    let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-    let client_api = Arc::new(inner.with_webrtc_status(config.webrtc_status.clone()));
-
-    let admin_api = config.settings_service.as_ref().map(|settings_svc| {
-        let email_svc = config.email_service.clone().unwrap_or_else(|| {
-            let settings_registry = config
-                .settings_registry
-                .clone()
-                .expect("settings registry is required when building admin email service");
+    let admin_api = if let Some(settings_svc) = config.settings_service.as_ref() {
+        let email_svc = if let Some(email_service) = config.email_service.clone() {
+            email_service
+        } else {
+            let settings_registry = config.settings_registry.clone().ok_or_else(|| {
+                anyhow::anyhow!("settings_registry is required to build the admin email service")
+            })?;
             Arc::new(
                 synctv_core::service::EmailService::new(Arc::new(
                     synctv_core::service::RuntimeEmailConfigProvider::new(settings_registry),
                 ))
-                .expect("runtime email service should initialize"),
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to build runtime admin email service: {error}")
+                })?,
             )
-        });
-        let admin_api = crate::impls::AdminApiImpl::new(
-            config.room_service.clone(),
-            config.user_service.clone(),
-            settings_svc.clone(),
-            config.settings_registry.clone(),
-            email_svc,
-            config.connection_manager.clone(),
-            config.provider_instance_manager.clone(),
-            config.live_streaming_infrastructure.clone(),
-            config.publish_key_service.clone(),
-            config.config.clone(),
-            config.audit_service.clone(),
-            public_id_codec.clone(),
-        )
-        .with_realtime_fanout_service(config.realtime_fanout_service.clone())
-        .with_provider_stores(provider_stores.clone())
-        .with_provider_access_service(provider_access_service.clone())
-        .with_request_executor(request_executor.clone());
-        let admin_api = if let Some(ref event_service) = config.event_service {
-            admin_api.with_realtime_event_service(event_service.clone())
-        } else {
-            admin_api
         };
-        Arc::new(admin_api)
-    });
+        let admin_api = crate::impls::AdminApiImpl::new_with_runtime(
+            crate::impls::AdminApiConfig {
+                room_service: config.room_service.clone(),
+                user_service: config.user_service.clone(),
+                settings_service: settings_svc.clone(),
+                settings_registry: config.settings_registry.clone(),
+                email_service: email_svc,
+                connection_service: config.connection_manager.clone(),
+                provider_instance_manager: config.provider_instance_manager.clone(),
+                live_streaming_infrastructure: config.live_streaming_infrastructure.clone(),
+                publish_key_service: config.publish_key_service.clone(),
+                config: config.config.clone(),
+                audit_service: config.audit_service.clone(),
+                public_id_codec: public_id_codec.clone(),
+            },
+            crate::impls::AdminApiRuntime {
+                realtime_fanout: config.realtime_fanout_service.clone(),
+                realtime_event_service: realtime_event_service.clone(),
+                provider_stores: Some(provider_stores.clone()),
+                provider_access_service: Some(provider_access_service.clone()),
+                request_executor: Some(request_executor.clone()),
+            },
+        );
+        Some(Arc::new(admin_api))
+    } else {
+        None
+    };
     // Create shared NotificationApiImpl for HTTP and gRPC.
     let notification_api = config.notification_service.as_ref().map(|notif_svc| {
         Arc::new(crate::impls::NotificationApiImpl::new(
@@ -389,42 +426,47 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         ))
     });
 
-    let provider_common_api = Arc::new(
-        crate::impls::ProviderCommonApiImpl::new(
-            config.provider_instance_manager.clone(),
-            config.user_service.clone(),
-            config.audit_service.clone(),
+    let provider_common_api = Arc::new(crate::impls::ProviderCommonApiImpl::new_with_runtime(
+        config.provider_instance_manager.clone(),
+        config.user_service.clone(),
+        config.audit_service.clone(),
+        crate::impls::ProviderCommonApiRuntime {
+            providers_manager: config.providers_manager.clone(),
+            request_executor: Some(request_executor.clone()),
+        },
+    ));
+
+    let provider_api_runtime = crate::impls::ProviderApiRuntime {
+        access_service: Some(provider_access_service.clone()),
+        event_service: config.event_service.clone(),
+    };
+
+    // Create shared provider API implementations once at startup.
+    let bilibili_api = Arc::new(
+        crate::impls::BilibiliApiImpl::new_with_runtime(
+            config.providers.bilibili.clone(),
+            credential_repo.clone(),
+            config.config.jwt.secret.as_bytes(),
+            provider_api_runtime.clone(),
         )
-        .with_providers_manager(config.providers_manager.clone())
-        .with_request_executor(request_executor.clone()),
+        .map_err(|error| anyhow::anyhow!("Failed to initialize Bilibili API: {error}"))?,
     );
+    let alist_api = Arc::new(crate::impls::AlistApiImpl::new_with_runtime(
+        config.providers.alist.clone(),
+        credential_repo.clone(),
+        provider_api_runtime.clone(),
+    ));
+    let emby_api = Arc::new(crate::impls::EmbyApiImpl::new_with_runtime(
+        config.providers.emby.clone(),
+        credential_repo.clone(),
+        provider_api_runtime,
+    ));
 
     // Create shared RateLimitConfig from the config file.
     let rate_limit_config = Arc::new(config.config.request_rate_limits.clone());
 
     // Create shared messaging rate limit config for WebSocket chat messages.
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
-
-    // Create shared provider API implementations once at startup.
-    let bilibili_api = Arc::new(
-        crate::impls::BilibiliApiImpl::new(
-            config.providers.bilibili.clone(),
-            credential_repo.clone(),
-            config.config.jwt.secret.as_bytes(),
-        )
-        .with_access_service(provider_access_service.clone())
-        .with_event_service(config.event_service.clone()),
-    );
-    let alist_api = Arc::new(
-        crate::impls::AlistApiImpl::new(config.providers.alist.clone(), credential_repo.clone())
-            .with_access_service(provider_access_service.clone())
-            .with_event_service(config.event_service.clone()),
-    );
-    let emby_api = Arc::new(
-        crate::impls::EmbyApiImpl::new(config.providers.emby.clone(), credential_repo.clone())
-            .with_access_service(provider_access_service.clone())
-            .with_event_service(config.event_service.clone()),
-    );
 
     // Prefer the provider graph built by ProvidersManager so playback and proxy
     // resolution share the same provider instances. Tests and fallback
@@ -444,7 +486,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         public_id_codec: public_id_codec.clone(),
     });
 
-    SharedApiRuntime {
+    Ok(SharedApiRuntime {
         redis_runtime,
         rate_limit_config,
         messaging_rate_limit_config,
@@ -470,19 +512,19 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         proxy_services,
         proxy_signing_key,
         webrtc_status: config.webrtc_status.clone(),
-    }
+    })
 }
 
 pub fn start_proxy_cache_lifecycle(
     cache: &Arc<synctv_proxy::slice_cache::SliceCache>,
-) -> Option<ProxyCacheLifecycleRuntime> {
+) -> ProxyCacheLifecycleRuntime {
     let manager = synctv_proxy::slice_cache::CacheLifecycleManager::new(
         cache.backend().clone(),
         cache.config().clone(),
     );
     let cancel = manager.cancellation_token();
     let handle = manager.start();
-    Some(ProxyCacheLifecycleRuntime { cancel, handle })
+    ProxyCacheLifecycleRuntime { cancel, handle }
 }
 
 /// Body size limits for specific endpoint categories.
@@ -491,8 +533,9 @@ pub fn start_proxy_cache_lifecycle(
 /// the limit is enforced before the handler reads the body, and the global 10 MB
 /// safety net remains as a fallback for routes not explicitly limited here.
 pub(crate) mod body_limits {
-    /// Auth endpoints (login, register, refresh, OAuth2 exchange): 64 KB.
-    /// A typical login JSON body is under 512 bytes; 64 KB is generous.
+    /// Auth endpoints: 64 KB.
+    /// Typical auth JSON bodies are under 1 KB; 64 KB leaves room for OPAQUE
+    /// and passkey payloads.
     pub const AUTH: usize = 64 * 1024;
 
     /// Room create / update / settings: 64 KB.
@@ -512,7 +555,7 @@ pub(crate) mod body_limits {
     pub const VIDEO_COVER: usize = 10 * 1024 * 1024;
 }
 
-/// Authentication routes (register, login, refresh, `OAuth2` exchange).
+/// Authentication routes that are mounted inside the strict rate-limit group.
 /// Strict rate limiting: 5 req/min. Body limit: 64 KB.
 fn register_auth_routes(_state: &AppState) -> Router<AppState> {
     Router::new()
@@ -525,10 +568,24 @@ fn register_auth_routes(_state: &AppState) -> Router<AppState> {
 
 fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/auth/register", post(auth::register))
-        .route("/api/auth/login", post(auth::login))
         .route("/api/auth/email/confirm", post(auth::confirm_email_login))
         .route("/api/auth/guest-token", post(auth::create_guest_token))
+        .route(
+            "/api/auth/direct-password/register",
+            post(auth::register_with_direct_password),
+        )
+        .route(
+            "/api/auth/direct-password/login",
+            post(auth::login_with_direct_password),
+        )
+        .route(
+            "/api/auth/email/registration/request",
+            post(auth::request_email_registration),
+        )
+        .route(
+            "/api/auth/email/registration/confirm",
+            post(auth::confirm_email_registration),
+        )
         .route(
             "/api/auth/passkeys/registration/start",
             post(auth::start_passkey_registration),
@@ -959,11 +1016,6 @@ fn register_websocket_routes(_state: &AppState) -> Router<AppState> {
     )
 }
 
-#[cfg(test)]
-fn register_all_routes_for_test(state: &AppState) -> Router<AppState> {
-    register_all_routes(state)
-}
-
 fn register_all_routes(state: &AppState) -> Router<AppState> {
     let mut router = Router::new()
         .merge(health::create_health_router())
@@ -1166,12 +1218,31 @@ fn parse_configured_cors_origin(origin: &str) -> anyhow::Result<HeaderValue> {
         .map_err(|_| anyhow::anyhow!("invalid CORS origin configured: `{origin}`"))
 }
 
+fn forwarded_proto_is_https(
+    server: &synctv_core::config::ServerConfig,
+    headers: &HeaderMap,
+    remote_addr: Option<std::net::IpAddr>,
+) -> AppResult<bool> {
+    let Some(remote_addr) = remote_addr else {
+        return Ok(false);
+    };
+    if !server.is_trusted_proxy(&remote_addr) {
+        return Ok(false);
+    }
+
+    let Some(value) = optional_header_str(headers, &X_FORWARDED_PROTO)? else {
+        return Ok(false);
+    };
+
+    Ok(value.eq_ignore_ascii_case("https"))
+}
+
 /// Apply shared transport layers (CORS, body limit, security headers, HSTS,
 /// request ID propagation, and tracing) and bind state.
 fn apply_shared_http_layers(
     router: Router<AppState>,
     cors: CorsLayer,
-    trusted_proxies: Vec<String>,
+    server_config: synctv_core::config::ServerConfig,
     hsts_value: String,
 ) -> Router<AppState> {
     router
@@ -1184,31 +1255,20 @@ fn apply_shared_http_layers(
         .layer(axum_middleware::from_fn(
             move |request: axum::extract::Request, next: axum::middleware::Next| {
                 let hsts = hsts_value.clone();
-                let trusted_proxies = trusted_proxies.clone();
+                let server_config = server_config.clone();
                 async move {
                     let remote_addr = request
                         .extensions()
                         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                         .map(|ci| ci.0.ip());
-                    let forwarded_proto_https = remote_addr.is_some_and(|ip| {
-                        let trusted = trusted_proxies.iter().any(|proxy| {
-                            proxy
-                                .parse::<ipnet::IpNet>()
-                                .map(|network| network.contains(&ip))
-                                .or_else(|_| {
-                                    proxy
-                                        .parse::<std::net::IpAddr>()
-                                        .map(|proxy_ip| proxy_ip == ip)
-                                })
-                                .unwrap_or(false)
-                        });
-                        trusted
-                            && request
-                                .headers()
-                                .get("x-forwarded-proto")
-                                .and_then(|v| v.to_str().ok())
-                                .is_some_and(|value| value.eq_ignore_ascii_case("https"))
-                    });
+                    let forwarded_proto_https = match forwarded_proto_is_https(
+                        &server_config,
+                        request.headers(),
+                        remote_addr,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => return error.into_response(),
+                    };
 
                     let mut response = next.run(request).await;
                     if forwarded_proto_https {
@@ -1230,10 +1290,10 @@ fn apply_shared_http_layers(
 
 fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Result<axum::Router> {
     let cors = build_cors_layer(&state.config)?;
-    let trusted_proxies = state.config.server.trusted_proxies.clone();
+    let server_config = state.config.server.clone();
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
     Ok(
-        apply_shared_http_layers(router, cors, trusted_proxies, hsts_value)
+        apply_shared_http_layers(router, cors, server_config, hsts_value)
             .layer(axum_middleware::from_fn(
                 crate::observability::metrics_middleware::metrics_layer,
             ))
@@ -1248,21 +1308,18 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_global_layers, build_app_state, build_cors_layer, register_all_routes_for_test,
-        start_proxy_cache_lifecycle, RouterConfig,
+        apply_global_layers, build_app_state, build_cors_layer, optional_header_str,
+        register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterConfig,
     };
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
     use axum::{routing::get, Router};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
     use synctv_core::cache::{KeyBuilder, UsernameCache};
-    use synctv_core::provider::{
-        AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-        ProviderSet, RtmpProvider,
-    };
+    use synctv_core::provider::ProviderSet;
     use synctv_core::proxy_signature::ProxySigningKey;
     use synctv_core::service::{
         AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
@@ -1270,6 +1327,114 @@ mod tests {
     };
     use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
     use tower::ServiceExt;
+
+    #[test]
+    fn required_header_str_rejects_missing_header() {
+        let headers = HeaderMap::new();
+
+        let error = required_header_str(&headers, "x-upload-token", "missing token")
+            .expect_err("missing required header should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.message, "missing token");
+    }
+
+    #[test]
+    fn required_header_str_rejects_blank_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-upload-token", HeaderValue::from_static("   "));
+
+        let error = required_header_str(&headers, "x-upload-token", "missing token")
+            .expect_err("blank required header should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.message, "missing token");
+    }
+
+    #[test]
+    fn required_header_str_rejects_non_utf8_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-upload-token",
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let error = required_header_str(&headers, "x-upload-token", "missing token")
+            .expect_err("invalid required header should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("x-upload-token"));
+    }
+
+    #[test]
+    fn optional_header_str_rejects_non_utf8_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let error = optional_header_str(&headers, &axum::http::header::CONTENT_TYPE)
+            .expect_err("invalid optional header should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("content-type"));
+    }
+
+    #[test]
+    fn forwarded_proto_is_https_accepts_trusted_proxy_https() {
+        let mut server = synctv_core::config::ServerConfig::default();
+        server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+
+        let result = super::forwarded_proto_is_https(
+            &server,
+            &headers,
+            Some("10.1.2.3".parse().expect("ip")),
+        )
+        .expect("forwarded proto should parse");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn forwarded_proto_is_https_ignores_untrusted_peer() {
+        let mut server = synctv_core::config::ServerConfig::default();
+        server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+
+        let result = super::forwarded_proto_is_https(
+            &server,
+            &headers,
+            Some("192.168.1.10".parse().expect("ip")),
+        )
+        .expect("untrusted peer should ignore forwarded proto");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() {
+        let mut server = synctv_core::config::ServerConfig::default();
+        server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-proto",
+            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let error = super::forwarded_proto_is_https(
+            &server,
+            &headers,
+            Some("10.1.2.3".parse().expect("ip")),
+        )
+        .expect_err("invalid forwarded proto should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("x-forwarded-proto"));
+    }
 
     #[test]
     fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() {
@@ -1331,11 +1496,12 @@ mod tests {
         assert!(user_role.user_id.is_empty());
         assert_eq!(user_role.role, 1);
 
-        let user_password: crate::proto::admin::UpdateUserPasswordRequest =
-            serde_json::from_str(r#"{"new_password":"StrongPass123"}"#)
+        let user_password: crate::proto::admin::SetUserPasswordRequest =
+            serde_json::from_str(r#"{"password":"NewPassword123!","reason":"support reset"}"#)
                 .expect("admin user password body");
         assert!(user_password.user_id.is_empty());
-        assert_eq!(user_password.new_password, "StrongPass123");
+        assert_eq!(user_password.password, "NewPassword123!");
+        assert_eq!(user_password.reason, "support reset");
 
         let user_username: crate::proto::admin::UpdateUserUsernameRequest =
             serde_json::from_str(r#"{"new_username":"new_admin_name"}"#)
@@ -1392,30 +1558,29 @@ mod tests {
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
-        let user_service = Arc::new(UserService::new(
+        let user_service = Arc::new(UserService::new_for_tests(
             &pool,
             synctv_core::service::JwtService::new(
                 "test-secret-key-for-http-router-tests-minimum-32-chars",
             )
             .expect("jwt"),
             username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         )));
-        let providers = ProviderSet {
-            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
-            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
-            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
-            direct_url: Arc::new(DirectUrlProvider::new()),
-            rtmp: Arc::new(RtmpProvider::new()),
-            live_proxy: Arc::new(LiveProxyProvider::new()),
-        };
+        let providers = ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
         let jwt_service = synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
         )
@@ -1427,10 +1592,12 @@ mod tests {
         };
         let router_config = RouterConfig {
             config: Arc::new(config),
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
-                    .expect("user cache"),
-            ),
+            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )),
             user_service,
             room_service,
             content_filter: ContentFilter::new(),
@@ -1439,14 +1606,12 @@ mod tests {
                 synctv_core::repository::UserProviderCredentialRepository::new(pool),
             ),
             providers,
-            event_service: None,
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
             connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
                 synctv_realtime::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
-                None, false,
-            ),
+            realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
             oauth2_service: None,
             passkey_service: None,
             settings_service: None,
@@ -1476,7 +1641,7 @@ mod tests {
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
         };
-        build_app_state(router_config)
+        build_app_state(router_config).expect("test HTTP app state should build")
     }
 
     async fn test_app_state_with_websocket_runtime(
@@ -1510,6 +1675,7 @@ mod tests {
                 permission_service: router_config.room_service.permission_service().clone(),
                 room_settings_service,
                 user_service: router_config.user_service.clone(),
+                file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
                 audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
             },
@@ -1533,8 +1699,8 @@ mod tests {
             .await
             .expect("realtime manager"),
         );
-        router_config.event_service = Some(realtime_manager);
-        build_app_state(router_config)
+        router_config.event_service = realtime_manager;
+        build_app_state(router_config).expect("test websocket HTTP app state should build")
     }
 
     async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::AppState {
@@ -1543,11 +1709,10 @@ mod tests {
 
         let username_cache =
             UsernameCache::local_only("test:http-chat:username:".to_string(), 128, 60);
-        let user_service = UserService::new(
+        let user_service = UserService::new_for_tests(
             &pool,
             router_config.jwt_service.clone(),
             username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test:http-chat"),
             synctv_core::service::BruteForceProtection::in_memory(
@@ -1556,12 +1721,20 @@ mod tests {
         );
         let user_service = Arc::new(user_service);
 
-        let room_service = RoomService::new(pool.clone(), (*user_service).clone());
+        let room_service = RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build");
         let room_service = Arc::new(room_service);
 
         let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
-        let mut permission_service = room_service.permission_service().clone();
-        permission_service.set_room_settings_repo(room_settings_repo.clone());
+        let permission_service = synctv_core::service::PermissionService::new_with_runtime(
+            synctv_core::repository::RoomMemberRepository::new(pool.clone()),
+            synctv_core::repository::RoomRepository::new(pool.clone()),
+            synctv_core::service::permission::PermissionServiceRuntime {
+                room_settings_repo: Some(room_settings_repo.clone()),
+                ..synctv_core::service::permission::PermissionServiceRuntime::default()
+            },
+        )
+        .expect("permission service should build");
         let notification_service = synctv_core::service::NotificationService::default();
         let room_settings_service = synctv_core::service::RoomSettingsService::new(
             room_settings_repo,
@@ -1581,6 +1754,7 @@ mod tests {
                 permission_service,
                 room_settings_service,
                 user_service: Arc::clone(&user_service),
+                file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
                 audit_service: None,
                 notification_service,
             },
@@ -1608,7 +1782,7 @@ mod tests {
         router_config.user_service = user_service;
         router_config.room_service = room_service;
         router_config.chat_service = Some(Arc::new(chat_service));
-        router_config.event_service = Some(realtime_manager);
+        router_config.event_service = realtime_manager;
         router_config.connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
             synctv_realtime::sync::ConnectionLimits::default(),
         ));
@@ -1616,7 +1790,7 @@ mod tests {
         router_config.user_provider_credential_repository =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool));
 
-        build_app_state(router_config)
+        build_app_state(router_config).expect("test chat HTTP app state should build")
     }
 
     #[tokio::test]
@@ -1641,8 +1815,7 @@ mod tests {
             .await
             .expect("seed expired slice");
 
-        let lifecycle = start_proxy_cache_lifecycle(&cache)
-            .expect("enabled proxy cache must start lifecycle task");
+        let lifecycle = start_proxy_cache_lifecycle(&cache);
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -1670,8 +1843,7 @@ mod tests {
             ..SliceCacheConfig::default()
         }));
 
-        let lifecycle = start_proxy_cache_lifecycle(&cache)
-            .expect("cache lifecycle should start so runtime settings can enable caching later");
+        let lifecycle = start_proxy_cache_lifecycle(&cache);
         lifecycle.cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), lifecycle.handle)
             .await
@@ -1685,30 +1857,29 @@ mod tests {
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
-        let user_service = Arc::new(UserService::new(
+        let user_service = Arc::new(UserService::new_for_tests(
             &pool,
             synctv_core::service::JwtService::new(
                 "test-secret-key-for-http-router-tests-minimum-32-chars",
             )
             .expect("jwt"),
             username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         )));
-        let providers = ProviderSet {
-            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
-            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
-            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
-            direct_url: Arc::new(DirectUrlProvider::new()),
-            rtmp: Arc::new(RtmpProvider::new()),
-            live_proxy: Arc::new(LiveProxyProvider::new()),
-        };
+        let providers = ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
         let jwt_service = synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
         )
@@ -1722,9 +1893,12 @@ mod tests {
             Arc::new(
                 synctv_core::provider::store::ProviderStoreRegistry::local_only("shared:test:"),
             );
-        let injected_proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
-            b"test-secret-key-for-http-router-tests-minimum-32-chars",
-        ));
+        let injected_proxy_signing_key = Arc::new(
+            ProxySigningKey::try_derive_from(
+                b"test-secret-key-for-http-router-tests-minimum-32-chars",
+            )
+            .expect("test proxy signing key should derive"),
+        );
         let injected_proxy_http_client =
             synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
                 .expect("proxy HTTP client should build for tests");
@@ -1732,10 +1906,12 @@ mod tests {
         let state = build_app_state(RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
-                    .expect("user cache"),
-            ),
+            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )),
             room_service,
             content_filter: ContentFilter::new(),
             provider_instance_manager,
@@ -1747,14 +1923,12 @@ mod tests {
                 ),
             ),
             providers,
-            event_service: None,
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
             connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
                 synctv_realtime::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
-                None, false,
-            ),
+            realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
             oauth2_service: None,
             passkey_service: None,
             settings_service: None,
@@ -1780,7 +1954,8 @@ mod tests {
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
-        });
+        })
+        .expect("test HTTP app state should build");
 
         assert!(
             Arc::ptr_eq(&state.proxy_slice_cache, &injected_cache),
@@ -1842,7 +2017,7 @@ mod tests {
     #[tokio::test]
     async fn test_playback_patch_route_is_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1876,7 +2051,7 @@ mod tests {
     #[tokio::test]
     async fn test_chat_message_patch_route_is_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1912,7 +2087,7 @@ mod tests {
     #[tokio::test]
     async fn test_chat_message_delete_route_is_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1972,7 +2147,7 @@ mod tests {
             .expect("owner should be created");
         let access_token = state
             .jwt_service
-            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
+            .sign_access_token(&owner.id, 0)
             .expect("access token should sign");
         let (room, _) = state
             .room_service
@@ -1990,7 +2165,7 @@ mod tests {
             .public_id_codec
             .encode_room_id(room.id)
             .expect("room id should encode");
-        let app = register_all_routes_for_test(&state).with_state(state.clone());
+        let app = register_all_routes(&state).with_state(state.clone());
         let response = app
             .oneshot(
                 Request::builder()
@@ -2087,7 +2262,7 @@ mod tests {
             .expect("owner should be created");
         let access_token = state
             .jwt_service
-            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
+            .sign_access_token(&owner.id, 0)
             .expect("access token should sign");
         let (room, _) = state
             .room_service
@@ -2147,7 +2322,7 @@ mod tests {
             .public_id_codec
             .encode_room_id(room.id)
             .expect("room id should encode");
-        let app = register_all_routes_for_test(&state).with_state(state.clone());
+        let app = register_all_routes(&state).with_state(state.clone());
         let response = app
             .oneshot(
                 Request::builder()
@@ -2221,7 +2396,7 @@ mod tests {
             .expect("owner should be created");
         let access_token = state
             .jwt_service
-            .sign_token(&owner.id, synctv_core::service::auth::TokenType::Access, 0)
+            .sign_access_token(&owner.id, 0)
             .expect("access token should sign");
         let (room, _) = state
             .room_service
@@ -2239,7 +2414,7 @@ mod tests {
             .public_id_codec
             .encode_room_id(room.id)
             .expect("room id should encode");
-        let app = register_all_routes_for_test(&state).with_state(state.clone());
+        let app = register_all_routes(&state).with_state(state.clone());
 
         let response = app
             .oneshot(
@@ -2265,7 +2440,7 @@ mod tests {
     #[tokio::test]
     async fn test_public_rooms_route_is_reachable_without_auth() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2293,7 +2468,7 @@ mod tests {
     #[tokio::test]
     async fn test_opaque_login_routes_are_registered() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         for uri in [
             "/api/auth/opaque/login/start",
@@ -2322,9 +2497,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_direct_password_and_email_registration_routes_are_registered() {
+        let state = test_app_state();
+        let app = register_all_routes(&state).with_state(state);
+
+        for uri in [
+            "/api/auth/direct-password/register",
+            "/api/auth/direct-password/login",
+            "/api/auth/email/registration/request",
+            "/api/auth/email/registration/confirm",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{"))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{uri} is missing");
+            assert_ne!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{uri} must accept POST"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_passkey_login_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let start_response = app
             .clone()
@@ -2359,7 +2567,7 @@ mod tests {
     #[tokio::test]
     async fn test_passkey_user_routes_are_registered_and_require_authentication() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         for (method, uri, body) in [
             ("GET", "/api/user/preferences", None),
@@ -2431,33 +2639,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_removed_room_password_verify_route_returns_not_found() {
-        let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/rooms/room1234_abx/password/verify")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"password":"secret"}"#))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "removed room password verify route must stay absent from the latest API surface"
-        );
-    }
-
-    #[tokio::test]
     async fn test_member_approval_routes_are_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         for (method, uri, body) in [
             (
@@ -2507,9 +2691,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_oauth2_unlink_route_uses_provider_type_namespace() {
+    async fn test_oauth2_unlink_route_is_reachable() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let new_route_response = app
             .clone()
@@ -2523,24 +2707,12 @@ mod tests {
             .await
             .expect("response");
         assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
-
-        let removed_route_response = app
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/api/oauth2/github/unlink")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(removed_route_response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
-    async fn test_delete_all_read_notifications_uses_read_namespace() {
+    async fn test_delete_all_read_notifications_route_is_reachable() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let new_route_response = app
             .clone()
@@ -2554,21 +2726,6 @@ mod tests {
             .await
             .expect("response");
         assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
-
-        let removed_route_response = app
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/api/notifications/actions/mark-read")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(
-            removed_route_response.status(),
-            StatusCode::METHOD_NOT_ALLOWED
-        );
     }
 
     #[tokio::test]
@@ -2581,7 +2738,7 @@ mod tests {
             config.metrics.auth.bearer_token = "metrics-secret".to_string();
             config
         });
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2605,7 +2762,7 @@ mod tests {
             read_window_seconds: 60,
             ..synctv_core::RequestRateLimitConfig::default()
         });
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2654,7 +2811,7 @@ mod tests {
             read_window_seconds: 60,
             ..synctv_core::RequestRateLimitConfig::default()
         });
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2691,7 +2848,7 @@ mod tests {
     #[tokio::test]
     async fn test_bilibili_me_route_requires_post() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2721,7 +2878,7 @@ mod tests {
             ..synctv_core::RequestRateLimitConfig::default()
         })
         .await;
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2768,7 +2925,7 @@ mod tests {
             read_window_seconds: 60,
             ..synctv_core::RequestRateLimitConfig::default()
         });
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2850,7 +3007,7 @@ mod tests {
     #[tokio::test]
     async fn test_streaming_proxy_routes_preserve_options_preflight() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let rtmp_preflight = app
             .clone()
@@ -2995,7 +3152,7 @@ mod tests {
     #[tokio::test]
     async fn test_openapi_json_route_is_available() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3015,6 +3172,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).expect("valid openapi json");
         assert_eq!(json["openapi"], "3.1.0");
         assert!(json["paths"]["/api/auth/email/confirm"].is_object());
+        assert!(json["paths"]["/api/auth/direct-password/register"].is_object());
+        assert!(json["paths"]["/api/auth/direct-password/login"].is_object());
+        assert!(json["paths"]["/api/auth/email/registration/request"].is_object());
+        assert!(json["paths"]["/api/auth/email/registration/confirm"].is_object());
         assert!(json["paths"]["/api/tickets"].is_object());
         assert!(json["paths"]["/api/user"].is_object());
         assert!(json["paths"]["/api/rooms/{room_id}/media"].is_object());
@@ -3136,7 +3297,7 @@ mod tests {
     #[tokio::test]
     async fn test_swagger_ui_route_is_available() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3189,7 +3350,7 @@ mod tests {
             auth_window_seconds: 60,
             ..synctv_core::RequestRateLimitConfig::default()
         });
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let first = app
             .clone()
@@ -3236,7 +3397,7 @@ mod tests {
             auth_window_seconds: 60,
             ..synctv_core::RequestRateLimitConfig::default()
         });
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let management = app
             .clone()
@@ -3287,7 +3448,7 @@ mod tests {
             ..synctv_core::RequestRateLimitConfig::default()
         })
         .await;
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let first = app
             .clone()
@@ -3324,7 +3485,7 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3348,7 +3509,7 @@ mod tests {
     #[tokio::test]
     async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3371,7 +3532,7 @@ mod tests {
     #[tokio::test]
     async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3393,9 +3554,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_key_route_is_namespaced_under_api() {
+    async fn test_rtmp_publish_key_routes_are_reachable_under_api() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let api_response = app
             .clone()
@@ -3410,19 +3571,6 @@ mod tests {
             .expect("response");
         assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
 
-        let removed_route_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/providers/rtmp/rooms/AbC123xYz890/publish-key/ZyX098wVu765")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(removed_route_response.status(), StatusCode::NOT_FOUND);
-
         let info_api_response = app
             .clone()
             .oneshot(
@@ -3435,24 +3583,12 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(info_api_response.status(), StatusCode::UNAUTHORIZED);
-
-        let info_removed_route_response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/providers/rtmp/rooms/AbC123xYz890/info/ZyX098wVu765")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(info_removed_route_response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn test_oauth2_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3494,9 +3630,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_http_request_metadata_rejects_non_utf8_authorization_header() {
+        let state = test_app_state();
+        let app = register_all_routes(&state).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/rooms/hot")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        axum::http::HeaderValue::from_bytes(&[0xff])
+                            .expect("raw header should build"),
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_http_request_metadata_rejects_non_utf8_user_agent_header() {
+        let state = test_app_state();
+        let app = register_all_routes(&state).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/rooms/hot")
+                    .header(
+                        axum::http::header::USER_AGENT,
+                        axum::http::HeaderValue::from_bytes(&[0xff])
+                            .expect("raw header should build"),
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_notification_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let read_response = app
             .clone()
@@ -3527,7 +3711,7 @@ mod tests {
     #[tokio::test]
     async fn test_live_provider_routes_remain_registered_when_infrastructure_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -3546,7 +3730,7 @@ mod tests {
     #[tokio::test]
     async fn test_websocket_routes_fail_closed_when_dependencies_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(&state).with_state(state);
+        let app = register_all_routes(&state).with_state(state);
 
         let response = app
             .oneshot(

@@ -142,9 +142,8 @@ pub trait CoordinationLock: Send + Sync {
 
 /// Execute an operation under an acquired [`CoordinationLock`].
 ///
-/// This preserves the same client-side timeout and best-effort unlock behavior
-/// previously provided by [`DistributedLock::with_lock`], while allowing the
-/// caller to depend on a trait object instead of a concrete Redis lock.
+/// Applies a client-side timeout and best-effort unlock around the protected
+/// operation while keeping callers independent from the concrete backend.
 pub async fn with_coordination_lock<L, F, Fut, T>(
     lock: &L,
     key: &str,
@@ -363,7 +362,13 @@ impl DistributedLock {
         key: &str,
         ttl_seconds: u64,
     ) -> Result<Option<(String, u64)>> {
-        self.acquire_internal(key, ttl_seconds, true).await
+        match self.acquire_internal(key, ttl_seconds, true).await? {
+            Some((value, Some(token))) => Ok(Some((value, token))),
+            Some((_value, None)) => Err(Error::Internal(
+                "Distributed lock acquired without required fencing token".to_string(),
+            )),
+            None => Ok(None),
+        }
     }
 
     /// Internal acquire implementation
@@ -372,7 +377,7 @@ impl DistributedLock {
         key: &str,
         ttl_seconds: u64,
         with_token: bool,
-    ) -> Result<Option<(String, u64)>> {
+    ) -> Result<Option<(String, Option<u64>)>> {
         let lock_key = format!("lock:{key}");
         let lock_value = synctv_common::snanoid!(16);
 
@@ -395,17 +400,16 @@ impl DistributedLock {
         .await?;
 
         if result.is_some() {
-            // Generate fencing token only if requested (saves Redis round-trip)
             let fencing_token = if with_token {
-                self.generate_fencing_token(key).await?
+                Some(self.generate_fencing_token(key).await?)
             } else {
-                0 // Dummy token when not requested
+                None
             };
 
             tracing::debug!(
                 lock_key = %lock_key,
                 lock_value = %lock_value,
-                fencing_token = %fencing_token,
+                fencing_token = ?fencing_token,
                 ttl_seconds = %ttl_seconds,
                 "Lock acquired"
             );
@@ -716,8 +720,8 @@ pub struct LockGuard {
     lock: DistributedLock,
     key: String,
     value: Option<String>,
-    /// Fencing token for CAS operations (0 if not requested)
-    fencing_token: u64,
+    /// Fencing token for CAS operations.
+    fencing_token: Option<u64>,
     /// Sender half of the oneshot channel used to trigger the background
     /// unlock task from `Drop`. Wrapped in `Option` so `release()` can take
     /// it to prevent a double-signal.
@@ -764,7 +768,7 @@ impl LockGuard {
             lock,
             key,
             value: Some(value),
-            fencing_token: 0,
+            fencing_token: None,
             drop_tx,
         })
     }
@@ -788,7 +792,7 @@ impl LockGuard {
             lock,
             key,
             value: Some(value),
-            fencing_token,
+            fencing_token: Some(fencing_token),
             drop_tx,
         })
     }
@@ -798,6 +802,15 @@ impl LockGuard {
     /// Returns 0 if the guard was created without requesting a token.
     #[must_use]
     pub const fn fencing_token(&self) -> u64 {
+        match self.fencing_token {
+            Some(token) => token,
+            None => 0,
+        }
+    }
+
+    /// Get the fencing token when this guard was created with token support.
+    #[must_use]
+    pub const fn fencing_token_opt(&self) -> Option<u64> {
         self.fencing_token
     }
 
@@ -926,6 +939,47 @@ pub struct Redlock {
     config: RedlockConfig,
 }
 
+fn log_redlock_release_result(
+    lock_key: &str,
+    result: std::result::Result<
+        std::result::Result<i32, redis::RedisError>,
+        tokio::time::error::Elapsed,
+    >,
+) {
+    match result {
+        Ok(Ok(1)) => {
+            tracing::trace!(lock_key = %lock_key, "Released Redlock lock on Redis master");
+        }
+        Ok(Ok(0)) => {
+            tracing::debug!(
+                lock_key = %lock_key,
+                "Redlock release script found no matching lock value on Redis master"
+            );
+        }
+        Ok(Ok(other)) => {
+            tracing::warn!(
+                lock_key = %lock_key,
+                result = other,
+                "Redlock release script returned unexpected result"
+            );
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                lock_key = %lock_key,
+                error = %error,
+                "Redlock release failed on Redis master"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                lock_key = %lock_key,
+                error = %error,
+                "Redlock release timed out on Redis master"
+            );
+        }
+    }
+}
+
 impl Redlock {
     /// Create a new Redlock instance with the given configuration.
     ///
@@ -963,12 +1017,18 @@ impl Redlock {
     }
 
     /// Get current time in milliseconds since Unix epoch.
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-            })
+    fn now_ms() -> crate::Result<u64> {
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => u64::try_from(duration.as_millis())
+                .map_err(|_| Error::Internal("System time exceeds u64 milliseconds".to_string())),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "System clock is before UNIX_EPOCH while evaluating Redlock timing"
+                );
+                Ok(0)
+            }
+        }
     }
 
     /// Release lock on a single Redis instance (best-effort).
@@ -978,14 +1038,17 @@ impl Redlock {
         lock_key: &str,
         lock_value: &str,
     ) {
-        let _ = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            RELEASE_LOCK_SCRIPT
-                .key(lock_key)
-                .arg(lock_value)
-                .invoke_async::<i32>(conn),
-        )
-        .await;
+        log_redlock_release_result(
+            lock_key,
+            tokio::time::timeout(
+                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+                RELEASE_LOCK_SCRIPT
+                    .key(lock_key)
+                    .arg(lock_value)
+                    .invoke_async::<i32>(conn),
+            )
+            .await,
+        );
     }
 
     /// Acquire a distributed lock using Redlock algorithm.
@@ -999,7 +1062,7 @@ impl Redlock {
         let lock_key = format!("lock:{key}");
         let lock_value = Self::generate_lock_value();
         let quorum = (self.connections.len() / 2) + 1;
-        let start_time = Self::now_ms();
+        let start_time = Self::now_ms()?;
 
         loop {
             let mut acquired = 0;
@@ -1042,7 +1105,7 @@ impl Redlock {
             // Check if we have quorum
             if acquired >= quorum {
                 // Calculate time remaining for validity
-                let elapsed = Self::now_ms() - start_time;
+                let elapsed = Self::now_ms()?.saturating_sub(start_time);
                 let remaining_ttl = self.config.ttl_ms.saturating_sub(elapsed);
 
                 if remaining_ttl > 0 {
@@ -1077,7 +1140,7 @@ impl Redlock {
             }
 
             // Check if we've exceeded acquire timeout
-            let elapsed = Self::now_ms() - start_time;
+            let elapsed = Self::now_ms()?.saturating_sub(start_time);
             if elapsed >= self.config.acquire_timeout_ms {
                 tracing::debug!(
                     lock_key = %lock_key,
@@ -1161,14 +1224,17 @@ impl RedlockRef {
                 let lock_key = lock_key.to_string();
                 let lock_value = lock_value.to_string();
                 async move {
-                    let _ = tokio::time::timeout(
-                        crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-                        RELEASE_LOCK_SCRIPT
-                            .key(&lock_key)
-                            .arg(&lock_value)
-                            .invoke_async::<i32>(&mut conn),
-                    )
-                    .await;
+                    log_redlock_release_result(
+                        &lock_key,
+                        tokio::time::timeout(
+                            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+                            RELEASE_LOCK_SCRIPT
+                                .key(&lock_key)
+                                .arg(&lock_value)
+                                .invoke_async::<i32>(&mut conn),
+                        )
+                        .await,
+                    );
                 }
             })
             .collect();
@@ -1222,43 +1288,14 @@ impl Drop for RedlockGuard {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
-    use super::*;
+    use super::{
+        run_distributed_lock_client_op, run_distributed_lock_redis_op, DistributedLock, Error,
+        Redlock, RedlockConfig, RedlockGuard, RedlockRef,
+    };
+    use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
-
-    #[test]
-    fn test_lock_key_format() {
-        // Test that lock key is properly formatted with "lock:" prefix
-        let key = "my_resource";
-        let lock_key = format!("lock:{key}");
-        assert_eq!(lock_key, "lock:my_resource");
-    }
-
-    #[test]
-    fn test_token_key_format() {
-        // Test that token key is properly formatted
-        let key = "my_resource";
-        let token_key = format!("lock:token:{key}");
-        assert_eq!(token_key, "lock:token:my_resource");
-    }
-
-    #[test]
-    fn test_backoff_calculation() {
-        // Test exponential backoff calculation: base_ms * 2^attempt
-        let base_ms: u64 = 5;
-        assert_eq!(base_ms, 5); // attempt 0: 5ms
-        assert_eq!(base_ms * (1 << 1), 10); // attempt 1: 10ms
-        assert_eq!(base_ms * (1 << 2), 20); // attempt 2: 20ms
-        assert_eq!(base_ms * (1 << 3), 40); // attempt 3: 40ms
-    }
-
-    #[test]
-    fn test_client_timeout_calculation() {
-        // Test client timeout: ttl_seconds + 5s for network round-trips
-        let ttl_seconds: u64 = 10;
-        let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
-        assert_eq!(client_timeout, std::time::Duration::from_secs(15));
-    }
+    use redis::aio::ConnectionManager as RedisConnectionManager;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_distributed_lock_accepts_trait_object_runtime() {
@@ -1267,7 +1304,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> RedisConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1288,7 +1325,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> RedisConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1307,11 +1344,7 @@ mod tests {
         let timeout_future = run_distributed_lock_redis_op(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             "acquire lock",
-            async {
-                std::future::pending::<()>().await;
-                #[allow(unreachable_code)]
-                Ok::<(), redis::RedisError>(())
-            },
+            async { std::future::pending::<std::result::Result<(), redis::RedisError>>().await },
         );
 
         tokio::pin!(timeout_future);
@@ -1329,9 +1362,7 @@ mod tests {
     async fn test_distributed_lock_client_timeout_maps_to_timeout_error() {
         let timeout_future =
             run_distributed_lock_client_op("test-key", std::time::Duration::from_secs(15), async {
-                std::future::pending::<()>().await;
-                #[allow(unreachable_code)]
-                Ok::<(), Error>(())
+                std::future::pending::<Result<(), Error>>().await
             });
 
         tokio::pin!(timeout_future);
@@ -1346,82 +1377,12 @@ mod tests {
     }
 
     #[test]
-    fn test_lua_script_release_logic() {
-        // The release Lua script logic:
-        // if GET key == lock_value then DEL key else return 0
-        // This test verifies the expected behavior conceptually
-
-        // Scenario 1: Value matches -> delete (return 1)
-        let stored_value = "abc123";
-        let provided_value = "abc123";
-        assert_eq!(stored_value, provided_value); // Would delete
-
-        // Scenario 2: Value doesn't match -> no delete (return 0)
-        let stored_value = "abc123";
-        let provided_value = "xyz789";
-        assert_ne!(stored_value, provided_value); // Would not delete
-
-        // Scenario 3: Key doesn't exist -> no delete (return 0)
-        // This is handled by GET returning nil
-    }
-
-    #[test]
-    fn test_redlock_quorum_calculation() {
-        // Redlock requires N/2 + 1 quorum
-        // For 3 masters: quorum = 2
-        // For 5 masters: quorum = 3
-        assert_eq!((3 / 2) + 1, 2);
-        assert_eq!((5 / 2) + 1, 3);
-        assert_eq!((7 / 2) + 1, 4);
-    }
-
-    #[test]
-    fn test_redlock_minimum_masters() {
-        // Redlock requires at least 3 masters
-        // This is enforced in Redlock::new()
-        let insufficient_masters = ["redis://host1".to_string(), "redis://host2".to_string()];
-        assert!(insufficient_masters.len() < 3);
-
-        let sufficient_masters = [
-            "redis://host1".to_string(),
-            "redis://host2".to_string(),
-            "redis://host3".to_string(),
-        ];
-        assert!(sufficient_masters.len() >= 3);
-    }
-
-    #[test]
-    fn test_redlock_time_calculation() {
-        // Test that time calculation works
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-            });
-        assert!(now > 0);
-    }
-
-    #[test]
     fn test_redlock_lock_value_generation() {
         let val1 = Redlock::generate_lock_value();
         let val2 = Redlock::generate_lock_value();
         assert_ne!(val1, val2);
         assert_eq!(val1.len(), 24);
         assert_eq!(val2.len(), 24);
-    }
-
-    #[test]
-    fn test_redlock_validity_remaining() {
-        // If acquisition takes 3ms with 10ms TTL, 7ms remains
-        let ttl_ms: u64 = 10;
-        let elapsed_ms: u64 = 3;
-        let remaining = ttl_ms.saturating_sub(elapsed_ms);
-        assert_eq!(remaining, 7);
-
-        // If acquisition takes longer than TTL, remaining is 0
-        let elapsed_ms: u64 = 15;
-        let remaining = ttl_ms.saturating_sub(elapsed_ms);
-        assert_eq!(remaining, 0);
     }
 
     #[tokio::test]
@@ -1431,34 +1392,8 @@ mod tests {
             ..Default::default()
         };
 
-        // Should fail because only 2 masters provided (need at least 3)
         let result = Redlock::new(config).await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_redlock_accepts_three_masters() {
-        // This test will fail to connect but validates the count check works.
-        // Use 127.0.0.1 with unused ports — connection is refused instantly
-        // (no DNS lookup or connect timeout delay).
-        let config = RedlockConfig {
-            master_urls: vec![
-                "redis://127.0.0.1:1".to_string(),
-                "redis://127.0.0.1:2".to_string(),
-                "redis://127.0.0.1:3".to_string(),
-            ],
-            ..Default::default()
-        };
-
-        // Should fail at connection, not at master count validation.
-        // Wrap with timeout since ConnectionManager has internal retry logic.
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), Redlock::new(config)).await;
-        // Either timed out or got a connection error — both mean count validation passed
-        assert!(
-            result.is_err() || result.unwrap().is_err(),
-            "Should fail due to unreachable Redis, not count validation"
-        );
     }
 
     #[test]

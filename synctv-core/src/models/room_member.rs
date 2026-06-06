@@ -156,7 +156,7 @@ sort_field_enum! {
     pub enum RoomMemberListSortBy {
         Username => { display: "username", sql: "u.username" },
         Role => { display: "role", sql: "rm.role" },
-        JoinedAt => { display: "joined_at", sql: "rm.joined_at", aliases: ["joinedat"] },
+        JoinedAt => { display: "joined_at", sql: "rm.joined_at" },
     }
     default = JoinedAt;
     error = "Unknown room member list sort field";
@@ -192,14 +192,13 @@ sort_field_enum! {
     #[serde(rename_all = "snake_case")]
     pub enum MyRoomListSortBy {
         Name => { display: "name", sql: "r.name" },
-        CreatedAt => { display: "created_at", sql: "r.created_at", aliases: ["createdat"] },
-        UpdatedAt => { display: "updated_at", sql: "r.updated_at", aliases: ["updatedat"] },
+        CreatedAt => { display: "created_at", sql: "r.created_at" },
+        UpdatedAt => { display: "updated_at", sql: "r.updated_at" },
         LastActivityAt => {
             display: "last_activity_at",
-            sql: "r.last_activity_at",
-            aliases: ["lastactivityat"]
+            sql: "r.last_activity_at"
         },
-        JoinedAt => { display: "joined_at", sql: "rm.joined_at", aliases: ["joinedat"] },
+        JoinedAt => { display: "joined_at", sql: "rm.joined_at" },
     }
     default = JoinedAt;
     error = "Unknown related room list field";
@@ -256,31 +255,6 @@ pub struct RoomMember {
     pub admin_removed_permissions: u64,
     pub joined_at: DateTime<Utc>,
     pub version: i64,
-}
-
-impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for RoomMember {
-    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-        use sqlx::Row;
-        Ok(Self {
-            room_id: row.try_get("room_id")?,
-            user_id: row.try_get("user_id")?,
-            role: row.try_get("role")?,
-            status: MemberStatus::Active,
-            added_permissions: permission_bits_from_row(row, "added_permissions")?,
-            removed_permissions: permission_bits_from_row(row, "removed_permissions")?,
-            admin_added_permissions: permission_bits_from_row(row, "admin_added_permissions")?,
-            admin_removed_permissions: permission_bits_from_row(row, "admin_removed_permissions")?,
-            joined_at: row.try_get("joined_at")?,
-            version: row.try_get("version")?,
-        })
-    }
-}
-
-fn permission_bits_from_row(row: &sqlx::postgres::PgRow, column: &str) -> Result<u64, sqlx::Error> {
-    use sqlx::Row;
-
-    let bits = row.try_get::<i64, _>(column)?;
-    u64::try_from(bits).map_err(|error| sqlx::Error::Decode(Box::new(error)))
 }
 
 impl RoomMember {

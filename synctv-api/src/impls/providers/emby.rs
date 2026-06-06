@@ -13,6 +13,7 @@ use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
 use synctv_core::provider::{EmbyProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
+use super::ProviderApiRuntime;
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
 
 fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &str) -> String {
@@ -33,36 +34,22 @@ pub struct EmbyApiImpl {
     provider: Arc<EmbyProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
     access_service: Option<Arc<dyn ProviderAccessService>>,
-    event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+    event_service: Arc<dyn crate::runtime::RealtimeEventService>,
 }
 
 impl EmbyApiImpl {
     #[must_use]
-    pub const fn new(
+    pub fn new_with_runtime(
         provider: Arc<EmbyProvider>,
         credential_repo: Arc<UserProviderCredentialRepository>,
+        runtime: ProviderApiRuntime,
     ) -> Self {
         Self {
             provider,
             credential_repo,
-            access_service: None,
-            event_service: None,
+            access_service: runtime.access_service,
+            event_service: runtime.event_service,
         }
-    }
-
-    #[must_use]
-    pub fn with_access_service(mut self, access_service: Arc<dyn ProviderAccessService>) -> Self {
-        self.access_service = Some(access_service);
-        self
-    }
-
-    #[must_use]
-    pub fn with_event_service(
-        mut self,
-        event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
-    ) -> Self {
-        self.event_service = event_service;
-        self
     }
 
     /// Resolve Emby credentials from DB using server_id, returning (host, api_key, emby_user_id).
@@ -225,7 +212,7 @@ impl EmbyApiImpl {
                 .await?;
         }
         publish_provider_credential_changed(
-            self.event_service.as_ref(),
+            &self.event_service,
             *caller_user_id,
             synctv_core::provider::EmbyProvider::NAME,
             &server_id,
@@ -400,7 +387,7 @@ impl EmbyApiImpl {
                     .await?;
             }
             publish_provider_credential_changed(
-                self.event_service.as_ref(),
+                &self.event_service,
                 *caller_user_id,
                 synctv_core::provider::EmbyProvider::NAME,
                 &req.server_id,
@@ -442,7 +429,7 @@ impl EmbyApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::EmbyApiImpl;
+    use super::{EmbyApiImpl, ProviderApiRuntime};
     use std::sync::Arc;
     use synctv_core::provider::{EmbyProvider, ProviderError};
     use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
@@ -452,15 +439,30 @@ mod tests {
     fn provider() -> Arc<EmbyProvider> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(EmbyProvider::new(Arc::new(RemoteProviderManager::new(
-            repo,
-        ))))
+        Arc::new(
+            EmbyProvider::new(Arc::new(RemoteProviderManager::new(repo)))
+                .expect("provider should build"),
+        )
+    }
+
+    fn test_provider_runtime() -> ProviderApiRuntime {
+        ProviderApiRuntime {
+            access_service: None,
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        }
+    }
+
+    fn test_api(
+        provider: Arc<EmbyProvider>,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> EmbyApiImpl {
+        EmbyApiImpl::new_with_runtime(provider, credential_repo, test_provider_runtime())
     }
 
     #[tokio::test]
     async fn login_rejects_missing_credential_before_provider_call() {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let api = EmbyApiImpl::new(
+        let api = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
         );
@@ -491,7 +493,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn logout_rejects_empty_server_id() {
         let (_postgres, pool) = create_test_pool().await;
-        let api = EmbyApiImpl::new(
+        let api = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
         );

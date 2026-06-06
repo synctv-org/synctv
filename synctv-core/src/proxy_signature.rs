@@ -39,9 +39,22 @@ pub struct ProxyUrlClaims {
     pub target_url: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+pub struct SignedProxyUrlRequest<'a> {
+    pub provider: &'a str,
+    pub version: &'a str,
+    pub action: &'a str,
+    pub signing_key: &'a ProxySigningKey,
+    pub room_id: &'a str,
+    pub user_id: &'a str,
+    pub expires_at: i64,
+}
+
 /// Errors from proxy signature operations.
 #[derive(Debug)]
 pub enum ProxySignatureError {
+    /// The signing key could not be initialized.
+    InvalidSigningKey,
     /// The signature does not match the expected HMAC.
     InvalidSignature,
     /// The URL has expired.
@@ -55,6 +68,7 @@ pub enum ProxySignatureError {
 impl fmt::Display for ProxySignatureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidSigningKey => write!(f, "invalid proxy signing key"),
             Self::InvalidSignature => write!(f, "invalid proxy signature"),
             Self::Expired => write!(f, "proxy URL expired"),
             Self::MissingParam(name) => write!(f, "missing query param: {name}"),
@@ -70,16 +84,22 @@ impl ProxySigningKey {
     ///
     /// Uses HMAC(jwt_secret, domain_separator) as the derived key material,
     /// ensuring proxy signatures are cryptographically independent from JWT tokens.
-    #[must_use]
-    pub fn derive_from(jwt_secret: &[u8]) -> Self {
-        // Use HMAC(secret, domain) to derive key material
-        let mut derivation_mac =
-            HmacSha256::new_from_slice(jwt_secret).expect("HMAC accepts any key length");
+    pub fn try_derive_from(jwt_secret: &[u8]) -> Result<Self, ProxySignatureError> {
+        let mut derivation_mac = HmacSha256::new_from_slice(jwt_secret)
+            .map_err(|_| ProxySignatureError::InvalidSigningKey)?;
         derivation_mac.update(DOMAIN_SEPARATOR);
         let derived = derivation_mac.finalize().into_bytes();
 
-        let key = HmacSha256::new_from_slice(&derived).expect("derived key is valid HMAC key");
-        Self { key }
+        let key = HmacSha256::new_from_slice(&derived)
+            .map_err(|_| ProxySignatureError::InvalidSigningKey)?;
+        Ok(Self { key })
+    }
+
+    /// Derive a proxy signing key for tests.
+    #[cfg(test)]
+    #[must_use]
+    pub fn derive_from(jwt_secret: &[u8]) -> Self {
+        Self::try_derive_from(jwt_secret).expect("test proxy signing key should derive")
     }
 
     /// Sign claims and return the hex-encoded HMAC-SHA256 signature.
@@ -226,38 +246,27 @@ impl ProxySigningKey {
     }
 }
 
-/// Build a signed proxy URL (relative) for a playback action.
-///
-/// Returns a path like `/api/providers/proxy/{provider}/{version}/{action}?sig=...&uid=...&rid=...&exp=...`
-#[allow(clippy::too_many_arguments)]
 #[must_use]
-pub fn build_signed_proxy_url(
-    provider: &str,
-    version: &str,
-    action: &str,
-    signing_key: &ProxySigningKey,
-    room_id: &str,
-    user_id: &str,
-    expires_at: i64,
-) -> String {
+pub fn build_signed_proxy_url(request: SignedProxyUrlRequest<'_>) -> String {
     let claims = ProxyUrlClaims {
-        provider: provider.to_string(),
-        version: version.to_string(),
-        room_id: room_id.to_string(),
-        user_id: user_id.to_string(),
-        expires_at,
+        provider: request.provider.to_string(),
+        version: request.version.to_string(),
+        room_id: request.room_id.to_string(),
+        user_id: request.user_id.to_string(),
+        expires_at: request.expires_at,
         target_url: None,
     };
-    let query = signing_key.build_signed_query(&claims);
-    let encoded_action = action
+    let query = request.signing_key.build_signed_query(&claims);
+    let encoded_action = request
+        .action
         .split('/')
         .map(url_encode)
         .collect::<Vec<_>>()
         .join("/");
     format!(
         "/api/providers/proxy/{}/{}/{}?{}",
-        url_encode(provider),
-        url_encode(version),
+        url_encode(request.provider),
+        url_encode(request.version),
         encoded_action,
         query
     )
@@ -268,7 +277,8 @@ mod tests {
     use super::*;
 
     fn test_key() -> ProxySigningKey {
-        ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough")
+        ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive")
     }
 
     fn test_claims() -> ProxyUrlClaims {
@@ -388,15 +398,15 @@ mod tests {
     #[test]
     fn build_signed_proxy_url_format() {
         let key = test_key();
-        let url = build_signed_proxy_url(
-            "emby",
-            "v1",
-            "stream",
-            &key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
+        let url = build_signed_proxy_url(SignedProxyUrlRequest {
+            provider: "emby",
+            version: "v1",
+            action: "stream",
+            signing_key: &key,
+            room_id: "room-1",
+            user_id: "user-1",
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+        });
         assert!(url.starts_with("/api/providers/proxy/emby/v1/stream?sig="));
         assert!(url.contains("&uid=user-1"));
         assert!(url.contains("&rid=room-1"));
@@ -404,8 +414,10 @@ mod tests {
 
     #[test]
     fn different_secrets_produce_different_signatures() {
-        let key1 = ProxySigningKey::derive_from(b"secret-1-long-enough-for-hmac");
-        let key2 = ProxySigningKey::derive_from(b"secret-2-long-enough-for-hmac");
+        let key1 = ProxySigningKey::try_derive_from(b"secret-1-long-enough-for-hmac")
+            .expect("test proxy signing key should derive");
+        let key2 = ProxySigningKey::try_derive_from(b"secret-2-long-enough-for-hmac")
+            .expect("test proxy signing key should derive");
         let claims = test_claims();
         let sig1 = key1.sign(&claims);
         let sig2 = key2.sign(&claims);
@@ -439,15 +451,15 @@ mod tests {
     #[test]
     fn build_signed_proxy_url_encodes_path_segments() {
         let key = test_key();
-        let url = build_signed_proxy_url(
-            "provider/name",
-            "v1&bad",
-            "action=evil",
-            &key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
+        let url = build_signed_proxy_url(SignedProxyUrlRequest {
+            provider: "provider/name",
+            version: "v1&bad",
+            action: "action=evil",
+            signing_key: &key,
+            room_id: "room-1",
+            user_id: "user-1",
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+        });
         // Path segments with special chars should be percent-encoded
         assert!(url.contains("provider%2Fname"));
         assert!(url.contains("v1%26bad"));

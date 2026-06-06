@@ -133,24 +133,28 @@ impl RoomResourceEventRepository {
             return Ok(Vec::new());
         }
 
-        let limit = limit.clamp(1, 500);
+        let limit = i64::from(limit.clamp(1, 500));
         let after_sequence = after_sequence.max(0);
         let resource_types: Vec<String> = resource_types
             .iter()
             .map(|resource_type| (*resource_type).to_string())
             .collect();
 
-        let rows = sqlx::query_as_unchecked!(
+        let rows = sqlx::query_as!(
             RoomResourceEventLog,
-            r"
-            SELECT event_id, sequence, resource_type, event_type, payload
+            r#"
+            SELECT event_id AS "event_id!",
+                   sequence,
+                   resource_type AS "resource_type!",
+                   event_type AS "event_type!",
+                   payload
             FROM room_resource_events
             WHERE room_id = $1
               AND sequence > $2
               AND resource_type = ANY($3::TEXT[])
             ORDER BY sequence ASC
             LIMIT $4
-            ",
+            "#,
             room_id.as_i64(),
             after_sequence,
             &resource_types,
@@ -189,10 +193,7 @@ impl RoomResourceEventRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(row
-            .min_sequence
-            .zip(row.max_sequence)
-            .map(|(min_sequence, max_sequence)| (min_sequence, max_sequence)))
+        Ok(row.min_sequence.zip(row.max_sequence))
     }
 
     pub async fn is_room_event_sequence_retained_for_resource_types(

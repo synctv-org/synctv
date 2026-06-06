@@ -87,35 +87,30 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn finish_passkey_bind(
-        &self,
-        user_id: &UserId,
-        session_id: &str,
-        credential_json: &[u8],
-    ) -> Result<PasskeyCredentialResponse, ApiError> {
-        let credential = self
-            .passkey_service()?
-            .finish_registration(session_id, credential_json, user_id)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(PasskeyCredentialResponse {
-            credential: Some(passkey_credential_to_proto(&credential)),
-        })
-    }
-
     pub async fn finish_passkey_bind_request(
         &self,
         user_id: &UserId,
         req: crate::proto::client::FinishPasskeyBindRequest,
     ) -> Result<PasskeyCredentialResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let prepared = self
+            .passkey_service()?
+            .prepare_registration(&req.session_id, &req.credential, user_id)
+            .await
+            .map_err(ApiError::from)?;
         self.user_service
             .consume_sensitive_operation_verification(user_id, &req.verification_id)
             .await
             .map_err(ApiError::from)?;
-        self.finish_passkey_bind(user_id, &req.session_id, &req.credential)
+        let credential = self
+            .passkey_service()?
+            .commit_prepared_registration(prepared)
             .await
+            .map_err(ApiError::from)?;
+
+        Ok(PasskeyCredentialResponse {
+            credential: Some(passkey_credential_to_proto(&credential)),
+        })
     }
 
     pub async fn list_passkeys(&self, user_id: &UserId) -> Result<ListPasskeysResponse, ApiError> {
@@ -136,13 +131,13 @@ impl ClientApiImpl {
         req: DeletePasskeyRequest,
     ) -> Result<DeletePasskeyResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let credential_id =
+            synctv_core::service::PasskeyService::decode_credential_id(&req.credential_id)
+                .map_err(ApiError::from)?;
         self.user_service
             .consume_sensitive_operation_verification(user_id, &req.verification_id)
             .await
             .map_err(ApiError::from)?;
-        let credential_id =
-            synctv_core::service::PasskeyService::decode_credential_id(&req.credential_id)
-                .map_err(ApiError::from)?;
         let deleted = self
             .passkey_service()?
             .delete_credential(user_id, &credential_id)

@@ -2,7 +2,6 @@
 //!
 //! Tests: encryption of sensitive fields and relational constraints.
 //!
-//! Run with: cargo test -p synctv-core --test `provider_instance_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

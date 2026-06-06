@@ -42,7 +42,7 @@ pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::*;
 
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
-use crate::proxy_signature::{build_signed_proxy_url, ProxySigningKey};
+use crate::proxy_signature::{build_signed_proxy_url, ProxySigningKey, SignedProxyUrlRequest};
 
 pub(crate) fn subtitle_headers_for_proxy(
     playback_headers: &std::collections::HashMap<String, String>,
@@ -86,25 +86,25 @@ pub struct ProviderSet {
 
 fn provider_http_client_for_ssrf_guard(
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
-) -> reqwest::Client {
-    synctv_media_providers::build_provider_http_client(ssrf_guard)
-        .expect("provider HTTP client should build")
+) -> crate::Result<reqwest::Client> {
+    synctv_media_providers::build_provider_http_client(ssrf_guard).map_err(|error| {
+        crate::Error::Internal(format!("Failed to build provider HTTP client: {error}"))
+    })
 }
 
 impl ProviderSet {
     /// Build built-in providers with a shared local provider HTTP client and
     /// explicit global SSRF policy.
-    #[must_use]
     pub fn new_with_ssrf_guard(
         provider_instance_manager: std::sync::Arc<crate::service::RemoteProviderManager>,
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    ) -> Self {
-        let provider_http_client = provider_http_client_for_ssrf_guard(ssrf_guard.clone());
-        Self::new_with_provider_http_client_and_ssrf_guard(
+    ) -> crate::Result<Self> {
+        let provider_http_client = provider_http_client_for_ssrf_guard(ssrf_guard.clone())?;
+        Ok(Self::new_with_provider_http_client_and_ssrf_guard(
             provider_instance_manager,
             provider_http_client,
             ssrf_guard,
-        )
+        ))
     }
 
     /// Build built-in providers with explicit local provider transport and
@@ -301,15 +301,15 @@ pub fn sign_playback_urls(
     {
         result.metadata.insert(
             "thumbnail".to_string(),
-            serde_json::json!(build_signed_proxy_url(
-                provider_name,
+            serde_json::json!(build_signed_proxy_url(SignedProxyUrlRequest {
+                provider: provider_name,
                 version,
-                "thumbnail",
+                action: "thumbnail",
                 signing_key,
                 room_id,
                 user_id,
                 expires_at,
-            )),
+            })),
         );
     }
 
@@ -330,60 +330,60 @@ pub fn sign_playback_urls(
                 .iter()
                 .enumerate()
                 .map(|(index, _)| {
-                    build_signed_proxy_url(
-                        provider_name,
+                    build_signed_proxy_url(SignedProxyUrlRequest {
+                        provider: provider_name,
                         version,
-                        &format!("stream/{mode_name}/{index}"),
+                        action: &format!("stream/{mode_name}/{index}"),
                         signing_key,
                         room_id,
                         user_id,
                         expires_at,
-                    )
+                    })
                 })
                 .collect();
             info.headers.clear();
             info.cors_proxy_required = false;
         } else if is_hls && needs_proxy {
             if mode_name == &default_mode && info.urls.len() == 1 {
-                info.urls = vec![build_signed_proxy_url(
-                    provider_name,
+                info.urls = vec![build_signed_proxy_url(SignedProxyUrlRequest {
+                    provider: provider_name,
                     version,
-                    "m3u8",
+                    action: "m3u8",
                     signing_key,
                     room_id,
                     user_id,
                     expires_at,
-                )];
+                })];
             } else {
                 info.urls = info
                     .urls
                     .iter()
                     .enumerate()
                     .map(|(index, _)| {
-                        build_signed_proxy_url(
-                            provider_name,
+                        build_signed_proxy_url(SignedProxyUrlRequest {
+                            provider: provider_name,
                             version,
-                            &format!("m3u8/{mode_name}/{index}"),
+                            action: &format!("m3u8/{mode_name}/{index}"),
                             signing_key,
                             room_id,
                             user_id,
                             expires_at,
-                        )
+                        })
                     })
                     .collect();
             }
             info.headers.clear();
             info.cors_proxy_required = false;
         } else if needs_proxy && mode_name == &default_mode && info.urls.len() == 1 {
-            info.urls = vec![build_signed_proxy_url(
-                provider_name,
+            info.urls = vec![build_signed_proxy_url(SignedProxyUrlRequest {
+                provider: provider_name,
                 version,
-                "stream",
+                action: "stream",
                 signing_key,
                 room_id,
                 user_id,
                 expires_at,
-            )];
+            })];
             info.headers.clear();
             info.cors_proxy_required = false;
         } else if needs_proxy {
@@ -392,15 +392,15 @@ pub fn sign_playback_urls(
                 .iter()
                 .enumerate()
                 .map(|(index, _)| {
-                    build_signed_proxy_url(
-                        provider_name,
+                    build_signed_proxy_url(SignedProxyUrlRequest {
+                        provider: provider_name,
                         version,
-                        &format!("stream/{mode_name}/{index}"),
+                        action: &format!("stream/{mode_name}/{index}"),
                         signing_key,
                         room_id,
                         user_id,
                         expires_at,
-                    )
+                    })
                 })
                 .collect();
             info.headers.clear();
@@ -411,15 +411,15 @@ pub fn sign_playback_urls(
             if !provider_requires_proxy && subtitle.headers.is_empty() {
                 continue;
             }
-            subtitle.url = build_signed_proxy_url(
-                provider_name,
+            subtitle.url = build_signed_proxy_url(SignedProxyUrlRequest {
+                provider: provider_name,
                 version,
-                &format!("subtitle/{mode_name}/{idx}"),
+                action: &format!("subtitle/{mode_name}/{idx}"),
                 signing_key,
                 room_id,
                 user_id,
                 expires_at,
-            );
+            });
             subtitle.headers.clear();
         }
     }
@@ -512,10 +512,23 @@ pub async fn finalize_versioned_playback(
     cache_ttl: std::time::Duration,
     ctx: &ProviderContext<'_>,
 ) -> Result<PlaybackResult> {
+    let ttl_secs = i64::try_from(cache_ttl.as_secs()).map_err(|_| {
+        ProviderError::Internal(format!(
+            "Provider '{provider_name}' playback cache TTL exceeds i64::MAX seconds"
+        ))
+    })?;
+    let expires_at = chrono::Utc::now()
+        .timestamp()
+        .checked_add(ttl_secs)
+        .ok_or_else(|| {
+            ProviderError::Internal(format!(
+                "Provider '{provider_name}' playback cache expiry exceeds i64::MAX"
+            ))
+        })?;
     let versioned = VersionedPlayback {
         version: synctv_common::snanoid!(16),
         result: result.clone(),
-        expires_at: chrono::Utc::now().timestamp() + cache_ttl.as_secs().cast_signed(),
+        expires_at,
     };
 
     if let Some(store) = ctx.store.as_ref() {
@@ -630,7 +643,8 @@ mod tests {
 
     #[test]
     fn test_sign_playback_urls_signs_mpd_streams_with_indexed_proxy_paths() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "dash".to_string(),
@@ -701,7 +715,8 @@ mod tests {
 
     #[test]
     fn test_sign_playback_urls_preserves_multiple_plain_stream_urls() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "direct".to_string(),
@@ -750,7 +765,8 @@ mod tests {
 
     #[test]
     fn test_sign_playback_urls_keeps_plain_direct_hls_urls_unproxied() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "direct".to_string(),
@@ -788,7 +804,8 @@ mod tests {
 
     #[test]
     fn test_sign_playback_urls_proxies_direct_hls_with_headers() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "direct".to_string(),
@@ -829,7 +846,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
@@ -854,7 +872,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_finalize_versioned_playback_fails_closed_when_mapping_persist_fails() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
@@ -882,7 +901,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_signed_playback_repairs_missing_version_mapping() {
-        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .expect("test proxy signing key should derive");
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
@@ -977,7 +997,8 @@ mod tests {
         let providers = ProviderSet::new_with_ssrf_guard(
             provider_instance_manager,
             synctv_common::ssrf::SsrfGuard::disabled(),
-        );
+        )
+        .expect("provider set should build");
         let ctx = ProviderContext::new("test");
 
         providers

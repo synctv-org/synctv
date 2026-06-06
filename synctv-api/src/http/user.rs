@@ -1,5 +1,4 @@
 //! User management HTTP handlers
-// This layer now uses proto types and delegates to the impls layer for business logic
 
 use axum::{
     body::Bytes,
@@ -44,6 +43,7 @@ pub struct UserAvatarObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserAvatarObjectQuery {
     pub token: String,
 }
@@ -281,17 +281,16 @@ pub async fn upload_user_avatar_object(
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    let upload_token = headers
-        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| super::AppError::bad_request("Missing file upload token"))?;
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
+    let upload_token = super::required_header_str(
+        &headers,
+        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        "Missing file upload token",
+    )?;
+    let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
     let req = crate::proto::client::UploadUserAvatarObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
-        content_type: content_type.unwrap_or_default().to_string(),
+        content_type: content_type.map(str::to_string),
         data: body.to_vec(),
     };
     let request_meta = request_meta
@@ -980,6 +979,8 @@ pub async fn close_account(
 
 #[cfg(test)]
 mod tests {
+    use super::UserAvatarObjectQuery;
+
     #[test]
     fn test_list_my_rooms_request_deserializes_numeric_fields() {
         let query: crate::proto::client::ListMyRoomsRequest = serde_urlencoded::from_str(
@@ -1010,5 +1011,12 @@ mod tests {
         assert_eq!(query.relation, 0);
         assert_eq!(query.sort_by, 0);
         assert_eq!(query.sort_direction, 0);
+    }
+
+    #[test]
+    fn test_user_avatar_object_query_rejects_unknown_fields() {
+        assert!(
+            serde_urlencoded::from_str::<UserAvatarObjectQuery>("token=token&extra=true").is_err()
+        );
     }
 }

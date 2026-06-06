@@ -31,12 +31,11 @@ use synctv_realtime::sync::{
     build_connection_runtime as build_realtime_connection_runtime,
     build_room_message_runtime as build_realtime_room_message_runtime, CacheTarget,
     ConnectionLimits, RealtimeConfig, RealtimeEvent, RealtimeEventHandler, RealtimeManager,
-    RoomMessageRuntime,
+    RealtimeManagerRuntime, RoomMessageRuntime,
 };
 
 use synctv_api::realtime_fanout::{
-    default_realtime_fanout_service_with_realtime, required_realtime_fanout_service_with_realtime,
-    RealtimeFanoutService,
+    distributed_realtime_fanout_service, local_realtime_fanout_service, RealtimeFanoutService,
 };
 use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
 
@@ -47,10 +46,7 @@ use crate::bootstrap::cluster::{
 use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
-use crate::realtime_bridge::{
-    room_event_to_realtime_event, LocalPlaylistBroadcaster, RealtimePlaybackBroadcaster,
-    RealtimePlaylistBroadcaster,
-};
+use crate::realtime_bridge::room_event_to_realtime_event;
 use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
@@ -247,7 +243,7 @@ impl RealtimeEventHandler for CoreRealtimeEventHandler {
 struct ClusterState {
     realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     realtime_connection_service: Arc<dyn RealtimeConnectionService>,
-    realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
+    realtime_event_service: Arc<dyn RealtimeEventService>,
     node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
     health_monitor: Option<Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>>,
     cluster_activation: Option<Arc<dyn ClusterNodeActivator>>,
@@ -336,7 +332,20 @@ fn partition_startup_error(kind: &str, error: impl std::fmt::Display) -> anyhow:
 async fn abort_running_leadership_task(running_task: &mut Option<tokio::task::JoinHandle<()>>) {
     if let Some(handle) = running_task.take() {
         handle.abort();
-        let _ = handle.await;
+        match handle.await {
+            Ok(()) => {
+                warn!("Leadership-gated startup task completed while abort was requested");
+            }
+            Err(error) if error.is_cancelled() => {
+                tracing::debug!("Leadership-gated startup task cancelled after abort");
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Leadership-gated startup task failed while aborting"
+                );
+            }
+        }
     }
 }
 
@@ -356,7 +365,7 @@ async fn ensure_administrator_bootstrap_precondition(
     pool: &PgPool,
     bootstrap_config: &synctv_core::config::BootstrapConfig,
 ) -> Result<()> {
-    if bootstrap_config.create_root_user || has_any_admin_users(pool).await {
+    if bootstrap_config.create_root_user || has_any_admin_users(pool).await? {
         return Ok(());
     }
 
@@ -485,19 +494,6 @@ fn build_room_message_runtime(
         .map_err(|error| anyhow::anyhow!("Failed to initialize realtime message runtime: {error}"))
 }
 
-fn wire_room_service_realtime_broadcasters(
-    room_service: &Arc<synctv_core::service::RoomService>,
-    realtime_manager: Arc<RealtimeManager>,
-    playlist_broadcaster: Option<Arc<dyn synctv_core::service::PlaylistBroadcaster>>,
-) {
-    room_service.set_playback_realtime_broadcaster(Arc::new(RealtimePlaybackBroadcaster {
-        realtime_manager,
-    }));
-    if let Some(playlist_broadcaster) = playlist_broadcaster {
-        room_service.set_playlist_realtime_broadcaster(playlist_broadcaster);
-    }
-}
-
 fn start_room_notification_bridge(
     notification_service: Arc<synctv_core::service::NotificationService>,
     realtime_manager: Arc<RealtimeManager>,
@@ -562,10 +558,15 @@ async fn build_local_realtime_manager(
         parent_cancel_token: None,
     };
 
-    let mut realtime_manager = RealtimeManager::new(realtime_config)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create local RealtimeManager: {e}"))?;
-    realtime_manager.set_connection_manager(connection_manager);
+    let realtime_manager = RealtimeManager::new_with_runtime(
+        realtime_config,
+        RealtimeManagerRuntime {
+            connection_runtime: Some(connection_manager),
+            leader_runtime: None,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create local RealtimeManager: {e}"))?;
 
     Ok(Arc::new(realtime_manager))
 }
@@ -773,7 +774,7 @@ impl Application {
             // Startup can continue only if the system already has an active
             // administrator account that can manage it.
             if should_continue_startup_after_root_bootstrap_failure(
-                has_any_admin_users(&infra.pool).await,
+                has_any_admin_users(&infra.pool).await?,
             ) {
                 warn!("Failed to bootstrap root user: {}", e);
                 warn!("Existing administrator found, continuing startup");
@@ -1045,10 +1046,9 @@ impl Application {
                 synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(2);
                 info!("K8s Lease-based leader election started");
             }
-            _ => unreachable!(
-                "leader runtime mode is validated before startup: {}",
-                leader_runtime.mode_label()
-            ),
+            other => {
+                anyhow::bail!("unsupported leader runtime mode after initialization: {other}");
+            }
         }
 
         let leader_election_handle = Some(leader_runtime.start(leader_cancel.clone()));
@@ -1112,26 +1112,30 @@ impl Application {
             ..synctv_core::service::cleanup::CleanupConfig::default()
         };
         let file_storage_service = core.services.chat_service.file_storage_service();
-        let cleanup_service = synctv_core::service::CleanupService::new(
+        let cleanup_service = synctv_core::service::CleanupService::new_with_options(
             infra.pool.clone(),
             cleanup_config.clone(),
             leader.leader_runtime.clone(),
-        )
-        .with_settings_registry(core.services.settings_registry.clone())
-        .with_file_storage_service(file_storage_service.clone());
+            synctv_core::service::cleanup::CleanupServiceOptions {
+                settings_registry: Some(core.services.settings_registry.clone()),
+                file_storage_service: Some(file_storage_service.clone()),
+            },
+        );
         shutdown.register_task(
             "data_cleanup",
             cleanup_service.start_periodic(24, singleton_cancel.clone()),
         );
         info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours, dynamic settings from registry)");
 
-        let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
+        let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new_with_options(
             infra.pool.clone(),
             leader.leader_runtime.clone(),
-        )
-        .with_cleanup_config(cleanup_config.clone())
-        .with_settings_registry(core.services.settings_registry.clone())
-        .with_file_storage_service(file_storage_service.clone());
+            synctv_core::service::db_maintenance::DatabaseMaintenanceOptions {
+                config: cleanup_config.clone(),
+                settings_registry: Some(core.services.settings_registry.clone()),
+                file_storage_service: Some(file_storage_service.clone()),
+            },
+        );
         shutdown.register_task(
             "db_maintenance",
             db_maintenance.spawn_maintenance_loop(singleton_cancel),
@@ -1156,13 +1160,15 @@ impl Application {
                         "Leadership gained after startup; running deferred singleton maintenance"
                     );
 
-                    let cleanup_service = synctv_core::service::CleanupService::new(
+                    let cleanup_service = synctv_core::service::CleanupService::new_with_options(
                         pool.clone(),
                         cleanup_config.clone(),
                         leader_runtime.clone(),
-                    )
-                    .with_settings_registry(settings_registry.clone())
-                    .with_file_storage_service(file_storage_service.clone());
+                        synctv_core::service::cleanup::CleanupServiceOptions {
+                            settings_registry: Some(settings_registry.clone()),
+                            file_storage_service: Some(file_storage_service.clone()),
+                        },
+                    );
                     let cleanup_result = cleanup_service.run_all().await;
                     info!(
                         users_purged = cleanup_result.users_purged,
@@ -1178,10 +1184,15 @@ impl Application {
                     );
 
                     let db_maintenance =
-                        synctv_core::service::DatabaseMaintenanceService::new(pool, leader_runtime)
-                            .with_cleanup_config(cleanup_config.clone())
-                            .with_settings_registry(settings_registry)
-                            .with_file_storage_service(file_storage_service);
+                        synctv_core::service::DatabaseMaintenanceService::new_with_options(
+                            pool,
+                            leader_runtime,
+                            synctv_core::service::db_maintenance::DatabaseMaintenanceOptions {
+                                config: cleanup_config.clone(),
+                                settings_registry: Some(settings_registry),
+                                file_storage_service: Some(file_storage_service),
+                            },
+                        );
                     db_maintenance.run_all_maintenance().await;
                     info!("Deferred database maintenance completed after leadership gain");
                 })
@@ -1229,13 +1240,6 @@ impl Application {
                 Some(core.services.room_service.permission_service().clone()),
             )
             .await?;
-            wire_room_service_realtime_broadcasters(
-                &core.services.room_service,
-                realtime_manager.clone(),
-                Some(Arc::new(RealtimePlaylistBroadcaster {
-                    realtime_manager: realtime_manager.clone(),
-                })),
-            );
             start_room_notification_bridge(
                 core.services.room_notification_service.clone(),
                 realtime_manager.clone(),
@@ -1244,13 +1248,11 @@ impl Application {
             info!("Cluster mode disabled — initialized local-only RealtimeManager");
             let realtime_event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
             return Ok(ClusterState {
-                realtime_fanout_service: default_realtime_fanout_service_with_realtime(
-                    None,
-                    false,
-                    Some(realtime_event_service.clone()),
+                realtime_fanout_service: local_realtime_fanout_service(
+                    realtime_event_service.clone(),
                 ),
                 realtime_connection_service: realtime_connection_service.clone(),
-                realtime_event_service: Some(realtime_event_service),
+                realtime_event_service,
                 node_registry: None,
                 health_monitor: None,
                 cluster_activation: None,
@@ -1293,7 +1295,15 @@ impl Application {
             ))),
             parent_cancel_token: Some(cluster_cancel.clone()),
         };
-        let mut realtime_manager = match RealtimeManager::new(realtime_config).await {
+        let realtime_manager = match RealtimeManager::new_with_runtime(
+            realtime_config,
+            RealtimeManagerRuntime {
+                connection_runtime: Some(realtime_connection_service.clone()),
+                leader_runtime: Some(leader.leader_runtime.clone()),
+            },
+        )
+        .await
+        {
             Ok(manager) => {
                 info!("RealtimeManager initialized with cross-replica cache invalidation");
                 manager
@@ -1305,22 +1315,10 @@ impl Application {
                 ));
             }
         };
-        realtime_manager.set_connection_manager(realtime_connection_service.clone());
-        realtime_manager.set_leader_elector(leader.leader_runtime.clone());
         let realtime_manager = Arc::new(realtime_manager);
         shutdown.register_hook(RealtimeManagerShutdownHook {
             manager: realtime_manager.clone(),
         });
-
-        // Wire realtime broadcasters into playback and playlist services.
-        wire_room_service_realtime_broadcasters(
-            &core.services.room_service,
-            realtime_manager.clone(),
-            Some(Arc::new(LocalPlaylistBroadcaster {
-                realtime_manager: realtime_manager.clone(),
-            })),
-        );
-        info!("PlaybackService wired with realtime broadcaster");
 
         // Cluster discovery (NodeRegistry, HealthMonitor) requires Redis.
         // When cluster is explicitly enabled, discovery failures are fatal.
@@ -1354,12 +1352,12 @@ impl Application {
         );
 
         Ok(ClusterState {
-            realtime_fanout_service: required_realtime_fanout_service_with_realtime(
+            realtime_fanout_service: distributed_realtime_fanout_service(
                 outbox,
                 realtime_event_service.clone(),
             ),
             realtime_connection_service: realtime_connection_service.clone(),
-            realtime_event_service: Some(realtime_event_service),
+            realtime_event_service,
             node_registry: Some(discovery.registry.clone()),
             health_monitor: Some(discovery.health_monitor.clone()),
             cluster_activation: Some(Arc::new(DefaultClusterNodeActivator::new(
@@ -1410,7 +1408,7 @@ impl Application {
         let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
             core.services.provider_instance_manager.clone(),
             infra.config.security.ssrf_guard(),
-        );
+        )?;
 
         Ok(ServerComponents {
             livestream_state,
@@ -1488,13 +1486,9 @@ mod tests {
         RedisConfig, RequestRateLimitConfig, ServerConfig, WebAuthnConfig, WebRTCConfig,
     };
     use synctv_core::{
-        cache::{KeyBuilder, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
-        service::{
-            auth::OpaquePasswordService, BruteForceProtection, InMemoryTokenBlacklistStore,
-            UserService,
-        },
+        service::auth::OpaquePasswordService,
         RedisConnectionRuntime, SharedRedisConnectionRuntime,
     };
     use synctv_core_testing::test_redis_key_prefix;
@@ -1659,11 +1653,21 @@ mod tests {
             }
         }
 
+        fn publish_event(&self, event: LeadershipEvent) {
+            if let Err(error) = self.tx.send(event) {
+                tracing::warn!(
+                    ?event,
+                    error = %error,
+                    "Test leader runtime failed to publish leadership event"
+                );
+            }
+        }
+
         fn gain_leadership(&self) {
             let epoch = self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             self.is_leader
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let _ = self.tx.send(LeadershipEvent::Gained { epoch });
+            self.publish_event(LeadershipEvent::Gained { epoch });
         }
     }
 
@@ -1671,23 +1675,6 @@ mod tests {
         fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
             self.tx.subscribe()
         }
-    }
-
-    fn make_test_user_service(pool: &PgPool) -> UserService {
-        let jwt_service =
-            synctv_core::service::JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
-                .expect("jwt service");
-        let username_cache = UsernameCache::local_only("test:username:".to_string(), 64, 60);
-
-        UserService::new(
-            pool,
-            jwt_service,
-            username_cache,
-            PasswordComplexityConfig::default(),
-            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
-            KeyBuilder::new("test"),
-            BruteForceProtection::in_memory("test".to_string()),
-        )
     }
 
     impl synctv_core::service::LeaderCheck for TestLeaderRuntime {
@@ -1711,7 +1698,7 @@ mod tests {
         async fn resign(&self) {
             self.is_leader
                 .store(false, std::sync::atomic::Ordering::SeqCst);
-            let _ = self.tx.send(LeadershipEvent::Lost);
+            self.publish_event(LeadershipEvent::Lost);
         }
     }
 
@@ -1976,51 +1963,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_wire_room_service_realtime_broadcasters_sets_runtime_bridges() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let room_service = Arc::new(synctv_core::service::RoomService::new(
-            pool.clone(),
-            make_test_user_service(&pool),
-        ));
-        let realtime_manager = Arc::new(
-            RealtimeManager::new(RealtimeConfig {
-                distributed_transport_factory: None,
-                message_runtime: build_room_message_runtime(
-                    &synctv_core::SharedStateProfile::from_runtime(None, "test:", false),
-                )
-                .expect("local message runtime should initialize"),
-                distributed_enabled: false,
-                node_id: "test-node".to_string(),
-                dedup_window: Duration::from_secs(30),
-                critical_channel_capacity: 16,
-                publish_channel_capacity: 16,
-                key_prefix: "test:".to_string(),
-                catchup_window_secs: 30,
-                stream_max_length: 128,
-                event_handler: None,
-                parent_cancel_token: None,
-            })
-            .await
-            .expect("local realtime manager should build"),
-        );
-
-        wire_room_service_realtime_broadcasters(
-            &room_service,
-            realtime_manager.clone(),
-            Some(Arc::new(RealtimePlaylistBroadcaster {
-                realtime_manager: realtime_manager.clone(),
-            })),
-        );
-
-        assert!(
-            room_service.has_playlist_realtime_broadcaster(),
-            "realtime broadcaster wiring must cover playlist lifecycle broadcasts"
-        );
-
-        realtime_manager.shutdown().await;
-    }
-
-    #[tokio::test]
     #[ignore = "requires Docker"]
     async fn test_init_cluster_injects_runtime_dependencies_into_realtime_manager() {
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
@@ -2061,16 +2003,15 @@ mod tests {
             parent_cancel_token: None,
         };
 
-        let mut realtime_manager = RealtimeManager::new(realtime_config)
-            .await
-            .expect("RealtimeManager should initialize");
-        let metrics = realtime_manager.metrics();
-        assert!(!metrics.has_connection_manager);
-        assert!(!metrics.has_leader_elector);
-
-        realtime_manager.set_connection_manager(connection_manager);
-        realtime_manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
-
+        let realtime_manager = RealtimeManager::new_with_runtime(
+            realtime_config,
+            RealtimeManagerRuntime {
+                connection_runtime: Some(connection_manager),
+                leader_runtime: Some(Arc::new(synctv_core::service::AlwaysLeader)),
+            },
+        )
+        .await
+        .expect("RealtimeManager should initialize");
         let metrics = realtime_manager.metrics();
         assert!(metrics.has_connection_manager);
         assert!(metrics.has_leader_elector);

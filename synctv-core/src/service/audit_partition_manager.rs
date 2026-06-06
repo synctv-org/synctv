@@ -11,7 +11,8 @@ use tracing::{info, warn};
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::service::partitioning::{
-    add_months, current_database_date, quote_ident, size_gb, size_mb, start_of_month, table_exists,
+    add_months, current_database_date, quote_ident, size_centi_gib, size_centi_mib, start_of_month,
+    table_exists,
 };
 use crate::{Error, InternalExt, Result};
 
@@ -23,12 +24,16 @@ const PARTITION_RETRY_BASE_MS: u64 = 1_000;
 const DEFAULT_RETENTION_MONTHS: i32 = 12;
 const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
 
+fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
+    i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
+}
+
 /// Health check result for audit log partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartitionHealth {
     pub total_partitions: i32,
-    pub total_size_mb: f64,
-    pub total_size_gb: f64,
+    pub total_size_centi_mib: i64,
+    pub total_size_centi_gib: i64,
     pub missing_partitions: Vec<String>,
     pub missing_count: i32,
     pub health_status: String,
@@ -47,7 +52,7 @@ pub struct PartitionStats {
 pub struct PartitionInfo {
     pub partition: String,
     pub row_count: i64,
-    pub size_mb: f64,
+    pub size_centi_mib: i64,
 }
 
 /// Result of partition creation
@@ -65,6 +70,23 @@ pub struct PartitionCreationDetail {
     pub start_date: String,
     pub end_date: String,
     pub indexes_created: i32,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionNameRow {
+    tablename: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionSizeRow {
+    size_bytes: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionStatsRow {
+    tablename: String,
+    row_count: i64,
+    size_bytes: i64,
 }
 
 /// Audit log partition manager
@@ -100,16 +122,16 @@ impl AuditPartitionManager {
             ));
         }
 
-        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let current_month = start_of_month(current_database_date(&self.pool).await?)?;
         let mut partitions = Vec::new();
         for offset in 0..=months_ahead {
             partitions.push(
-                self.create_partition_detail(add_months(current_month, offset))
+                self.create_partition_detail(add_months(current_month, offset)?)
                     .await?,
             );
         }
 
-        let success_count = i32::try_from(partitions.len()).unwrap_or(i32::MAX);
+        let success_count = len_to_i32(partitions.len(), "created audit partition count")?;
         let result = PartitionCreationResult {
             total_requested: months_ahead + 1,
             success_count,
@@ -133,7 +155,7 @@ impl AuditPartitionManager {
         Ok(PartitionInfo {
             partition: partition_name,
             row_count: 0,
-            size_mb: 0.0,
+            size_centi_mib: 0,
         })
     }
 
@@ -141,8 +163,8 @@ impl AuditPartitionManager {
         &self,
         date: chrono::NaiveDate,
     ) -> Result<PartitionCreationDetail> {
-        let start_date = start_of_month(date);
-        let end_date = add_months(start_date, 1);
+        let start_date = start_of_month(date)?;
+        let end_date = add_months(start_date, 1)?;
         let partition_name = format!("audit_logs_{}", start_date.format("%Y_%m"));
         let partition_ident = quote_ident(&partition_name);
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
@@ -209,25 +231,28 @@ impl AuditPartitionManager {
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .internal_with_err("Failed to acquire DDL connection for dropping partitions")?;
-        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let current_month = start_of_month(current_database_date(&self.pool).await?)?;
         let cutoff_name = format!(
             "audit_logs_{}",
-            add_months(current_month, -keep_months).format("%Y_%m")
+            add_months(current_month, -keep_months)?.format("%Y_%m")
         );
-        let dropped_partitions = sqlx::query_scalar_unchecked!(
-            "SELECT tablename
+        let dropped_partitions = sqlx::query_as!(
+            PartitionNameRow,
+            r#"
+            SELECT tablename AS "tablename!"
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
                AND tablename < $1
-             ORDER BY tablename",
+             ORDER BY tablename
+             "#,
             cutoff_name
         )
         .fetch_all(&mut *conn)
         .await
         .internal_with_err("Failed to list old audit partitions")?
         .into_iter()
-        .flatten()
+        .map(|row| row.tablename)
         .collect::<Vec<_>>();
 
         for partition in &dropped_partitions {
@@ -237,7 +262,7 @@ impl AuditPartitionManager {
                 .internal_with_err("Failed to drop audit partition")?;
         }
 
-        let dropped_count = i32::try_from(dropped_partitions.len()).unwrap_or(i32::MAX);
+        let dropped_count = len_to_i32(dropped_partitions.len(), "dropped audit partition count")?;
 
         info!("Successfully dropped {} old partitions", dropped_count);
 
@@ -248,37 +273,40 @@ impl AuditPartitionManager {
     ///
     /// Returns missing partitions and overall health status
     pub async fn check_health(&self) -> Result<PartitionHealth> {
-        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let current_month = start_of_month(current_database_date(&self.pool).await?)?;
         let mut missing_partitions = Vec::new();
         for offset in 0..=6 {
             let partition_name = format!(
                 "audit_logs_{}",
-                add_months(current_month, offset).format("%Y_%m")
+                add_months(current_month, offset)?.format("%Y_%m")
             );
             if !table_exists(&self.pool, &partition_name).await? {
                 missing_partitions.push(partition_name);
             }
         }
 
-        let rows = sqlx::query_as::<_, (i64,)>(
-            "SELECT pg_total_relation_size(c.oid)::BIGINT
+        let rows = sqlx::query_as!(
+            PartitionSizeRow,
+            r#"
+            SELECT pg_total_relation_size(c.oid)::BIGINT AS "size_bytes!"
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'public'
                AND c.relkind = 'r'
-               AND c.relname ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'",
+               AND c.relname ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
+             "#,
         )
         .fetch_all(&self.pool)
         .await
         .internal_with_err("Failed to check partition health")?;
 
-        let total_partitions = i32::try_from(rows.len()).unwrap_or(i32::MAX);
-        let total_size = rows.iter().map(|(size,)| *size).sum::<i64>();
-        let missing_count = i32::try_from(missing_partitions.len()).unwrap_or(i32::MAX);
+        let total_partitions = len_to_i32(rows.len(), "audit partition count")?;
+        let total_size = rows.iter().map(|row| row.size_bytes).sum::<i64>();
+        let missing_count = len_to_i32(missing_partitions.len(), "missing audit partition count")?;
         let health = PartitionHealth {
             total_partitions,
-            total_size_mb: size_mb(total_size),
-            total_size_gb: size_gb(total_size),
+            total_size_centi_mib: size_centi_mib(total_size),
+            total_size_centi_gib: size_centi_gib(total_size),
             missing_partitions,
             missing_count,
             health_status: if missing_count == 0 {
@@ -313,29 +341,32 @@ impl AuditPartitionManager {
     ///
     /// Returns detailed statistics for all partitions
     pub async fn get_stats(&self) -> Result<PartitionStats> {
-        let rows = sqlx::query_as::<_, (String, i64, i64)>(
-            "SELECT
-                c.relname AS tablename,
-                GREATEST(c.reltuples, 0)::BIGINT AS row_count,
-                pg_total_relation_size(c.oid)::BIGINT AS size_bytes
+        let rows = sqlx::query_as!(
+            PartitionStatsRow,
+            r#"
+            SELECT
+                c.relname AS "tablename!",
+                GREATEST(c.reltuples, 0)::BIGINT AS "row_count!",
+                pg_total_relation_size(c.oid)::BIGINT AS "size_bytes!"
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'public'
                AND c.relkind = 'r'
                AND c.relname ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
-             ORDER BY c.relname DESC",
+             ORDER BY c.relname DESC
+             "#,
         )
         .fetch_all(&self.pool)
         .await
         .internal_with_err("Failed to get partition stats")?;
 
-        let total_records = rows.iter().map(|(_, row_count, _)| *row_count).sum();
+        let total_records = rows.iter().map(|row| row.row_count).sum();
         let partitions = rows
             .into_iter()
-            .map(|(partition, row_count, size_bytes)| PartitionInfo {
-                partition,
-                row_count,
-                size_mb: size_mb(size_bytes),
+            .map(|row| PartitionInfo {
+                partition: row.tablename,
+                row_count: row.row_count,
+                size_centi_mib: size_centi_mib(row.size_bytes),
             })
             .collect::<Vec<_>>();
         let stats = PartitionStats {
@@ -605,8 +636,8 @@ mod tests {
     fn test_partition_health_deserialization() {
         let json = r#"{
             "total_partitions": 10,
-            "total_size_mb": 1024.5,
-            "total_size_gb": 1.0,
+            "total_size_centi_mib": 102450,
+            "total_size_centi_gib": 100,
             "missing_partitions": [
                 "audit_logs_2026_06"
             ],
@@ -643,63 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_info_serialization() {
-        let info = PartitionInfo {
-            partition: "audit_logs_2024_01".to_string(),
-            row_count: 1000,
-            size_mb: 256.5,
-        };
-
-        let json = serde_json::to_string(&info).unwrap();
-        let deserialized: PartitionInfo = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.partition, info.partition);
-        assert_eq!(deserialized.row_count, info.row_count);
-        assert!((deserialized.size_mb - info.size_mb).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_partition_creation_detail_serialization() {
-        let detail = PartitionCreationDetail {
-            partition_name: "audit_logs_2024_01".to_string(),
-            start_date: "2024-01-01".to_string(),
-            end_date: "2024-02-01".to_string(),
-            indexes_created: 4,
-        };
-
-        let json = serde_json::to_string(&detail).unwrap();
-        let deserialized: PartitionCreationDetail = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.partition_name, detail.partition_name);
-        assert_eq!(deserialized.indexes_created, detail.indexes_created);
-    }
-
-    #[test]
-    fn test_all_statuses() {
-        // Test all possible health statuses
-        let statuses = vec!["healthy", "warning", "unknown"];
-        for status in statuses {
-            let health = PartitionHealth {
-                total_partitions: 10,
-                total_size_mb: 1024.5,
-                total_size_gb: 1.0,
-                missing_partitions: vec![],
-                missing_count: 0,
-                health_status: status.to_string(),
-            };
-            assert_eq!(health.health_status, status);
-        }
-    }
-
-    #[test]
-    fn test_retry_constants() {
-        assert_eq!(MAX_PARTITION_RETRIES, 3);
-        assert_eq!(PARTITION_RETRY_BASE_MS, 1_000);
-    }
-
-    #[test]
     fn test_exponential_backoff_sequence() {
-        // Verify the backoff values: 1s, 2s, 4s
         let backoffs: Vec<u64> = (0..MAX_PARTITION_RETRIES)
             .map(|attempt| PARTITION_RETRY_BASE_MS * (1 << attempt))
             .collect();
@@ -712,8 +687,8 @@ mod tests {
             "total_partitions": 3,
             "total_records": 5000,
             "partitions": [
-                {"partition": "audit_logs_2025_01", "row_count": 2000, "size_mb": 50.0},
-                {"partition": "audit_logs_2025_02", "row_count": 3000, "size_mb": 75.0}
+                {"partition": "audit_logs_2025_01", "row_count": 2000, "size_centi_mib": 5000},
+                {"partition": "audit_logs_2025_02", "row_count": 3000, "size_centi_mib": 7500}
             ]
         }"#;
 

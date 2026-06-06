@@ -1,12 +1,15 @@
 //! Auth operations: register, login, `refresh_token`
 
-use super::convert::user_to_proto;
+use super::convert::try_user_to_proto;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 use std::future::Future;
 use std::net::IpAddr;
+use std::num::TryFromIntError;
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::{AuthFactorMethod, AuthenticatedLogin};
+use synctv_core::service::{
+    AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, PendingAccountRegistration,
+};
 
 pub(crate) struct PasskeyAuthChallenge {
     pub session_id: String,
@@ -24,25 +27,25 @@ fn mfa_method_to_proto(method: AuthFactorMethod) -> crate::proto::client::MfaMet
 pub(crate) fn login_outcome_to_proto(
     outcome: AuthenticatedLogin,
     public_id_codec: &crate::PublicIdCodec,
-) -> crate::proto::client::LoginResponse {
+) -> Result<crate::proto::client::LoginResponse, ApiError> {
     match outcome {
         AuthenticatedLogin::Complete {
             user,
             email,
             access_token,
             refresh_token,
-        } => crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user, email.as_deref(), public_id_codec)),
+        } => Ok(crate::proto::client::LoginResponse {
+            user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
             access_token,
             refresh_token,
             mfa: None,
-        },
+        }),
         AuthenticatedLogin::MfaRequired {
             user,
             email,
             challenge,
-        } => crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user, email.as_deref(), public_id_codec)),
+        } => Ok(crate::proto::client::LoginResponse {
+            user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
             access_token: String::new(),
             refresh_token: String::new(),
             mfa: Some(crate::proto::client::MfaChallenge {
@@ -56,7 +59,7 @@ pub(crate) fn login_outcome_to_proto(
                 masked_email: challenge.masked_email.unwrap_or_default(),
                 expires_at: challenge.expires_at,
             }),
-        },
+        }),
     }
 }
 
@@ -68,6 +71,52 @@ fn normalize_optional_email(email: Option<String>) -> Result<Option<String>, Api
                 .map_err(|error| ApiError::InvalidInput(error.to_string()))
         })
         .transpose()
+}
+
+fn pending_registration_to_proto(
+    pending: PendingAccountRegistration,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<crate::proto::client::PendingRegistrationReview, ApiError> {
+    Ok(crate::proto::client::PendingRegistrationReview {
+        review_request_id: public_id_codec
+            .encode_user_id(pending.review_request_id)
+            .map_err(|error| {
+                ApiError::Internal(format!(
+                    "failed to encode pending registration review id: {error}"
+                ))
+            })?,
+        username: pending.username,
+        email: pending.email,
+    })
+}
+
+fn registration_outcome_to_proto(
+    outcome: AccountRegistrationOutcome,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+    match outcome {
+        AccountRegistrationOutcome::Registered {
+            user,
+            email,
+            access_token,
+            refresh_token,
+        } => Ok(crate::proto::client::RegisterResponse {
+            user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
+            access_token,
+            refresh_token,
+            status: crate::proto::client::RegistrationStatus::Registered as i32,
+            pending_review: None,
+        }),
+        AccountRegistrationOutcome::PendingReview(pending) => {
+            Ok(crate::proto::client::RegisterResponse {
+                user: None,
+                access_token: String::new(),
+                refresh_token: String::new(),
+                status: crate::proto::client::RegistrationStatus::PendingReview as i32,
+                pending_review: Some(pending_registration_to_proto(pending, public_id_codec)?),
+            })
+        }
+    }
 }
 
 fn normalize_optional_identifier(username: &str, email: &str) -> Result<Option<String>, ApiError> {
@@ -89,6 +138,14 @@ fn normalize_optional_identifier(username: &str, email: &str) -> Result<Option<S
     } else {
         Ok(None)
     }
+}
+
+fn nonnegative_token_ttl_seconds(exp: i64, now: i64) -> Result<u64, ApiError> {
+    u64::try_from(exp.saturating_sub(now)).map_err(|error: TryFromIntError| {
+        ApiError::Internal(format!(
+            "Token expiry is outside representable range: {error}"
+        ))
+    })
 }
 
 /// Outcome of a logout operation.
@@ -117,68 +174,6 @@ impl LogoutOutcome {
 }
 
 impl ClientApiImpl {
-    pub async fn register_with_control(
-        &self,
-        mut req: crate::proto::client::RegisterRequest,
-        client_ip: Option<std::net::IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
-        req.username = crate::impls::validation::validate_username(&req.username)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-        let email = normalize_optional_email(req.email.clone())?;
-        crate::impls::validate_proto_request(&req)?;
-        let (user, access_token, refresh_token) = self
-            .user_service
-            .register_with_control(
-                req.username,
-                email.clone(),
-                req.password,
-                client_ip,
-                control,
-            )
-            .await
-            .map_err(ApiError::from)?;
-        Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(
-                &user,
-                email.as_deref(),
-                &self.public_id_codec,
-            )),
-            access_token: access_token.unwrap_or_default(),
-            refresh_token: refresh_token.unwrap_or_default(),
-        })
-    }
-
-    pub async fn login_with_control(
-        &self,
-        req: crate::proto::client::LoginRequest,
-        client_ip: Option<std::net::IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let identifier = match req.identifier {
-            Some(crate::proto::client::login_request::Identifier::Email(email)) => {
-                crate::impls::validation::validate_email(&email)
-                    .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-            }
-            Some(crate::proto::client::login_request::Identifier::Username(username)) => {
-                crate::impls::validation::validate_login_username(&username)
-                    .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-            }
-            None => {
-                return Err(ApiError::InvalidInput(
-                    "Login identifier is required".to_string(),
-                ));
-            }
-        };
-        let outcome = self
-            .user_service
-            .login_with_control(identifier, req.password, client_ip, control)
-            .await
-            .map_err(ApiError::from)?;
-        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
-    }
-
     pub async fn confirm_email_login_with_control(
         &self,
         email_api: Option<&crate::impls::EmailApiImpl>,
@@ -197,7 +192,7 @@ impl ClientApiImpl {
             .confirm_email_login_with_control(&req.email, &req.email_token, client_ip, control)
             .await?;
 
-        Ok(login_outcome_to_proto(result.login, &self.public_id_codec))
+        login_outcome_to_proto(result.login, &self.public_id_codec)
     }
 
     pub async fn create_guest_token_with_control(
@@ -246,7 +241,7 @@ impl ClientApiImpl {
         let guest_id = crate::impls::messaging::guest_public_id(&claims.session_id);
         let display_name = crate::impls::messaging::guest_display_name(&claims.session_id);
         let now = chrono::Utc::now().timestamp();
-        let expires_in_secs = claims.exp.saturating_sub(now).try_into().unwrap_or(0);
+        let expires_in_secs = nonnegative_token_ttl_seconds(claims.exp, now)?;
 
         Ok(crate::proto::client::CreateGuestTokenResponse {
             token,
@@ -296,6 +291,46 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn login_with_direct_password_with_control(
+        &self,
+        req: crate::proto::client::LoginWithDirectPasswordRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
+        let identifier = match req.identifier {
+            Some(crate::proto::client::login_with_direct_password_request::Identifier::Email(
+                email,
+            )) => crate::impls::validation::validate_email(&email)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
+            Some(
+                crate::proto::client::login_with_direct_password_request::Identifier::Username(
+                    username,
+                ),
+            ) => crate::impls::validation::validate_login_username(&username)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
+            None => {
+                return Err(ApiError::InvalidInput(
+                    "Login identifier is required".to_string(),
+                ));
+            }
+        };
+
+        let outcome = self
+            .user_service
+            .login_with_direct_password_transport_with_control(
+                identifier,
+                req.password,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        login_outcome_to_proto(outcome, &self.public_id_codec)
+    }
+
     pub async fn finish_opaque_login_with_control(
         &self,
         req: crate::proto::client::FinishOpaqueLoginRequest,
@@ -315,7 +350,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
+        login_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
     pub async fn start_opaque_registration_with_control(
@@ -355,7 +390,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let (user, access_token, refresh_token) = self
+        let outcome = self
             .user_service
             .finish_opaque_registration_with_control(
                 &req.session_id,
@@ -365,21 +400,53 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let email = self
+        registration_outcome_to_proto(outcome, &self.public_id_codec)
+    }
+
+    pub async fn register_with_direct_password_with_control(
+        &self,
+        mut req: crate::proto::client::RegisterWithDirectPasswordRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        req.username = crate::impls::validation::validate_username(&req.username)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let email = normalize_optional_email(req.email.clone())?;
+        crate::impls::validate_proto_request(&req)?;
+
+        let outcome = self
             .user_service
-            .get_email(&user.id)
+            .register_with_direct_password_transport_with_control(
+                req.username,
+                email,
+                req.password,
+                client_ip,
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
+        registration_outcome_to_proto(outcome, &self.public_id_codec)
+    }
 
-        Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(
-                &user,
-                email.as_deref(),
-                &self.public_id_codec,
-            )),
-            access_token: access_token.unwrap_or_default(),
-            refresh_token: refresh_token.unwrap_or_default(),
-        })
+    pub async fn confirm_email_registration_with_direct_password_with_control(
+        &self,
+        req: crate::proto::client::ConfirmEmailRegistrationRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
+        let outcome = self
+            .user_service
+            .complete_email_registration_with_direct_password_transport_with_control(
+                &req.email_token,
+                req.password,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        registration_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
     pub(crate) async fn start_passkey_registration_challenge_with_control(
@@ -439,25 +506,12 @@ impl ClientApiImpl {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
-        let (user, access_token, refresh_token) = self
+        let outcome = self
             .passkey_service()?
             .finish_account_registration(session_id, credential_json, client_ip, control)
             .await
             .map_err(ApiError::from)?;
-        let email = self
-            .user_service
-            .get_email(&user.id)
-            .await
-            .map_err(ApiError::from)?;
-        Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(
-                &user,
-                email.as_deref(),
-                &self.public_id_codec,
-            )),
-            access_token: access_token.unwrap_or_default(),
-            refresh_token: refresh_token.unwrap_or_default(),
-        })
+        registration_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
     pub async fn finish_passkey_registration_with_control(
@@ -533,7 +587,7 @@ impl ClientApiImpl {
             .finish_login(session_id, credential_json, client_ip, control)
             .await
             .map_err(ApiError::from)?;
-        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
+        login_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
     pub async fn finish_passkey_login_with_control(
@@ -614,7 +668,7 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
+        login_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
     pub async fn finish_mfa_passkey_with_control(
@@ -676,7 +730,7 @@ impl ClientApiImpl {
                 logout_token,
                 |user_id, session_id, revoked_at| async move {
                     self.user_service
-                        .revoke_refresh_token_session(&user_id, session_id.as_deref(), revoked_at)
+                        .revoke_refresh_token_session(&user_id, &session_id, revoked_at)
                         .await
                 },
                 |jti, remaining_ttl_secs| async move {
@@ -694,7 +748,7 @@ impl ClientApiImpl {
 
 struct LogoutToken {
     user_id: synctv_core::models::UserId,
-    session_id: Option<String>,
+    session_id: String,
     jti: String,
     remaining_ttl_secs: u64,
     revoked_at: i64,
@@ -706,7 +760,7 @@ async fn revoke_logout_token_in_order<FR, FB, FutR, FutB>(
     blacklist_access_token: FB,
 ) -> synctv_core::Result<()>
 where
-    FR: FnOnce(synctv_core::models::UserId, Option<String>, i64) -> FutR,
+    FR: FnOnce(synctv_core::models::UserId, String, i64) -> FutR,
     FB: FnOnce(String, u64) -> FutB,
     FutR: Future<Output = synctv_core::Result<()>>,
     FutB: Future<Output = synctv_core::Result<()>>,
@@ -756,10 +810,14 @@ where
         ));
     }
     let user_id = claims.user_id().map_err(ApiError::from)?;
+    let session_id = claims
+        .sid
+        .clone()
+        .ok_or_else(|| ApiError::Authentication("Access token missing session id".to_string()))?;
 
     revoke(LogoutToken {
         user_id,
-        session_id: claims.sid.clone(),
+        session_id,
         jti: claims.jti.clone(),
         remaining_ttl_secs: remaining_ttl,
         revoked_at: now,
@@ -777,19 +835,92 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{revoke_logout_token_in_order, revoke_session_for_logout, LogoutToken};
+    use super::{
+        nonnegative_token_ttl_seconds, registration_outcome_to_proto, revoke_logout_token_in_order,
+        revoke_session_for_logout, LogoutToken,
+    };
     use crate::impls::ApiError;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
     use synctv_core::{
-        models::UserId,
-        service::{JwtService, TokenType},
+        models::{User, UserId},
+        service::{AccountRegistrationOutcome, JwtService, PendingAccountRegistration},
     };
 
     fn create_test_jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
+    }
+
+    #[test]
+    fn registration_outcome_to_proto_encodes_completed_registration() {
+        let codec = crate::PublicIdCodec::plain();
+        let response = registration_outcome_to_proto(
+            AccountRegistrationOutcome::Registered {
+                user: User::new(
+                    "alice".to_string(),
+                    synctv_core::models::SignupMethod::Password,
+                ),
+                email: Some("alice@example.com".to_string()),
+                access_token: "access".to_string(),
+                refresh_token: "refresh".to_string(),
+            },
+            &codec,
+        )
+        .expect("completed registration should encode");
+
+        assert_eq!(
+            response.status,
+            crate::proto::client::RegistrationStatus::Registered as i32
+        );
+        assert_eq!(response.access_token, "access");
+        assert_eq!(response.refresh_token, "refresh");
+        assert!(response.user.is_some());
+        assert!(response.pending_review.is_none());
+    }
+
+    #[test]
+    fn registration_outcome_to_proto_encodes_pending_review() {
+        let codec = crate::PublicIdCodec::plain();
+        let response = registration_outcome_to_proto(
+            AccountRegistrationOutcome::PendingReview(PendingAccountRegistration {
+                review_request_id: UserId::expect_positive(42),
+                username: "alice".to_string(),
+                email: Some("alice@example.com".to_string()),
+            }),
+            &codec,
+        )
+        .expect("pending registration should encode");
+
+        assert_eq!(
+            response.status,
+            crate::proto::client::RegistrationStatus::PendingReview as i32
+        );
+        assert!(response.user.is_none());
+        assert!(response.access_token.is_empty());
+        assert!(response.refresh_token.is_empty());
+        let pending = response
+            .pending_review
+            .expect("pending review payload should be present");
+        assert_eq!(pending.review_request_id, "usr_42");
+        assert_eq!(pending.username, "alice");
+        assert_eq!(pending.email.as_deref(), Some("alice@example.com"));
+    }
+
+    #[test]
+    fn test_nonnegative_token_ttl_seconds_returns_remaining_seconds() {
+        assert_eq!(
+            nonnegative_token_ttl_seconds(1_700_000_100, 1_700_000_000).unwrap(),
+            100
+        );
+    }
+
+    #[test]
+    fn test_nonnegative_token_ttl_seconds_rejects_expired_token() {
+        let error = nonnegative_token_ttl_seconds(1_700_000_000, 1_700_000_100)
+            .expect_err("expired token ttl should not be coerced to zero");
+        assert!(matches!(error, ApiError::Internal(_)));
     }
 
     #[test]
@@ -815,7 +946,13 @@ mod tests {
     async fn test_logout_blacklist_failure_is_propagated() {
         let jwt_service = create_test_jwt_service();
         let token = jwt_service
-            .sign_token(&UserId::new(), TokenType::Access, 0)
+            .sign_access_token_with_auth_context_and_session(
+                &UserId::new(),
+                0,
+                None,
+                Some("logout-failure-session"),
+                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            )
             .unwrap();
 
         let result = revoke_session_for_logout(&jwt_service, &token, |_logout_token| async {
@@ -865,7 +1002,13 @@ mod tests {
     async fn test_logout_refresh_token_is_rejected() {
         let jwt_service = create_test_jwt_service();
         let token = jwt_service
-            .sign_token(&UserId::new(), TokenType::Refresh, 0)
+            .sign_refresh_token_with_session(
+                &UserId::new(),
+                0,
+                None,
+                "logout-refresh-session",
+                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            )
             .unwrap();
 
         let result =
@@ -883,6 +1026,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_logout_access_token_without_session_id_is_rejected() {
+        let jwt_service = create_test_jwt_service();
+        let token = jwt_service.sign_access_token(&UserId::new(), 0).unwrap();
+
+        let result =
+            revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
+
+        assert!(
+            matches!(result, Err(ApiError::Authentication(message)) if message.contains("session id"))
+        );
+    }
+
+    #[tokio::test]
     async fn test_logout_rejects_zero_ttl_access_token() {
         let jwt_service = JwtService::with_durations(
             "test-secret-key-for-jwt-that-is-long-enough-1234567890",
@@ -893,7 +1049,13 @@ mod tests {
         )
         .unwrap();
         let token = jwt_service
-            .sign_token(&UserId::new(), TokenType::Access, 0)
+            .sign_access_token_with_auth_context_and_session(
+                &UserId::new(),
+                0,
+                None,
+                Some("expired-logout-session"),
+                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            )
             .unwrap();
 
         let result =
@@ -916,9 +1078,8 @@ mod tests {
         let user_id = UserId::new();
         let session_id = "session-for-logout";
         let token = jwt_service
-            .sign_token_with_auth_context_and_session(
+            .sign_access_token_with_auth_context_and_session(
                 &user_id,
-                TokenType::Access,
                 0,
                 None,
                 Some(session_id),
@@ -928,7 +1089,7 @@ mod tests {
 
         let result = revoke_session_for_logout(&jwt_service, &token, |logout_token| async move {
             assert_eq!(logout_token.user_id, user_id);
-            assert_eq!(logout_token.session_id.as_deref(), Some(session_id));
+            assert_eq!(logout_token.session_id, session_id);
             assert!(!logout_token.jti.is_empty());
             assert!(logout_token.remaining_ttl_secs > 0);
             assert!(logout_token.revoked_at > 0);
@@ -949,7 +1110,7 @@ mod tests {
         let result = revoke_logout_token_in_order(
             LogoutToken {
                 user_id,
-                session_id: Some("logout-session".to_string()),
+                session_id: "logout-session".to_string(),
                 jti: "logout-jti".to_string(),
                 remaining_ttl_secs: 60,
                 revoked_at: 1_700_000_000,
@@ -958,7 +1119,7 @@ mod tests {
                 let refresh_order = Arc::clone(&refresh_order);
                 async move {
                     assert_eq!(actual_user_id, user_id);
-                    assert_eq!(actual_session_id.as_deref(), Some("logout-session"));
+                    assert_eq!(actual_session_id, "logout-session");
                     assert_eq!(revoked_at, 1_700_000_000);
                     assert_eq!(refresh_order.fetch_add(1, Ordering::SeqCst), 0);
                     Ok(())
@@ -988,7 +1149,7 @@ mod tests {
         let result = revoke_logout_token_in_order(
             LogoutToken {
                 user_id: UserId::new(),
-                session_id: Some("logout-session".to_string()),
+                session_id: "logout-session".to_string(),
                 jti: "logout-jti".to_string(),
                 remaining_ttl_secs: 60,
                 revoked_at: 1_700_000_000,

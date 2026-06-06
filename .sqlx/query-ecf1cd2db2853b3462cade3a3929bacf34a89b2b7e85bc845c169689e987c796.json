@@ -1,0 +1,87 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT rjr.id AS \"id: ReviewRequestId\",\n                   rjr.room_id AS \"room_id: RoomId\",\n                   COALESCE(r.name, '') AS \"room_name!\",\n                   rjr.user_id AS \"user_id: UserId\",\n                   COALESCE(u.username, '') AS \"username!\",\n                   COALESCE(rjr.requested_role, 0)::int4 AS \"requested_role!\",\n                   rjr.status AS \"status: ReviewStatus\",\n                   rjr.requested_at,\n                   rjr.reviewed_at,\n                   rjr.reviewed_by AS \"reviewed_by: UserId\",\n                   rjr.rejection_reason\n            FROM room_join_requests rjr\n            LEFT JOIN rooms r ON r.id = rjr.room_id\n            LEFT JOIN users u ON u.id = rjr.user_id\n            WHERE rjr.status = $1\n              AND ($2::bigint IS NULL OR rjr.room_id = $2)\n              AND ($3::bigint IS NULL OR rjr.user_id = $3)\n              AND ($4 = '' OR COALESCE(r.name, '') ILIKE $4 ESCAPE '\\' OR COALESCE(u.username, '') ILIKE $4 ESCAPE '\\')\n            ORDER BY rjr.requested_at DESC, rjr.id DESC\n            LIMIT $5 OFFSET $6\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: ReviewRequestId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "room_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "username!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "requested_role!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "status: ReviewStatus",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 7,
+        "name": "requested_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "reviewed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "reviewed_by: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "rejection_reason",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int8",
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      null,
+      null,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ecf1cd2db2853b3462cade3a3929bacf34a89b2b7e85bc845c169689e987c796"
+}

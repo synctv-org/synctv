@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id: RoomId\",\n                   requested_by AS \"requested_by: UserId\",\n                   name,\n                   description,\n                   settings_payload,\n                   opaque_password_record,\n                   opaque_password_credential_identifier,\n                   opaque_password_ciphersuite,\n                   opaque_password_server_setup_version\n            FROM room_creation_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "requested_by: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "settings_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "opaque_password_record",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "opaque_password_credential_identifier",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "opaque_password_ciphersuite",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "opaque_password_server_setup_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "e766a4a0cf0440dcccd0cb68d960a68744cf9900ce08611eb7a11942ef69b740"
+}

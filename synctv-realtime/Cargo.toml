@@ -70,6 +70,7 @@ protoc-bin-vendored.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 mockall.workspace = true
+synctv-cluster = { workspace = true, default-features = false, features = ["test-support"] }
 synctv-core-testing.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true

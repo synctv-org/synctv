@@ -91,6 +91,14 @@ impl Default for RoomSettingsRuntime {
     }
 }
 
+fn normalize_cache_capacity(capacity: u64) -> u64 {
+    capacity.max(1)
+}
+
+fn normalize_cache_ttl(ttl_seconds: u64) -> u64 {
+    ttl_seconds.max(1)
+}
+
 impl std::fmt::Debug for RoomSettingsService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RoomSettingsService")
@@ -152,19 +160,18 @@ impl RoomSettingsService {
         notification_service: Arc<NotificationService>,
         runtime: RoomSettingsRuntime,
     ) -> Self {
-        let ttl = runtime.cache_ttl_secs.unwrap_or(Self::CACHE_TTL_SECS);
+        let ttl = normalize_cache_ttl(runtime.cache_ttl_secs.unwrap_or(Self::CACHE_TTL_SECS));
         let capacity = runtime
             .cache_max_capacity
             .unwrap_or(Self::CACHE_MAX_CAPACITY);
 
         let cache = RoomSettingsCache::new(
             runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
-            capacity,
+            normalize_cache_capacity(capacity),
             ttl,
             ttl,
             runtime.cache_key_prefix,
-        )
-        .expect("failed to create room settings cache");
+        );
 
         let version_fence = runtime
             .version_fence
@@ -184,10 +191,6 @@ impl RoomSettingsService {
 
     pub const fn has_invalidation_service(&self) -> bool {
         self.invalidation_service.is_some()
-    }
-
-    pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        self.invalidation_service = Some(service);
     }
 
     #[cfg(test)]
@@ -882,13 +885,20 @@ impl RoomSettingsService {
             }
         };
 
-        let _ = self.notification_service.notify_settings_updated(
+        let subscriber_count = self.notification_service.notify_settings_updated(
             room_id,
             None,
             "",
             settings_value,
             version,
         );
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                version,
+                "Room settings updated event had no local subscribers"
+            );
+        }
     }
 
     /// Preload settings for multiple rooms (bulk loading)
@@ -953,7 +963,6 @@ mod tests {
     use super::*;
     use crate::cache::{CacheInvalidationService, CacheL2Backend};
     use crate::cache::{KeyBuilder, UsernameCache};
-    use crate::config::PasswordComplexityConfig;
     use crate::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use crate::repository::RoomSettingsRepository;
     use crate::repository::UserRepository;
@@ -1041,7 +1050,9 @@ mod tests {
     async fn test_strong_read_uses_l1_when_version_satisfies_fence() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_fence_l1_owner"))
             .await
@@ -1106,7 +1117,9 @@ mod tests {
     async fn test_strong_read_uses_l1_with_local_version_fence() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_local_fence_owner"))
             .await
@@ -1167,7 +1180,9 @@ mod tests {
     async fn test_settings_write_uses_redis_allocated_version() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_allocator_owner"))
             .await
@@ -1246,7 +1261,9 @@ mod tests {
     async fn test_settings_reserve_rejects_stale_snapshot_without_advancing_fence() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_stale_reserve_owner"))
             .await
@@ -1301,7 +1318,9 @@ mod tests {
     async fn test_settings_write_does_not_retry_committed_update_after_l2_failure() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_l2_failure_owner"))
             .await
@@ -1350,7 +1369,9 @@ mod tests {
     async fn test_db_refresh_seeds_missing_local_version_fence() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_seed_fence_owner"))
             .await
@@ -1421,7 +1442,9 @@ mod tests {
     async fn test_delete_writes_versioned_default_settings() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let room_service = crate::service::RoomService::new(pool.clone(), make_user_service(&pool));
+        let room_service =
+            crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool))
+                .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_delete_default_owner"))
             .await
@@ -1571,25 +1594,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_lagged_receiver_flushes_cache() {
-        // Create invalidation service with local-only mode
+    async fn test_local_invalidation_broadcast_accepts_all_target_message() {
         let inv_service = Arc::new(CacheInvalidationService::new(
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
 
-        // Verify that broadcast_all works without panicking
-        // (full lagged-receiver test requires a real RoomSettingsService with DB)
         inv_service
             .broadcast_all(InvalidationMessage::All)
             .await
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_cache_invalidation() {
-        // Placeholder: integration test for RoomSettingsService cache invalidation
-        // would require a full TestInfra with PostgreSQL
     }
 
     #[tokio::test]
@@ -1682,15 +1696,13 @@ mod tests {
         let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
             .expect("jwt service should build");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-        let password_complexity = PasswordComplexityConfig::default();
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let key_builder = KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             jwt_service,
             username_cache,
-            password_complexity,
             token_blacklist,
             key_builder,
             brute_force,
@@ -1723,7 +1735,8 @@ mod tests {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
         let user_service = make_user_service(&pool);
-        let room_service = crate::service::RoomService::new(pool.clone(), user_service);
+        let room_service = crate::service::RoomService::new_for_tests(pool.clone(), user_service)
+            .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_version_owner"))
             .await
@@ -1782,7 +1795,8 @@ mod tests {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
         let user_service = make_user_service(&pool);
-        let room_service = crate::service::RoomService::new(pool.clone(), user_service);
+        let room_service = crate::service::RoomService::new_for_tests(pool.clone(), user_service)
+            .expect("room service should build");
         let owner = user_repo
             .create(&make_user("room_settings_strong_owner"))
             .await

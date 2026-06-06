@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
 use crate::{
     models::{OpaquePasswordRecord, RoomId},
@@ -9,6 +9,17 @@ use crate::{
 #[derive(sqlx::FromRow)]
 struct RoomPasswordCredentialStateRow {
     room_id: RoomId,
+    enabled: bool,
+    changed_at: DateTime<Utc>,
+    version: i32,
+}
+
+struct RoomOpaqueCredentialRow {
+    room_id: RoomId,
+    opaque_record: Vec<u8>,
+    opaque_credential_identifier: Vec<u8>,
+    opaque_ciphersuite: String,
+    opaque_server_setup_version: i32,
     enabled: bool,
     changed_at: DateTime<Utc>,
     version: i32,
@@ -59,13 +70,14 @@ impl RoomPasswordRepository {
         &self,
         room_id: &RoomId,
     ) -> Result<Option<StoredRoomPasswordCredential>> {
-        let row = sqlx::query(
-            r"
-            SELECT room_id,
-                   opaque_record,
-                   opaque_credential_identifier,
-                   opaque_ciphersuite,
-                   opaque_server_setup_version,
+        let row = sqlx::query_as!(
+            RoomOpaqueCredentialRow,
+            r#"
+            SELECT room_id AS "room_id: RoomId",
+                   opaque_record AS "opaque_record!",
+                   opaque_credential_identifier AS "opaque_credential_identifier!",
+                   opaque_ciphersuite AS "opaque_ciphersuite!",
+                   opaque_server_setup_version AS "opaque_server_setup_version!",
                    enabled,
                    changed_at,
                    version
@@ -75,41 +87,38 @@ impl RoomPasswordRepository {
               AND opaque_credential_identifier IS NOT NULL
               AND opaque_ciphersuite IS NOT NULL
               AND opaque_server_setup_version IS NOT NULL
-            ",
+            "#,
+            room_id as &RoomId
         )
-        .bind(room_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        row.map(|row| {
-            Ok(StoredRoomPasswordCredential {
-                record: OpaquePasswordRecord {
-                    record: row.try_get("opaque_record")?,
-                    credential_identifier: row.try_get("opaque_credential_identifier")?,
-                    ciphersuite: row.try_get("opaque_ciphersuite")?,
-                    server_setup_version: row.try_get("opaque_server_setup_version")?,
-                },
-                state: RoomPasswordCredentialState {
-                    room_id: row.try_get("room_id")?,
-                    enabled: row.try_get("enabled")?,
-                    changed_at: row.try_get("changed_at")?,
-                    version: row.try_get("version")?,
-                },
-            })
-        })
-        .transpose()
-        .map_err(Error::Database)
+        Ok(row.map(|row| StoredRoomPasswordCredential {
+            record: OpaquePasswordRecord {
+                record: row.opaque_record,
+                credential_identifier: row.opaque_credential_identifier,
+                ciphersuite: row.opaque_ciphersuite,
+                server_setup_version: row.opaque_server_setup_version,
+            },
+            state: RoomPasswordCredentialState {
+                room_id: row.room_id,
+                enabled: row.enabled,
+                changed_at: row.changed_at,
+                version: row.version,
+            },
+        }))
     }
 
     pub async fn get_state(&self, room_id: &RoomId) -> Result<Option<RoomPasswordCredentialState>> {
-        let row = sqlx::query_as::<_, RoomPasswordCredentialStateRow>(
-            r"
-            SELECT room_id, enabled, changed_at, version
+        let row = sqlx::query_as!(
+            RoomPasswordCredentialStateRow,
+            r#"
+            SELECT room_id AS "room_id: RoomId", enabled, changed_at, version
             FROM room_password_credentials
             WHERE room_id = $1
-            ",
+            "#,
+            room_id as &RoomId
         )
-        .bind(room_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -126,8 +135,9 @@ impl RoomPasswordRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
-        let row = sqlx::query_as::<_, RoomPasswordCredentialStateRow>(
-            r"
+        let row = sqlx::query_as!(
+            RoomPasswordCredentialStateRow,
+            r#"
             WITH existing_room AS (
                 SELECT id
                 FROM rooms
@@ -149,15 +159,15 @@ impl RoomPasswordRepository {
                 changed_at = EXCLUDED.changed_at,
                 version = room_password_credentials.version + 1,
                 updated_at = EXCLUDED.updated_at
-            RETURNING room_id, enabled, changed_at, version
-            ",
+            RETURNING room_id AS "room_id!: RoomId", enabled, changed_at, version
+            "#,
+            room_id as &RoomId,
+            opaque_record.record.as_slice(),
+            opaque_record.credential_identifier.as_slice(),
+            opaque_record.ciphersuite.as_str(),
+            opaque_record.server_setup_version,
+            now
         )
-        .bind(room_id)
-        .bind(opaque_record.record.as_slice())
-        .bind(opaque_record.credential_identifier.as_slice())
-        .bind(opaque_record.ciphersuite.as_str())
-        .bind(opaque_record.server_setup_version)
-        .bind(now)
         .fetch_optional(executor)
         .await?
         .ok_or_else(|| Error::NotFound(format!("Room {room_id} not found")))?;
@@ -174,8 +184,9 @@ impl RoomPasswordRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
-        let row = sqlx::query_as::<_, RoomPasswordCredentialStateRow>(
-            r"
+        let row = sqlx::query_as!(
+            RoomPasswordCredentialStateRow,
+            r#"
             WITH existing_room AS (
                 SELECT id
                 FROM rooms
@@ -192,11 +203,11 @@ impl RoomPasswordRepository {
                 changed_at = EXCLUDED.changed_at,
                 version = room_password_credentials.version + 1,
                 updated_at = EXCLUDED.updated_at
-            RETURNING room_id, enabled, changed_at, version
-            ",
+            RETURNING room_id AS "room_id!: RoomId", enabled, changed_at, version
+            "#,
+            room_id as &RoomId,
+            now
         )
-        .bind(room_id)
-        .bind(now)
         .fetch_optional(executor)
         .await?
         .ok_or_else(|| Error::NotFound(format!("Room {room_id} not found")))?;

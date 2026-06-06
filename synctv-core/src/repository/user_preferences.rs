@@ -212,8 +212,8 @@ impl UserPreferencesRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let (password, webauthn, email) = sqlx::query_as::<_, (bool, bool, bool)>(
-            r"
+        let row = sqlx::query!(
+            r#"
             SELECT
                 EXISTS (
                     SELECT 1
@@ -223,29 +223,29 @@ impl UserPreferencesRepository {
                       AND opaque_credential_identifier IS NOT NULL
                       AND opaque_ciphersuite IS NOT NULL
                       AND opaque_server_setup_version IS NOT NULL
-                ) AS password,
+                ) AS "password!",
                 EXISTS (
                     SELECT 1
                     FROM auth_webauthn_credentials
                     WHERE user_id = $1
                       AND ($2::bytea IS NULL OR credential_id <> $2)
-                ) AS webauthn,
+                ) AS "webauthn!",
                 EXISTS (
                     SELECT 1
                     FROM auth_email_identities
                     WHERE user_id = $1
-                ) AS email
-            ",
+                ) AS "email!"
+            "#,
+            user_id.as_i64(),
+            excluded_credential_id
         )
-        .bind(user_id.as_i64())
-        .bind(excluded_credential_id)
         .fetch_one(executor)
         .await?;
 
         Ok(UserAuthFactors {
-            password,
-            webauthn,
-            email,
+            password: row.password,
+            webauthn: row.webauthn,
+            email: row.email,
         })
     }
 

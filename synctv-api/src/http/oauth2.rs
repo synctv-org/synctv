@@ -151,7 +151,8 @@ pub async fn exchange_authorization_code(
         &state.config,
         connect_info.0.ip(),
         &headers,
-    );
+    )
+    .map_err(|error| AppError::bad_request(error.to_string()))?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
     let response = state

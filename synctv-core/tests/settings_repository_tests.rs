@@ -2,7 +2,6 @@
 //!
 //! Tests: get non-existent key, `get_all` ordering.
 //!
-//! Run with: cargo test -p synctv-core --test `settings_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::repository::SettingsRepository;

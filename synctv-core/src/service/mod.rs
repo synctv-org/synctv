@@ -42,22 +42,23 @@ pub mod user;
 pub mod user_notification;
 pub mod ws_ticket;
 
-pub use audit::{AuditFlushHandle, AuditLog, AuditService};
+pub use audit::{
+    AuditEventParams, AuditFlushHandle, AuditLog, AuditService, PermissionAuditRequest,
+    StreamKickAuditRequest, TokenFamilyRevokedAuditRequest, TokenIssuedAuditRequest,
+    TokenRefreshedAuditRequest, UserLoginAuditRequest,
+};
 pub use audit_partition_manager::{
     ensure_audit_partitions_on_startup, AuditPartitionManager, PartitionHealth, PartitionStats,
 };
 pub use auth::brute_force::{AttemptTracker, BruteForceConfig};
 pub use auth::guest_validator::GuestTokenValidator;
-pub use auth::security_pipeline::{
-    BlacklistEnforcement, SecurityPipelineBuildError, SecurityPipelineBuilder,
-};
 pub use auth::token_blacklist::{
     InMemoryTokenBlacklistStore, PgTokenBlacklistStore, TieredTokenBlacklistStore,
 };
 pub use auth::{
-    brute_force_protection_from_shared_state_profile, hash_password, verify_password,
-    AuthenticatedToken, BruteForceProtection, BruteForceProtectionService, Claims, GuestClaims,
-    JwtService, SecurityPipeline, TokenAuthContext, TokenBlacklistStore, TokenType,
+    brute_force_protection_from_shared_state_profile, AuthenticatedToken, BruteForceProtection,
+    BruteForceProtectionService, Claims, GuestClaims, JwtService, SecurityPipeline,
+    SecurityPipelineRuntime, TokenAuthContext, TokenBlacklistStore, TokenType,
 };
 pub use ban_record::{
     BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordService, BanRecordTargetType,
@@ -100,7 +101,7 @@ pub use notification_partition_manager::{
 };
 pub use oauth2::{
     local_oauth_state_store, shared_oauth_state_store, OAuth2LinkResult, OAuth2PendingRegistration,
-    OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore,
+    OAuth2Service, OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use passkey::{
@@ -108,8 +109,8 @@ pub use passkey::{
     shared_passkey_session_store, PasskeyService, PasskeySessionStore,
 };
 pub use permission::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};
-pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
-pub use playlist::{PlaylistBroadcaster, PlaylistService, RealtimeOutboxPlaylistEventFactory};
+pub use playback::{PlaybackService, PlaybackStatePatch, PlaybackUpdateRequest, SeekResponse};
+pub use playlist::{PlaylistService, RealtimeOutboxPlaylistEventFactory};
 pub use providers_manager::ProvidersManager;
 pub use publish_key::{
     streaming_publish_key_service_from_shared_state_profile, JtiStore, PublishKey,
@@ -129,13 +130,14 @@ pub use room::{
     room_opaque_password_login_session_store_from_shared_state_profile,
     room_opaque_password_registration_session_store_from_shared_state_profile,
     AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
-    PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomService,
+    MemberPermissionPatch, PermissionChangedOutboxSnapshot,
+    RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomService, UpdateMemberWithOutboxRequest,
     UserLeftOutboxSnapshot,
 };
 pub use room_settings::{CacheStats, RoomSettingsService};
-pub use settings::{SettingsChangeListener, SettingsService};
+pub use settings::SettingsService;
 pub use settings_vars::{Setting, SettingsStorage};
 pub use stun_server::{
     resolve_external_ip, validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState,
@@ -149,10 +151,11 @@ pub use user::{
     opaque_registration_session_store_from_shared_state_profile,
     sensitive_verification_session_store_from_shared_state_profile, shared_mfa_session_store,
     shared_opaque_login_session_store, shared_opaque_registration_session_store,
-    shared_sensitive_verification_session_store, AuthFactorMethod, AuthenticatedLogin,
-    MfaChallenge, MfaSessionStore, OpaqueLoginSessionStore, OpaqueRegistrationSessionStore,
-    RegistrationMode, RegistrationPolicy, SensitiveVerificationChallenge,
-    SensitiveVerificationOutcome, SensitiveVerificationSessionStore,
+    shared_sensitive_verification_session_store, AccountRegistrationOutcome, AuthFactorMethod,
+    AuthenticatedLogin, MfaChallenge, MfaSessionStore, OpaqueLoginSessionStore,
+    OpaqueRegistrationSessionStore, PendingAccountRegistration, RegistrationMode,
+    RegistrationPolicy, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
+    SensitiveVerificationSessionStore,
 };
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{

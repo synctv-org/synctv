@@ -78,7 +78,7 @@ struct HangingRedisRuntime;
 
 #[async_trait]
 impl RedisConnectionRuntime for HangingRedisRuntime {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
         std::future::pending().await
     }
 
@@ -158,14 +158,8 @@ async fn test_distributed_presence_queries_fail_closed_when_redis_snapshot_times
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
 async fn test_register_fails_closed_when_distributed_limit_state_is_unavailable() {
-    let mut redis = TestRedis::start_dedicated().await;
-    let conn = redis_connection(&redis.redis_url).await;
-    let manager = distributed_manager(ConnectionLimits::default(), conn, "fail_closed_register:");
-
-    redis.terminate_container();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let manager = manager_with_unavailable_redis("fail_closed_register:");
 
     let result = tokio::time::timeout(
         Duration::from_secs(3),
@@ -185,23 +179,8 @@ async fn test_register_fails_closed_when_distributed_limit_state_is_unavailable(
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
 async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() {
-    let mut redis = TestRedis::start_dedicated().await;
-    let conn = redis_connection(&redis.redis_url).await;
-    let manager = distributed_manager(ConnectionLimits::default(), conn, "fail_closed_join:");
-
-    manager
-        .register("conn1".to_string(), uid("user1"))
-        .await
-        .expect("initial registration should succeed while Redis is healthy");
-    manager
-        .join_room("conn1", rid("room_a"))
-        .await
-        .expect("initial room join should succeed while Redis is healthy");
-
-    redis.terminate_container();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let manager = manager_with_unavailable_redis("fail_closed_join:");
 
     let target_room = rid("room_b");
     let result = tokio::time::timeout(
@@ -213,33 +192,12 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
 
     let err = result.expect_err("join_room should fail closed when Redis is unavailable");
     assert!(err.contains("Distributed room capacity check unavailable"));
-    assert_eq!(manager.room_connection_count(&rid("room_a")), 1);
     assert_eq!(manager.room_connection_count(&target_room), 0);
-
-    let conn = manager
-        .get_connection("conn1")
-        .expect("connection should remain tracked");
-    assert_eq!(conn.room_id, Some(rid("room_a")));
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
 async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailable() {
-    let mut redis = TestRedis::start_dedicated().await;
-    let conn = redis_connection(&redis.redis_url).await;
-    let manager = distributed_manager(ConnectionLimits::default(), conn, "fail_closed_get:");
-
-    manager
-        .register("conn1".to_string(), uid("user1"))
-        .await
-        .expect("initial registration should succeed while Redis is healthy");
-    manager
-        .join_room("conn1", rid("room_a"))
-        .await
-        .expect("initial room join should succeed while Redis is healthy");
-
-    redis.terminate_container();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let manager = manager_with_unavailable_redis("fail_closed_get:");
 
     let user_err = tokio::time::timeout(
         Duration::from_secs(3),

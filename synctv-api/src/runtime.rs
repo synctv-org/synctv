@@ -169,6 +169,70 @@ pub trait RealtimeEventService: Send + Sync {
     async fn shutdown(&self);
 }
 
+pub struct LocalNoopRealtimeEventService {
+    admin_tx: broadcast::Sender<RealtimeEvent>,
+}
+
+impl LocalNoopRealtimeEventService {
+    #[must_use]
+    pub fn new() -> Self {
+        let (admin_tx, _) = broadcast::channel(16);
+        Self { admin_tx }
+    }
+}
+
+impl Default for LocalNoopRealtimeEventService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl RealtimeEventService for LocalNoopRealtimeEventService {
+    async fn subscribe_with_id(
+        &self,
+        _room_id: RoomId,
+        _user_id: UserId,
+        connection_id: String,
+    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+        let (_tx, rx) = mpsc::channel(16);
+        Ok((rx, connection_id))
+    }
+
+    fn unsubscribe(&self, _connection_id: &str) {}
+
+    fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
+        BroadcastResult {
+            local_sent: 0,
+            redis_sent: false,
+        }
+    }
+
+    fn publish_only(&self, _event: RealtimeEvent) -> bool {
+        false
+    }
+
+    fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
+        0
+    }
+
+    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        self.admin_tx.subscribe()
+    }
+
+    fn metrics(&self) -> RealtimeMetrics {
+        RealtimeMetrics {
+            distributed_enabled: false,
+        }
+    }
+
+    fn node_id(&self) -> &'static str {
+        "local-noop"
+    }
+
+    async fn shutdown(&self) {}
+}
+
 #[async_trait]
 impl RealtimeEventService for RealtimeManager {
     async fn subscribe_with_id(

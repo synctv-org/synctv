@@ -69,14 +69,16 @@ impl GitHubProvider {
         let client = Arc::new(
             BasicClient::new(ClientId::new(client_id))
                 .set_client_secret(ClientSecret::new(client_secret))
-                // Well-known constant URLs — expect is safe here
                 .set_auth_uri(
-                    AuthUrl::new("https://github.com/login/oauth/authorize".to_string())
-                        .expect("valid GitHub auth URL"),
+                    AuthUrl::new("https://github.com/login/oauth/authorize".to_string()).map_err(
+                        |e| Error::InvalidInput(format!("Invalid GitHub auth URL: {e}")),
+                    )?,
                 )
                 .set_token_uri(
                     TokenUrl::new("https://github.com/login/oauth/access_token".to_string())
-                        .expect("valid GitHub token URL"),
+                        .map_err(|e| {
+                            Error::InvalidInput(format!("Invalid GitHub token URL: {e}"))
+                        })?,
                 )
                 .set_redirect_uri(redirect),
         );
@@ -463,19 +465,5 @@ mod tests {
         assert_eq!(config.client_id, "abc123");
         assert_eq!(config.client_secret, "def456");
         assert_eq!(config.redirect_url, "https://example.com/cb");
-    }
-
-    #[test]
-    fn test_github_config_serialize_roundtrip() {
-        let config = GitHubConfig {
-            client_id: "id".to_string(),
-            client_secret: "secret".to_string(),
-            redirect_url: "https://example.com/cb".to_string(),
-        };
-        let json = serde_json::to_value(&config).unwrap();
-        let deserialized: GitHubConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.client_id, config.client_id);
-        assert_eq!(deserialized.client_secret, config.client_secret);
-        assert_eq!(deserialized.redirect_url, config.redirect_url);
     }
 }

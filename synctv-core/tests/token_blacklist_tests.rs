@@ -24,7 +24,7 @@ async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
     store.cleanup_expired().await.unwrap();
 
     assert_eq!(
-        store.get_family_revoked_at(&key).await,
+        store.get_family_revoked_at_checked(&key).await.unwrap(),
         Some(timestamp),
         "cleanup must not delete the family revocation timestamp while the row is still alive"
     );
@@ -43,9 +43,9 @@ async fn test_pg_family_revocation_timestamp_is_stable_across_reads() {
         .await
         .unwrap();
 
-    let first = store.get_family_revoked_at(&key).await;
+    let first = store.get_family_revoked_at_checked(&key).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
-    let second = store.get_family_revoked_at(&key).await;
+    let second = store.get_family_revoked_at_checked(&key).await.unwrap();
 
     assert_eq!(first, Some(timestamp));
     assert_eq!(

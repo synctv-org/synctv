@@ -2,8 +2,6 @@
 //!
 //! Tests: `set_settings_with_version` CAS (concurrent insert race, stale version -> `OptimisticLockConflict`),
 //!        batch reads fail closed on invalid room settings JSON.
-//!
-//! Run with: cargo test -p synctv-core --test `room_settings_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

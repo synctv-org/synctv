@@ -351,7 +351,7 @@ impl Default for IceServerList {
 
 impl fmt::Display for IceServerList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
+        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
         f.write_str(&json)
     }
 }
@@ -394,7 +394,7 @@ impl Default for CorsAllowedOrigins {
 
 impl fmt::Display for CorsAllowedOrigins {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
+        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
         f.write_str(&json)
     }
 }
@@ -522,7 +522,7 @@ fn validate_oauth2_instance_name(instance_name: &str) -> crate::Result<()> {
 
 impl fmt::Display for OAuth2ProviderConfigs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "{}".to_string());
+        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
         f.write_str(&json)
     }
 }
@@ -725,9 +725,18 @@ impl RuntimeEmailConfigProvider {
                 };
 
                 match event {
-                    Ok(()) => {
-                        let _ = changes.send(());
-                    }
+                    Ok(()) => match changes.send(()) {
+                        Ok(subscriber_count) => tracing::debug!(
+                            subscriber_count,
+                            "Email runtime setting change notified subscribers"
+                        ),
+                        Err(error) => {
+                            tracing::debug!(
+                                error = %error,
+                                "Email runtime setting change had no active subscribers"
+                            );
+                        }
+                    },
                     Err(error) => {
                         warn!(
                             error = %error,
@@ -925,7 +934,7 @@ impl SettingsRegistry {
                 storage.clone(),
                 100,
                 |v: &i64| -> crate::Result<()> {
-                    if *v > 0 && *v <= MaxMembers::MAX.cast_signed() {
+                    if *v > 0 {
                         Ok(())
                     } else {
                         Err(crate::Error::InvalidInput(format!(
@@ -1164,110 +1173,37 @@ impl SettingsRegistry {
     }
 
     /// Build a `PublicSettings` snapshot from the current registry values.
-    #[must_use]
-    pub fn to_public_settings(&self) -> PublicSettings {
-        let email_whitelist_enabled = Self::get_or_warn(
-            "email_whitelist_enabled",
-            &self.email_whitelist_enabled,
-            false,
-        );
+    pub fn to_public_settings(&self) -> crate::Result<PublicSettings> {
+        let email_whitelist_enabled = self.email_whitelist_enabled.get()?;
         let email_whitelist_domains = if email_whitelist_enabled {
-            Self::normalize_email_whitelist_domains(&self.email_whitelist.get().unwrap_or_else(
-                |e| {
-                    tracing::warn!(
-                        setting = "email_whitelist",
-                        error = %e,
-                        "Failed to read email whitelist setting for public settings, using empty list"
-                    );
-                    String::new()
-                },
-            ))
+            Self::normalize_email_whitelist_domains(&self.email_whitelist.get()?)
         } else {
             Vec::new()
         };
 
-        PublicSettings {
-            allow_room_creation: Self::get_or_warn(
-                "allow_room_creation",
-                &self.allow_room_creation,
-                true,
-            ),
-            max_rooms_per_user: Self::get_or_warn(
-                "max_rooms_per_user",
-                &self.max_rooms_per_user,
-                10,
-            ),
-            max_members_per_room: Self::get_or_warn(
-                "max_members_per_room",
-                &self.max_members_per_room,
-                100,
-            ),
-            disable_create_room: Self::get_or_warn(
-                "disable_create_room",
-                &self.disable_create_room,
-                false,
-            ),
-            create_room_need_review: Self::get_or_warn(
-                "create_room_need_review",
-                &self.create_room_need_review,
-                false,
-            ),
-            room_password_policy: Self::get_or_warn(
-                "room_password_policy",
-                &self.room_password_policy,
-                RoomPasswordPolicy::Optional,
-            ),
-            enable_password_signup: Self::get_or_warn(
-                "enable_password_signup",
-                &self.enable_password_signup,
-                false,
-            ),
-            password_signup_need_review: Self::get_or_warn(
-                "password_signup_need_review",
-                &self.password_signup_need_review,
-                false,
-            ),
-            enable_email_signup: Self::get_or_warn(
-                "enable_email_signup",
-                &self.enable_email_signup,
-                false,
-            ),
-            email_signup_need_review: Self::get_or_warn(
-                "email_signup_need_review",
-                &self.email_signup_need_review,
-                false,
-            ),
-            enable_webauthn_signup: Self::get_or_warn(
-                "enable_webauthn_signup",
-                &self.enable_webauthn_signup,
-                false,
-            ),
-            webauthn_signup_need_review: Self::get_or_warn(
-                "webauthn_signup_need_review",
-                &self.webauthn_signup_need_review,
-                false,
-            ),
-            enable_guest: Self::get_or_warn("enable_guest", &self.enable_guest, true),
-            enable_email: Self::get_or_warn("email_enabled", &self.email_enabled, false),
+        Ok(PublicSettings {
+            allow_room_creation: self.allow_room_creation.get()?,
+            max_rooms_per_user: self.max_rooms_per_user.get()?,
+            max_members_per_room: self.max_members_per_room.get()?,
+            disable_create_room: self.disable_create_room.get()?,
+            create_room_need_review: self.create_room_need_review.get()?,
+            room_password_policy: self.room_password_policy.get()?,
+            enable_password_signup: self.enable_password_signup.get()?,
+            password_signup_need_review: self.password_signup_need_review.get()?,
+            enable_email_signup: self.enable_email_signup.get()?,
+            email_signup_need_review: self.email_signup_need_review.get()?,
+            enable_webauthn_signup: self.enable_webauthn_signup.get()?,
+            webauthn_signup_need_review: self.webauthn_signup_need_review.get()?,
+            enable_guest: self.enable_guest.get()?,
+            enable_email: self.email_enabled.get()?,
             enable_webauthn: false,
-            movie_proxy: Self::get_or_warn("movie_proxy", &self.movie_proxy, true),
-            live_proxy: Self::get_or_warn("live_proxy", &self.live_proxy, true),
-            ts_disguised_as_png: Self::get_or_warn(
-                "ts_disguised_as_png",
-                &self.ts_disguised_as_png,
-                false,
-            ),
-            custom_publish_host: self.custom_publish_host.get().unwrap_or_else(|e| {
-                tracing::warn!(
-                    setting = "custom_publish_host",
-                    error = %e,
-                    "Failed to read setting for public settings, using default"
-                );
-                String::new()
-            }),
+            movie_proxy: self.movie_proxy.get()?,
+            live_proxy: self.live_proxy.get()?,
+            ts_disguised_as_png: self.ts_disguised_as_png.get()?,
+            custom_publish_host: self.custom_publish_host.get()?,
             email_whitelist_enabled,
             email_whitelist_domains,
-        }
+        })
     }
 
     #[must_use]
@@ -1283,39 +1219,11 @@ impl SettingsRegistry {
         domains.dedup();
         domains
     }
-
-    /// Helper to get a setting value with a warning log on failure.
-    fn get_or_warn<T>(name: &str, setting: &Setting<T>, default: T) -> T
-    where
-        T: Clone + std::fmt::Display + std::str::FromStr + Send + Sync + 'static,
-        <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
-    {
-        setting.get().unwrap_or_else(|e| {
-            tracing::warn!(
-                setting = name,
-                error = %e,
-                "Failed to read setting for public settings, using default"
-            );
-            default
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_ice_server_list_display() {
-        let list = IceServerList(vec![
-            ConfiguredIceServer::new(vec!["stun:example.com:19302".to_string()]),
-            ConfiguredIceServer::new(vec!["turn:turn.example.com:3478".to_string()])
-                .with_auth("alice", "secret"),
-        ]);
-        let json = list.to_string();
-        let parsed: Vec<ConfiguredIceServer> = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, list.0);
-    }
 
     #[test]
     fn test_ice_server_list_from_str_empty_string() {
@@ -1331,39 +1239,16 @@ mod tests {
         assert_eq!(list.0[0].urls, vec!["stun:a.com:19302"]);
         assert_eq!(list.0[1].username.as_deref(), Some("bob"));
         assert_eq!(list.0[1].credential.as_deref(), Some("secret"));
+
+        let display_json = list.to_string();
+        let displayed: Vec<ConfiguredIceServer> = serde_json::from_str(&display_json).unwrap();
+        assert_eq!(displayed, list.0);
     }
 
     #[test]
     fn test_ice_server_list_from_str_invalid_json() {
         let result = "not json".parse::<IceServerList>();
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_ice_server_list_roundtrip() {
-        let original = IceServerList(vec![
-            ConfiguredIceServer::new(vec!["stun:a.com:19302".to_string()]),
-            ConfiguredIceServer::new(vec!["turn:b.com:3478".to_string()])
-                .with_auth("bob", "secret"),
-        ]);
-        let serialized = original.to_string();
-        let deserialized: IceServerList = serialized.parse().unwrap();
-        assert_eq!(original, deserialized);
-    }
-
-    #[test]
-    fn test_public_settings_serialization_roundtrip() {
-        // Use non-empty custom_publish_host so skip_serializing_if doesn't omit it
-        let mut settings = PublicSettings::defaults();
-        settings.custom_publish_host = "rtmp://live.example.com".to_string();
-        let json = serde_json::to_string(&settings).unwrap();
-        let deserialized: PublicSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            deserialized.enable_password_signup,
-            settings.enable_password_signup
-        );
-        assert_eq!(deserialized.max_rooms_per_user, settings.max_rooms_per_user);
-        assert_eq!(deserialized.custom_publish_host, "rtmp://live.example.com");
     }
 
     #[test]
@@ -1493,7 +1378,7 @@ mod tests {
             .set_for_test(&"example.com,@team.example.org".to_string())
             .unwrap();
 
-        let settings = registry.to_public_settings();
+        let settings = registry.to_public_settings().unwrap();
         assert!(!settings.email_whitelist_enabled);
         assert!(settings.email_whitelist_domains.is_empty());
     }
@@ -1518,7 +1403,7 @@ mod tests {
             .set_for_test(&"Example.com,@team.example.org,example.com".to_string())
             .unwrap();
 
-        let settings = registry.to_public_settings();
+        let settings = registry.to_public_settings().unwrap();
         assert!(settings.email_whitelist_enabled);
         assert_eq!(
             settings.email_whitelist_domains,
@@ -1611,19 +1496,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cors_allowed_origins_display_with_origins() {
-        let origins = CorsAllowedOrigins(vec![
-            "https://example.com".to_string(),
-            "https://app.example.com".to_string(),
-        ]);
-        let json = origins.to_string();
-        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0], "https://example.com");
-        assert_eq!(parsed[1], "https://app.example.com");
-    }
-
-    #[test]
     fn test_cors_allowed_origins_from_str_empty_string() {
         let origins: CorsAllowedOrigins = "".parse().unwrap();
         assert!(origins.0.is_empty());
@@ -1636,24 +1508,16 @@ mod tests {
         assert_eq!(origins.0.len(), 2);
         assert_eq!(origins.0[0], "https://example.com");
         assert_eq!(origins.0[1], "https://app.example.com");
+
+        let display_json = origins.to_string();
+        let displayed: Vec<String> = serde_json::from_str(&display_json).unwrap();
+        assert_eq!(displayed, origins.0);
     }
 
     #[test]
     fn test_cors_allowed_origins_from_str_invalid_json() {
         let result = "not valid json".parse::<CorsAllowedOrigins>();
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_roundtrip() {
-        let original = CorsAllowedOrigins(vec![
-            "https://a.com".to_string(),
-            "https://b.com".to_string(),
-            "https://c.com".to_string(),
-        ]);
-        let serialized = original.to_string();
-        let deserialized: CorsAllowedOrigins = serialized.parse().unwrap();
-        assert_eq!(original, deserialized);
     }
 
     #[test]

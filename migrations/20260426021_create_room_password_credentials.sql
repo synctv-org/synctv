@@ -34,7 +34,20 @@ CREATE TABLE IF NOT EXISTS room_password_credentials (
                 AND opaque_ciphersuite IS NOT NULL
                 AND opaque_server_setup_version IS NOT NULL
             )
-        )
+        ),
+    CONSTRAINT room_password_credentials_opaque_record_not_empty
+        CHECK (opaque_record IS NULL OR length(opaque_record) > 0),
+    CONSTRAINT room_password_credentials_opaque_identifier_not_empty
+        CHECK (opaque_credential_identifier IS NULL OR length(opaque_credential_identifier) > 0),
+    CONSTRAINT room_password_credentials_opaque_ciphersuite_not_empty
+        CHECK (opaque_ciphersuite IS NULL OR length(trim(opaque_ciphersuite)) > 0),
+    CONSTRAINT room_password_credentials_opaque_setup_version_positive
+        CHECK (
+            opaque_server_setup_version IS NULL
+            OR opaque_server_setup_version > 0
+        ),
+    CONSTRAINT room_password_credentials_version_nonnegative
+        CHECK (version >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_room_password_credentials_changed_at

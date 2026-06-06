@@ -7,6 +7,14 @@ use crate::{
     Error, Result,
 };
 
+fn scalar_value<T>(value: Option<T>, query_description: &str) -> Result<T> {
+    value.ok_or_else(|| {
+        Error::Internal(format!(
+            "{query_description} query returned no scalar value"
+        ))
+    })
+}
+
 #[derive(Clone)]
 pub struct FileStorageRepository {
     pool: PgPool,
@@ -199,7 +207,7 @@ impl FileStorageRepository {
         )
         .fetch_one(&self.pool)
         .await?;
-        Ok(exists.unwrap_or(false))
+        scalar_value(exists, "file object EXISTS")
     }
 
     pub async fn object_validated(&self, storage_backend: &str, object_key: &str) -> Result<bool> {
@@ -218,7 +226,7 @@ impl FileStorageRepository {
         )
         .fetch_one(&self.pool)
         .await?;
-        Ok(exists.unwrap_or(false))
+        scalar_value(exists, "file object validation EXISTS")
     }
 
     pub async fn object_reference_count(
@@ -238,7 +246,7 @@ impl FileStorageRepository {
         )
         .fetch_one(&self.pool)
         .await?;
-        Ok(count.unwrap_or(0))
+        scalar_value(count, "file reference COUNT")
     }
 
     pub async fn insert_reference_in_tx(
@@ -257,7 +265,10 @@ impl FileStorageRepository {
         )
         .fetch_one(&mut **tx)
         .await?;
-        if !object_registered.unwrap_or(false) {
+        let object_registered = object_registered.ok_or_else(|| {
+            Error::Internal("file object registration EXISTS query returned NULL".to_string())
+        })?;
+        if !object_registered {
             return Ok(None);
         }
         let reference_id_row = sqlx::query!(
@@ -383,7 +394,7 @@ impl FileStorageRepository {
         )
         .fetch_one(&self.pool)
         .await?;
-        Ok(exists.unwrap_or(false))
+        scalar_value(exists, "file blob EXISTS")
     }
 
     pub async fn get_blob(
@@ -586,7 +597,7 @@ impl FileStorageRepository {
         )
         .fetch_one(&self.pool)
         .await?;
-        Ok(count.unwrap_or(0))
+        scalar_value(count, "file cleanup job COUNT")
     }
 
     pub async fn complete_cleanup_job(&self, job_id: i64) -> Result<()> {

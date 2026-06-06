@@ -16,8 +16,9 @@ pub struct PreparedPlaylistOutboxFanout {
 
 impl PreparedPlaylistOutboxFanout {
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxPlaylistEventFactory> {
-        self.prepared.outbox_factory()
+    pub fn outbox_factory(&self) -> RealtimeOutboxPlaylistEventFactory {
+        let factory = self.prepared.outbox_factory();
+        Arc::new(move |playlist| factory(playlist))
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -37,7 +38,7 @@ impl PreparedPlaylistDeletedFanout {
     }
 
     #[must_use]
-    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+    pub fn cloned_outbox_event(&self) -> NewRealtimeOutboxEvent {
         self.plan.cloned_outbox_event()
     }
 
@@ -67,7 +68,7 @@ pub trait PlaylistFanoutService: Send + Sync {
         user_id: &UserId,
         username: &str,
         playlist_id: &PlaylistId,
-    ) -> PreparedPlaylistDeletedFanout;
+    ) -> synctv_core::Result<PreparedPlaylistDeletedFanout>;
 }
 
 pub struct DefaultPlaylistFanoutService {
@@ -141,15 +142,16 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
         user_id: &UserId,
         username: &str,
         playlist_id: &PlaylistId,
-    ) -> PreparedPlaylistDeletedFanout {
+    ) -> synctv_core::Result<PreparedPlaylistDeletedFanout> {
         let event = playlist_deleted_event(room_id, user_id, username, playlist_id);
-        PreparedPlaylistDeletedFanout {
+        Ok(PreparedPlaylistDeletedFanout {
             plan: PreparedRealtimeFanoutPlan::new(
                 self.realtime_fanout.clone(),
                 event,
                 RealtimeDeliveryRequirement::DistributedIfAvailable,
-            ),
-        }
+            )
+            .map_err(synctv_core::Error::Internal)?,
+        })
     }
 }
 
@@ -200,8 +202,8 @@ mod tests {
             false
         }
 
-        fn outbox_event(&self, event: &RealtimeEvent) -> Option<NewRealtimeOutboxEvent> {
-            Some(NewRealtimeOutboxEvent {
+        fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+            Ok(NewRealtimeOutboxEvent {
                 id: event.event_id().to_string(),
                 enqueue_outbox: true,
                 aggregate_type: "playlist".to_string(),
@@ -212,7 +214,7 @@ mod tests {
                 event_version: 1,
                 aggregate_version: None,
                 payload: serde_json::to_value(event)
-                    .expect("realtime event serialization should not fail"),
+                    .map_err(|error| format!("test event serialization failed: {error}"))?,
             })
         }
 
@@ -261,14 +263,9 @@ mod tests {
         let prepared =
             service.prepare_created_outbox_fanout(room_id(), user_id(), "tester".to_string());
         let factory = prepared.outbox_factory();
-        assert!(factory.is_some());
-        let outbox_event =
-            factory.expect("realtime fanout should provide playlist outbox factory")(&playlist);
+        let outbox_event = factory(&playlist).expect("playlist outbox event should prepare");
 
-        assert_eq!(
-            outbox_event.as_ref().map(|event| event.event_type.as_str()),
-            Some("playlist_created")
-        );
+        assert_eq!(outbox_event.event_type.as_str(), "playlist_created");
         assert_eq!(
             realtime_fanout
                 .committed_publish_count
@@ -286,12 +283,8 @@ mod tests {
             "playlist fanout should publish the same prepared event after commit"
         );
 
-        let event: RealtimeEvent = serde_json::from_value(
-            outbox_event
-                .expect("outbox event should be generated")
-                .payload,
-        )
-        .expect("playlist outbox payload should deserialize");
+        let event: RealtimeEvent = serde_json::from_value(outbox_event.payload)
+            .expect("playlist outbox payload should deserialize");
         match event {
             RealtimeEvent::PlaylistCreated {
                 room_id,

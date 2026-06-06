@@ -3,7 +3,6 @@
 //! Tests that `as_provider_proxy()` returns the correct result for each provider,
 //! and edge cases for `lookup_versioned`.
 //!
-//! Run with: cargo nextest run -p synctv-core --test provider_proxy_trait_tests
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
@@ -33,19 +32,19 @@ fn new_store() -> Arc<dyn ProviderStore> {
 
 #[tokio::test]
 async fn bilibili_has_provider_proxy() {
-    let p = BilibiliProvider::new(fake_provider_instance_manager());
+    let p = BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
     assert!(p.as_provider_proxy().is_some());
 }
 
 #[tokio::test]
 async fn alist_has_provider_proxy() {
-    let p = AlistProvider::new(fake_provider_instance_manager());
+    let p = AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
     assert!(p.as_provider_proxy().is_some());
 }
 
 #[tokio::test]
 async fn emby_has_provider_proxy() {
-    let p = EmbyProvider::new(fake_provider_instance_manager());
+    let p = EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
     assert!(p.as_provider_proxy().is_some());
 }
 
@@ -70,9 +69,15 @@ async fn live_proxy_has_provider_proxy() {
 #[tokio::test]
 async fn provider_set_registers_live_providers() {
     let provider_set = ProviderSet {
-        alist: Arc::new(AlistProvider::new(fake_provider_instance_manager())),
-        bilibili: Arc::new(BilibiliProvider::new(fake_provider_instance_manager())),
-        emby: Arc::new(EmbyProvider::new(fake_provider_instance_manager())),
+        alist: Arc::new(
+            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build"),
+        ),
+        bilibili: Arc::new(
+            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build"),
+        ),
+        emby: Arc::new(
+            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build"),
+        ),
         direct_url: Arc::new(DirectUrlProvider::new()),
         rtmp: Arc::new(RtmpProvider::new()),
         live_proxy: Arc::new(LiveProxyProvider::new()),

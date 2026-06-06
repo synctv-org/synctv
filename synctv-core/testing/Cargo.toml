@@ -8,6 +8,9 @@ license.workspace = true
 synctv-core = { path = "..", default-features = false }
 synctv-common.workspace = true
 
+opaque-ke.workspace = true
+rand.workspace = true
+sha2_010.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
 testcontainers = { workspace = true, features = ["reusable-containers"] }
 testcontainers-modules = { workspace = true }

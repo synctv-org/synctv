@@ -235,41 +235,22 @@ where
 }
 
 #[derive(serde::Deserialize)]
-pub struct LoginRequestDef {
-    #[serde(default)]
-    username: Option<String>,
-    #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    password: String,
-}
-
-impl TryFrom<LoginRequestDef> for crate::client::LoginRequest {
-    type Error = serde_json::Error;
-
-    fn try_from(value: LoginRequestDef) -> Result<Self, Self::Error> {
-        let identifier = login_identifier::<serde_json::Error, _>(
-            value.username,
-            value.email,
-            crate::client::login_request::Identifier::Username,
-            crate::client::login_request::Identifier::Email,
-        )?;
-
-        Ok(Self {
-            password: value.password,
-            identifier,
-        })
-    }
-}
-
-#[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_client_StartOpaqueLoginRequest)
+)]
+#[serde(deny_unknown_fields)]
 pub struct StartOpaqueLoginRequestDef {
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
     #[serde(default)]
-    username: Option<String>,
+    pub username: Option<String>,
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
     #[serde(default)]
-    email: Option<String>,
+    pub email: Option<String>,
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = Binary))]
     #[serde(with = "base64_bytes")]
-    credential_request: Vec<u8>,
+    pub credential_request: Vec<u8>,
 }
 
 impl TryFrom<StartOpaqueLoginRequestDef> for crate::client::StartOpaqueLoginRequest {
@@ -291,11 +272,54 @@ impl TryFrom<StartOpaqueLoginRequestDef> for crate::client::StartOpaqueLoginRequ
 }
 
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_client_LoginWithDirectPasswordRequest)
+)]
+#[serde(deny_unknown_fields)]
+pub struct LoginWithDirectPasswordRequestDef {
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
+    #[serde(default)]
+    pub username: Option<String>,
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
+    #[serde(default)]
+    pub email: Option<String>,
+    pub password: String,
+}
+
+impl TryFrom<LoginWithDirectPasswordRequestDef> for crate::client::LoginWithDirectPasswordRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(value: LoginWithDirectPasswordRequestDef) -> Result<Self, Self::Error> {
+        let identifier = login_identifier::<serde_json::Error, _>(
+            value.username,
+            value.email,
+            crate::client::login_with_direct_password_request::Identifier::Username,
+            crate::client::login_with_direct_password_request::Identifier::Email,
+        )?;
+
+        Ok(Self {
+            identifier,
+            password: value.password,
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_client_StartPasskeyLoginRequest)
+)]
+#[serde(deny_unknown_fields)]
 pub struct StartPasskeyLoginRequestDef {
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
     #[serde(default)]
-    username: Option<String>,
+    pub username: Option<String>,
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
     #[serde(default)]
-    email: Option<String>,
+    pub email: Option<String>,
 }
 
 impl TryFrom<StartPasskeyLoginRequestDef> for crate::client::StartPasskeyLoginRequest {
@@ -313,7 +337,70 @@ impl TryFrom<StartPasskeyLoginRequestDef> for crate::client::StartPasskeyLoginRe
     }
 }
 
+#[cfg(test)]
+mod auth_http_serde_tests {
+    use super::{
+        LoginWithDirectPasswordRequestDef, StartOpaqueLoginRequestDef, StartPasskeyLoginRequestDef,
+    };
+
+    #[test]
+    fn direct_password_login_json_maps_to_proto_oneof() {
+        let value: LoginWithDirectPasswordRequestDef = serde_json::from_str(
+            r#"{"email":"user@example.com","password":"correct horse battery staple"}"#,
+        )
+        .expect("direct password login JSON should decode");
+        let request: crate::client::LoginWithDirectPasswordRequest = value
+            .try_into()
+            .expect("direct password login JSON should convert to proto");
+
+        assert_eq!(request.password, "correct horse battery staple");
+        assert!(matches!(
+            request.identifier,
+            Some(crate::client::login_with_direct_password_request::Identifier::Email(email))
+                if email == "user@example.com"
+        ));
+    }
+
+    #[test]
+    fn opaque_login_json_decodes_base64_credential_request() {
+        let value: StartOpaqueLoginRequestDef =
+            serde_json::from_str(r#"{"username":"alice","credential_request":"AQIDBA=="}"#)
+                .expect("opaque login JSON should decode");
+        let request: crate::client::StartOpaqueLoginRequest = value
+            .try_into()
+            .expect("opaque login JSON should convert to proto");
+
+        assert_eq!(request.credential_request, vec![1, 2, 3, 4]);
+        assert!(matches!(
+            request.identifier,
+            Some(crate::client::start_opaque_login_request::Identifier::Username(username))
+                if username == "alice"
+        ));
+    }
+
+    #[test]
+    fn login_identifier_requires_one_identifier() {
+        let direct: LoginWithDirectPasswordRequestDef = serde_json::from_str(
+            r#"{"username":"alice","email":"user@example.com","password":"pw"}"#,
+        )
+        .expect("direct password login JSON should decode");
+        assert!(
+            TryInto::<crate::client::LoginWithDirectPasswordRequest>::try_into(direct).is_err()
+        );
+
+        let passkey: StartPasskeyLoginRequestDef =
+            serde_json::from_str(r#"{"username":"alice","email":"user@example.com"}"#)
+                .expect("passkey login JSON should decode");
+        assert!(TryInto::<crate::client::StartPasskeyLoginRequest>::try_into(passkey).is_err());
+    }
+}
+
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_client_UpdateRoomSettingsRequest)
+)]
 #[serde(untagged)]
 pub enum ClientUpdateRoomSettingsRequestDef {
     Wrapped { settings: serde_json::Value },
@@ -334,6 +421,11 @@ impl From<ClientUpdateRoomSettingsRequestDef> for crate::client::UpdateRoomSetti
 }
 
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_admin_UpdateRoomSettingsRequest)
+)]
 #[serde(untagged)]
 pub enum AdminUpdateRoomSettingsRequestDef {
     Wrapped {
@@ -362,6 +454,12 @@ impl From<AdminUpdateRoomSettingsRequestDef> for crate::admin::UpdateRoomSetting
 }
 
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_client_MovePlaylistRequest)
+)]
+#[serde(deny_unknown_fields)]
 pub struct MovePlaylistRequestDef {
     #[serde(default, rename = "playlist_id")]
     playlist_id: String,
@@ -397,7 +495,72 @@ impl TryFrom<MovePlaylistRequestDef> for crate::client::MovePlaylistRequest {
     }
 }
 
+#[cfg(test)]
+mod room_http_serde_tests {
+    use super::{
+        AdminUpdateRoomSettingsRequestDef, ClientUpdateRoomSettingsRequestDef,
+        MovePlaylistRequestDef,
+    };
+
+    #[test]
+    fn client_room_settings_accepts_raw_json_object() {
+        let value: ClientUpdateRoomSettingsRequestDef =
+            serde_json::from_str(r#"{"chat":{"enabled":true}}"#)
+                .expect("raw room settings JSON should decode");
+        let request = crate::client::UpdateRoomSettingsRequest::from(value);
+        let settings: serde_json::Value =
+            serde_json::from_slice(&request.settings).expect("settings should be JSON");
+
+        assert_eq!(settings["chat"]["enabled"], true);
+    }
+
+    #[test]
+    fn admin_room_settings_accepts_wrapped_json_object() {
+        let value: AdminUpdateRoomSettingsRequestDef = serde_json::from_str(
+            r#"{"room_id":"room_ignored_by_path","settings":{"chat":{"enabled":false}}}"#,
+        )
+        .expect("wrapped admin room settings JSON should decode");
+        let request = crate::admin::UpdateRoomSettingsRequest::from(value);
+        let settings: serde_json::Value =
+            serde_json::from_slice(&request.settings).expect("settings should be JSON");
+
+        assert_eq!(request.room_id, "room_ignored_by_path");
+        assert_eq!(settings["chat"]["enabled"], false);
+    }
+
+    #[test]
+    fn move_playlist_json_maps_anchor_to_proto_oneof() {
+        let value: MovePlaylistRequestDef =
+            serde_json::from_str(r#"{"after_playlist_id":"pl_after"}"#)
+                .expect("move playlist JSON should decode");
+        let request = crate::client::MovePlaylistRequest::try_from(value)
+            .expect("move playlist JSON should convert to proto");
+
+        assert!(matches!(
+            request.anchor,
+            Some(crate::client::move_playlist_request::Anchor::AfterPlaylistId(anchor))
+                if anchor == "pl_after"
+        ));
+    }
+
+    #[test]
+    fn move_playlist_json_rejects_two_anchors() {
+        let value: MovePlaylistRequestDef = serde_json::from_str(
+            r#"{"before_playlist_id":"pl_before","after_playlist_id":"pl_after"}"#,
+        )
+        .expect("move playlist JSON should decode");
+
+        assert!(crate::client::MovePlaylistRequest::try_from(value).is_err());
+    }
+}
+
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_provider_alist_LoginRequest)
+)]
+#[serde(deny_unknown_fields)]
 pub struct AlistLoginRequestDef {
     host: String,
     username: String,
@@ -456,6 +619,12 @@ impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::login_request::C
 }
 
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    feature = "openapi",
+    derive(utoipa::ToSchema),
+    schema(as = synctv_provider_emby_LoginRequest)
+)]
+#[serde(deny_unknown_fields)]
 pub struct EmbyLoginRequestDef {
     host: String,
     username: String,
@@ -500,5 +669,75 @@ impl TryFrom<EmbyLoginRequestDef> for crate::providers::emby::login_request::Cre
             (None, None) => Err("exactly one of password or api_key must be provided".into()),
             (Some(_), Some(_)) => Err("password and api_key are mutually exclusive".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_http_serde_tests {
+    use super::{AlistLoginRequestDef, EmbyLoginRequestDef};
+
+    #[test]
+    fn alist_login_json_maps_plain_password_to_proto_oneof() {
+        let value: AlistLoginRequestDef = serde_json::from_str(
+            r#"{"host":"https://alist.example","username":"alice","password":"pw","otp_code":"123456"}"#,
+        )
+        .expect("Alist login JSON should decode");
+        let request = crate::providers::alist::LoginRequest::try_from(value)
+            .expect("Alist login JSON should convert to proto");
+
+        assert_eq!(request.host, "https://alist.example");
+        assert_eq!(request.username, "alice");
+        assert_eq!(request.otp_code, "123456");
+        assert!(matches!(
+            request.credential,
+            Some(crate::providers::alist::login_request::Credential::Password(password))
+                if password == "pw"
+        ));
+    }
+
+    #[test]
+    fn alist_login_json_rejects_missing_or_duplicate_credential() {
+        let missing: AlistLoginRequestDef =
+            serde_json::from_str(r#"{"host":"https://alist.example","username":"alice"}"#)
+                .expect("Alist login JSON should decode");
+        assert!(crate::providers::alist::LoginRequest::try_from(missing).is_err());
+
+        let duplicate: AlistLoginRequestDef = serde_json::from_str(
+            r#"{"host":"https://alist.example","username":"alice","password":"pw","hashed_password":"hash"}"#,
+        )
+        .expect("Alist login JSON should decode");
+        assert!(crate::providers::alist::LoginRequest::try_from(duplicate).is_err());
+    }
+
+    #[test]
+    fn emby_login_json_maps_api_key_to_proto_oneof() {
+        let value: EmbyLoginRequestDef = serde_json::from_str(
+            r#"{"host":"https://emby.example","username":"alice","api_key":"key"}"#,
+        )
+        .expect("Emby login JSON should decode");
+        let request = crate::providers::emby::LoginRequest::try_from(value)
+            .expect("Emby login JSON should convert to proto");
+
+        assert_eq!(request.host, "https://emby.example");
+        assert_eq!(request.username, "alice");
+        assert!(matches!(
+            request.credential,
+            Some(crate::providers::emby::login_request::Credential::ApiKey(api_key))
+                if api_key == "key"
+        ));
+    }
+
+    #[test]
+    fn emby_login_json_rejects_missing_or_duplicate_credential() {
+        let missing: EmbyLoginRequestDef =
+            serde_json::from_str(r#"{"host":"https://emby.example","username":"alice"}"#)
+                .expect("Emby login JSON should decode");
+        assert!(crate::providers::emby::LoginRequest::try_from(missing).is_err());
+
+        let duplicate: EmbyLoginRequestDef = serde_json::from_str(
+            r#"{"host":"https://emby.example","username":"alice","password":"pw","api_key":"key"}"#,
+        )
+        .expect("Emby login JSON should decode");
+        assert!(crate::providers::emby::LoginRequest::try_from(duplicate).is_err());
     }
 }

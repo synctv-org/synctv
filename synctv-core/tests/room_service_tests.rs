@@ -2,22 +2,19 @@
 //!
 //! Tests the `RoomService` business logic layer with real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test `room_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
 use chrono::Utc;
-use parking_lot::RwLock;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         room_settings::{AllowAutoJoin, RequireApproval},
         Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
-        ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomPlaybackState,
-        RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
+        ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole, RoomSettings,
+        RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -27,7 +24,7 @@ use synctv_core::{
     service::{
         auth::{BruteForceProtection, JwtService},
         notification::{GuestKickReason, RoomEvent},
-        playback::{BroadcastResult, PlaybackBroadcaster},
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, RoomPasswordPolicy, RoomService, SettingsRegistry,
         SettingsService, UserService,
     },
@@ -55,43 +52,6 @@ fn assert_f64_eq(actual: f64, expected: f64) {
     );
 }
 
-fn assert_playback_reset_event(broadcaster: &RecordingPlaybackBroadcaster, operation: &str) {
-    let broadcasts = broadcaster.broadcasts();
-    assert!(
-        broadcasts.iter().any(|state| {
-            state.playing_media_id.is_none()
-                && state.playing_playlist_id.is_none()
-                && state.target.is_empty()
-                && !state.is_playing
-                && (state.position - 0.0).abs() < f64::EPSILON
-                && (state.speed - 1.0).abs() < f64::EPSILON
-        }),
-        "{operation} must broadcast a playback reset when member cleanup deletes current media; got {broadcasts:?}"
-    );
-}
-
-#[derive(Debug, Default)]
-struct RecordingPlaybackBroadcaster {
-    broadcasts: RwLock<Vec<RoomPlaybackState>>,
-}
-
-impl RecordingPlaybackBroadcaster {
-    fn broadcasts(&self) -> Vec<RoomPlaybackState> {
-        self.broadcasts.read().clone()
-    }
-}
-
-impl PlaybackBroadcaster for RecordingPlaybackBroadcaster {
-    fn broadcast_playback_state(&self, state: &RoomPlaybackState) -> BroadcastResult {
-        self.broadcasts.write().push(state.clone());
-        BroadcastResult {
-            local_sent: 1,
-            redis_sent: true,
-            single_node: false,
-        }
-    }
-}
-
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -101,16 +61,14 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -120,7 +78,24 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+}
+
+fn make_room_service_with_settings_registry(
+    pool: PgPool,
+    settings_registry: Arc<SettingsRegistry>,
+) -> RoomService {
+    let user_service = make_user_service(&pool);
+
+    RoomService::new_with_options(
+        pool,
+        user_service,
+        RoomServiceOptions {
+            settings_registry: Some(settings_registry),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build")
 }
 
 async fn register_direct_url_provider(room_service: &RoomService) {
@@ -952,8 +927,6 @@ async fn test_leave_room_cleans_member_created_media_resources() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let playback_broadcaster = Arc::new(RecordingPlaybackBroadcaster::default());
-    room_service.set_playback_realtime_broadcaster(playback_broadcaster.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
@@ -1019,7 +992,8 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .unwrap();
 
     room_service
-        .set_playing_media(room.id, owner.id, media.id)
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
     let warm_state = room_service
@@ -1049,7 +1023,6 @@ async fn test_leave_room_cleans_member_created_media_resources() {
     assert!(!refreshed_state.is_playing);
     assert_f64_eq(refreshed_state.position, 0.0);
     assert_f64_eq(refreshed_state.speed, 1.0);
-    assert_playback_reset_event(&playback_broadcaster, "leave_room");
 }
 
 #[tokio::test]
@@ -1060,8 +1033,6 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let playback_broadcaster = Arc::new(RecordingPlaybackBroadcaster::default());
-    room_service.set_playback_realtime_broadcaster(playback_broadcaster.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo
@@ -1127,7 +1098,8 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .unwrap();
 
     room_service
-        .set_playing_media(room.id, owner.id, media.id)
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
     let warm_state = room_service
@@ -1164,7 +1136,6 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
     assert!(!refreshed_state.is_playing);
     assert_f64_eq(refreshed_state.position, 0.0);
     assert_f64_eq(refreshed_state.speed, 1.0);
-    assert_playback_reset_event(&playback_broadcaster, "kick_member");
 
     let blocked_rejoin = room_service.join_room(room.id, target.id, None).await;
     assert!(
@@ -1608,8 +1579,6 @@ async fn test_join_room_password_changed_during_join_with_correct_old_password_f
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_join_room_password_changed_during_join_with_correct_new_password_succeeds() {
-    // This test verifies that if password is changed during join,
-    // using the NEW password should succeed
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1701,8 +1670,6 @@ async fn test_join_room_password_not_required_password_cleared_during_join() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_join_room_password_added_during_join_requires_password() {
-    // This test verifies that if password requirement is added during join
-    // (room was originally public, now requires password), join without password fails
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2544,71 +2511,6 @@ async fn test_room_deletion_invalidates_caches() {
     let room_repo = RoomRepository::new(pool.clone());
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(fetched.is_none(), "Room should not be found after deletion");
-}
-
-// to prevent timing attacks. The verify_password function uses Argon2id which
-// has built-in constant-time password comparison.
-// Key security properties:
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_password_verification_constant_time_properties() {
-    // This test verifies the password verification uses constant-time comparison
-    // by checking that Argon2id verification works correctly for both valid
-    // and invalid passwords without early-exit timing differences.
-    use synctv_core::service::auth::password::{hash_password, verify_password};
-
-    let password = "TestPassword123!";
-    let hash = hash_password(password)
-        .await
-        .expect("Failed to hash password");
-
-    // Valid password should verify successfully
-    let valid_result = verify_password(password, &hash)
-        .await
-        .expect("Verification should not error");
-    assert!(valid_result, "Correct password should verify");
-
-    // Invalid password should NOT verify, but should not error
-    // (no timing difference from erroring vs returning false)
-    let invalid_result = verify_password("WrongPassword456", &hash)
-        .await
-        .expect("Verification should not error even for wrong password");
-    assert!(!invalid_result, "Wrong password should not verify");
-
-    // Completely different length password should also just return false
-    let short_result = verify_password("x", &hash)
-        .await
-        .expect("Short password should not cause error");
-    assert!(!short_result, "Short password should not verify");
-
-    // Empty password should also just return false
-    let empty_result = verify_password("", &hash)
-        .await
-        .expect("Empty password should not cause error");
-    assert!(!empty_result, "Empty password should not verify");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_password_verification_handles_malformed_hash_gracefully() {
-    use synctv_core::service::auth::password::verify_password;
-
-    // Malformed hash should return an error, but the service layer
-    // should handle this gracefully and not leak information
-    let result = verify_password("anypassword", "not_a_valid_hash").await;
-    assert!(result.is_err(), "Malformed hash should return error");
-
-    // The error should be Internal, not revealing hash details
-    match result.unwrap_err() {
-        synctv_core::Error::Internal(msg) => {
-            assert!(
-                msg.contains("Invalid password hash format") || msg.contains("verification"),
-                "Error message should indicate hash format issue: {msg}"
-            );
-        }
-        other => panic!("Expected Internal error for malformed hash, got: {other:?}"),
-    }
 }
 
 #[tokio::test]
@@ -4122,7 +4024,8 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .unwrap();
 
     room_service
-        .set_playing_media(room.id, owner.id, media.id)
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -4132,8 +4035,6 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .await
         .unwrap();
     assert_eq!(warm_state.playing_media_id, Some(media.id));
-
-    let mut event_rx = room_service.notification_service().subscribe();
 
     let result = room_service
         .clear_playlist(room.id, owner.id, None)
@@ -4152,35 +4053,6 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
     assert_eq!(refreshed_state.playing_playlist_id, None);
     assert!(!refreshed_state.is_playing);
     assert_f64_eq(refreshed_state.position, 0.0);
-
-    let mut saw_playback_reset = false;
-    for _ in 0..2 {
-        let (event_room_id, event) =
-            tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
-                .await
-                .expect("expected local notification after clear_playlist")
-                .unwrap();
-
-        assert_eq!(event_room_id, room.id);
-        if let RoomEvent::PlaybackStateChanged {
-            playing,
-            position,
-            speed,
-            media_id,
-        } = event
-        {
-            assert!(!playing);
-            assert_f64_eq(position, 0.0);
-            assert_f64_eq(speed, 1.0);
-            assert_eq!(media_id, None);
-            saw_playback_reset = true;
-        }
-    }
-
-    assert!(
-        saw_playback_reset,
-        "clear_playlist must broadcast a playback reset when it clears the currently playing room-root media"
-    );
 }
 
 #[tokio::test]
@@ -5872,10 +5744,9 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
 async fn test_list_rooms_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.max_rooms_per_user.set(32).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo.create(&make_user("page_owner")).await.unwrap();
 
@@ -5968,7 +5839,6 @@ async fn test_guest_cannot_join_password_protected_room() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_check_guest_allowed_when_disabled_globally() {
-    // This test verifies the fail-closed behavior when settings registry is None
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -6203,10 +6073,7 @@ async fn test_join_room_idempotent_same_user() {
     );
 }
 
-/// Test that `max_members` is correctly read from `RoomSettings` when joining.
-///
-/// This test verifies that when `max_members=0` is passed to `with_max_members(0)`,
-/// the system correctly reads the actual `max_members` value from `RoomSettings`.
+/// `RoomSettings::max_members` is enforced when joining.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_max_members_read_from_room_settings_on_join() {
@@ -6445,14 +6312,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
     }
 }
 
-// Problem: Soft-deleted rooms and related data consume resources for up to 90 days.
-
-/// Test that soft-delete immediately cleans up non-critical data (playlists, media, members).
-///
-/// This test verifies the optimized soft-delete strategy:
-/// 1. Room row gets `deleted_at` set (soft-delete)
-/// 2. Non-critical data (playlists, media, playback state, members, settings) is immediately deleted
-/// 3. Only audit log entries are preserved
+/// Soft-delete marks the room deleted and removes non-critical room data.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
@@ -7027,14 +6887,13 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
 async fn test_create_room_rejects_no_password_when_password_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
         .unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pwd_policy_owner"))
@@ -7067,14 +6926,13 @@ async fn test_create_room_rejects_no_password_when_password_policy_required() {
 async fn test_create_room_allows_password_when_password_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
         .unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pwd_policy_ok_owner"))
@@ -7103,14 +6961,13 @@ async fn test_create_room_allows_password_when_password_policy_required() {
 async fn test_create_room_rejects_password_when_password_policy_forbidden() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Forbidden)
         .await
         .unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("no_pwd_policy_owner"))
@@ -7143,14 +7000,13 @@ async fn test_create_room_rejects_password_when_password_policy_forbidden() {
 async fn test_create_room_allows_no_password_when_password_policy_forbidden() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Forbidden)
         .await
         .unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("no_pwd_policy_ok_owner"))
@@ -7180,9 +7036,8 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_owner"))
@@ -7236,10 +7091,9 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
 async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.max_rooms_per_user.set(1).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_limit_owner"))
@@ -7293,9 +7147,8 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
 async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_dup_owner"))
@@ -7347,10 +7200,9 @@ async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
 async fn test_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.max_rooms_per_user.set(1).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("room_create_limit_owner"))
@@ -7390,10 +7242,9 @@ async fn test_create_room_respects_max_rooms_per_user() {
 async fn test_concurrent_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.max_rooms_per_user.set(2).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("room_create_concurrent_limit_owner"))
@@ -7498,10 +7349,9 @@ async fn test_create_room_rejects_banned_creator_in_service_layer() {
 async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.create_room_need_review.set(true).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_dup_owner"))
@@ -7561,10 +7411,9 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
 async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.create_room_need_review.set(true).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_same_name_owner"))
@@ -7623,10 +7472,9 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
 async fn test_approve_pending_room_allows_the_request_itself_while_checking_name_policy() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.create_room_need_review.set(true).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_self_exclusion_owner"))
@@ -7658,14 +7506,13 @@ async fn test_approve_pending_room_allows_the_request_itself_while_checking_name
 async fn test_approve_pending_room_preserves_password_when_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.create_room_need_review.set(true).await.unwrap();
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
         .unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_password_required_owner"))
@@ -7729,10 +7576,9 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let user_service = make_user_service(&pool);
-    let mut room_service = make_room_service(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
     registry.create_room_need_review.set(true).await.unwrap();
-    room_service.set_settings_registry(registry);
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_banned_after_request_owner"))

@@ -398,12 +398,22 @@ pub struct ChatPlaybackMessagesQuery {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub target_hash: Option<String>,
+    pub target: Option<Vec<u8>>,
     pub position_seconds: f64,
     pub before_seconds: f64,
     pub after_seconds: f64,
     pub limit: i32,
     pub include_deleted: bool,
+}
+
+impl ChatPlaybackMessagesQuery {
+    #[must_use]
+    pub fn normalize(mut self) -> Self {
+        if self.target.as_ref().is_some_and(Vec::is_empty) {
+            self.target = None;
+        }
+        self
+    }
 }
 
 #[cfg(test)]

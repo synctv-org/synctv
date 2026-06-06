@@ -3,7 +3,6 @@
 //! Tests playback control including seek, speed, media switching, and
 //! optimistic lock behavior with real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test `playback_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -12,7 +11,6 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{
         room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, User, UserId, UserRole,
         UserStatus,
@@ -29,16 +27,14 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -48,7 +44,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -1123,10 +1119,7 @@ async fn test_state_consistency_after_mixed_operations() {
 
 use synctv_core::models::{room_settings, RoomSettings};
 
-/// Test that seek returns `seek_applied=true` on success.
-///
-/// This test verifies that clients can distinguish between a successful seek
-/// and a degraded response (seek failed but returned current state).
+/// Successful seek responses set `seek_applied=true`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_seek_success_returns_applied_true() {

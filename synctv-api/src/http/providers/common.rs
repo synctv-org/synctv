@@ -480,7 +480,6 @@ mod tests {
     use chrono::Utc;
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::ProviderInstance;
     use synctv_core::repository::ProviderInstanceRepository;
     use synctv_core::service::{
@@ -491,12 +490,11 @@ mod tests {
     use synctv_proto::providers::common::ListProviderBackendsRequest;
 
     fn test_user_service(pool: &sqlx::PgPool) -> UserService {
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
                 .expect("test JWT service should build"),
             UsernameCache::local_only("test:username:".to_string(), 100, 60),
-            PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
@@ -510,7 +508,10 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(repo.clone()));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager.clone()));
+        let providers_manager = Arc::new(
+            ProvidersManager::new(provider_instance_manager.clone())
+                .expect("providers manager should build"),
+        );
         providers_manager
             .create_builtin_defaults()
             .await
@@ -535,12 +536,15 @@ mod tests {
         .expect("remote backend row should persist");
 
         let (audit_service, _flush_handle) = AuditService::new(pool.clone());
-        let api = crate::impls::ProviderCommonApiImpl::new(
+        let api = crate::impls::ProviderCommonApiImpl::new_with_runtime(
             provider_instance_manager,
             Arc::new(test_user_service(&pool)),
             Arc::new(audit_service),
-        )
-        .with_providers_manager(Some(providers_manager));
+            crate::impls::ProviderCommonApiRuntime {
+                providers_manager: Some(providers_manager),
+                request_executor: None,
+            },
+        );
         let backends = api
             .list_provider_backends(ListProviderBackendsRequest {
                 provider_type: "alist".to_string(),

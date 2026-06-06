@@ -124,6 +124,7 @@ where
     /// unbounded memory growth when `l2_ttl_seconds` is misconfigured as 0.
     const MIN_L2_TTL_SECONDS: u64 = 60;
 
+    #[must_use]
     pub fn new(
         l2: Arc<dyn CacheL2Backend>,
         l1_max_capacity: u64,
@@ -131,7 +132,7 @@ where
         l2_ttl_seconds: u64,
         key_prefix: String,
         cache_type: String,
-    ) -> Result<Self> {
+    ) -> Self {
         // Enforce minimum L2 TTL when L2 is active to prevent
         // persistent keys that cause unbounded memory growth.
         let l2_ttl_seconds = if l2.is_active() && l2_ttl_seconds < Self::MIN_L2_TTL_SECONDS {
@@ -150,7 +151,7 @@ where
             .time_to_live(std::time::Duration::from_secs(l1_ttl_seconds))
             .build();
 
-        Ok(Self {
+        Self {
             l2,
             l1_cache: Arc::new(l1_cache),
             l2_ttl_seconds,
@@ -163,7 +164,7 @@ where
             max_epoch_entries: usize::try_from(l1_max_capacity)
                 .unwrap_or(usize::MAX / 2)
                 .saturating_mul(2),
-        })
+        }
     }
 
     /// Get a value from cache.
@@ -1050,7 +1051,6 @@ mod tests {
             "test:".to_string(),
             "test".to_string(),
         )
-        .unwrap()
     }
 
     fn make_value(name: &str) -> TestValue {

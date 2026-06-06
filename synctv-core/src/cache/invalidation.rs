@@ -67,6 +67,19 @@ const SUBSCRIBER_MAX_BACKOFF_SECS: u64 = 30;
 /// Trim interval in subscriber loop iterations (~60 seconds at 1s block).
 const TRIM_EVERY_N_ITERATIONS: u32 = 60;
 
+fn current_unix_millis() -> Result<u64> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            Error::Internal(format!(
+                "System clock is before UNIX_EPOCH while trimming cache invalidation stream: {error}"
+            ))
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|_| {
+        Error::Internal("Cache invalidation timestamp exceeds u64::MAX millis".to_string())
+    })
+}
+
 struct StreamProcessingContext<'a> {
     local_sender: &'a broadcast::Sender<InvalidationMessage>,
     node_id: &'a str,
@@ -450,8 +463,12 @@ impl CacheInvalidationService {
                 }
                 info!("Cache invalidation listener stopped");
             });
-        self.replace_task_handle(&self.subscriber_task, subscriber_handle)
-            .await;
+        self.replace_task_handle(
+            "cache invalidation subscriber",
+            &self.subscriber_task,
+            subscriber_handle,
+        )
+        .await;
 
         // Spawn periodic state sync task
         self.spawn_state_sync_task().await;
@@ -533,18 +550,24 @@ impl CacheInvalidationService {
             }
             debug!("Cache invalidation state sync task stopped");
         });
-        self.replace_task_handle(&self.state_sync_task, task).await;
+        self.replace_task_handle("cache invalidation state sync", &self.state_sync_task, task)
+            .await;
     }
 
     async fn replace_task_handle(
         &self,
+        task_name: &'static str,
         slot: &Arc<Mutex<Option<JoinHandle<()>>>>,
         handle: JoinHandle<()>,
     ) {
         let mut guard = slot.lock().await;
         if let Some(existing) = guard.replace(handle) {
             existing.abort();
-            let _ = existing.await;
+            match existing.await {
+                Ok(()) => debug!("{task_name} replaced task stopped after abort"),
+                Err(error) if error.is_cancelled() => debug!("{task_name} replaced task aborted"),
+                Err(error) => warn!("{task_name} replaced task ended with error: {error}"),
+            }
         }
     }
 
@@ -1004,6 +1027,38 @@ impl CacheInvalidationService {
         }
     }
 
+    async fn ack_stream_entry<C>(
+        conn: &mut C,
+        context: &StreamProcessingContext<'_>,
+        entry_id: &str,
+        operation: &'static str,
+    ) -> bool
+    where
+        C: redis::aio::ConnectionLike + Send + Unpin,
+    {
+        match run_cache_invalidation_redis_op(
+            context.redis_timeout,
+            operation,
+            redis::cmd("XACK")
+                .arg(context.stream_key)
+                .arg(context.consumer_group)
+                .arg(entry_id)
+                .query_async::<()>(conn),
+        )
+        .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(
+                    message_id = %entry_id,
+                    error = %error,
+                    "Failed to acknowledge cache invalidation stream entry"
+                );
+                false
+            }
+        }
+    }
+
     /// Process a single stream entry: deserialize, filter, broadcast, and acknowledge.
     ///
     /// Malformed entries that cannot be parsed are tracked in `failed_delivery_counts`.
@@ -1026,14 +1081,11 @@ impl CacheInvalidationService {
             };
             if origin_str == Some(context.node_id) {
                 // Acknowledge but don't broadcast -- this node originated the message
-                let _: Result<()> = run_cache_invalidation_redis_op(
-                    context.redis_timeout,
+                Self::ack_stream_entry(
+                    conn,
+                    context,
+                    &entry.id,
                     "acknowledge self-originated invalidation message",
-                    redis::cmd("XACK")
-                        .arg(context.stream_key)
-                        .arg(context.consumer_group)
-                        .arg(&entry.id)
-                        .query_async::<()>(conn),
                 )
                 .await;
                 failed_delivery_counts.remove(&entry.id);
@@ -1060,14 +1112,11 @@ impl CacheInvalidationService {
                     "Cache invalidation message has no payload field after {} attempts; acknowledging to prevent PEL accumulation",
                     Self::MAX_DELIVERY_ATTEMPTS
                 );
-                let _: Result<()> = run_cache_invalidation_redis_op(
-                    context.redis_timeout,
+                Self::ack_stream_entry(
+                    conn,
+                    context,
+                    &entry.id,
                     "acknowledge malformed invalidation message",
-                    redis::cmd("XACK")
-                        .arg(context.stream_key)
-                        .arg(context.consumer_group)
-                        .arg(&entry.id)
-                        .query_async::<()>(conn),
                 )
                 .await;
                 failed_delivery_counts.remove(&entry.id);
@@ -1113,14 +1162,11 @@ impl CacheInvalidationService {
                         "Failed to parse cache invalidation message after {} attempts; acknowledging to prevent PEL accumulation",
                         Self::MAX_DELIVERY_ATTEMPTS
                     );
-                    let _: Result<()> = run_cache_invalidation_redis_op(
-                        context.redis_timeout,
+                    Self::ack_stream_entry(
+                        conn,
+                        context,
+                        &entry.id,
                         "acknowledge unparseable invalidation message",
-                        redis::cmd("XACK")
-                            .arg(context.stream_key)
-                            .arg(context.consumer_group)
-                            .arg(&entry.id)
-                            .query_async::<()>(conn),
                     )
                     .await;
                     failed_delivery_counts.remove(&entry.id);
@@ -1139,16 +1185,7 @@ impl CacheInvalidationService {
         }
 
         // Acknowledge the message only after successful parse and broadcast.
-        let _: Result<()> = run_cache_invalidation_redis_op(
-            context.redis_timeout,
-            "acknowledge invalidation message",
-            redis::cmd("XACK")
-                .arg(context.stream_key)
-                .arg(context.consumer_group)
-                .arg(&entry.id)
-                .query_async::<()>(conn),
-        )
-        .await;
+        Self::ack_stream_entry(conn, context, &entry.id, "acknowledge invalidation message").await;
     }
 
     /// Trim the stream to remove entries older than `STREAM_RETENTION_MS` (1 hour).
@@ -1159,11 +1196,13 @@ impl CacheInvalidationService {
     where
         C: redis::aio::ConnectionLike + Send + Unpin,
     {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let now_ms = u64::try_from(now_ms).unwrap_or(u64::MAX);
+        let now_ms = match current_unix_millis() {
+            Ok(now_ms) => now_ms,
+            Err(error) => {
+                warn!(%error, "Skipping cache invalidation stream trim");
+                return;
+            }
+        };
         let min_id = now_ms.saturating_sub(STREAM_RETENTION_MS);
         let min_id_str = format!("{min_id}-0");
 
@@ -1811,7 +1850,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1857,7 +1896,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -2153,13 +2192,6 @@ mod tests {
     }
 
     #[test]
-    fn test_state_sync_interval_constant() {
-        // Verify the state sync interval is 60 seconds
-        assert_eq!(STATE_SYNC_INTERVAL_SECS, 60);
-        assert_eq!(ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS, 300);
-    }
-
-    #[test]
     fn test_room_settings_message_serialization() {
         let msg = InvalidationMessage::RoomSettings {
             room_id: "room_abc".to_string(),
@@ -2306,7 +2338,10 @@ mod tests {
             redis::Value::SimpleString("name".to_string()),
             redis::Value::SimpleString("node-a".to_string()),
             redis::Value::SimpleString("idle".to_string()),
-            redis::Value::Int(i64::try_from(STALE_CONSUMER_IDLE_MS).unwrap_or(i64::MAX)),
+            redis::Value::Int(
+                i64::try_from(STALE_CONSUMER_IDLE_MS)
+                    .expect("stale consumer idle threshold should fit i64"),
+            ),
         ]];
 
         assert!(CacheInvalidationService::consumer_group_is_stale(&stale));
@@ -2325,7 +2360,10 @@ mod tests {
                 redis::Value::SimpleString("name".to_string()),
                 redis::Value::SimpleString("node-b".to_string()),
                 redis::Value::SimpleString("idle".to_string()),
-                redis::Value::Int(i64::try_from(STALE_CONSUMER_IDLE_MS).unwrap_or(i64::MAX)),
+                redis::Value::Int(
+                    i64::try_from(STALE_CONSUMER_IDLE_MS)
+                        .expect("stale consumer idle threshold should fit i64"),
+                ),
             ],
         ];
 

@@ -6,7 +6,6 @@
 //! These tests exercise the `play_next` decision logic with a real `PostgreSQL`
 //! via testcontainers, since `play_next` reads from the DB repo layer.
 //!
-//! Run with: cargo test -p synctv-core --test `playback_play_next_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -16,7 +15,6 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     credential_encryption::CredentialEncryption,
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode, Playlist,
@@ -42,16 +40,14 @@ fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        password_complexity,
         token_blacklist,
         key_builder,
         brute_force,
@@ -61,7 +57,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new(pool, user_service)
+    RoomService::new_for_tests(pool, user_service).expect("room service should build")
 }
 
 fn make_room_service_with_providers(
@@ -83,9 +79,10 @@ fn make_room_service_with_providers(
         RoomServiceOptions {
             credential_encryption: Some(credential_encryption),
             credential_repo: Some(credential_repo),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
     )
+    .expect("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -1074,7 +1071,8 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1137,7 +1135,8 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1210,7 +1209,8 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1286,7 +1286,8 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1347,7 +1348,8 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1409,7 +1411,8 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1431,9 +1434,10 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
             credential_repo: Some(Arc::new(UserProviderCredentialRepository::new(
                 pool.clone(),
             ))),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
-    );
+    )
+    .expect("room service should build");
 
     let owner = user_repo
         .create(&make_user("dynamic_sensitive_list_owner"))

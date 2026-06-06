@@ -32,7 +32,7 @@ fn build_provider_context<'a>(
     media_id: Option<&'a MediaId>,
     provider_instance_name: Option<&'a str>,
     deps: ProviderPlaybackDeps<'a>,
-) -> ProviderContext<'a> {
+) -> Result<ProviderContext<'a>, ApiError> {
     let mut ctx = ProviderContext::new("synctv")
         .with_user_id(*user_id)
         .with_room_id(*room_id)
@@ -40,16 +40,12 @@ fn build_provider_context<'a>(
         .with_request_context(deps.request_context.cloned());
     if let Some(public_id_codec) = deps.public_id_codec {
         ctx = ctx
-            .with_public_user_id(
-                public_id_codec
-                    .encode_user_id(*user_id)
-                    .expect("positive user id must encode as public ID"),
-            )
-            .with_public_room_id(
-                public_id_codec
-                    .encode_room_id(*room_id)
-                    .expect("positive room id must encode as public ID"),
-            );
+            .with_public_user_id(public_id_codec.encode_user_id(*user_id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode provider user public id: {error}"))
+            })?)
+            .with_public_room_id(public_id_codec.encode_room_id(*room_id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode provider room public id: {error}"))
+            })?);
     }
     if let Some(credential_owner_id) = credential_owner_id {
         ctx = ctx.with_credential_owner_id(*credential_owner_id);
@@ -78,7 +74,7 @@ fn build_provider_context<'a>(
     if let Some(store) = deps.store {
         ctx = ctx.with_store(store);
     }
-    ctx
+    Ok(ctx)
 }
 
 pub async fn resolve_media_from_playlist(
@@ -118,7 +114,7 @@ pub async fn resolve_provider_playback_url(
         Some(media_id),
         media.provider_instance_name.as_deref(),
         deps,
-    );
+    )?;
 
     let playback_result = provider
         .generate_playback(&ctx, &media.source_config)
@@ -155,7 +151,7 @@ pub async fn resolve_provider_playback_result(
         Some(media_id),
         media.provider_instance_name.as_deref(),
         deps,
-    );
+    )?;
 
     provider
         .generate_playback(&ctx, &media.source_config)

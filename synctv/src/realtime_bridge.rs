@@ -1,11 +1,6 @@
-//! Adapter bridging runtime realtime delivery and `synctv-core` broadcasting traits.
-//!
-//! `RealtimePlaybackBroadcaster` implements the `PlaybackBroadcaster` trait from
-//! `synctv-core` by delegating to `RealtimeManager`, keeping the core crate
-//! decoupled from runtime-specific types.
+//! Adapter bridging room service events to runtime realtime delivery.
 
-use std::sync::Arc;
-use synctv_realtime::sync::{RealtimeEvent, RealtimeManager};
+use synctv_realtime::sync::RealtimeEvent;
 
 fn system_user_id() -> synctv_core::models::UserId {
     synctv_core::models::UserId::MAX
@@ -13,54 +8,6 @@ fn system_user_id() -> synctv_core::models::UserId {
 
 fn bridge_user_id(user_id: Option<&synctv_core::models::UserId>) -> synctv_core::models::UserId {
     user_id.copied().unwrap_or_else(system_user_id)
-}
-
-fn playlist_created_event(
-    room_id: &synctv_core::models::RoomId,
-    playlist: &synctv_core::models::Playlist,
-    user_id: &synctv_core::models::UserId,
-    username: &str,
-) -> RealtimeEvent {
-    RealtimeEvent::PlaylistCreated {
-        event_id: synctv_common::snanoid!(16),
-        room_id: *room_id,
-        user_id: *user_id,
-        username: username.to_string(),
-        playlist: playlist.clone(),
-        timestamp: chrono::Utc::now(),
-    }
-}
-
-fn playlist_updated_event(
-    room_id: &synctv_core::models::RoomId,
-    playlist: &synctv_core::models::Playlist,
-    user_id: &synctv_core::models::UserId,
-    username: &str,
-) -> RealtimeEvent {
-    RealtimeEvent::PlaylistUpdated {
-        event_id: synctv_common::snanoid!(16),
-        room_id: *room_id,
-        user_id: *user_id,
-        username: username.to_string(),
-        playlist: playlist.clone(),
-        timestamp: chrono::Utc::now(),
-    }
-}
-
-fn playlist_deleted_event(
-    room_id: &synctv_core::models::RoomId,
-    playlist_id: &synctv_core::models::PlaylistId,
-    user_id: &synctv_core::models::UserId,
-    username: &str,
-) -> RealtimeEvent {
-    RealtimeEvent::PlaylistDeleted {
-        event_id: synctv_common::snanoid!(16),
-        room_id: *room_id,
-        user_id: *user_id,
-        username: username.to_string(),
-        playlist_id: *playlist_id,
-        timestamp: chrono::Utc::now(),
-    }
 }
 
 #[must_use]
@@ -179,15 +126,26 @@ pub fn room_event_to_realtime_event(
             version,
             user_id,
             username,
-        } => Some(RealtimeEvent::RoomSettingsChanged {
-            event_id: synctv_common::snanoid!(16),
-            room_id: *room_id,
-            user_id: bridge_user_id(user_id.as_ref()),
-            username: username.clone(),
-            settings_json: serde_json::to_vec(settings).unwrap_or_default(),
-            version: *version,
-            timestamp,
-        }),
+        } => match serde_json::to_vec(settings) {
+            Ok(settings_json) => Some(RealtimeEvent::RoomSettingsChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: *room_id,
+                user_id: bridge_user_id(user_id.as_ref()),
+                username: username.clone(),
+                settings_json,
+                version: *version,
+                timestamp,
+            }),
+            Err(error) => {
+                tracing::error!(
+                    room_id = %room_id,
+                    version = *version,
+                    error = %error,
+                    "Failed to serialize room settings realtime event"
+                );
+                None
+            }
+        },
         synctv_core::service::RoomEvent::RoomDeleted => Some(RealtimeEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,
@@ -196,7 +154,6 @@ pub fn room_event_to_realtime_event(
         }),
         synctv_core::service::RoomEvent::UserJoined { .. }
         | synctv_core::service::RoomEvent::ChatMessage { .. }
-        | synctv_core::service::RoomEvent::PlaybackStateChanged { .. }
         | synctv_core::service::RoomEvent::MemberKicked { .. }
         | synctv_core::service::RoomEvent::GuestKicked { .. }
         | synctv_core::service::RoomEvent::StreamStarted { .. }
@@ -204,324 +161,11 @@ pub fn room_event_to_realtime_event(
     }
 }
 
-/// Adapter that implements `PlaybackBroadcaster` by delegating to `RealtimeManager`.
-pub struct RealtimePlaybackBroadcaster {
-    pub realtime_manager: Arc<RealtimeManager>,
-}
-
-impl synctv_core::service::PlaybackBroadcaster for RealtimePlaybackBroadcaster {
-    fn broadcast_playback_state(
-        &self,
-        state: &synctv_core::models::RoomPlaybackState,
-    ) -> synctv_core::service::BroadcastResult {
-        let event = RealtimeEvent::PlaybackStateChanged {
-            event_id: synctv_common::snanoid!(16),
-            room_id: state.room_id,
-            // For system-initiated broadcasts (auto-play, reset), use a sentinel user_id
-            // with a clearly-invalid prefix that cannot collide with real user IDs.
-            // The consumer in messaging.rs only reads the state payload, not the user fields.
-            user_id: system_user_id(),
-            username: synctv_common::reserved::SYSTEM_USERNAME.to_string(),
-            state: state.clone(),
-            timestamp: chrono::Utc::now(),
-        };
-
-        let result = self.realtime_manager.broadcast(event);
-        let metrics = self.realtime_manager.metrics();
-        let single_node = !metrics.distributed_enabled;
-
-        synctv_core::service::BroadcastResult {
-            local_sent: result.local_sent,
-            redis_sent: result.redis_sent,
-            single_node,
-        }
-    }
-}
-
-/// Adapter that implements `PlaylistBroadcaster` by delegating to `RealtimeManager`.
-pub struct RealtimePlaylistBroadcaster {
-    pub realtime_manager: Arc<RealtimeManager>,
-}
-
-impl synctv_core::service::PlaylistBroadcaster for RealtimePlaylistBroadcaster {
-    fn broadcast_playlist_created(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        playlist: &synctv_core::models::Playlist,
-        user_id: &synctv_core::models::UserId,
-        username: &str,
-    ) {
-        let _ = self
-            .realtime_manager
-            .broadcast(playlist_created_event(room_id, playlist, user_id, username));
-    }
-
-    fn broadcast_playlist_updated(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        playlist: &synctv_core::models::Playlist,
-        user_id: &synctv_core::models::UserId,
-        username: &str,
-    ) {
-        let _ = self
-            .realtime_manager
-            .broadcast(playlist_updated_event(room_id, playlist, user_id, username));
-    }
-
-    fn broadcast_playlist_deleted(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        playlist_id: &synctv_core::models::PlaylistId,
-        user_id: &synctv_core::models::UserId,
-        username: &str,
-    ) {
-        let _ = self.realtime_manager.broadcast(playlist_deleted_event(
-            room_id,
-            playlist_id,
-            user_id,
-            username,
-        ));
-    }
-}
-
-/// Adapter that emits playlist lifecycle events to local subscribers only.
-///
-/// In clustered mode the API layer already handles fail-closed distributed
-/// fan-out. This broadcaster exists solely to preserve origin-node realtime
-/// delivery without double-publishing the same mutation to Redis.
-pub struct LocalPlaylistBroadcaster {
-    pub realtime_manager: Arc<RealtimeManager>,
-}
-
-impl synctv_core::service::PlaylistBroadcaster for LocalPlaylistBroadcaster {
-    fn broadcast_playlist_created(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        playlist: &synctv_core::models::Playlist,
-        user_id: &synctv_core::models::UserId,
-        username: &str,
-    ) {
-        let _ = self
-            .realtime_manager
-            .broadcast_local(playlist_created_event(room_id, playlist, user_id, username));
-    }
-
-    fn broadcast_playlist_updated(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        playlist: &synctv_core::models::Playlist,
-        user_id: &synctv_core::models::UserId,
-        username: &str,
-    ) {
-        let _ = self
-            .realtime_manager
-            .broadcast_local(playlist_updated_event(room_id, playlist, user_id, username));
-    }
-
-    fn broadcast_playlist_deleted(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        playlist_id: &synctv_core::models::PlaylistId,
-        user_id: &synctv_core::models::UserId,
-        username: &str,
-    ) {
-        let _ = self
-            .realtime_manager
-            .broadcast_local(playlist_deleted_event(
-                room_id,
-                playlist_id,
-                user_id,
-                username,
-            ));
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        room_event_to_realtime_event, LocalPlaylistBroadcaster, RealtimePlaybackBroadcaster,
-    };
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use synctv_core::models::{MediaId, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId};
-    use synctv_realtime::sync::{
-        PublishRequest, RealtimeConfig, RealtimeEvent, RealtimeManager, RealtimeMessageTransport,
-        RealtimeMessageTransportConfig, RealtimeMessageTransportFactory,
-        RealtimeMessageTransportRuntime, RoomMessageHub,
-    };
-
-    #[derive(Clone)]
-    struct CaptureTransportFactory {
-        publish_tx: tokio::sync::mpsc::Sender<PublishRequest>,
-    }
-
-    struct CaptureTransport {
-        publish_tx: tokio::sync::mpsc::Sender<PublishRequest>,
-    }
-
-    impl RealtimeMessageTransportFactory for CaptureTransportFactory {
-        fn build(
-            &self,
-            _config: RealtimeMessageTransportConfig,
-        ) -> synctv_realtime::Result<Arc<dyn RealtimeMessageTransport>> {
-            Ok(Arc::new(CaptureTransport {
-                publish_tx: self.publish_tx.clone(),
-            }))
-        }
-    }
-
-    #[async_trait]
-    impl RealtimeMessageTransport for CaptureTransport {
-        async fn start(
-            self: Arc<Self>,
-            _publish_channel_capacity: usize,
-        ) -> synctv_realtime::Result<RealtimeMessageTransportRuntime> {
-            Ok(RealtimeMessageTransportRuntime {
-                publish_tx: self.publish_tx.clone(),
-                publisher_handle: tokio::spawn(async {}),
-            })
-        }
-
-        async fn shutdown(&self) {}
-    }
-
-    fn sample_state() -> RoomPlaybackState {
-        RoomPlaybackState {
-            room_id: RoomId::expect_positive(120_001),
-            playing_media_id: Some(MediaId::expect_positive(120_002)),
-            playing_playlist_id: Some(PlaylistId::expect_positive(120_003)),
-            target: Vec::new(),
-            current_progress_id: None,
-            is_playing: true,
-            position: 42.0,
-            speed: 1.0,
-            version: 1,
-            updated_at: chrono::Utc::now(),
-        }
-    }
-
-    fn sample_playlist(room_id: &RoomId) -> Playlist {
-        Playlist {
-            id: PlaylistId::expect_positive(120_003),
-            room_id: *room_id,
-            creator_id: Some(UserId::expect_positive(120_004)),
-            name: "playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 1,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_playback_broadcaster_reports_single_node_without_redis() {
-        let realtime_manager = Arc::new(
-            RealtimeManager::new(RealtimeConfig {
-                distributed_transport_factory: None,
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                distributed_enabled: false,
-                node_id: "node-local".to_string(),
-                dedup_window: Duration::from_secs(30),
-                critical_channel_capacity: 16,
-                publish_channel_capacity: 16,
-                key_prefix: "test:".to_string(),
-                catchup_window_secs: 30,
-                stream_max_length: 128,
-                event_handler: None,
-                parent_cancel_token: None,
-            })
-            .await
-            .expect("local realtime manager should build"),
-        );
-        let broadcaster = RealtimePlaybackBroadcaster { realtime_manager };
-
-        let result = synctv_core::service::PlaybackBroadcaster::broadcast_playback_state(
-            &broadcaster,
-            &sample_state(),
-        );
-
-        assert!(
-            result.single_node,
-            "local-only realtime manager should map playback broadcasts to single-node success"
-        );
-        assert!(
-            result.is_success(),
-            "single-node playback broadcasts should not be reported as failures"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_local_playlist_broadcaster_keeps_origin_delivery_without_redis_publish() {
-        let room_id = RoomId::expect_positive(120_005);
-        let user_id = UserId::expect_positive(120_006);
-        let playlist = sample_playlist(&room_id);
-        let (publish_tx, mut publish_rx) = tokio::sync::mpsc::channel(4);
-        let realtime_manager = Arc::new(
-            RealtimeManager::new(RealtimeConfig {
-                distributed_transport_factory: Some(Arc::new(CaptureTransportFactory {
-                    publish_tx,
-                })),
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                distributed_enabled: true,
-                node_id: "node-cluster".to_string(),
-                dedup_window: Duration::from_secs(30),
-                critical_channel_capacity: 16,
-                publish_channel_capacity: 16,
-                key_prefix: "test:".to_string(),
-                catchup_window_secs: 30,
-                stream_max_length: 128,
-                event_handler: None,
-                parent_cancel_token: None,
-            })
-            .await
-            .expect("realtime manager should build"),
-        );
-        let mut room_rx = realtime_manager
-            .message_hub()
-            .subscribe(room_id, user_id, "conn-playlist".to_string())
-            .await
-            .expect("room subscription should succeed");
-        let broadcaster = LocalPlaylistBroadcaster {
-            realtime_manager: realtime_manager.clone(),
-        };
-
-        synctv_core::service::PlaylistBroadcaster::broadcast_playlist_created(
-            &broadcaster,
-            &room_id,
-            &playlist,
-            &user_id,
-            "tester",
-        );
-
-        let delivered = tokio::time::timeout(Duration::from_millis(200), room_rx.recv())
-            .await
-            .expect("playlist event should be delivered locally")
-            .expect("local subscriber should stay open");
-        match delivered {
-            RealtimeEvent::PlaylistCreated {
-                room_id, playlist, ..
-            } => {
-                assert_eq!(room_id, RoomId::expect_positive(120_005));
-                assert_eq!(playlist.id, PlaylistId::expect_positive(120_003));
-            }
-            other => panic!("expected PlaylistCreated, got {other:?}"),
-        }
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), publish_rx.recv())
-                .await
-                .is_err(),
-            "local playlist broadcaster must not enqueue a distributed publish"
-        );
-
-        realtime_manager.shutdown().await;
-    }
+    use super::room_event_to_realtime_event;
+    use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
+    use synctv_realtime::sync::RealtimeEvent;
 
     #[test]
     fn test_room_event_to_realtime_event_maps_room_deleted() {
@@ -616,12 +260,6 @@ mod tests {
                 username: "chat-user".to_string(),
                 content: "hello".to_string(),
                 timestamp: chrono::Utc::now(),
-            },
-            synctv_core::service::RoomEvent::PlaybackStateChanged {
-                playing: true,
-                position: 12.0,
-                speed: 1.0,
-                media_id: Some(MediaId::expect_positive(120_015)),
             },
         ];
 

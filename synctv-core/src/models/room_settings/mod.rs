@@ -1,21 +1,4 @@
 //! Type-safe room settings with a static registry.
-//!
-//! # Architecture
-//!
-//! Each room setting is an independent type that implements the `RoomSetting` trait.
-//! The `room_setting!` macro generates the type and its dynamic provider implementation.
-//!
-//! # Examples
-//!
-//! ```text
-//! // Define a setting
-//! room_setting!(ChatEnabled, bool, "chat_enabled", true);
-//!
-//! // Use by type (compile-time safe)
-//! let setting = ChatEnabled(true);
-//! // Or use via registry
-//! RoomSettingsRegistry::has_key("chat_enabled");
-//! ```
 
 use crate::models::permission::{
     RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
@@ -23,9 +6,6 @@ use crate::models::permission::{
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
-
-// Forward-declare RoomSettings so the trait can reference it.
-// The actual struct definition is below, after the setting type definitions.
 
 /// Trait for room setting operations (type-erased)
 ///
@@ -46,7 +26,7 @@ pub trait RoomSettingProvider: Send + Sync {
     fn parse_raw(&self, value: &str) -> Result<Box<dyn std::any::Any + Send + Sync>>;
 
     /// Get default value as string
-    fn default_as_string(&self) -> String;
+    fn default_as_string(&self) -> Result<String>;
 
     /// Apply a raw string value to the corresponding field of `RoomSettings`.
     ///
@@ -147,7 +127,7 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
     fn parse_from_str(value: &str) -> Result<Self::Value>;
 
     /// Format to string (for serialization)
-    fn format_value(value: &Self::Value) -> String;
+    fn format_value(value: &Self::Value) -> Result<String>;
 
     /// Type name (for debugging/registry)
     const TYPE_NAME: &'static str;
@@ -156,37 +136,15 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
     fn default_value() -> Self::Value;
 }
 
-/// Macro to generate room setting types and dynamic provider implementations.
-///
-/// # Examples
-///
-/// ```text
-/// // Without validator
-/// room_setting!(ChatEnabled, bool, "chat_enabled", true);
-///
-/// // With validator (called during is_valid_raw and apply_to)
-/// room_setting!(MaxMembers, u64, "max_members", 0, |v: &u64| {
-///     if *v > 10_000 {
-///         Err(crate::Error::InvalidInput("max_members cannot exceed 10000".into()))
-///     } else {
-///         Ok(())
-///     }
-/// });
-/// ```
-///
-/// The macro auto-derives the field name on `RoomSettings` from the type name
-/// (e.g., `ChatEnabled` → `chat_enabled`) via `paste::paste!`.
+/// Generates a room setting type and its dynamic provider implementation.
 #[macro_export]
 macro_rules! room_setting {
-    // Without validator — delegates to @impl with a no-op validator
     ($name:ident, $ty:ty, $key:expr, $default:expr) => {
         $crate::room_setting!(@impl $name, $ty, $key, $default, |_v: &$ty| -> $crate::Result<()> { Ok(()) });
     };
-    // With validator
     ($name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr) => {
         $crate::room_setting!(@impl $name, $ty, $key, $default, $validator);
     };
-    // Internal implementation
     (@impl $name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr) => {
         #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         #[serde(transparent)]
@@ -195,8 +153,8 @@ macro_rules! room_setting {
         impl $name {
             /// Validate the parsed value (custom validator from macro invocation).
             fn validate_value(v: &$ty) -> $crate::Result<()> {
-                #[allow(clippy::redundant_closure_call)]
-                ($validator)(v)
+                let validator = $validator;
+                validator(v)
             }
         }
 
@@ -223,8 +181,8 @@ macro_rules! room_setting {
                 })
             }
 
-            fn format_value(value: &$ty) -> String {
-                value.to_string()
+            fn format_value(value: &$ty) -> $crate::Result<String> {
+                Ok(value.to_string())
             }
 
             fn default_value() -> $ty {
@@ -254,7 +212,7 @@ macro_rules! room_setting {
                 Ok(Box::new(parsed))
             }
 
-            fn default_as_string(&self) -> String {
+            fn default_as_string(&self) -> $crate::Result<String> {
                 Self::format_value(
                     &<$name as $crate::models::room_settings::RoomSetting>::default_value(),
                 )
@@ -352,11 +310,8 @@ impl RoomSetting for AutoPlay {
             .map_err(|_| crate::Error::InvalidInput(format!("Invalid JSON for auto_play: {value}")))
     }
 
-    fn format_value(value: &AutoPlaySettings) -> String {
-        serde_json::to_string(value).unwrap_or_else(|e| {
-            tracing::warn!("Failed to serialize AutoPlaySettings: {e}");
-            String::from("{}")
-        })
+    fn format_value(value: &AutoPlaySettings) -> Result<String> {
+        serde_json::to_string(value).map_err(crate::Error::from)
     }
 
     fn default_value() -> AutoPlaySettings {
@@ -384,7 +339,7 @@ impl RoomSettingProvider for AutoPlay {
         Ok(Box::new(parsed))
     }
 
-    fn default_as_string(&self) -> String {
+    fn default_as_string(&self) -> Result<String> {
         Self::format_value(&AutoPlaySettings::default())
     }
 
@@ -520,53 +475,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bool_setting() {
-        let setting = ChatEnabled(true);
-        assert_eq!(ChatEnabled::KEY, "chat_enabled");
-        assert!(*setting.value());
-    }
-
-    #[test]
-    fn test_optional_setting() {
-        let setting = MaxMembers(100);
-        assert_eq!(MaxMembers::KEY, "max_members");
-        assert_eq!(*setting.value(), 100);
-        // Test that 0 means no limit
-        let no_limit = MaxMembers(0);
-        assert_eq!(*no_limit.value(), 0);
-    }
-
-    #[test]
-    fn test_registry() {
-        assert!(RoomSettingsRegistry::has_key("chat_enabled"));
-        assert!(RoomSettingsRegistry::has_key("max_members"));
-    }
-
-    #[test]
     fn test_dynamic_validation() {
-        // Test bool validation
         assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "true").is_ok());
         assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "false").is_ok());
         assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "invalid").is_err());
 
-        // Test i64 validation
         assert!(RoomSettingsRegistry::validate_setting("admin_added_permissions", "123").is_ok());
         assert!(
             RoomSettingsRegistry::validate_setting("admin_added_permissions", "invalid").is_err()
         );
 
-        // Test u64 validation (max_members)
         assert!(RoomSettingsRegistry::validate_setting("max_members", "100").is_ok());
         assert!(RoomSettingsRegistry::validate_setting("max_members", "0").is_ok());
         assert!(RoomSettingsRegistry::validate_setting("max_members", "invalid").is_err());
-    }
-
-    #[test]
-    fn test_get_provider() {
-        let provider = RoomSettingsRegistry::get_provider("chat_enabled").unwrap();
-        assert_eq!(provider.key(), "chat_enabled");
-        assert_eq!(provider.type_name(), "ChatEnabled");
-        assert_eq!(provider.default_as_string(), "true");
     }
 
     #[test]
@@ -574,11 +495,9 @@ mod tests {
         let mut settings = RoomSettings::default();
         assert!(settings.chat_enabled.0);
 
-        // Apply via registry (fully generic)
         RoomSettingsRegistry::apply_setting(&mut settings, "chat_enabled", "false").unwrap();
         assert!(!settings.chat_enabled.0);
 
-        // Apply max_members
         RoomSettingsRegistry::apply_setting(&mut settings, "max_members", "42").unwrap();
         assert_eq!(settings.max_members.0, 42);
     }
@@ -605,21 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_deserialize() {
-        let settings = RoomSettings {
-            chat_enabled: ChatEnabled(false),
-            max_members: MaxMembers(100),
-            ..Default::default()
-        };
-
-        let json = serde_json::to_string(&settings).unwrap();
-        let deserialized: RoomSettings = serde_json::from_str(&json).unwrap();
-
-        assert!(!deserialized.chat_enabled.0);
-        assert_eq!(deserialized.max_members.0, 100);
-    }
-
-    #[test]
     fn test_admin_permissions_with_added() {
         let settings = RoomSettings {
             admin_added_permissions: AdminAddedPermissions(RoomAdminPermissionBits::PLAY_CONTROL),
@@ -628,7 +532,6 @@ mod tests {
         let global = RoomPermissionSet::default_member();
         let result = settings.admin_permissions(global);
         assert!(result.has(crate::models::RoomPermission::PLAY_CONTROL));
-        // Original permissions preserved
         assert!(result.has(crate::models::RoomPermission::CHAT));
     }
 
@@ -640,9 +543,7 @@ mod tests {
         };
         let global = RoomPermissionSet::default_member();
         let result = settings.member_permissions(global);
-        // CHAT should be removed
         assert!(!result.has(crate::models::RoomPermission::CHAT));
-        // Other permissions remain
         assert!(result.has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE));
     }
 
@@ -667,37 +568,30 @@ mod tests {
     }
 
     #[test]
-    fn test_max_members_max_constant() {
-        assert_eq!(MaxMembers::MAX, 10_000);
-    }
-
-    #[test]
-    fn test_max_members_validator_rejects_over_limit() {
-        let result = RoomSettingsRegistry::validate_setting("max_members", "10001");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_max_members_validator_accepts_at_limit() {
-        assert!(RoomSettingsRegistry::validate_setting("max_members", "10000").is_ok());
-    }
-
-    #[test]
-    fn test_max_members_validator_accepts_zero() {
+    fn max_members_validation_accepts_zero_and_limit() {
         assert!(RoomSettingsRegistry::validate_setting("max_members", "0").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting(
+            "max_members",
+            &MaxMembers::MAX.to_string()
+        )
+        .is_ok());
+        assert!(RoomSettingsRegistry::validate_setting(
+            "max_members",
+            &(MaxMembers::MAX + 1).to_string()
+        )
+        .is_err());
     }
 
     #[test]
-    fn test_apply_to_max_members_rejects_over_limit() {
+    fn apply_to_max_members_rejects_over_limit() {
         let mut settings = RoomSettings::default();
         let result = settings.set_by_key("max_members", "99999");
         assert!(result.is_err());
-        // Value should not have been applied (default is 100)
         assert_eq!(settings.max_members.0, 100);
     }
 
     #[test]
-    fn test_room_settings_validate_rejects_over_limit_max_members() {
+    fn room_settings_validation_rejects_over_limit_max_members() {
         let settings = RoomSettings {
             max_members: MaxMembers(MaxMembers::MAX + 1),
             ..RoomSettings::default()

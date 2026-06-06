@@ -9,8 +9,8 @@ use synctv_core::models::notification::{
     MarkAllAsReadRequest, MarkAsReadRequest, Notification, NotificationListQuery,
     NotificationListSortBy, NotificationType as CoreNotificationType,
 };
+use synctv_core::models::PageParams;
 use synctv_core::models::SortDirection as CoreSortDirection;
-use synctv_core::models::{PageParams, MAX_PAGE_SIZE};
 use synctv_core::service::UserNotificationService;
 
 use crate::impls::ApiError;
@@ -25,13 +25,10 @@ use crate::proto::client::{
 };
 
 /// Convert a domain Notification to a proto `NotificationProto`.
-///
-/// Shared by both HTTP and gRPC handlers.
-#[must_use]
 pub fn notification_to_proto(
     n: Notification,
     public_id_codec: &PublicIdCodec,
-) -> NotificationProto {
+) -> Result<NotificationProto, ApiError> {
     let notification_type = match n.notification_type {
         CoreNotificationType::RoomInvitation => ProtoNotificationType::RoomInvitation,
         CoreNotificationType::SystemAnnouncement => ProtoNotificationType::SystemAnnouncement,
@@ -39,27 +36,28 @@ pub fn notification_to_proto(
         CoreNotificationType::PasswordReset => ProtoNotificationType::PasswordReset,
         CoreNotificationType::EmailBind => ProtoNotificationType::EmailBind,
     };
+    let notification_id = n.id;
+    let data = serde_json::to_vec(&n.data).map_err(|error| {
+        ApiError::Internal(format!(
+            "Failed to serialize notification {notification_id} data: {error}"
+        ))
+    })?;
 
-    NotificationProto {
+    Ok(NotificationProto {
         id: n.id.to_string(),
-        user_id: public_id_codec
-            .encode_user_id(n.user_id)
-            .expect("notification user_id must be encodable"),
+        user_id: public_id_codec.encode_user_id(n.user_id).map_err(|error| {
+            ApiError::Internal(format!(
+                "Failed to encode notification user public id: {error}"
+            ))
+        })?,
         notification_type: notification_type as i32,
         title: n.title,
         content: n.content,
-        data: serde_json::to_vec(&n.data).unwrap_or_else(|e| {
-            tracing::warn!(
-                notification_id = %n.id,
-                error = %e,
-                "Failed to serialize notification data, using empty bytes"
-            );
-            Vec::new()
-        }),
+        data,
         is_read: n.is_read,
         created_at: n.created_at.timestamp(),
         updated_at: n.updated_at.timestamp(),
-    }
+    })
 }
 
 /// Error type for notification type parsing failures.
@@ -120,14 +118,14 @@ pub struct ListNotificationsResult {
 
 const DEFAULT_NOTIFICATION_PAGE: u32 = 1;
 const DEFAULT_NOTIFICATION_PAGE_SIZE: u32 = synctv_core::models::DEFAULT_PAGE_SIZE;
+const MAX_PAGE_SIZE_I32: i32 = 100;
 
 fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
     u32::try_from(value).unwrap_or(default)
 }
 
 fn normalized_notification_page_size(value: i32) -> u32 {
-    let max_page_size = i32::try_from(MAX_PAGE_SIZE).unwrap_or(i32::MAX);
-    let clamped = value.clamp(1, max_page_size);
+    let clamped = value.clamp(1, MAX_PAGE_SIZE_I32);
     positive_i32_to_u32(clamped, DEFAULT_NOTIFICATION_PAGE_SIZE)
 }
 
@@ -148,11 +146,15 @@ fn normalize_notification_pagination(
     Ok(pagination)
 }
 
-fn proto_notification_sort_by_to_core(sort_by: i32) -> NotificationListSortBy {
-    match ProtoNotificationListSortBy::try_from(sort_by) {
-        Ok(ProtoNotificationListSortBy::Title) => NotificationListSortBy::Title,
-        Ok(ProtoNotificationListSortBy::UpdatedAt) => NotificationListSortBy::UpdatedAt,
-        _ => NotificationListSortBy::CreatedAt,
+fn proto_notification_sort_by_to_core(sort_by: i32) -> Result<NotificationListSortBy, ApiError> {
+    match ProtoNotificationListSortBy::try_from(sort_by).map_err(|_| {
+        ApiError::InvalidInput("Unsupported notification list sort field".to_string())
+    })? {
+        ProtoNotificationListSortBy::Unspecified | ProtoNotificationListSortBy::CreatedAt => {
+            Ok(NotificationListSortBy::CreatedAt)
+        }
+        ProtoNotificationListSortBy::Title => Ok(NotificationListSortBy::Title),
+        ProtoNotificationListSortBy::UpdatedAt => Ok(NotificationListSortBy::UpdatedAt),
     }
 }
 
@@ -176,8 +178,8 @@ fn build_notification_list_query(
             let trimmed = req.search.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
         },
-        sort_by: proto_notification_sort_by_to_core(req.sort_by),
-        sort_direction: proto_sort_direction_to_core(req.sort_direction),
+        sort_by: proto_notification_sort_by_to_core(req.sort_by)?,
+        sort_direction: proto_sort_direction_to_core(req.sort_direction)?,
     })
 }
 
@@ -220,12 +222,13 @@ fn notification_list_response_to_proto(
     public_id_codec: &PublicIdCodec,
 ) -> Result<ListNotificationsResponse, ApiError> {
     let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)?;
+    let notifications = result
+        .notifications
+        .into_iter()
+        .map(|notification| notification_to_proto(notification, public_id_codec))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ListNotificationsResponse {
-        notifications: result
-            .notifications
-            .into_iter()
-            .map(|notification| notification_to_proto(notification, public_id_codec))
-            .collect(),
+        notifications,
         total,
         unread_count,
     })
@@ -326,7 +329,7 @@ impl NotificationApiImpl {
         let notification_id = build_get_notification_request(&req)?;
         let notification = self.get_notification(user_id, notification_id).await?;
         Ok(GetNotificationResponse {
-            notification: Some(notification_to_proto(notification, &self.public_id_codec)),
+            notification: Some(notification_to_proto(notification, &self.public_id_codec)?),
         })
     }
 
@@ -416,10 +419,12 @@ impl NotificationApiImpl {
     }
 }
 
-pub fn proto_sort_direction_to_core(sort_direction: i32) -> CoreSortDirection {
-    match ProtoSortDirection::try_from(sort_direction) {
-        Ok(ProtoSortDirection::Asc) => CoreSortDirection::Asc,
-        _ => CoreSortDirection::Desc,
+pub fn proto_sort_direction_to_core(sort_direction: i32) -> Result<CoreSortDirection, ApiError> {
+    match ProtoSortDirection::try_from(sort_direction)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        ProtoSortDirection::Unspecified | ProtoSortDirection::Desc => Ok(CoreSortDirection::Desc),
+        ProtoSortDirection::Asc => Ok(CoreSortDirection::Asc),
     }
 }
 
@@ -443,7 +448,6 @@ mod tests {
 
     #[test]
     fn test_proto_notification_type_to_core_valid_types() {
-        // Test all valid notification types (1-5)
         assert_eq!(
             proto_notification_type_to_core(1),
             Ok(CoreNotificationType::RoomInvitation)
@@ -468,7 +472,6 @@ mod tests {
 
     #[test]
     fn test_proto_notification_type_to_core_unspecified_rejected() {
-        // Unspecified (0) should be rejected
         let result = proto_notification_type_to_core(0);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -479,13 +482,11 @@ mod tests {
 
     #[test]
     fn test_proto_notification_type_to_core_unknown_type_rejected() {
-        // Unknown types (negative numbers) should be rejected
         let result = proto_notification_type_to_core(-1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.invalid_value, -1);
 
-        // Unknown types (large positive numbers) should be rejected
         let result = proto_notification_type_to_core(999);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -493,15 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn test_notification_type_parse_error_display() {
-        let err = NotificationTypeParseError { invalid_value: 42 };
-        let display = format!("{err}");
-        assert_eq!(display, "Invalid notification type: 42 (must be 1-5)");
-    }
-
-    #[test]
     fn test_notification_type_roundtrip() {
-        // Test that converting to proto and back preserves the type
         let types = [
             CoreNotificationType::RoomInvitation,
             CoreNotificationType::SystemAnnouncement,
@@ -521,6 +514,29 @@ mod tests {
             let converted_back = proto_notification_type_to_core(proto_value).unwrap();
             assert_eq!(converted_back, core_type);
         }
+    }
+
+    #[test]
+    fn notification_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
+        assert_eq!(
+            proto_notification_sort_by_to_core(ProtoNotificationListSortBy::Unspecified as i32)
+                .expect("unspecified notification sort should be accepted"),
+            NotificationListSortBy::CreatedAt
+        );
+        assert_eq!(
+            proto_sort_direction_to_core(ProtoSortDirection::Unspecified as i32)
+                .expect("unspecified sort direction should be accepted"),
+            CoreSortDirection::Desc
+        );
+
+        assert!(matches!(
+            proto_notification_sort_by_to_core(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("notification list sort")
+        ));
+        assert!(matches!(
+            proto_sort_direction_to_core(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("sort direction")
+        ));
     }
 
     #[test]

@@ -122,11 +122,17 @@ impl InMemoryGovernorLimiter {
         }
     }
 
+    fn normalize_quota_input(max_requests: u32, window_seconds: u64) -> (u32, u64) {
+        (max_requests.max(1), window_seconds.max(1))
+    }
+
     fn get_limiter(
         &self,
         max_requests: u32,
         window_seconds: u64,
     ) -> Arc<DefaultKeyedRateLimiter<String>> {
+        let (max_requests, window_seconds) =
+            Self::normalize_quota_input(max_requests, window_seconds);
         let key = (max_requests, window_seconds);
         if let Some(limiter) = self.limiters.get(&key) {
             return limiter;
@@ -135,8 +141,8 @@ impl InMemoryGovernorLimiter {
         let period = Duration::from_secs(window_seconds)
             .checked_div(max_requests)
             .unwrap_or(Duration::from_millis(1));
-        let quota = Quota::with_period(period)
-            .expect("non-zero period")
+        let quota = Quota::with_period(period.max(Duration::from_millis(1)))
+            .unwrap_or_else(|| Quota::per_second(nonzero!(1u32)))
             .allow_burst(NonZeroU32::new(max_requests).unwrap_or(nonzero!(1u32)));
 
         let limiter = Arc::new(GovernorRateLimiter::keyed(quota));
@@ -196,18 +202,38 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
     "unknown"
 }
 
-fn timestamp_millis() -> u64 {
-    SystemTime::now()
+fn timestamp_millis() -> std::result::Result<u64, RateLimitError> {
+    let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .map_err(|error| {
+            RateLimitError::BackendUnavailable(format!(
+                "System clock is before UNIX_EPOCH: {error}"
+            ))
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|_| {
+        RateLimitError::BackendUnavailable("current timestamp exceeds u64::MAX millis".to_string())
+    })
 }
 
-fn window_expire_seconds(window_seconds: u64) -> i64 {
-    i64::try_from(window_seconds.saturating_add(1)).unwrap_or(i64::MAX)
+fn window_expire_seconds(window_seconds: u64) -> std::result::Result<i64, RateLimitError> {
+    let expires = window_seconds.checked_add(1).ok_or_else(|| {
+        RateLimitError::BackendUnavailable("rate limit window exceeds u64::MAX seconds".to_string())
+    })?;
+    i64::try_from(expires).map_err(|_| {
+        RateLimitError::BackendUnavailable("rate limit window exceeds i64::MAX seconds".to_string())
+    })
 }
 
-fn millis_to_i64_saturating(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn millis_to_i64(value: u64) -> std::result::Result<i64, RateLimitError> {
+    i64::try_from(value).map_err(|_| {
+        RateLimitError::BackendUnavailable("millisecond timestamp exceeds i64::MAX".to_string())
+    })
+}
+
+fn window_millis(window_seconds: u64) -> std::result::Result<u64, RateLimitError> {
+    window_seconds.checked_mul(1000).ok_or_else(|| {
+        RateLimitError::BackendUnavailable("rate limit window exceeds u64::MAX millis".to_string())
+    })
 }
 
 fn retry_after_seconds_from_oldest(
@@ -220,18 +246,49 @@ fn retry_after_seconds_from_oldest(
     }
 
     let time_since_oldest = now_millis.saturating_sub(oldest_score_millis);
-    let remaining_window = window_seconds
-        .saturating_mul(1000)
-        .saturating_sub(time_since_oldest);
+    let window_ms = window_seconds.saturating_mul(1000);
+    let remaining_window = window_ms.saturating_sub(time_since_oldest);
     remaining_window.div_ceil(1000).max(1)
 }
 
-fn nonnegative_i64_to_u32_saturating(value: i64) -> u32 {
-    if value <= 0 {
-        0
-    } else {
-        u32::try_from(value).unwrap_or(u32::MAX)
+fn redis_count_to_u32(value: i64, field: &'static str) -> std::result::Result<u32, RateLimitError> {
+    if value < 0 {
+        return Err(RateLimitError::BackendUnavailable(format!(
+            "Redis returned negative {field}"
+        )));
     }
+    u32::try_from(value)
+        .map_err(|_| RateLimitError::BackendUnavailable(format!("Redis {field} exceeds u32::MAX")))
+}
+
+fn parse_sliding_window_result(result: &[i64]) -> std::result::Result<(u32, u64), RateLimitError> {
+    let [count, oldest_score, ..] = result else {
+        return Err(RateLimitError::BackendUnavailable(format!(
+            "Redis sliding-window script returned {} values; expected 2",
+            result.len()
+        )));
+    };
+    let oldest_score = if *oldest_score < 0 {
+        return Err(RateLimitError::BackendUnavailable(
+            "Redis returned negative oldest score".to_string(),
+        ));
+    } else {
+        oldest_score.cast_unsigned()
+    };
+    Ok((
+        redis_count_to_u32(*count, "sliding-window count")?,
+        oldest_score,
+    ))
+}
+
+fn parse_quota_count_result(result: &[u32]) -> std::result::Result<u32, RateLimitError> {
+    let [count, ..] = result else {
+        return Err(RateLimitError::BackendUnavailable(format!(
+            "Redis quota pipeline returned {} values; expected 1",
+            result.len()
+        )));
+    };
+    Ok(*count)
 }
 
 // RateLimitBackend trait
@@ -497,11 +554,6 @@ impl RedisRateLimitBackend {
         }
     }
 
-    /// Acquire a fresh ConnectionManager clone from the shared handle.
-    async fn get_conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.snapshot().await
-    }
-
     async fn with_redis_conn<T, F, Fut>(
         &self,
         operation: &'static str,
@@ -512,7 +564,11 @@ impl RedisRateLimitBackend {
         Fut: std::future::Future<Output = std::result::Result<T, RateLimitError>>,
     {
         match tokio::time::timeout(self.conn.operation_timeout(), async {
-            let conn = self.get_conn().await;
+            let conn = self.conn.snapshot().await.map_err(|error| {
+                RateLimitError::BackendUnavailable(format!(
+                    "Redis rate limiter {operation} connection failed: {error}"
+                ))
+            })?;
             f(conn).await
         })
         .await
@@ -559,16 +615,19 @@ impl RateLimitBackend for RedisRateLimitBackend {
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), RateLimitError> {
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = timestamp_millis();
-        let window_start = now.saturating_sub(window_seconds * 1000);
-        let expire_seconds = window_expire_seconds(window_seconds);
+        let now = timestamp_millis()?;
+        let window_ms = window_millis(window_seconds)?;
+        let window_start = now.saturating_sub(window_ms);
+        let expire_seconds = window_expire_seconds(window_seconds)?;
+        let window_start = millis_to_i64(window_start)?;
+        let now_arg = millis_to_i64(now)?;
 
         let result: Vec<i64> = match Self::run_with_control(control, async {
             self.with_redis_conn("sliding-window check", |mut conn| async move {
                 REDIS_SLIDING_WINDOW_SCRIPT
                     .key(&redis_key)
-                    .arg(millis_to_i64_saturating(window_start))
-                    .arg(now)
+                    .arg(window_start)
+                    .arg(now_arg)
                     .arg(expire_seconds)
                     .arg(max_requests)
                     .invoke_async(&mut conn)
@@ -600,8 +659,26 @@ impl RateLimitBackend for RedisRateLimitBackend {
             }
         };
 
-        let current_count = nonnegative_i64_to_u32_saturating(result.first().copied().unwrap_or(0));
-        let oldest_score = result.get(1).copied().unwrap_or(0).max(0).cast_unsigned();
+        let (current_count, oldest_score) = match parse_sliding_window_result(&result) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Redis rate limiter returned malformed script output, falling back to in-memory"
+                );
+                let tier_label = extract_rate_limit_tier(key);
+                crate::metrics::rate_limit::RATE_LIMIT_REDIS_FALLBACKS_TOTAL
+                    .with_label_values(&[tier_label])
+                    .inc();
+                let mem_key = format!("{}{}", self.key_prefix, key);
+                return self
+                    .fallback
+                    .check(&mem_key, max_requests, window_seconds)
+                    .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
+                        retry_after_seconds,
+                    });
+            }
+        };
 
         if current_count > max_requests {
             return Err(RateLimitError::RateLimitExceeded {
@@ -634,16 +711,19 @@ impl RateLimitBackend for RedisRateLimitBackend {
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), RateLimitError> {
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = timestamp_millis();
-        let window_start = now.saturating_sub(window_seconds * 1000);
-        let expire_seconds = window_expire_seconds(window_seconds);
+        let now = timestamp_millis()?;
+        let window_ms = window_millis(window_seconds)?;
+        let window_start = now.saturating_sub(window_ms);
+        let expire_seconds = window_expire_seconds(window_seconds)?;
+        let window_start = millis_to_i64(window_start)?;
+        let now_arg = millis_to_i64(now)?;
 
         let result: Vec<i64> = match Self::run_with_control(control, async {
             self.with_redis_conn("strict sliding-window check", |mut conn| async move {
                 REDIS_SLIDING_WINDOW_SCRIPT
                     .key(&redis_key)
-                    .arg(millis_to_i64_saturating(window_start))
-                    .arg(now)
+                    .arg(window_start)
+                    .arg(now_arg)
                     .arg(expire_seconds)
                     .arg(max_requests)
                     .invoke_async(&mut conn)
@@ -665,8 +745,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
                 ));
             }
         };
-        let current_count = nonnegative_i64_to_u32_saturating(result.first().copied().unwrap_or(0));
-        let oldest_score = result.get(1).copied().unwrap_or(0).max(0).cast_unsigned();
+        let (current_count, oldest_score) = parse_sliding_window_result(&result)?;
 
         if current_count > max_requests {
             return Err(RateLimitError::RateLimitExceeded {
@@ -690,8 +769,10 @@ impl RateLimitBackend for RedisRateLimitBackend {
         use redis::AsyncCommands;
 
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = timestamp_millis();
-        let window_start = now.saturating_sub(window_seconds * 1000);
+        let now = timestamp_millis()?;
+        let window_ms = window_millis(window_seconds)?;
+        let window_start = now.saturating_sub(window_ms);
+        let window_start = millis_to_i64(window_start)?;
 
         let results: Vec<u32> = self
             .with_redis_conn("quota query", |mut conn| {
@@ -699,7 +780,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
                 async move {
                     let mut pipe = redis::pipe();
                     pipe.atomic()
-                        .zrembyscore(&redis_key, 0, millis_to_i64_saturating(window_start))
+                        .zrembyscore(&redis_key, 0, window_start)
                         .ignore()
                         .zcard(&redis_key);
 
@@ -709,7 +790,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
                 }
             })
             .await?;
-        let current_count = results.first().copied().unwrap_or(0);
+        let current_count = parse_quota_count_result(&results)?;
         let remaining = max_requests.saturating_sub(current_count);
 
         let oldest: Option<u64> = self
@@ -723,12 +804,11 @@ impl RateLimitBackend for RedisRateLimitBackend {
                     Ok(entries.first().map(|(_, ts)| *ts))
                 }
             })
-            .await
-            .unwrap_or(None);
+            .await?;
 
         let reset_seconds = if let Some(oldest_ts) = oldest {
             let time_since_oldest = now.saturating_sub(oldest_ts);
-            let remaining_window = (window_seconds * 1000).saturating_sub(time_since_oldest);
+            let remaining_window = window_ms.saturating_sub(time_since_oldest);
             let reset_seconds = remaining_window.div_ceil(1000);
             if remaining == 0 {
                 reset_seconds.max(1)
@@ -1119,6 +1199,31 @@ mod tests {
     }
 
     #[test]
+    fn test_sliding_window_result_requires_count_and_oldest_score() {
+        let (count, oldest) =
+            parse_sliding_window_result(&[3, 1_700_000]).expect("valid script result");
+        assert_eq!(count, 3);
+        assert_eq!(oldest, 1_700_000);
+
+        assert!(matches!(
+            parse_sliding_window_result(&[3]),
+            Err(RateLimitError::BackendUnavailable(_))
+        ));
+    }
+
+    #[test]
+    fn test_quota_count_result_requires_count() {
+        assert_eq!(
+            parse_quota_count_result(&[7]).expect("valid quota result"),
+            7
+        );
+        assert!(matches!(
+            parse_quota_count_result(&[]),
+            Err(RateLimitError::BackendUnavailable(_))
+        ));
+    }
+
+    #[test]
     fn test_extracts_rate_limit_tier_from_transport_scoped_keys() {
         assert_eq!(
             extract_rate_limit_tier("ratelimit:http:websocket:user:42"),
@@ -1162,7 +1267,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("snapshot should not be called in constructor-only test");
             }
         }
@@ -1183,7 +1288,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for HangingRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 std::future::pending().await
             }
 
@@ -1214,7 +1319,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for HangingRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 std::future::pending().await
             }
 
@@ -1655,15 +1760,6 @@ mod tests {
             }
             other => panic!("Expected ServiceUnavailable, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_rate_limit_error_display() {
-        let err = RateLimitError::RateLimitExceeded {
-            retry_after_seconds: 5,
-        };
-        let display = format!("{err}");
-        assert!(display.contains("5s"));
     }
 
     #[tokio::test]

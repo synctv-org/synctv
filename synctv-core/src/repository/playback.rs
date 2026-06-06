@@ -449,7 +449,7 @@ impl RoomPlaybackStateRepository {
     pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
         let mut tx = self.pool.begin().await?;
         let result = self
-            .update_with_exact_version_on_conn(state, state.version + 1, None, &mut *tx)
+            .update_with_exact_version_on_conn(state, state.version + 1, None, &mut tx)
             .await;
 
         match result {
@@ -475,7 +475,7 @@ impl RoomPlaybackStateRepository {
     ) -> Result<RoomPlaybackState> {
         let mut tx = self.pool.begin().await?;
         let result = self
-            .update_with_exact_version_on_conn(state, new_version, None, &mut *tx)
+            .update_with_exact_version_on_conn(state, new_version, None, &mut tx)
             .await;
 
         match result {
@@ -502,7 +502,7 @@ impl RoomPlaybackStateRepository {
                 state,
                 new_version,
                 previous_progress_position,
-                &mut *tx,
+                &mut tx,
             )
             .await;
 
@@ -537,79 +537,6 @@ impl RoomPlaybackStateRepository {
     ) -> Result<RoomPlaybackState> {
         self.update_with_exact_version_on_conn(state, new_version, previous_progress_position, conn)
             .await
-    }
-
-    /// Reset playback state for every room currently playing media or playlists
-    /// created by the specified user.
-    pub async fn reset_playback_for_creator(
-        &self,
-        creator_id: &UserId,
-    ) -> Result<Vec<RoomPlaybackState>> {
-        let states = sqlx::query_as!(
-            RoomPlaybackState,
-            r#"
-            WITH impacted_states AS (
-                SELECT DISTINCT rps.room_id,
-                                rps.current_progress_id,
-                                rps.is_playing,
-                                rps.speed,
-                                rps.updated_at
-                FROM room_playback_state rps
-                LEFT JOIN media m ON m.id = rps.playing_media_id
-                LEFT JOIN playlists p ON p.id = rps.playing_playlist_id
-                WHERE m.creator_id = $1 OR p.creator_id = $1
-            ),
-            reset_progress AS (
-                UPDATE room_playback_progress progress
-                SET "position" = CASE
-                        WHEN impacted.is_playing THEN progress."position" + GREATEST(EXTRACT(EPOCH FROM (NOW() - impacted.updated_at)), 0) * impacted.speed
-                        ELSE progress."position"
-                    END,
-                    version = version + 1
-                FROM impacted_states impacted
-                WHERE progress.id = impacted.current_progress_id
-                RETURNING progress.id
-            ),
-            updated AS (
-                UPDATE room_playback_state rps
-                SET playing_media_id = NULL,
-                    playing_playlist_id = NULL,
-                    target = ''::bytea,
-                    current_progress_id = NULL,
-                    speed = 1.0,
-                    is_playing = false,
-                    updated_at = NOW(),
-                    version = version + 1
-                FROM impacted_states impacted
-                WHERE rps.room_id = impacted.room_id
-                RETURNING rps.room_id,
-                          rps.playing_media_id,
-                          rps.playing_playlist_id,
-                          rps.target,
-                          rps.current_progress_id,
-                          rps.speed,
-                          rps.is_playing,
-                          rps.updated_at,
-                          rps.version
-            )
-            SELECT updated.room_id as "room_id: RoomId",
-                   updated.playing_media_id as "playing_media_id: MediaId",
-                   updated.playing_playlist_id as "playing_playlist_id: PlaylistId",
-                   updated.target,
-                   updated.current_progress_id,
-                   0.0::DOUBLE PRECISION AS "position!",
-                   updated.speed AS "speed!",
-                   updated.is_playing,
-                   updated.updated_at,
-                   updated.version
-            FROM updated
-            "#,
-            creator_id as &UserId,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(states)
     }
 
     /// List playback states impacted by media/playlists owned by a creator.
@@ -666,7 +593,7 @@ impl RoomPlaybackStateRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Media;
+    use crate::models::{FromProviderParams, Media};
     use crate::repository::media::MediaRepository;
     use synctv_core_testing::create_test_pool;
 
@@ -676,16 +603,17 @@ mod tests {
         mut state: RoomPlaybackState,
         owner_id: UserId,
     ) -> RoomPlaybackState {
-        let media = Media::from_provider(
-            None,
-            state.room_id,
-            Some(owner_id),
-            "Playback Position Test Video".to_string(),
-            serde_json::json!({"url": "https://example.com/video.mp4"}),
-            "direct_url",
-            None,
-            0.0,
-        );
+        let media = Media::from_provider_with_params(FromProviderParams {
+            playlist_id: None,
+            room_id: state.room_id,
+            creator_id: Some(owner_id),
+            name: "Playback Position Test Video".to_string(),
+            description: String::new(),
+            source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+            provider_name: "direct_url".to_string(),
+            provider_instance_name: None,
+            position: 0.0,
+        });
         let media = MediaRepository::new(pool.clone())
             .create(&media)
             .await
@@ -788,16 +716,17 @@ mod tests {
         .await;
 
         // Create media for playback reference (required by FK constraint)
-        let media = Media::from_provider(
-            Some(playlist.id),
-            room.id,
-            Some(owner.id),
-            "Test Video".to_string(),
-            serde_json::json!({"url": "https://example.com/video.mp4"}),
-            "direct_url",
-            None,
-            0.0,
-        );
+        let media = Media::from_provider_with_params(FromProviderParams {
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Test Video".to_string(),
+            description: String::new(),
+            source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+            provider_name: "direct_url".to_string(),
+            provider_instance_name: None,
+            position: 0.0,
+        });
         let media = media_repo.create(&media).await.unwrap();
 
         // Create playback state

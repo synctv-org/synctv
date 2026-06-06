@@ -29,7 +29,6 @@ sqlx.workspace = true
 redis.workspace = true
 
 # Security
-argon2.workspace = true
 opaque-ke.workspace = true
 jsonwebtoken.workspace = true
 oauth2.workspace = true

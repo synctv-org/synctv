@@ -6,84 +6,98 @@ pub const MAX_VIDEO_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_ROOM_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_PLAYLIST_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 
+const COVER_IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/avif"];
+
+fn policy_from_slices(
+    kind: &str,
+    max_size_bytes: i64,
+    allowed_mime_prefixes: &[&str],
+    allowed_mime_types: &[&str],
+    storage_namespace: &str,
+    database_object_route_prefix: &str,
+) -> FileUploadPolicy {
+    FileUploadPolicy {
+        kind: kind.to_string(),
+        max_size_bytes,
+        allowed_mime_prefixes: allowed_mime_prefixes
+            .iter()
+            .map(|prefix| (*prefix).to_string())
+            .collect(),
+        allowed_mime_types: allowed_mime_types
+            .iter()
+            .map(|mime_type| (*mime_type).to_string())
+            .collect(),
+        storage_namespace: storage_namespace.to_string(),
+        database_object_route_prefix: database_object_route_prefix.to_string(),
+    }
+}
+
+fn typed_image_policy(
+    kind: &str,
+    max_size_bytes: i64,
+    storage_namespace: &str,
+    database_object_route_prefix: &str,
+) -> FileUploadPolicy {
+    policy_from_slices(
+        kind,
+        max_size_bytes,
+        &[],
+        COVER_IMAGE_MIME_TYPES,
+        storage_namespace,
+        database_object_route_prefix,
+    )
+}
+
 #[must_use]
 pub fn chat_image_upload_policy() -> FileUploadPolicy {
-    FileUploadPolicy {
-        kind: "chat_image".to_string(),
-        max_size_bytes: MAX_CHAT_IMAGE_SIZE_BYTES,
-        allowed_mime_prefixes: vec!["image/".to_string()],
-        allowed_mime_types: Vec::new(),
-        storage_namespace: "chat/images".to_string(),
-        database_object_route_prefix: "/api/chat/image-objects".to_string(),
-    }
+    policy_from_slices(
+        "chat_image",
+        MAX_CHAT_IMAGE_SIZE_BYTES,
+        &["image/"],
+        &[],
+        "chat/images",
+        "/api/chat/image-objects",
+    )
 }
 
 #[must_use]
 pub fn user_avatar_upload_policy() -> FileUploadPolicy {
-    FileUploadPolicy {
-        kind: "user_avatar".to_string(),
-        max_size_bytes: MAX_USER_AVATAR_SIZE_BYTES,
-        allowed_mime_prefixes: Vec::new(),
-        allowed_mime_types: vec![
-            "image/jpeg".to_string(),
-            "image/png".to_string(),
-            "image/webp".to_string(),
-            "image/avif".to_string(),
-        ],
-        storage_namespace: "users/avatars".to_string(),
-        database_object_route_prefix: "/api/user/avatar-objects".to_string(),
-    }
+    typed_image_policy(
+        "user_avatar",
+        MAX_USER_AVATAR_SIZE_BYTES,
+        "users/avatars",
+        "/api/user/avatar-objects",
+    )
 }
 
 #[must_use]
 pub fn video_cover_upload_policy() -> FileUploadPolicy {
-    FileUploadPolicy {
-        kind: "video_cover".to_string(),
-        max_size_bytes: MAX_VIDEO_COVER_SIZE_BYTES,
-        allowed_mime_prefixes: Vec::new(),
-        allowed_mime_types: vec![
-            "image/jpeg".to_string(),
-            "image/png".to_string(),
-            "image/webp".to_string(),
-            "image/avif".to_string(),
-        ],
-        storage_namespace: "videos/covers".to_string(),
-        database_object_route_prefix: "/api/video/cover-objects".to_string(),
-    }
+    typed_image_policy(
+        "video_cover",
+        MAX_VIDEO_COVER_SIZE_BYTES,
+        "videos/covers",
+        "/api/video/cover-objects",
+    )
 }
 
 #[must_use]
 pub fn room_cover_upload_policy() -> FileUploadPolicy {
-    FileUploadPolicy {
-        kind: "room_cover".to_string(),
-        max_size_bytes: MAX_ROOM_COVER_SIZE_BYTES,
-        allowed_mime_prefixes: Vec::new(),
-        allowed_mime_types: vec![
-            "image/jpeg".to_string(),
-            "image/png".to_string(),
-            "image/webp".to_string(),
-            "image/avif".to_string(),
-        ],
-        storage_namespace: "rooms/covers".to_string(),
-        database_object_route_prefix: "/api/room/cover-objects".to_string(),
-    }
+    typed_image_policy(
+        "room_cover",
+        MAX_ROOM_COVER_SIZE_BYTES,
+        "rooms/covers",
+        "/api/room/cover-objects",
+    )
 }
 
 #[must_use]
 pub fn playlist_cover_upload_policy() -> FileUploadPolicy {
-    FileUploadPolicy {
-        kind: "playlist_cover".to_string(),
-        max_size_bytes: MAX_PLAYLIST_COVER_SIZE_BYTES,
-        allowed_mime_prefixes: Vec::new(),
-        allowed_mime_types: vec![
-            "image/jpeg".to_string(),
-            "image/png".to_string(),
-            "image/webp".to_string(),
-            "image/avif".to_string(),
-        ],
-        storage_namespace: "playlists/covers".to_string(),
-        database_object_route_prefix: "/api/playlist/cover-objects".to_string(),
-    }
+    typed_image_policy(
+        "playlist_cover",
+        MAX_PLAYLIST_COVER_SIZE_BYTES,
+        "playlists/covers",
+        "/api/playlist/cover-objects",
+    )
 }
 
 #[cfg(test)]

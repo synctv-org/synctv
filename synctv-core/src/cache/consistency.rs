@@ -547,6 +547,38 @@ impl RedisVersionFenceStore {
     fn timeout(&self) -> Duration {
         self.runtime.operation_timeout()
     }
+
+    fn parse_required_state_i64(
+        value: Option<&String>,
+        field: &'static str,
+        domain: &CacheDomain,
+    ) -> Result<i64> {
+        let Some(value) = value else {
+            return Err(Error::Internal(format!(
+                "Invalid cache version fence state for {domain}: missing {field}"
+            )));
+        };
+        value.parse::<i64>().map_err(|error| {
+            Error::Internal(format!(
+                "Invalid cache version fence state for {domain}: field {field} contains {value:?}: {error}"
+            ))
+        })
+    }
+
+    fn parse_optional_state_i64(
+        value: Option<&String>,
+        field: &'static str,
+        domain: &CacheDomain,
+    ) -> Result<Option<i64>> {
+        let Some(value) = value.filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        value.parse::<i64>().map(Some).map_err(|error| {
+            Error::Internal(format!(
+                "Invalid cache version fence state for {domain}: field {field} contains {value:?}: {error}"
+            ))
+        })
+    }
 }
 
 #[async_trait]
@@ -601,19 +633,13 @@ impl VersionFenceStore for RedisVersionFenceStore {
             return Ok(None);
         }
 
-        let committed_version = values
-            .first()
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(0);
-        let pending_version = values
-            .get(1)
-            .filter(|value| !value.is_empty())
-            .and_then(|value| value.parse::<i64>().ok());
+        let committed_version =
+            Self::parse_required_state_i64(values.first(), "committed_version", domain)?;
+        let pending_version =
+            Self::parse_optional_state_i64(values.get(1), "pending_version", domain)?;
         let pending_token = values.get(2).filter(|value| !value.is_empty()).cloned();
-        let pending_started_at_ms = values
-            .get(3)
-            .filter(|value| !value.is_empty())
-            .and_then(|value| value.parse::<i64>().ok());
+        let pending_started_at_ms =
+            Self::parse_optional_state_i64(values.get(3), "pending_started_at_ms", domain)?;
 
         Ok(Some(VersionFenceState {
             committed_version,
@@ -1316,7 +1342,10 @@ impl ConsistencyCoordinator {
         };
         let now_ms = chrono::Utc::now().timestamp_millis();
         let elapsed_ms = now_ms.saturating_sub(started_at_ms);
-        elapsed_ms >= pending_lease.as_millis().try_into().unwrap_or(i64::MAX)
+        let Ok(pending_lease_ms) = i64::try_from(pending_lease.as_millis()) else {
+            return true;
+        };
+        elapsed_ms >= pending_lease_ms
     }
     pub async fn repair_pending_domains<F, Fut>(&self, mut db_version_for_domain: F)
     where
@@ -1453,21 +1482,25 @@ impl ConsistencyCoordinator {
 pub fn version_fence_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn VersionFenceStore>> {
-    if let Some(runtime) = profile.shared_runtime() {
-        return Ok(Arc::new(RedisVersionFenceStore::new(
-            runtime,
-            profile.key_prefix(),
-        )));
-    }
-
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
-            let _ = profile.require_shared_runtime("cache version fences")?;
-            unreachable!("require_shared_runtime should reject missing cache version fence runtime")
+            let runtime = profile.require_shared_runtime("cache version fences")?;
+            Ok(Arc::new(RedisVersionFenceStore::new(
+                runtime,
+                profile.key_prefix(),
+            )))
         }
-        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => {
-            Ok(Arc::new(NoopVersionFenceStore))
+        SharedStateMode::SharedBestEffort => {
+            if let Some(runtime) = profile.shared_runtime() {
+                Ok(Arc::new(RedisVersionFenceStore::new(
+                    runtime,
+                    profile.key_prefix(),
+                )))
+            } else {
+                Ok(Arc::new(NoopVersionFenceStore))
+            }
         }
+        SharedStateMode::LocalOnly => Ok(Arc::new(NoopVersionFenceStore)),
     }
 }
 
@@ -1971,13 +2004,13 @@ mod tests {
                                 if reservation.version % 2 == 0 {
                                     store.abort_write(&domain, &reservation).await.unwrap();
                                 } else {
-                                    let _ = store.commit_write(&domain, &reservation).await;
+                                    store.commit_write(&domain, &reservation).await.unwrap();
                                 }
                             }
                             Err(Error::OptimisticLockConflict) => {}
                             Err(error) => panic!("unexpected fence error: {error:?}"),
                         }
-                        let _ = store.set_version_at_least(&domain, observed).await;
+                        store.set_version_at_least(&domain, observed).await.unwrap();
                     }
                 }));
             }
@@ -2053,7 +2086,7 @@ mod tests {
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 panic!("unit test should only verify fence store construction");
             }
         }

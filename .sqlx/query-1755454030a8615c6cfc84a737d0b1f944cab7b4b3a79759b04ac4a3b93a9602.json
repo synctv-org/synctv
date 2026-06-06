@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_email_registration_tokens\n            SET used_at = CURRENT_TIMESTAMP\n            WHERE token_hash = $1\n              AND used_at IS NULL\n              AND expires_at > CURRENT_TIMESTAMP\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1755454030a8615c6cfc84a737d0b1f944cab7b4b3a79759b04ac4a3b93a9602"
+}

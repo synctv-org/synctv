@@ -95,7 +95,9 @@ pub(crate) async fn execute_live_stream_action(
         } => execute_hls_segment(state, room_id, media_id, &segment_name, disguised_as_png).await,
         other => {
             tracing::error!(action = ?other, "execute_live_stream_action received unsupported action");
-            Err(AppError::internal("Unsupported live stream proxy action"))
+            Err(AppError::internal_server_error(
+                "Unsupported live stream proxy action",
+            ))
         }
     }
 }

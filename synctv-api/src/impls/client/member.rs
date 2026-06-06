@@ -4,11 +4,14 @@ use crate::impls::ApiError;
 use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use synctv_core::models::{ReviewRequestId, ReviewStatus, UserId};
-use synctv_core::service::{RoomJoinReviewListQuery, RoomJoinReviewRecord};
+use synctv_core::service::{
+    MemberPermissionPatch, RoomJoinReviewListQuery, RoomJoinReviewRecord,
+    UpdateMemberWithOutboxRequest,
+};
 
 use super::convert::{
-    members_to_proto, proto_role_filter_to_room_role, proto_role_to_assignable_room_role,
-    proto_role_to_room_role, room_member_to_proto_with_permissions,
+    proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
+    try_members_to_proto, try_room_member_to_proto_with_permissions,
 };
 use super::media::prepare_delete_entries_outbox_fanout;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -38,20 +41,67 @@ pub(crate) fn compute_room_members_response_version(
     hex_encode(hasher.finalize())
 }
 
-fn review_status_i32_to_core(value: i32) -> ReviewStatus {
-    ReviewStatus::try_from(value).unwrap_or_default()
+fn review_status_i32_to_core(value: i32) -> Result<ReviewStatus, ApiError> {
+    ReviewStatus::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported review status".to_string()))
 }
 
-fn page_i32_to_usize(value: i32) -> usize {
-    usize::try_from(value.max(1)).unwrap_or(1)
+async fn required_member_username(
+    api: &ClientApiImpl,
+    user_id: &UserId,
+) -> Result<String, ApiError> {
+    api.user_service
+        .get_user(user_id)
+        .await
+        .map(|user| user.username)
+        .map_err(ApiError::from)
 }
 
-fn page_size_i32_to_usize(value: i32) -> usize {
-    usize::try_from(if value <= 0 { 50 } else { value.min(100) }).unwrap_or(50)
+fn proto_room_member_list_sort_by(
+    value: i32,
+) -> Result<synctv_core::models::RoomMemberListSortBy, ApiError> {
+    match crate::proto::client::RoomMemberListSortBy::try_from(value).map_err(|_| {
+        ApiError::InvalidInput("Unsupported room member list sort field".to_string())
+    })? {
+        crate::proto::client::RoomMemberListSortBy::Unspecified
+        | crate::proto::client::RoomMemberListSortBy::JoinedAt => {
+            Ok(synctv_core::models::RoomMemberListSortBy::JoinedAt)
+        }
+        crate::proto::client::RoomMemberListSortBy::Username => {
+            Ok(synctv_core::models::RoomMemberListSortBy::Username)
+        }
+        crate::proto::client::RoomMemberListSortBy::Role => {
+            Ok(synctv_core::models::RoomMemberListSortBy::Role)
+        }
+    }
 }
 
-fn usize_to_i64_saturating(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn proto_sort_direction(value: i32) -> Result<synctv_core::models::SortDirection, ApiError> {
+    match crate::proto::client::SortDirection::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        crate::proto::client::SortDirection::Unspecified
+        | crate::proto::client::SortDirection::Asc => Ok(synctv_core::models::SortDirection::Asc),
+        crate::proto::client::SortDirection::Desc => Ok(synctv_core::models::SortDirection::Desc),
+    }
+}
+
+fn page_i32_to_usize(value: i32) -> Result<usize, ApiError> {
+    let value = u32::try_from(value.max(1))
+        .map_err(|_| ApiError::Internal("page must be positive".to_string()))?;
+    usize::try_from(value).map_err(|_| ApiError::Internal("page exceeds usize::MAX".to_string()))
+}
+
+fn page_size_i32_to_usize(value: i32) -> Result<usize, ApiError> {
+    let normalized = if value <= 0 { 50 } else { value.min(100) };
+    let value = u32::try_from(normalized)
+        .map_err(|_| ApiError::Internal("page_size must be positive".to_string()))?;
+    usize::try_from(value)
+        .map_err(|_| ApiError::Internal("page_size exceeds usize::MAX".to_string()))
+}
+
+fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> {
+    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
 }
 
 fn room_join_review_row_to_proto(
@@ -80,9 +130,8 @@ fn room_join_review_row_to_proto(
                     .encode_user_id(id)
                     .map_err(ApiError::InvalidInput)
             })
-            .transpose()?
-            .unwrap_or_default(),
-        rejection_reason: row.rejection_reason.clone().unwrap_or_default(),
+            .transpose()?,
+        rejection_reason: row.rejection_reason.clone(),
     })
 }
 
@@ -137,10 +186,12 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         self.require_member_review_permission(&rid, &uid).await?;
 
-        let page = page_i32_to_usize(req.page);
-        let page_size = page_size_i32_to_usize(req.page_size);
+        let page = page_i32_to_usize(req.page)?;
+        let page_size = page_size_i32_to_usize(req.page_size)?;
         let offset = page.saturating_sub(1).saturating_mul(page_size);
-        let status = review_status_i32_to_core(req.status);
+        let limit = usize_to_i64_api(page_size, "join review page size")?;
+        let offset = usize_to_i64_api(offset, "join review offset")?;
+        let status = review_status_i32_to_core(req.status)?;
         let target_user_id = if req.user_id.trim().is_empty() {
             None
         } else {
@@ -158,8 +209,8 @@ impl ClientApiImpl {
                 room_id: Some(rid),
                 user_id: target_user_id,
                 search: None,
-                limit: usize_to_i64_saturating(page_size),
-                offset: usize_to_i64_saturating(offset),
+                limit,
+                offset,
             })
             .await?;
         let reviews = page
@@ -169,7 +220,9 @@ impl ClientApiImpl {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::client::ListRoomJoinReviewsResponse {
             reviews,
-            total: i32::try_from(page.total).unwrap_or(i32::MAX),
+            total: i32::try_from(page.total).map_err(|_| {
+                ApiError::Internal("room join review count exceeds i32 range".to_string())
+            })?,
         })
     }
 
@@ -206,28 +259,18 @@ impl ClientApiImpl {
             .await?;
         let rid = actor.room_id();
 
-        let role = req.role.and_then(proto_role_filter_to_room_role);
+        let role = req
+            .role
+            .map(proto_role_filter_to_room_role)
+            .transpose()?
+            .flatten();
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             role,
             is_online: None,
-            sort_by: match crate::proto::client::RoomMemberListSortBy::try_from(req.sort_by) {
-                Ok(crate::proto::client::RoomMemberListSortBy::Username) => {
-                    synctv_core::models::RoomMemberListSortBy::Username
-                }
-                Ok(crate::proto::client::RoomMemberListSortBy::Role) => {
-                    synctv_core::models::RoomMemberListSortBy::Role
-                }
-                _ => synctv_core::models::RoomMemberListSortBy::JoinedAt,
-            },
-            sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction)
-            {
-                Ok(crate::proto::client::SortDirection::Desc) => {
-                    synctv_core::models::SortDirection::Desc
-                }
-                _ => synctv_core::models::SortDirection::Asc,
-            },
+            sort_by: proto_room_member_list_sort_by(req.sort_by)?,
+            sort_direction: proto_sort_direction(req.sort_direction)?,
         };
         let (members, total) = self
             .room_service
@@ -252,12 +295,12 @@ impl ClientApiImpl {
             .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        let proto_members = members_to_proto(
+        let proto_members = try_members_to_proto(
             &members,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
-        );
+        )?;
 
         let mut response = crate::proto::client::GetRoomMembersResponse {
             members: proto_members,
@@ -308,11 +351,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        let username = self
-            .user_service
-            .get_user(&target_uid)
-            .await
-            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
+        let username = required_member_username(self, &target_uid).await?;
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
@@ -342,11 +381,11 @@ impl ClientApiImpl {
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
         Ok(crate::proto::client::AddMemberResponse {
-            member: Some(room_member_to_proto_with_permissions(
+            member: Some(try_room_member_to_proto_with_permissions(
                 &member_with_user,
                 permissions,
                 &self.public_id_codec,
-            )),
+            )?),
         })
     }
 
@@ -380,11 +419,7 @@ impl ClientApiImpl {
         let target_uid = member.user_id;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        let username = self
-            .user_service
-            .get_user(&target_uid)
-            .await
-            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
+        let username = required_member_username(self, &target_uid).await?;
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
@@ -415,11 +450,11 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ApproveRoomJoinReviewResponse {
             review: Some(self.load_room_join_review(&rid, request_id).await?),
-            member: Some(room_member_to_proto_with_permissions(
+            member: Some(try_room_member_to_proto_with_permissions(
                 &member_with_user,
                 permissions,
                 &self.public_id_codec,
-            )),
+            )?),
         })
     }
 
@@ -542,18 +577,20 @@ impl ClientApiImpl {
                 .membership_event_fanout
                 .prepare_permission_changed_outbox_fanout(target_uid, uid);
             self.room_service
-                .update_member_with_outbox(
-                    rid,
-                    uid,
-                    target_uid,
-                    new_role,
-                    should_apply_permission_update,
-                    added_permissions,
-                    removed_permissions,
-                    admin_added_permissions,
-                    admin_removed_permissions,
-                    Some(prepared_membership_fanout.outbox_factory()),
-                )
+                .update_member_with_outbox(UpdateMemberWithOutboxRequest {
+                    room_id: rid,
+                    actor_id: uid,
+                    target_user_id: target_uid,
+                    role: new_role,
+                    permissions: MemberPermissionPatch {
+                        apply_permission_update: should_apply_permission_update,
+                        added_permissions,
+                        removed_permissions,
+                        admin_added_permissions,
+                        admin_removed_permissions,
+                    },
+                    outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+                })
                 .await
                 .map_err(ApiError::from)?;
             prepared_membership_fanout.publish_after_outbox_commit();
@@ -568,11 +605,7 @@ impl ClientApiImpl {
             .ok_or_else(|| ApiError::NotFound("Member not found".to_string()))?;
 
         // Fetch username for the target user
-        let username = self
-            .user_service
-            .get_user(&target_uid)
-            .await
-            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
+        let username = required_member_username(self, &target_uid).await?;
 
         // Query ConnectionManager for actual online status instead of hardcoding false
         let is_online = self
@@ -607,11 +640,11 @@ impl ClientApiImpl {
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
-            member: Some(room_member_to_proto_with_permissions(
+            member: Some(try_room_member_to_proto_with_permissions(
                 &member_with_user,
                 permissions,
                 &self.public_id_codec,
-            )),
+            )?),
         })
     }
 
@@ -634,14 +667,11 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, uid);
-        let actor_username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map_or_else(|_| uid.to_string(), |user| user.username);
+        let actor_username = required_member_username(self, &uid).await?;
         let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             uid,
@@ -654,7 +684,10 @@ impl ClientApiImpl {
             reason: "kicked".to_string(),
             timestamp: chrono::Utc::now(),
         };
-        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
+        let lifecycle_outbox_event = self
+            .realtime_fanout
+            .outbox_event(&lifecycle_event)
+            .map_err(ApiError::Internal)?;
         self.room_service
             .kick_member_with_outbox(
                 rid,
@@ -664,7 +697,7 @@ impl ClientApiImpl {
                 synctv_core::service::room::KickMemberOutboxOptions {
                     permission_changed: Some(prepared_membership_fanout.outbox_factory()),
                     cleanup: Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
-                    lifecycle: lifecycle_outbox_event,
+                    lifecycle: Some(lifecycle_outbox_event),
                 },
             )
             .await
@@ -690,5 +723,35 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService for ClientA
         req: &crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
         self.get_room_members_for_actor(actor, req.clone()).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{proto_room_member_list_sort_by, proto_sort_direction};
+
+    #[test]
+    fn room_member_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
+        assert_eq!(
+            proto_room_member_list_sort_by(
+                crate::proto::client::RoomMemberListSortBy::Unspecified as i32
+            )
+            .expect("unspecified room member sort should be accepted"),
+            synctv_core::models::RoomMemberListSortBy::JoinedAt
+        );
+        assert_eq!(
+            proto_sort_direction(crate::proto::client::SortDirection::Unspecified as i32)
+                .expect("unspecified sort direction should be accepted"),
+            synctv_core::models::SortDirection::Asc
+        );
+
+        assert!(matches!(
+            proto_room_member_list_sort_by(99),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("room member list sort")
+        ));
+        assert!(matches!(
+            proto_sort_direction(99),
+            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("sort direction")
+        ));
     }
 }

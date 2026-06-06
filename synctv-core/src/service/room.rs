@@ -96,7 +96,7 @@ use crate::{
         UserProviderCredentialRepository,
     },
     service::{
-        audit::AuditService,
+        audit::{AuditEventParams, AuditService},
         auth::OpaquePasswordService,
         file_storage::FileStorageContext,
         media::MediaService,
@@ -473,9 +473,9 @@ pub fn room_opaque_password_registration_session_store_from_shared_state_profile
         }
         SharedStateMode::SharedBestEffort => {
             Ok(shared_room_opaque_password_registration_session_store(
-                profile
-                    .shared_runtime()
-                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.best_effort_shared_runtime(
+                    "single-use room OPAQUE password registration session storage",
+                )?,
                 profile.key_prefix().to_string(),
             ))
         }
@@ -496,9 +496,9 @@ pub fn room_opaque_password_login_session_store_from_shared_state_profile(
             ))
         }
         SharedStateMode::SharedBestEffort => Ok(shared_room_opaque_password_login_session_store(
-            profile
-                .shared_runtime()
-                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.best_effort_shared_runtime(
+                "single-use room OPAQUE password login session storage",
+            )?,
             profile.key_prefix().to_string(),
         )),
         SharedStateMode::LocalOnly => Ok(local_room_opaque_password_login_session_store()),
@@ -530,6 +530,64 @@ struct PendingRoomCreationRequest {
     opaque_password_record: Option<OpaquePasswordRecord>,
 }
 
+struct PendingRoomCreationRequestRow {
+    id: RoomId,
+    requested_by: UserId,
+    name: String,
+    description: String,
+    settings_payload: Option<serde_json::Value>,
+    opaque_password_record: Option<Vec<u8>>,
+    opaque_password_credential_identifier: Option<Vec<u8>>,
+    opaque_password_ciphersuite: Option<String>,
+    opaque_password_server_setup_version: Option<i32>,
+}
+
+impl PendingRoomCreationRequestRow {
+    fn into_request(self) -> std::result::Result<PendingRoomCreationRequest, sqlx::Error> {
+        let settings_payload = self
+            .settings_payload
+            .unwrap_or_else(|| serde_json::json!({}));
+        let settings = serde_json::from_value::<RoomSettings>(settings_payload)
+            .map_err(|error| sqlx::Error::Decode(error.into()))?;
+        let opaque_password_record = match (
+            self.opaque_password_record,
+            self.opaque_password_credential_identifier,
+            self.opaque_password_ciphersuite,
+            self.opaque_password_server_setup_version,
+        ) {
+            (Some(record), Some(credential_identifier), Some(ciphersuite), Some(version)) => {
+                Some(OpaquePasswordRecord {
+                    record,
+                    credential_identifier,
+                    ciphersuite,
+                    server_setup_version: version,
+                })
+            }
+            (None, None, None, None) => None,
+            _ => {
+                return Err(sqlx::Error::Decode(
+                    "Incomplete pending room OPAQUE password material".into(),
+                ));
+            }
+        };
+
+        Ok(PendingRoomCreationRequest {
+            id: self.id,
+            requested_by: self.requested_by,
+            name: self.name,
+            description: self.description,
+            settings,
+            opaque_password_record,
+        })
+    }
+}
+
+struct MediaCoverFileReferenceRow {
+    id: MediaId,
+    storage_backend: String,
+    object_key: String,
+}
+
 struct CreateRoomCommand {
     name: String,
     description: String,
@@ -547,17 +605,17 @@ use std::{future::Future, sync::Arc};
 use synctv_common::ExecutionControl;
 
 pub type RealtimeOutboxSettingsEventFactory =
-    Arc<dyn Fn(&RoomSettings, i64) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&RoomSettings, i64) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxRoomEventFactory =
-    Arc<dyn Fn(&Room) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&Room) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxDeleteEntriesEventFactory =
-    Arc<dyn Fn(&DeleteEntriesPlan) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&DeleteEntriesPlan) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
 pub type RealtimeOutboxPermissionChangedEventFactory =
-    Arc<dyn Fn(&PermissionChangedOutboxSnapshot) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&PermissionChangedOutboxSnapshot) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxUserLeftEventFactory =
-    Arc<dyn Fn(&UserLeftOutboxSnapshot) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&UserLeftOutboxSnapshot) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxMemberResourceCleanupEventFactory =
-    Arc<dyn Fn(&MemberResourceCleanupResult) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
+    Arc<dyn Fn(&MemberResourceCleanupResult) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
 
 #[derive(Default)]
 pub struct KickMemberOutboxOptions {
@@ -595,6 +653,24 @@ pub struct AdminAddMemberWithOutboxRequest<'a> {
     pub target_user_id: UserId,
     pub role: RoomRole,
     pub notify: bool,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MemberPermissionPatch {
+    pub apply_permission_update: bool,
+    pub added_permissions: u64,
+    pub removed_permissions: u64,
+    pub admin_added_permissions: u64,
+    pub admin_removed_permissions: u64,
+}
+
+pub struct UpdateMemberWithOutboxRequest {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub target_user_id: UserId,
+    pub role: Option<RoomRole>,
+    pub permissions: MemberPermissionPatch,
     pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
 }
 
@@ -676,7 +752,7 @@ impl AuthorizedAdminActor {
 /// Room service for business logic
 ///
 /// This is the main service that coordinates between domain services.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RoomServiceOptions {
     pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
@@ -690,7 +766,11 @@ pub struct RoomServiceOptions {
     pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
-    pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
+    /// Stable OPAQUE server setup used for room password credentials.
+    ///
+    /// Real deployments should pass the same service as `UserService`, derived
+    /// from `security.opaque_server_setup_secret`.
+    pub opaque_password_service: Arc<OpaquePasswordService>,
     pub opaque_password_registration_session_store:
         Option<Arc<dyn RoomOpaquePasswordRegistrationSessionStore>>,
     pub opaque_password_login_session_store: Option<Arc<dyn RoomOpaquePasswordLoginSessionStore>>,
@@ -698,6 +778,33 @@ pub struct RoomServiceOptions {
     pub media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
     pub room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
     pub playlist_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+}
+
+impl RoomServiceOptions {
+    #[must_use]
+    pub fn test_defaults() -> Self {
+        Self {
+            distributed_lock: None,
+            cache_invalidation: None,
+            version_fence: None,
+            playback_l2_cache: None,
+            room_settings_l2_cache: None,
+            room_settings_cache_key_prefix: None,
+            credential_encryption: None,
+            credential_repo: None,
+            audit_service: None,
+            brute_force_service: None,
+            settings_registry: None,
+            user_notification_service: None,
+            opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
+            opaque_password_registration_session_store: None,
+            opaque_password_login_session_store: None,
+            realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
+        }
+    }
 }
 
 /// Room service for business logic
@@ -766,12 +873,13 @@ pub struct DeleteEntriesRequest {
     pub force: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeleteEntriesResult {
     pub deleted_playlists: usize,
     pub deleted_media: usize,
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
+    pub playback_state: Option<RoomPlaybackState>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -779,6 +887,7 @@ pub struct DeleteEntriesPlan {
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_reset: bool,
+    pub playback_state: Option<RoomPlaybackState>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -788,6 +897,10 @@ pub struct ClearPlaylistResult {
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_state: Option<RoomPlaybackState>,
+}
+
+fn deleted_count_to_i64(value: usize, field: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -912,7 +1025,7 @@ impl RoomService {
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
-        let request_id = sqlx::query_scalar::<_, i64>(
+        let request_id = sqlx::query_scalar!(
             r"
             INSERT INTO room_creation_requests (
                 requested_by, name, description, settings_payload, status, requested_at
@@ -920,12 +1033,12 @@ impl RoomService {
             VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
             RETURNING id
             ",
+            requested_by.as_i64(),
+            name,
+            description,
+            settings_payload,
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(requested_by)
-        .bind(name)
-        .bind(description)
-        .bind(settings_payload)
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(&mut **tx)
         .await?;
 
@@ -936,7 +1049,7 @@ impl RoomService {
             let opaque_record = self
                 .opaque_password_service
                 .register_password(&Self::room_opaque_credential_identifier(&room.id), password)?;
-            sqlx::query(
+            sqlx::query!(
                 r"
                 UPDATE room_creation_requests
                 SET opaque_password_record = $2,
@@ -945,12 +1058,12 @@ impl RoomService {
                     opaque_password_server_setup_version = $5
                 WHERE id = $1
                 ",
+                room.id.as_i64(),
+                opaque_record.record.as_slice(),
+                opaque_record.credential_identifier.as_slice(),
+                opaque_record.ciphersuite.as_str(),
+                opaque_record.server_setup_version
             )
-            .bind(room.id)
-            .bind(opaque_record.record.as_slice())
-            .bind(opaque_record.credential_identifier.as_slice())
-            .bind(opaque_record.ciphersuite.as_str())
-            .bind(opaque_record.server_setup_version)
             .execute(&mut **tx)
             .await?;
         }
@@ -961,10 +1074,11 @@ impl RoomService {
         request_id: &RoomId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRoomCreationRequest>> {
-        let row = sqlx::query(
-            r"
-            SELECT id,
-                   requested_by,
+        let row = sqlx::query_as!(
+            PendingRoomCreationRequestRow,
+            r#"
+            SELECT id AS "id: RoomId",
+                   requested_by AS "requested_by: UserId",
                    name,
                    description,
                    settings_payload,
@@ -975,55 +1089,16 @@ impl RoomService {
             FROM room_creation_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id)
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_optional(&mut **tx)
         .await?;
 
-        row.map(|row| {
-            use sqlx::Row;
-            let id: i64 = row.try_get("id")?;
-            let requested_by: i64 = row.try_get("requested_by")?;
-            let settings_payload = row
-                .try_get::<Option<serde_json::Value>, _>("settings_payload")?
-                .unwrap_or_else(|| serde_json::json!({}));
-            let settings = serde_json::from_value::<RoomSettings>(settings_payload)
-                .map_err(|e| sqlx::Error::Decode(e.into()))?;
-            let opaque_password_record = match (
-                row.try_get::<Option<Vec<u8>>, _>("opaque_password_record")?,
-                row.try_get::<Option<Vec<u8>>, _>("opaque_password_credential_identifier")?,
-                row.try_get::<Option<String>, _>("opaque_password_ciphersuite")?,
-                row.try_get::<Option<i32>, _>("opaque_password_server_setup_version")?,
-            ) {
-                (Some(record), Some(credential_identifier), Some(ciphersuite), Some(version)) => {
-                    Some(OpaquePasswordRecord {
-                        record,
-                        credential_identifier,
-                        ciphersuite,
-                        server_setup_version: version,
-                    })
-                }
-                (None, None, None, None) => None,
-                _ => {
-                    return Err(sqlx::Error::Decode(
-                        "Incomplete pending room OPAQUE password material".into(),
-                    ));
-                }
-            };
-            Ok(PendingRoomCreationRequest {
-                id: RoomId::try_from(id).map_err(|e| sqlx::Error::Decode(e.into()))?,
-                requested_by: UserId::try_from(requested_by)
-                    .map_err(|e| sqlx::Error::Decode(e.into()))?,
-                name: row.try_get("name")?,
-                description: row.try_get("description")?,
-                settings,
-                opaque_password_record,
-            })
-        })
-        .transpose()
-        .map_err(Error::Database)
+        row.map(PendingRoomCreationRequestRow::into_request)
+            .transpose()
+            .map_err(Error::Database)
     }
 
     async fn ensure_user_can_create_room_now_tx(
@@ -1112,10 +1187,17 @@ impl RoomService {
         if room_state.closed_at.is_some() {
             return Err(Error::InvalidInput("Room is closed".to_string()));
         }
-        if room_state.is_banned.unwrap_or(false) {
+        let is_banned = room_state
+            .is_banned
+            .ok_or_else(|| Error::Internal("Room ban EXISTS query returned NULL".to_string()))?;
+        if is_banned {
             return Err(Error::Authorization("Room is banned".to_string()));
         }
-        if room_state.is_target_in_kick_cooldown.unwrap_or(false) {
+        let is_target_in_kick_cooldown =
+            room_state.is_target_in_kick_cooldown.ok_or_else(|| {
+                Error::Internal("Room kick cooldown EXISTS query returned NULL".to_string())
+            })?;
+        if is_target_in_kick_cooldown {
             return Err(Error::Authorization(
                 crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
             ));
@@ -1132,24 +1214,20 @@ impl RoomService {
     ) -> Result<()> {
         if let Some(ref registry) = self.settings_registry {
             if policy.enforce_creation_toggle {
-                if registry.disable_create_room.get().unwrap_or(false) {
+                if registry.disable_create_room.get()? {
                     tracing::warn!(user_id = %user_id, "Room creation rejected: disable_create_room is true");
                     return Err(Error::Authorization(
                         "Room creation is currently disabled".to_string(),
                     ));
                 }
-                if !registry.allow_room_creation.get().unwrap_or(true) {
+                if !registry.allow_room_creation.get()? {
                     tracing::warn!(user_id = %user_id, "Room creation rejected: allow_room_creation is false");
                     return Err(Error::Authorization(
                         "Room creation is currently disabled".to_string(),
                     ));
                 }
             }
-            match registry
-                .room_password_policy
-                .get()
-                .unwrap_or(RoomPasswordPolicy::Optional)
-            {
+            match registry.room_password_policy.get()? {
                 RoomPasswordPolicy::Required if !password_enabled => {
                     tracing::warn!(user_id = %user_id, "Room creation rejected: password required by server policy");
                     return Err(Error::InvalidInput(
@@ -1391,10 +1469,8 @@ impl RoomService {
     /// Prevents unbounded wait times when database operations are slow.
     const SETTINGS_UPDATE_TIMEOUT_SECS: u64 = 5;
     /// TTL for `create_room` distributed lock (seconds)
-    /// Increased from 15s to 30s to account for:
-    /// - bcrypt password hashing (1-3 seconds)
-    /// - database transaction latency
-    /// - network delays under high load
+    /// Accounts for password credential processing, database transaction latency,
+    /// and network delays under high load.
     const CREATE_ROOM_LOCK_TTL_SECS: u64 = 30;
 
     /// Get the playlist service
@@ -1573,102 +1649,48 @@ impl RoomService {
         &self.user_service
     }
 
-    /// Set the distributed lock (enables multi-replica safety for room creation)
-    pub fn set_distributed_lock(
-        &mut self,
-        lock: Arc<dyn crate::service::distributed_lock::CoordinationLock>,
-    ) {
-        self.distributed_lock = Some(lock);
-    }
-
-    /// Set the cache invalidation service for cross-replica room cache sync.
+    /// Build a room service with test fixture runtime dependencies.
     ///
-    /// Also propagates to the inner `MemberService` so that permission/role
-    /// changes are broadcast to other replicas.
-    pub fn set_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        self.permission_service
-            .set_invalidation_service(Arc::clone(&service));
-        self.member_service
-            .set_cache_invalidation(Arc::clone(&service));
-        self.room_settings_service
-            .set_invalidation_service(Arc::clone(&service));
-        self.cache_invalidation = Some(service);
+    /// Composition roots should use the constructors that accept
+    /// `RoomServiceOptions` and inject stable OPAQUE/session/cache runtimes.
+    pub fn new_for_tests(pool: PgPool, user_service: UserService) -> Result<Self> {
+        Self::new_with_options(pool, user_service, RoomServiceOptions::test_defaults())
     }
 
-    /// Set the realtime broadcaster on the inner playback service for cross-replica sync.
-    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
-    pub fn set_playback_realtime_broadcaster(
-        &self,
-        broadcaster: Arc<dyn crate::service::PlaybackBroadcaster>,
-    ) {
-        self.playback_service.set_realtime_broadcaster(broadcaster);
-    }
-
-    /// Set the realtime broadcaster on the inner playlist service for cross-replica sync.
-    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
-    pub fn set_playlist_realtime_broadcaster(
-        &self,
-        broadcaster: Arc<dyn crate::service::PlaylistBroadcaster>,
-    ) {
-        self.playlist_service.set_realtime_broadcaster(broadcaster);
-    }
-
-    /// Wire the cache invalidation service into the inner playback service
-    /// so it can broadcast invalidation messages to other replicas on updates.
-    pub fn set_playback_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        self.playback_service.set_invalidation_service(service);
-    }
-
-    /// Wire the playback L2 cache into the inner playback service.
-    ///
-    /// This keeps bootstrap ownership at the `RoomService` boundary instead of
-    /// reaching through to private service internals.
-    pub fn set_playback_l2_cache(&mut self, cache: crate::cache::PlaybackStateCache) {
-        self.playback_service.set_l2_cache(cache);
-    }
-
-    #[must_use]
-    pub fn new(pool: PgPool, user_service: UserService) -> Self {
-        Self::new_with_options(pool, user_service, RoomServiceOptions::default())
-    }
-
-    #[must_use]
     pub fn new_with_options(
         pool: PgPool,
         user_service: UserService,
         options: RoomServiceOptions,
-    ) -> Self {
+    ) -> Result<Self> {
         let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
             pool.clone(),
         ));
         let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(
             provider_instance_repo,
         ));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager)?);
         Self::new_with_providers_and_options(pool, user_service, providers_manager, options)
     }
 
-    #[must_use]
-    pub fn new_with_providers(
+    pub fn new_with_providers_for_tests(
         pool: PgPool,
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_with_providers_and_options(
             pool,
             user_service,
             providers_manager,
-            RoomServiceOptions::default(),
+            RoomServiceOptions::test_defaults(),
         )
     }
 
-    #[must_use]
     pub fn new_with_providers_and_options(
         pool: PgPool,
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
         options: RoomServiceOptions,
-    ) -> Self {
+    ) -> Result<Self> {
         let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
@@ -1686,18 +1708,17 @@ impl RoomService {
                     .unwrap_or_else(|| "room_settings:".to_string()),
                 ..PermissionServiceRuntime::default()
             },
-        );
-        Self::new_with_providers_permission_service_and_options(
+        )?;
+        Ok(Self::new_with_providers_permission_service_and_options(
             pool,
             user_service,
             providers_manager,
             permission_service,
             options,
-        )
+        ))
     }
 
-    #[must_use]
-    pub fn new_with_providers_and_permission_service(
+    pub fn new_with_providers_and_permission_service_for_tests(
         pool: PgPool,
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
@@ -1708,7 +1729,7 @@ impl RoomService {
             user_service,
             providers_manager,
             permission_service,
-            RoomServiceOptions::default(),
+            RoomServiceOptions::test_defaults(),
         )
     }
 
@@ -1743,18 +1764,16 @@ impl RoomService {
             notification_service.clone(),
         );
 
-        let mut playlist_service = PlaylistService::new_with_provider_credentials(
+        let playlist_service = PlaylistService::new_with_runtime(
             playlist_repo.clone(),
             permission_service.clone(),
             providers_manager.clone(),
             options.credential_encryption.clone(),
             options.credential_repo.clone(),
+            options.realtime_outbox.clone(),
+            options.playlist_file_storage_service.clone(),
         );
-        if let Some(file_storage_service) = options.playlist_file_storage_service.clone() {
-            playlist_service = playlist_service.with_file_storage_service(file_storage_service);
-        }
-        playlist_service.set_realtime_outbox(options.realtime_outbox.clone());
-        let mut media_service = MediaService::new_with_provider_credentials(
+        let media_service = MediaService::new_with_runtime(
             media_repo.clone(),
             playlist_repo.clone(),
             permission_service.clone(),
@@ -1762,11 +1781,9 @@ impl RoomService {
             notification_service.clone(),
             options.credential_encryption.clone(),
             options.credential_repo.clone(),
+            options.realtime_outbox.clone(),
+            options.media_file_storage_service.clone(),
         );
-        if let Some(file_storage_service) = options.media_file_storage_service.clone() {
-            media_service = media_service.with_file_storage_service(file_storage_service);
-        }
-        media_service.set_realtime_outbox(options.realtime_outbox.clone());
         let playback_service = PlaybackService::new_with_runtime(
             playback_repo.clone(),
             permission_service.clone(),
@@ -1775,6 +1792,7 @@ impl RoomService {
             options.cache_invalidation.clone(),
             options.playback_l2_cache.clone(),
             options.version_fence.clone(),
+            options.realtime_outbox.clone(),
         );
         let room_settings_service = RoomSettingsService::new_with_version_fence(
             room_settings_repo.clone(),
@@ -1818,9 +1836,7 @@ impl RoomService {
             brute_force_service: options.brute_force_service,
             settings_registry: options.settings_registry,
             user_notification_service: options.user_notification_service,
-            opaque_password_service: options
-                .opaque_password_service
-                .unwrap_or_else(|| Arc::new(OpaquePasswordService::new_ephemeral_for_process())),
+            opaque_password_service: options.opaque_password_service,
             opaque_password_registration_session_store: options
                 .opaque_password_registration_session_store
                 .unwrap_or_else(local_room_opaque_password_registration_session_store),
@@ -1832,22 +1848,6 @@ impl RoomService {
             room_file_storage_service: options.room_file_storage_service,
             consistency: ConsistencyCoordinator::new(version_fence),
         }
-    }
-
-    /// Inject the brute-force protection service for room password rate limiting.
-    pub fn set_brute_force_service<T>(&mut self, service: T)
-    where
-        T: crate::service::auth::BruteForceProtectionService + 'static,
-    {
-        self.set_brute_force_service_arc(Arc::new(service));
-    }
-
-    /// Inject a pre-built brute-force protection service trait object.
-    pub fn set_brute_force_service_arc(
-        &mut self,
-        service: Arc<dyn crate::service::auth::BruteForceProtectionService>,
-    ) {
-        self.brute_force_service = Some(service);
     }
 
     #[cfg(test)]
@@ -1875,36 +1875,6 @@ impl RoomService {
         self.playback_service.has_l2_cache()
     }
 
-    #[doc(hidden)]
-    pub fn has_playlist_realtime_broadcaster(&self) -> bool {
-        self.playlist_service.has_realtime_broadcaster()
-    }
-
-    /// Inject the settings registry for reading `create_room_need_review` and other global settings.
-    pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
-        self.permission_service
-            .set_settings_registry(Arc::clone(&registry));
-        self.settings_registry = Some(registry);
-    }
-
-    pub fn set_opaque_password_service(&mut self, service: Arc<OpaquePasswordService>) {
-        self.opaque_password_service = service;
-    }
-
-    pub fn set_room_opaque_password_registration_session_store(
-        &mut self,
-        store: Arc<dyn RoomOpaquePasswordRegistrationSessionStore>,
-    ) {
-        self.opaque_password_registration_session_store = store;
-    }
-
-    pub fn set_room_opaque_password_login_session_store(
-        &mut self,
-        store: Arc<dyn RoomOpaquePasswordLoginSessionStore>,
-    ) {
-        self.opaque_password_login_session_store = store;
-    }
-
     /// Log an audit event if the audit service is configured.
     /// Failures are logged as warnings but never propagated.
     ///
@@ -1922,16 +1892,16 @@ impl RoomService {
     ) {
         if let Some(ref audit) = self.audit_service {
             if let Err(e) = audit
-                .log(
-                    actor_id.to_string(),
-                    actor_username.to_string(),
+                .log(AuditEventParams {
+                    actor_id: actor_id.to_string(),
+                    actor_username: actor_username.to_string(),
                     action,
                     target_type,
                     target_id,
                     details,
-                    None,
-                    None,
-                )
+                    ip_address: None,
+                    user_agent: None,
+                })
                 .await
             {
                 tracing::warn!(error = %e, "Failed to write audit log from RoomService");
@@ -1939,16 +1909,48 @@ impl RoomService {
         }
     }
 
+    async fn write_audit_event(
+        &self,
+        actor_id: &UserId,
+        actor_username: &str,
+        action: AuditAction,
+        target_type: AuditTargetType,
+        target_id: Option<String>,
+        details: serde_json::Value,
+    ) -> Result<()> {
+        let Some(ref audit) = self.audit_service else {
+            return Ok(());
+        };
+        audit
+            .log(AuditEventParams {
+                actor_id: actor_id.to_string(),
+                actor_username: actor_username.to_string(),
+                action,
+                target_type,
+                target_id,
+                details,
+                ip_address: None,
+                user_agent: None,
+            })
+            .await
+    }
+
     async fn membership_snapshot_username(&self, user_id: &UserId) -> Result<String> {
         if *user_id == UserId::MAX {
             return Ok("local-management".to_string());
         }
 
-        Ok(self
-            .user_service
+        self.user_service
             .get_username(user_id)
             .await?
-            .unwrap_or_else(|| user_id.to_string()))
+            .ok_or_else(|| Error::NotFound("Membership snapshot user not found".to_string()))
+    }
+
+    async fn actor_username_required(&self, user_id: &UserId) -> Result<String> {
+        self.user_service
+            .get_username(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Actor user not found".to_string()))
     }
 
     async fn membership_snapshot_username_tx(
@@ -1959,13 +1961,13 @@ impl RoomService {
             return Ok("local-management".to_string());
         }
 
-        Ok(sqlx::query_scalar!(
+        sqlx::query_scalar!(
             "SELECT username FROM users WHERE id = $1 AND deleted_at IS NULL",
             user_id as &UserId,
         )
         .fetch_optional(&mut **tx)
         .await?
-        .unwrap_or_else(|| user_id.to_string()))
+        .ok_or_else(|| Error::NotFound("Membership snapshot user not found".to_string()))
     }
 
     async fn permission_changed_snapshot_tx(
@@ -2044,7 +2046,10 @@ impl RoomService {
         snapshot: &PermissionChangedOutboxSnapshot,
         outbox_event_factory: Option<&RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<()> {
-        if let Some(event) = outbox_event_factory.and_then(|factory| factory(snapshot)) {
+        if let Some(event) = outbox_event_factory
+            .map(|factory| factory(snapshot))
+            .transpose()?
+        {
             if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut **tx).await?;
             }
@@ -2082,7 +2087,10 @@ impl RoomService {
         snapshot: &UserLeftOutboxSnapshot,
         outbox_event_factory: Option<&RealtimeOutboxUserLeftEventFactory>,
     ) -> Result<()> {
-        if let Some(event) = outbox_event_factory.and_then(|factory| factory(snapshot)) {
+        if let Some(event) = outbox_event_factory
+            .map(|factory| factory(snapshot))
+            .transpose()?
+        {
             if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut **tx).await?;
             }
@@ -2234,7 +2242,9 @@ impl RoomService {
         let need_review = self
             .settings_registry
             .as_ref()
-            .is_some_and(|r| r.create_room_need_review.get().unwrap_or(false));
+            .map(|registry| registry.create_room_need_review.get())
+            .transpose()?
+            .unwrap_or(false);
 
         if need_review {
             tracing::info!(
@@ -2348,7 +2358,8 @@ impl RoomService {
 
         if let Some(event) = outbox_event_factory
             .as_ref()
-            .and_then(|factory| factory(&created_room))
+            .map(|factory| factory(&created_room))
+            .transpose()?
         {
             if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut *tx).await?;
@@ -2448,6 +2459,8 @@ impl RoomService {
             })?;
 
         let mut tx = self.pool.begin().await?;
+        let current_owner_username =
+            Self::membership_snapshot_username_tx(&mut tx, &current_owner_id).await?;
         self.enforce_room_ownership_limit_tx(&mut tx, &new_owner_id, Some(&room_id))
             .await?;
         self.ensure_room_name_available_for_creator_tx(&mut tx, &new_owner_id, &room.name)
@@ -2653,7 +2666,7 @@ impl RoomService {
 
         self.audit_log(
             &current_owner_id,
-            "",
+            &current_owner_username,
             AuditAction::RoomOwnershipTransferred,
             AuditTargetType::Room,
             Some(room_id.to_string()),
@@ -2935,6 +2948,7 @@ impl RoomService {
         // and realtime outbox insert.
         let options = AddMemberOptions::new().with_max_members(settings.max_members.0);
         let member = RoomMember::new(room_id, user_id, RoomRole::Member);
+        let username = self.actor_username_required(&user_id).await?;
         let mut tx = self.pool.begin().await?;
         let created_member = match self
             .member_repo
@@ -2982,12 +2996,6 @@ impl RoomService {
         // Get all members
         let members = self.member_service.list_members(&room_id).await?;
 
-        // Notify room members with username
-        let username = self
-            .user_service
-            .get_username(&user_id)
-            .await?
-            .unwrap_or_else(|| "Unknown".to_string());
         let _ = self
             .notification_service
             .notify_user_joined(&room_id, &user_id, &username);
@@ -3362,11 +3370,7 @@ impl RoomService {
             .seed_added_member_cache(&room_id, &target_user_id, created.version)
             .await;
 
-        let actor_username = self
-            .user_service
-            .get_username(&actor_id)
-            .await?
-            .unwrap_or_else(|| actor_id.to_string());
+        let actor_username = self.actor_username_required(&actor_id).await?;
 
         self.audit_log(
             &actor_id,
@@ -3536,11 +3540,7 @@ impl RoomService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        let actor_username = self
-            .user_service
-            .get_username(&actor_id)
-            .await?
-            .unwrap_or_else(|| actor_id.to_string());
+        let actor_username = self.actor_username_required(&actor_id).await?;
 
         self.audit_log(
             &actor_id,
@@ -3933,7 +3933,9 @@ impl RoomService {
         };
         let cleanup_outbox_events = cleanup_outbox_event_factory
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&cleanup));
+            .map(|factory| factory(&cleanup))
+            .transpose()?
+            .unwrap_or_default();
         if let Err(error) = self
             .insert_user_left_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await
@@ -4006,7 +4008,7 @@ impl RoomService {
     ) -> Result<()> {
         // Check global enable_guest setting (fail-closed: deny when registry unavailable)
         if let Some(registry) = settings_registry {
-            let enable_guest = registry.enable_guest.get().unwrap_or(true);
+            let enable_guest = registry.enable_guest.get()?;
             if !enable_guest {
                 tracing::debug!(room_id = %room_id, "Guest access denied: global guest mode disabled");
                 return Err(Error::Authorization(
@@ -4172,8 +4174,13 @@ impl RoomService {
         self.invalidate_removed_room_member_permission_caches(&impact.removed_members)
             .await;
 
-        // Notify after commit so notifications are only sent for successful deletions
-        let _ = self.notification_service.notify_room_deleted(&room_id);
+        let subscriber_count = self.notification_service.notify_room_deleted(&room_id);
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                "Room deleted event had no local subscribers"
+            );
+        }
 
         tracing::info!(
             room_id = %room_id,
@@ -4194,7 +4201,7 @@ impl RoomService {
         // Audit log (preserved - not deleted with room data)
         self.audit_log(
             &user_id,
-            "",
+            &actor.username,
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
             Some(room_id.to_string()),
@@ -4227,14 +4234,17 @@ impl RoomService {
     ) -> Result<Room> {
         tracing::info!(request_id = %request_id, ?admin_id, "Approving room creation request");
 
-        if let Some(admin_id) = admin_id {
+        let admin_username = if let Some(admin_id) = admin_id {
             let admin = self.user_service.get_user(admin_id).await?;
             if !admin.role.is_admin_or_above() {
                 return Err(Error::Authorization(
                     "Only admins can approve rooms".to_string(),
                 ));
             }
-        }
+            Some(admin.username)
+        } else {
+            None
+        };
 
         let mut tx = self.pool.begin().await?;
         let request = Self::load_pending_room_creation_request_for_update(&request_id, &mut tx)
@@ -4244,6 +4254,10 @@ impl RoomService {
                     "Pending room creation request {request_id} not found"
                 ))
             })?;
+        let audit_actor_username = match admin_username {
+            Some(username) => username,
+            None => Self::membership_snapshot_username_tx(&mut tx, &request.requested_by).await?,
+        };
 
         self.ensure_user_can_create_room_now_tx(&mut tx, &request.requested_by)
             .await?;
@@ -4310,7 +4324,7 @@ impl RoomService {
         // Audit log
         self.audit_log(
             admin_id.unwrap_or(&request.requested_by),
-            "",
+            &audit_actor_username,
             AuditAction::RoomApproved,
             AuditTargetType::Room,
             Some(updated.id.to_string()),
@@ -4344,14 +4358,17 @@ impl RoomService {
     ) -> Result<Room> {
         tracing::info!(room_id = %room_id, ?admin_id, "Rejecting pending room");
 
-        if let Some(admin_id) = admin_id {
+        let admin_username = if let Some(admin_id) = admin_id {
             let admin = self.user_service.get_user(admin_id).await?;
             if !admin.role.is_admin_or_above() {
                 return Err(Error::Authorization(
                     "Only admins can reject rooms".to_string(),
                 ));
             }
-        }
+            Some(admin.username)
+        } else {
+            None
+        };
 
         let mut tx = self.pool.begin().await?;
         let request = Self::load_pending_room_creation_request_for_update(&room_id, &mut tx)
@@ -4359,6 +4376,10 @@ impl RoomService {
             .ok_or_else(|| {
                 Error::NotFound(format!("Pending room creation request {room_id} not found"))
             })?;
+        let audit_actor_username = match admin_username {
+            Some(username) => username,
+            None => Self::membership_snapshot_username_tx(&mut tx, &request.requested_by).await?,
+        };
 
         let rejected = ReviewRepository::reject_room_creation_with_executor(
             &mut *tx,
@@ -4381,7 +4402,7 @@ impl RoomService {
         // Audit log
         self.audit_log(
             admin_id.unwrap_or(&updated.created_by),
-            "",
+            &audit_actor_username,
             AuditAction::RoomRejected,
             AuditTargetType::Room,
             Some(room_id.to_string()),
@@ -4441,8 +4462,8 @@ impl RoomService {
             LIMIT $2 OFFSET $3
             "#,
             i16::from(ReviewStatus::Pending),
-            i64::try_from(pagination.limit()).unwrap_or(i64::MAX),
-            i64::try_from(pagination.offset()).unwrap_or(i64::MAX),
+            pagination.limit_i64()?,
+            pagination.offset_i64()?,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -4585,21 +4606,18 @@ impl RoomService {
             )
             .await?;
 
-        if let Some(ref audit) = audit_service {
+        if audit_service.is_some() {
             let settings_json = serde_json::to_value(&snapshot.settings)
                 .internal_with_err("Failed to serialize settings")?;
-            let _ = audit
-                .log(
-                    user_id.to_string(),
-                    user_id.to_string(),
-                    AuditAction::RoomSettingsUpdated,
-                    AuditTargetType::Room,
-                    Some(room_id.to_string()),
-                    settings_json,
-                    None,
-                    None,
-                )
-                .await;
+            self.write_audit_event(
+                &user_id,
+                &user_id.to_string(),
+                AuditAction::RoomSettingsUpdated,
+                AuditTargetType::Room,
+                Some(room_id.to_string()),
+                settings_json,
+            )
+            .await?;
         }
 
         Ok(snapshot)
@@ -4879,12 +4897,11 @@ impl RoomService {
             .unwrap_or(0))
     }
 
-    async fn resolve_actor_username(&self, user_id: &UserId) -> String {
+    async fn resolve_actor_username(&self, user_id: &UserId) -> Result<String> {
         self.user_service
             .get_user(user_id)
             .await
             .map(|user| user.username)
-            .unwrap_or_default()
     }
 
     /// Get settings for multiple rooms in a single query (avoids N+1)
@@ -4960,7 +4977,8 @@ impl RoomService {
                     };
                     let outbox_event = outbox_event_factory
                         .as_ref()
-                        .and_then(|factory| factory(settings, new_version));
+                        .map(|factory| factory(settings, new_version))
+                        .transpose()?;
                     if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
                         if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
                             self.abort_room_settings_write(&domain, reservation.as_ref())
@@ -5093,7 +5111,8 @@ impl RoomService {
                         };
                         let outbox_event = outbox_event_factory
                             .as_ref()
-                            .and_then(|factory| factory(&merged_settings, new_version));
+                            .map(|factory| factory(&merged_settings, new_version))
+                            .transpose()?;
                         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
                         {
                             if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
@@ -5131,22 +5150,17 @@ impl RoomService {
             )
             .await?;
 
-        if let Some(ref audit) = self.audit_service {
-            let settings_json = serde_json::to_value(&snapshot.settings)
-                .internal_with_err("Failed to serialize settings")?;
-            let _ = audit
-                .log(
-                    user_id.to_string(),
-                    user_id.to_string(),
-                    AuditAction::RoomSettingsUpdated,
-                    AuditTargetType::Room,
-                    Some(room_id.to_string()),
-                    settings_json,
-                    None,
-                    None,
-                )
-                .await;
-        }
+        let settings_json = serde_json::to_value(&snapshot.settings)
+            .internal_with_err("Failed to serialize settings")?;
+        self.write_audit_event(
+            &user_id,
+            &user_id.to_string(),
+            AuditAction::RoomSettingsUpdated,
+            AuditTargetType::Room,
+            Some(room_id.to_string()),
+            settings_json,
+        )
+        .await?;
 
         Ok(snapshot)
     }
@@ -5263,13 +5277,20 @@ impl RoomService {
 
         let settings_json = serde_json::to_value(updated_settings)
             .internal_with_err("Failed to serialize settings")?;
-        let _ = self.notification_service.notify_settings_updated(
+        let subscriber_count = self.notification_service.notify_settings_updated(
             room_id,
             actor_user_id,
             actor_username,
             settings_json.clone(),
             version,
         );
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                version,
+                "Room settings updated event had no local subscribers"
+            );
+        }
 
         Ok(crate::cache::RoomSettingsSnapshot {
             settings: updated_settings.clone(),
@@ -5380,7 +5401,8 @@ impl RoomService {
                     };
                     let outbox_event = outbox_event_factory
                         .as_ref()
-                        .and_then(|factory| factory(&default_settings, new_version));
+                        .map(|factory| factory(&default_settings, new_version))
+                        .transpose()?;
                     if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
                         if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
                             self.abort_room_settings_write(&domain, reservation.as_ref())
@@ -6594,7 +6616,9 @@ impl RoomService {
         let cleanup_outbox_events = outbox
             .cleanup
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&cleanup));
+            .map(|factory| factory(&cleanup))
+            .transpose()?
+            .unwrap_or_default();
         let snapshot = match self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, kicker_id, None)
             .await
@@ -6648,15 +6672,14 @@ impl RoomService {
             .await;
         self.finalize_member_resource_cleanup_after_commit(&room_id, &target_user_id, &cleanup)
             .await;
-        if let Err(e) = self
+        let subscriber_count = self
             .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
+            .notify_member_kicked(&room_id, &target_user_id);
+        if subscriber_count == 0 {
+            tracing::debug!(
                 room_id = %room_id,
                 user_id = %target_user_id,
-                "Failed to notify local clients of member kick"
+                "Member kick event had no local subscribers"
             );
         }
         Ok(())
@@ -6857,9 +6880,11 @@ impl RoomService {
                         .await?,
                 );
             }
-            let write_fence = fence
-                .as_ref()
-                .expect("permission update must have a permission write fence");
+            let Some(write_fence) = fence.as_ref() else {
+                return Err(Error::Internal(
+                    "Permission update missing write fence".to_string(),
+                ));
+            };
             updated = if effective_is_admin {
                 if write_fence.version() > 0 {
                     match self
@@ -6988,20 +7013,26 @@ impl RoomService {
         Ok(updated)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn update_member_with_outbox(
         &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        target_user_id: UserId,
-        role: Option<RoomRole>,
-        apply_permission_update: bool,
-        added_permissions: u64,
-        removed_permissions: u64,
-        admin_added_permissions: u64,
-        admin_removed_permissions: u64,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        request: UpdateMemberWithOutboxRequest,
     ) -> Result<crate::models::RoomMember> {
+        let UpdateMemberWithOutboxRequest {
+            room_id,
+            actor_id,
+            target_user_id,
+            role,
+            permissions,
+            outbox_event_factory,
+        } = request;
+        let MemberPermissionPatch {
+            apply_permission_update,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        } = permissions;
+
         if !RoomAdminPermissionBits::includes_only_defined(admin_added_permissions)
             || !RoomAdminPermissionBits::includes_only_defined(admin_removed_permissions)
         {
@@ -7199,9 +7230,11 @@ impl RoomService {
                         .await?,
                 );
             }
-            let write_fence = fence
-                .as_ref()
-                .expect("permission update must have a permission write fence");
+            let Some(write_fence) = fence.as_ref() else {
+                return Err(Error::Internal(
+                    "Permission update missing write fence".to_string(),
+                ));
+            };
             updated = if effective_is_admin {
                 if write_fence.version() > 0 {
                     match self
@@ -7404,7 +7437,9 @@ impl RoomService {
         let cleanup_outbox_events = outbox
             .cleanup
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&cleanup));
+            .map(|factory| factory(&cleanup))
+            .transpose()?
+            .unwrap_or_default();
         let snapshot = match self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await
@@ -7458,15 +7493,14 @@ impl RoomService {
             .await;
         self.finalize_member_resource_cleanup_after_commit(&room_id, &target_user_id, &cleanup)
             .await;
-        if let Err(e) = self
+        let subscriber_count = self
             .notification_service
-            .notify_member_kicked(&room_id, &target_user_id)
-        {
-            tracing::warn!(
-                error = %e,
+            .notify_member_kicked(&room_id, &target_user_id);
+        if subscriber_count == 0 {
+            tracing::debug!(
                 room_id = %room_id,
                 user_id = %target_user_id,
-                "Failed to notify local clients of admin member kick"
+                "Admin member kick event had no local subscribers"
             );
         }
         Ok(())
@@ -7750,12 +7784,21 @@ impl RoomService {
             deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
             deleted_media_ids: impact.deleted_media_ids.clone(),
             playback_reset: impact.playback_reset,
+            playback_state: None,
         };
         let precommit_result = precommit(plan.clone()).await?;
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
+        let committed_plan = DeleteEntriesPlan {
+            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
+            deleted_media_ids: impact.deleted_media_ids.clone(),
+            playback_reset: impact.playback_reset,
+            playback_state: impact.playback_state.clone(),
+        };
         let outbox_events = outbox_event_factory
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&plan));
-        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
+            .map(|factory| factory(&committed_plan))
+            .transpose()?
+            .unwrap_or_default();
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -7773,34 +7816,45 @@ impl RoomService {
 
         let should_notify_playlist_delete = !impact.deleted_playlist_ids.is_empty();
         if !impact.deleted_media_ids.is_empty() || should_notify_playlist_delete {
-            let actor_username = self.resolve_actor_username(&user_id).await;
+            let actor_username = match self.resolve_actor_username(&user_id).await {
+                Ok(username) => username,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        user_id = %user_id,
+                        "Skipped delete entries notifications because actor username lookup failed"
+                    );
+                    return Ok((delete_entries_result_from_impact(impact), precommit_result));
+                }
+            };
             for media_id in &impact.deleted_media_ids {
-                if let Err(error) = self.notification_service.notify_media_removed(
+                let subscriber_count = self.notification_service.notify_media_removed(
                     &room_id,
                     Some(&user_id),
                     &actor_username,
                     *media_id,
-                ) {
-                    tracing::warn!(
-                        error = %error,
+                );
+                if subscriber_count == 0 {
+                    tracing::debug!(
                         room_id = %room_id,
                         media_id = %media_id,
-                        "Failed to broadcast media removed event"
+                        "Media removed event had no local subscribers"
                     );
                 }
             }
             for playlist_id in &impact.deleted_playlist_ids {
-                if let Err(error) = self.notification_service.notify_playlist_deleted(
+                let subscriber_count = self.notification_service.notify_playlist_deleted(
                     &room_id,
                     Some(&user_id),
                     &actor_username,
                     *playlist_id,
-                ) {
-                    tracing::warn!(
-                        error = %error,
+                );
+                if subscriber_count == 0 {
+                    tracing::debug!(
                         room_id = %room_id,
                         playlist_id = %playlist_id,
-                        "Failed to broadcast playlist deleted event"
+                        "Playlist deleted event had no local subscribers"
                     );
                 }
             }
@@ -7906,12 +7960,21 @@ impl RoomService {
             deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
             deleted_media_ids: impact.deleted_media_ids.clone(),
             playback_reset: impact.playback_reset,
+            playback_state: None,
         };
         let precommit_result = precommit(plan.clone()).await?;
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
+        let committed_plan = DeleteEntriesPlan {
+            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
+            deleted_media_ids: impact.deleted_media_ids.clone(),
+            playback_reset: impact.playback_reset,
+            playback_state: impact.playback_state.clone(),
+        };
         let outbox_events = outbox_event_factory
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&plan));
-        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
+            .map(|factory| factory(&committed_plan))
+            .transpose()?
+            .unwrap_or_default();
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -7929,32 +7992,32 @@ impl RoomService {
 
         if !impact.deleted_media_ids.is_empty() || !impact.deleted_playlist_ids.is_empty() {
             for media_id in &impact.deleted_media_ids {
-                if let Err(error) = self.notification_service.notify_media_removed(
+                let subscriber_count = self.notification_service.notify_media_removed(
                     &room_id,
                     Some(&admin_user_id),
                     actor.username(),
                     *media_id,
-                ) {
-                    tracing::warn!(
-                        error = %error,
+                );
+                if subscriber_count == 0 {
+                    tracing::debug!(
                         room_id = %room_id,
                         media_id = %media_id,
-                        "Failed to broadcast media removed event"
+                        "Media removed event had no local subscribers"
                     );
                 }
             }
             for playlist_id in &impact.deleted_playlist_ids {
-                if let Err(error) = self.notification_service.notify_playlist_deleted(
+                let subscriber_count = self.notification_service.notify_playlist_deleted(
                     &room_id,
                     Some(&admin_user_id),
                     actor.username(),
                     *playlist_id,
-                ) {
-                    tracing::warn!(
-                        error = %error,
+                );
+                if subscriber_count == 0 {
+                    tracing::debug!(
                         room_id = %room_id,
                         playlist_id = %playlist_id,
-                        "Failed to broadcast playlist deleted event"
+                        "Playlist deleted event had no local subscribers"
                     );
                 }
             }
@@ -8085,7 +8148,7 @@ impl RoomService {
         .await?;
 
         if let Some(playlist_id) = playlist_id {
-            let exists = sqlx::query_scalar_unchecked!(
+            let exists = sqlx::query_scalar!(
                 r#"SELECT EXISTS(
                     SELECT 1
                     FROM playlists
@@ -8102,15 +8165,18 @@ impl RoomService {
         }
 
         let mut impact = plan_clear_playlist_scope_in_tx(&mut tx, &room_id, playlist_id).await?;
-        let plan = DeleteEntriesPlan {
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
+        let committed_plan = DeleteEntriesPlan {
             deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
             deleted_media_ids: impact.deleted_media_ids.clone(),
             playback_reset: impact.playback_reset,
+            playback_state: impact.playback_state.clone(),
         };
         let outbox_events = outbox_event_factory
             .as_ref()
-            .map_or_else(Vec::new, |factory| factory(&plan));
-        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
+            .map(|factory| factory(&committed_plan))
+            .transpose()?
+            .unwrap_or_default();
         if let Some(outbox) = &self.realtime_outbox {
             for event in &outbox_events {
                 outbox.insert_with_executor(event, &mut *tx).await?;
@@ -8126,39 +8192,59 @@ impl RoomService {
         self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
             .await;
 
-        let actor_username = self.resolve_actor_username(&user_id).await;
+        let actor_username = match self.resolve_actor_username(&user_id).await {
+            Ok(username) => username,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "Skipped clear playlist notifications because actor username lookup failed"
+                );
+                let deleted_count =
+                    deleted_count_to_i64(impact.deleted_media_ids.len(), "deleted media count")?;
+                return Ok(ClearPlaylistResult {
+                    deleted_count,
+                    deleted_playlists: impact.deleted_playlist_ids.len(),
+                    deleted_playlist_ids: impact.deleted_playlist_ids,
+                    deleted_media_ids: impact.deleted_media_ids,
+                    playback_state: impact.playback_state,
+                });
+            }
+        };
         for media_id in &impact.deleted_media_ids {
-            if let Err(error) = self.notification_service.notify_media_removed(
+            let subscriber_count = self.notification_service.notify_media_removed(
                 &room_id,
                 Some(&user_id),
                 &actor_username,
                 *media_id,
-            ) {
-                tracing::warn!(
-                    error = %error,
+            );
+            if subscriber_count == 0 {
+                tracing::debug!(
                     room_id = %room_id,
                     media_id = %media_id,
-                    "Failed to broadcast media removed event after clear_playlist"
+                    "Media removed event after clear_playlist had no local subscribers"
                 );
             }
         }
         for playlist_id in &impact.deleted_playlist_ids {
-            if let Err(error) = self.notification_service.notify_playlist_deleted(
+            let subscriber_count = self.notification_service.notify_playlist_deleted(
                 &room_id,
                 Some(&user_id),
                 &actor_username,
                 *playlist_id,
-            ) {
-                tracing::warn!(
-                    error = %error,
+            );
+            if subscriber_count == 0 {
+                tracing::debug!(
                     room_id = %room_id,
                     playlist_id = %playlist_id,
-                    "Failed to broadcast playlist deleted event after clear_playlist"
+                    "Playlist deleted event after clear_playlist had no local subscribers"
                 );
             }
         }
 
-        let deleted_count = i64::try_from(impact.deleted_media_ids.len()).unwrap_or(i64::MAX);
+        let deleted_count =
+            deleted_count_to_i64(impact.deleted_media_ids.len(), "deleted media count")?;
         Ok(ClearPlaylistResult {
             deleted_count,
             deleted_playlists: impact.deleted_playlist_ids.len(),
@@ -8166,18 +8252,6 @@ impl RoomService {
             deleted_media_ids: impact.deleted_media_ids,
             playback_state: impact.playback_state,
         })
-    }
-
-    /// Set current playing media for a room
-    pub async fn set_playing_media(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_id: MediaId,
-    ) -> Result<RoomPlaybackState> {
-        self.playback_service
-            .switch(room_id, user_id, Some(media_id), None, Vec::new())
-            .await
     }
 
     /// Move a media item relative to a sibling in the same scope.
@@ -8449,33 +8523,32 @@ impl RoomService {
         self.invalidate_removed_room_member_permission_caches(&impact.removed_members)
             .await;
 
-        // Notify after commit so notifications are only sent for successful deletions
-        let _ = self.notification_service.notify_room_deleted(room_id);
+        let subscriber_count = self.notification_service.notify_room_deleted(room_id);
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                "Room deleted event had no local subscribers"
+            );
+        }
 
         crate::metrics::http::ROOMS_ACTIVE.dec();
 
-        // Audit log
-        if let Some(ref audit) = self.audit_service {
-            let _ = audit
-                .log(
-                    actor.user_id().to_string(),
-                    actor.user_id().to_string(),
-                    AuditAction::RoomDeleted,
-                    AuditTargetType::Room,
-                    Some(room_id.to_string()),
-                    serde_json::json!({
-                        "reason": "Room deleted by admin",
-                        "playlists_deleted": impact.deleted_playlist_ids.len(),
-                        "media_deleted": impact.deleted_media_ids.len(),
-                        "members_deleted": impact.members_deleted,
-                        "settings_deleted": impact.settings_deleted,
-                        "chat_deleted": impact.chat_deleted,
-                    }),
-                    None,
-                    None,
-                )
-                .await;
-        }
+        self.write_audit_event(
+            actor.user_id(),
+            &actor.user_id().to_string(),
+            AuditAction::RoomDeleted,
+            AuditTargetType::Room,
+            Some(room_id.to_string()),
+            serde_json::json!({
+                "reason": "Room deleted by admin",
+                "playlists_deleted": impact.deleted_playlist_ids.len(),
+                "media_deleted": impact.deleted_media_ids.len(),
+                "members_deleted": impact.members_deleted,
+                "settings_deleted": impact.settings_deleted,
+                "chat_deleted": impact.chat_deleted,
+            }),
+        )
+        .await?;
 
         Ok(())
     }
@@ -8602,34 +8675,33 @@ impl RoomService {
         self.invalidate_removed_room_member_permission_caches(&impact.removed_members)
             .await;
 
-        // Notify after commit
-        let _ = self.notification_service.notify_room_deleted(room_id);
+        let subscriber_count = self.notification_service.notify_room_deleted(room_id);
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                "Room deleted event had no local subscribers"
+            );
+        }
 
         crate::metrics::http::ROOMS_ACTIVE.dec();
 
-        // Audit log
-        if let Some(ref audit) = self.audit_service {
-            let _ = audit
-                .log(
-                    actor.user_id().to_string(),
-                    actor.user_id().to_string(),
-                    AuditAction::RoomDeleted,
-                    AuditTargetType::Room,
-                    Some(room_id.to_string()),
-                    serde_json::json!({
-                        "reason": "Orphaned room deleted by admin (creator deleted/banned)",
-                        "creator_id": room.created_by.to_string(),
-                        "playlists_deleted": impact.deleted_playlist_ids.len(),
-                        "media_deleted": impact.deleted_media_ids.len(),
-                        "members_deleted": impact.members_deleted,
-                        "settings_deleted": impact.settings_deleted,
-                        "chat_deleted": impact.chat_deleted,
-                    }),
-                    None,
-                    None,
-                )
-                .await;
-        }
+        self.write_audit_event(
+            actor.user_id(),
+            &actor.user_id().to_string(),
+            AuditAction::RoomDeleted,
+            AuditTargetType::Room,
+            Some(room_id.to_string()),
+            serde_json::json!({
+                "reason": "Orphaned room deleted by admin (creator deleted/banned)",
+                "creator_id": room.created_by.to_string(),
+                "playlists_deleted": impact.deleted_playlist_ids.len(),
+                "media_deleted": impact.deleted_media_ids.len(),
+                "members_deleted": impact.members_deleted,
+                "settings_deleted": impact.settings_deleted,
+                "chat_deleted": impact.chat_deleted,
+            }),
+        )
+        .await?;
 
         tracing::info!(room_id = %room_id, "Orphaned room deleted successfully");
 
@@ -8660,8 +8732,37 @@ impl RoomService {
         playlist_id: Option<PlaylistId>,
         target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
+        self.admin_start_playback_as_with_outbox(
+            room_id,
+            actor,
+            media_id,
+            playlist_id,
+            target,
+            None,
+        )
+        .await
+    }
+
+    pub async fn admin_start_playback_as_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+        outbox_event_factory: Option<
+            crate::service::playback::RealtimeOutboxPlaybackStateEventFactory,
+        >,
+    ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .admin_switch(room_id, *actor.user_id(), media_id, playlist_id, target)
+            .admin_switch_with_outbox(
+                room_id,
+                *actor.user_id(),
+                media_id,
+                playlist_id,
+                target,
+                outbox_event_factory,
+            )
             .await
     }
 
@@ -8682,32 +8783,35 @@ impl RoomService {
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
     ) -> Result<RoomPlaybackState> {
-        self.playback_service
-            .admin_reset(room_id, *actor.user_id())
+        self.admin_stop_playback_as_with_outbox(room_id, actor, None)
             .await
     }
 
-    /// Patch playback from the management plane, bypassing room membership permissions.
-    ///
-    /// Only global admin/root identities may use this path.
-    pub async fn admin_update_playback_as(
+    pub async fn admin_stop_playback_as_with_outbox(
         &self,
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        expected_version: Option<i64>,
+        outbox_event_factory: Option<
+            crate::service::playback::RealtimeOutboxPlaybackStateEventFactory,
+        >,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .admin_update_multiple_with_version(
-                room_id,
-                *actor.user_id(),
-                playing,
-                position,
-                speed,
-                expected_version,
-            )
+            .admin_reset_with_outbox(room_id, *actor.user_id(), outbox_event_factory)
+            .await
+    }
+
+    pub async fn admin_update_playback_as_request(
+        &self,
+        actor: &AuthorizedAdminActor,
+        request: crate::service::playback::PlaybackUpdateRequest,
+    ) -> Result<RoomPlaybackState> {
+        if request.actor_user_id != *actor.user_id() {
+            return Err(Error::Authorization(
+                "Playback update actor does not match authorized admin actor".to_string(),
+            ));
+        }
+        self.playback_service
+            .admin_update_playback_state(request)
             .await
     }
 
@@ -8781,7 +8885,13 @@ impl RoomService {
     ) -> Result<()> {
         self.remove_guest_role_members(room_id).await?;
         self.bump_room_guest_version(room_id).await?;
-        self.notification_service.kick_all_guests(room_id, reason)?;
+        let subscriber_count = self.notification_service.kick_all_guests(room_id, reason);
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                "Guest kick event had no local subscribers"
+            );
+        }
         Ok(())
     }
 
@@ -8849,21 +8959,15 @@ impl RoomService {
         tx.commit().await?;
         self.notify_room_invalidation(room_id).await;
 
-        // Audit log
-        if let Some(ref audit) = self.audit_service {
-            let _ = audit
-                .log(
-                    admin_user_id.to_string(),
-                    admin_user_id.to_string(),
-                    AuditAction::RoomBanned,
-                    AuditTargetType::Room,
-                    Some(room_id.to_string()),
-                    serde_json::json!({"reason": "Room banned by admin"}),
-                    None,
-                    None,
-                )
-                .await;
-        }
+        self.write_audit_event(
+            admin_user_id,
+            &admin_user_id.to_string(),
+            AuditAction::RoomBanned,
+            AuditTargetType::Room,
+            Some(room_id.to_string()),
+            serde_json::json!({"reason": "Room banned by admin"}),
+        )
+        .await?;
 
         Ok(updated_room)
     }
@@ -8886,21 +8990,15 @@ impl RoomService {
         let updated_room = self.room_repo.update_ban_status(room_id, false).await?;
         self.notify_room_invalidation(room_id).await;
 
-        // Audit log
-        if let Some(ref audit) = self.audit_service {
-            let _ = audit
-                .log(
-                    admin_user_id.to_string(),
-                    admin_user_id.to_string(),
-                    AuditAction::RoomUnbanned,
-                    AuditTargetType::Room,
-                    Some(room_id.to_string()),
-                    serde_json::json!({"reason": "Room unbanned by admin"}),
-                    None,
-                    None,
-                )
-                .await;
-        }
+        self.write_audit_event(
+            admin_user_id,
+            &admin_user_id.to_string(),
+            AuditAction::RoomUnbanned,
+            AuditTargetType::Room,
+            Some(room_id.to_string()),
+            serde_json::json!({"reason": "Room unbanned by admin"}),
+        )
+        .await?;
 
         Ok(updated_room)
     }
@@ -8924,27 +9022,9 @@ impl RoomService {
     }
 
     async fn broadcast_playback_reset_after_entry_deletion(&self, state: RoomPlaybackState) {
-        let result = self
-            .playback_service
+        self.playback_service
             .broadcast_playback_reset_after_force_delete(state.clone())
             .await;
-
-        if result.single_node {
-            let media_id = state.playing_media_id;
-            if let Err(error) = self.notification_service.notify_playback_state_changed(
-                &state.room_id,
-                state.is_playing,
-                state.position,
-                state.speed,
-                media_id,
-            ) {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %state.room_id,
-                    "Failed to broadcast local playback reset event after entry deletion"
-                );
-            }
-        }
     }
 
     async fn cleanup_deleted_media_file_references(
@@ -9049,7 +9129,13 @@ impl RoomService {
     /// deleted transactionally elsewhere.
     pub async fn finalize_deleted_room_after_commit(&self, room_id: &RoomId) {
         self.invalidate_room_caches(room_id).await;
-        let _ = self.notification_service.notify_room_deleted(room_id);
+        let subscriber_count = self.notification_service.notify_room_deleted(room_id);
+        if subscriber_count == 0 {
+            tracing::debug!(
+                room_id = %room_id,
+                "Room deleted event after commit had no local subscribers"
+            );
+        }
     }
 
     /// Run best-effort post-commit side effects after a room became unusable
@@ -9074,15 +9160,14 @@ impl RoomService {
         }
 
         for media_id in deleted_media_ids {
-            if let Err(error) = self
+            let subscriber_count = self
                 .notification_service
-                .notify_media_removed(room_id, None, "", *media_id)
-            {
-                tracing::warn!(
-                    error = %error,
+                .notify_media_removed(room_id, None, "", *media_id);
+            if subscriber_count == 0 {
+                tracing::debug!(
                     room_id = %room_id,
                     media_id = %media_id,
-                    "Failed to broadcast media removed event after user cleanup"
+                    "Media removed event after user cleanup had no local subscribers"
                 );
             }
         }
@@ -9105,19 +9190,30 @@ impl RoomService {
         )
         .await;
 
-        let username = self.resolve_actor_username(user_id).await;
+        let username = match self.resolve_actor_username(user_id).await {
+            Ok(username) => username,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "Skipped member resource cleanup notifications because actor username lookup failed"
+                );
+                return;
+            }
+        };
         for playlist_id in &cleanup.deleted_playlist_ids {
-            if let Err(error) = self.notification_service.notify_playlist_deleted(
+            let subscriber_count = self.notification_service.notify_playlist_deleted(
                 room_id,
                 Some(user_id),
                 &username,
                 *playlist_id,
-            ) {
-                tracing::warn!(
-                    error = %error,
+            );
+            if subscriber_count == 0 {
+                tracing::debug!(
                     room_id = %room_id,
                     playlist_id = %playlist_id,
-                    "Failed to broadcast playlist deleted event after member resource cleanup"
+                    "Playlist deleted event after member resource cleanup had no local subscribers"
                 );
             }
         }
@@ -9270,9 +9366,11 @@ async fn has_room_permission_in_tx(
     }
 
     let settings = match row.settings_value {
-        Some(value) => serde_json::from_str::<RoomSettings>(&value).map_err(|error| {
-            Error::Internal(format!("Failed to deserialize room settings: {error}"))
-        })?,
+        Some(settings_value) => {
+            serde_json::from_str::<RoomSettings>(&settings_value).map_err(|error| {
+                Error::Internal(format!("Failed to deserialize room settings: {error}"))
+            })?
+        }
         None => RoomSettings::default(),
     };
 
@@ -9348,7 +9446,10 @@ async fn ensure_actor_has_room_permission_now_tx(
     .await?
     .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-    if room_state.is_banned.unwrap_or(false) {
+    let is_banned = room_state
+        .is_banned
+        .ok_or_else(|| Error::Internal("Room ban EXISTS query returned NULL".to_string()))?;
+    if is_banned {
         return Err(Error::Authorization("Room is banned".to_string()));
     }
     if room_state.closed_at.is_some() {
@@ -9543,9 +9644,10 @@ async fn collect_media_cover_file_references_in_tx(
     }
 
     let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
-    let rows = sqlx::query_as::<_, (i64, String, String)>(
-        r"
-        SELECT m.id,
+    let rows = sqlx::query_as!(
+        MediaCoverFileReferenceRow,
+        r#"
+        SELECT m.id AS "id: MediaId",
                fr.storage_backend,
                fr.object_key
           FROM media m
@@ -9554,23 +9656,21 @@ async fn collect_media_cover_file_references_in_tx(
            AND fr.released_at IS NULL
          WHERE m.room_id = $1
            AND m.id = ANY($2)
-        ",
+        "#,
+        room_id.as_i64(),
+        &media_id_strs
     )
-    .bind(room_id.as_i64())
-    .bind(&media_id_strs)
     .fetch_all(&mut **tx)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(
-            |(id, storage_backend, object_key)| crate::models::FileReferenceTarget {
-                storage_backend,
-                object_key,
-                reference_kind: "media_cover".to_string(),
-                reference_id: id.to_string(),
-            },
-        )
+        .map(|row| crate::models::FileReferenceTarget {
+            storage_backend: row.storage_backend,
+            object_key: row.object_key,
+            reference_kind: "media_cover".to_string(),
+            reference_id: row.id.to_string(),
+        })
         .collect())
 }
 
@@ -9652,6 +9752,7 @@ fn delete_entries_result_from_impact(impact: EntryDeletionImpact) -> DeleteEntri
         deleted_media: impact.deleted_media_ids.len(),
         deleted_playlist_ids: impact.deleted_playlist_ids,
         deleted_media_ids: impact.deleted_media_ids,
+        playback_state: impact.playback_state,
     }
 }
 
@@ -9797,7 +9898,7 @@ async fn collect_child_playlist_nodes_in_tx(
     room_id: &RoomId,
     parent_playlist_id: Option<PlaylistId>,
 ) -> Result<Vec<(PlaylistId, i32)>> {
-    let rows = sqlx::query_as::<_, (PlaylistId, Option<i32>)>(
+    let rows = sqlx::query!(
         r#"WITH RECURSIVE child_playlists AS (
             SELECT id, 0 AS depth
             FROM playlists
@@ -9812,19 +9913,19 @@ async fn collect_child_playlist_nodes_in_tx(
             JOIN child_playlists cp ON p.parent_id = cp.id
             WHERE p.room_id = $1
         )
-        SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
+        SELECT id AS "playlist_id!: PlaylistId", COALESCE(MAX(depth), 0) AS "depth!: i32"
         FROM child_playlists
         GROUP BY id
         ORDER BY MAX(depth) DESC, id"#,
+        room_id.as_i64(),
+        parent_playlist_id.map(|playlist_id| playlist_id.as_i64())
     )
-    .bind(room_id.as_i64())
-    .bind(parent_playlist_id.map(|playlist_id| playlist_id.as_i64()))
     .fetch_all(&mut **tx)
     .await?;
 
     let mut result = Vec::with_capacity(rows.len());
-    for (playlist_id, depth) in rows {
-        result.push((playlist_id, depth.unwrap_or(0)));
+    for row in rows {
+        result.push((row.playlist_id, row.depth));
     }
     Ok(result)
 }
@@ -9834,7 +9935,7 @@ async fn collect_direct_scope_media_ids_in_tx(
     room_id: &RoomId,
     playlist_id: Option<PlaylistId>,
 ) -> Result<Vec<MediaId>> {
-    let media_ids = sqlx::query_scalar_unchecked!(
+    let media_ids = sqlx::query_scalar!(
         r#"SELECT id AS "id: MediaId"
          FROM media
          WHERE room_id = $1
@@ -10080,13 +10181,10 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::RoomService;
     use crate::models::{
-        room_settings::{
-            AllowGuestJoin, ChatEnabled, GuestAddedPermissions, MaxMembers, MemberAddedPermissions,
-        },
+        room_settings::{GuestAddedPermissions, MemberAddedPermissions},
         RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
         RoomRole, RoomSettings, RoomStatus, UserId,
     };
@@ -10094,7 +10192,6 @@ mod tests {
     use crate::Error;
     use crate::{
         cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
-        config::PasswordComplexityConfig,
         service::{
             auth::{BruteForceProtection, JwtService},
             InMemoryTokenBlacklistStore, UserService,
@@ -10174,7 +10271,8 @@ mod tests {
         );
 
         assert!(
-            RoomPermissionSet::default_member().has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE),
+            RoomPermissionSet::default_member()
+                .has(crate::models::RoomPermission::CREATE_MEDIA_RESOURCE),
             "static defaults include CREATE_MEDIA_RESOURCE, so this test guards against falling back to them"
         );
         assert!(
@@ -10216,11 +10314,10 @@ mod tests {
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let brute_force = BruteForceProtection::in_memory("room-service-test".to_string());
 
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             jwt_service,
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             KeyBuilder::new("room-service-test"),
             brute_force,
@@ -10231,7 +10328,8 @@ mod tests {
     async fn standalone_room_service_uses_non_authoritative_fence_by_default() {
         let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
         let user_service = make_user_service(&pool);
-        let room_service = RoomService::new(pool, user_service);
+        let room_service =
+            RoomService::new_for_tests(pool, user_service).expect("room service should build");
 
         assert!(
             !room_service.consistency.is_authoritative(),
@@ -10240,24 +10338,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_cache_invalidation_wires_permission_service_for_room_service_new() {
+    async fn test_cache_invalidation_option_wires_permission_service_for_room_service_new() {
         let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
         let user_service = make_user_service(&pool);
-        let mut room_service = RoomService::new(pool, user_service);
-
-        assert!(
-            !room_service.permission_service().has_invalidation_service(),
-            "plain RoomService::new should start without permission invalidation wiring"
-        );
-
-        room_service.set_cache_invalidation(Arc::new(CacheInvalidationService::new(
-            "room-service-node".to_string(),
-            "room-service-stream".to_string(),
-        )));
+        let room_service = RoomService::new_with_options(
+            pool,
+            user_service,
+            super::RoomServiceOptions {
+                cache_invalidation: Some(Arc::new(CacheInvalidationService::new(
+                    "room-service-node".to_string(),
+                    "room-service-stream".to_string(),
+                ))),
+                ..super::RoomServiceOptions::test_defaults()
+            },
+        )
+        .expect("room service should build");
 
         assert!(
             room_service.permission_service().has_invalidation_service(),
-            "post-construction cache invalidation wiring must reach the shared permission service"
+            "constructor cache invalidation wiring must reach the shared permission service"
         );
     }
 
@@ -10280,8 +10379,15 @@ mod tests {
     async fn test_create_room_uses_injected_coordination_lock_trait_object() {
         let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
         let user_service = make_user_service(&pool);
-        let mut room_service = RoomService::new(pool, user_service);
-        room_service.set_distributed_lock(Arc::new(FailingCoordinationLock));
+        let room_service = RoomService::new_with_options(
+            pool,
+            user_service,
+            super::RoomServiceOptions {
+                distributed_lock: Some(Arc::new(FailingCoordinationLock)),
+                ..super::RoomServiceOptions::test_defaults()
+            },
+        )
+        .expect("room service should build");
 
         let error = room_service
             .create_room(
@@ -10365,9 +10471,10 @@ mod tests {
 
     #[test]
     fn test_settings_validate_permissions_guest_escalation_is_rejected() {
-        let mut settings = RoomSettings::default();
-        // Grant guests a permission that exceeds the guest-specific ceiling.
-        settings.guest_added_permissions = GuestAddedPermissions(1 << 21);
+        let settings = RoomSettings {
+            guest_added_permissions: GuestAddedPermissions(1 << 21),
+            ..RoomSettings::default()
+        };
         let result = settings.validate_permissions();
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -10380,9 +10487,10 @@ mod tests {
 
     #[test]
     fn test_settings_validate_permissions_member_escalation_is_rejected() {
-        let mut settings = RoomSettings::default();
-        // Grant members a lifecycle permission that is not assignable in room settings.
-        settings.member_added_permissions = MemberAddedPermissions(1 << 21);
+        let settings = RoomSettings {
+            member_added_permissions: MemberAddedPermissions(1 << 21),
+            ..RoomSettings::default()
+        };
         let result = settings.validate_permissions();
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -10427,27 +10535,27 @@ mod tests {
 
     #[test]
     fn test_settings_validate_permissions_within_limits_is_ok() {
-        let mut settings = RoomSettings::default();
-        // Grant guests a guest-level permission.
-        settings.guest_added_permissions =
-            GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC);
+        let settings = RoomSettings {
+            guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
+            ..RoomSettings::default()
+        };
         assert!(settings.validate_permissions().is_ok());
     }
 
     #[test]
     fn test_admin_permissions_with_added_and_removed() {
-        let mut settings = RoomSettings::default();
+        let settings = RoomSettings {
+            admin_added_permissions: crate::models::room_settings::AdminAddedPermissions(
+                crate::models::RoomAdminPermissionBits::PLAY_CONTROL,
+            ),
+            admin_removed_permissions: crate::models::room_settings::AdminRemovedPermissions(
+                crate::models::RoomAdminPermissionBits::CHAT,
+            ),
+            ..RoomSettings::default()
+        };
         let base = RoomPermissionSet(
             crate::models::RoomAdminPermissionBits::CHAT
                 | crate::models::RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
-        );
-
-        // Add PLAY_CONTROL, remove CHAT
-        settings.admin_added_permissions = crate::models::room_settings::AdminAddedPermissions(
-            crate::models::RoomAdminPermissionBits::PLAY_CONTROL,
-        );
-        settings.admin_removed_permissions = crate::models::room_settings::AdminRemovedPermissions(
-            crate::models::RoomAdminPermissionBits::CHAT,
         );
 
         let result = settings.admin_permissions(base);
@@ -10464,21 +10572,6 @@ mod tests {
         let result = settings.guest_permissions(base);
         // Default guest added permissions are 0, so result should be 0
         assert_eq!(result.0, 0);
-    }
-
-    #[test]
-    fn test_room_settings_custom_values_roundtrip() {
-        let settings = RoomSettings {
-            chat_enabled: ChatEnabled(false),
-            allow_guest_join: AllowGuestJoin(false),
-            max_members: MaxMembers(42),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&settings).expect("serialize");
-        let deserialized: RoomSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(!deserialized.chat_enabled.0);
-        assert!(!deserialized.allow_guest_join.0);
-        assert_eq!(deserialized.max_members.0, 42);
     }
 
     #[test]
@@ -10560,70 +10653,6 @@ mod tests {
         let effective = member.effective_permissions(RoomPermissionSet::default_member());
         assert!(effective.has(crate::models::RoomPermission::USE_WEBRTC));
         assert!(!effective.has(crate::models::RoomPermission::CHAT));
-    }
-
-    /// Documents the A→B→A password change race condition.
-    ///
-    /// Scenario: fast path optimization doesn't detect intermediate password changes.
-    ///
-    /// 1. Initial check: password "abc123" verified against hash H1, `verified_hash` = H1
-    /// 2. Password changes: H1 → H2 (different password)
-    /// 3. Password changes back: H2 → H1 (same password, same hash if salt reused)
-    /// 4. Under lock: fast path sees `verified_hash` (H1) == `current_hash` (H1)
-    /// 5. Fast path skips re-verification, missing the intermediate change
-    ///
-    /// NOTE: Argon2id uses random salts, so re-hashing the same password produces
-    /// a different hash. The race condition only occurs if the exact same hash
-    /// string is restored (e.g., via database update), not by re-setting the same
-    /// password value.
-    ///
-    /// The room service must always re-verify the password under lock. That
-    /// removes the stale verified-hash fast path entirely.
-    #[test]
-    fn test_join_room_password_race_condition_documentation() {
-        // This is a documentation test explaining the race condition.
-        // The bug occurs when:
-        // 1. User provides password "abc123"
-        // 2. Initial verification succeeds against hash H1
-        // 3. Password changes to "xyz789" (hash H2)
-        // 4. Password changes back to "abc123" with hash H1 (same hash!)
-        // 5. Under lock, fast path skips re-verification
-        // The implementation always re-verifies instead of using a verified-hash
-        // fast path.
-        // let provided_password = password.ok_or_else(||...)?;
-        // if !verify_password(&provided_password, hash).await? {
-        // return Err(...);
-        // }
-
-        // Demonstrate that hash comparison alone doesn't detect intermediate changes
-        let hash1 = "$argon2id$v=19$m=65536,t=3,p=4$abc123$xyz789";
-        let hash2 = "$argon2id$v=19$m=65536,t=3,p=4$different$salt";
-        let hash3 = "$argon2id$v=19$m=65536,t=3,p=4$abc123$xyz789"; // Same as hash1
-
-        let verified_hash: Option<String> = Some(hash1.to_string());
-
-        // Initial state: hash1
-        assert_eq!(verified_hash.as_deref(), Some(hash1));
-
-        // Intermediate change: hash1 -> hash2
-        let current_hash: Option<&str> = Some(hash2);
-        assert_ne!(
-            verified_hash.as_deref(),
-            current_hash,
-            "Hash changed, should re-verify"
-        );
-
-        // A->B->A change: hash2 -> hash1 (same as original)
-        let current_hash: Option<&str> = Some(hash3);
-        assert_eq!(
-            verified_hash.as_deref(),
-            current_hash,
-            "Hash is same as initial, fast path would skip re-verification"
-        );
-
-        // The problem: fast path can't distinguish between:
-        // - No change (safe to skip)
-        // - A->B->A change (unsafe to skip, but hash comparison can't tell)
     }
 
     /// Replicates the `allow_room_creation` / `disable_create_room` guard logic

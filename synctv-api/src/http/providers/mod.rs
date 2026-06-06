@@ -14,8 +14,6 @@ pub mod common;
 pub mod emby;
 pub mod live;
 pub mod rtmp;
-// direct_url module removed: proxy handled by unified_proxy_handler,
-// no provider-specific API endpoints needed.
 
 use axum::{
     extract::{Path, RawQuery, State},
@@ -61,7 +59,7 @@ pub(crate) async fn execute_proxy_action(
     match action {
         ProxyAction::LiveFlv { .. }
         | ProxyAction::LiveHlsPlaylist { .. }
-        | ProxyAction::LiveHlsSegment { .. } => Err(AppError::internal(
+        | ProxyAction::LiveHlsSegment { .. } => Err(AppError::internal_server_error(
             "live proxy actions must execute with application state".to_string(),
         )),
         ProxyAction::FetchAndForward {
@@ -89,7 +87,7 @@ pub(crate) async fn execute_proxy_action(
             proxy_url_claims,
         } => {
             if proxy_url_claims.is_some() {
-                return Err(AppError::internal(
+                return Err(AppError::internal_server_error(
                     "signed M3U8 proxy actions require application state".to_string(),
                 ));
             }
@@ -110,13 +108,27 @@ pub(crate) async fn execute_proxy_action(
             content_type,
             status,
         } => {
-            let status_code =
-                axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK);
-            Ok(axum::response::Response::builder()
-                .status(status_code)
-                .header(axum::http::header::CONTENT_TYPE, content_type)
-                .body(axum::body::Body::from(body))
-                .expect("valid response"))
+            if !(100..=599).contains(&status) {
+                return Err(AppError::internal_server_error(format!(
+                    "provider returned invalid direct body status code {status}"
+                )));
+            }
+            let status_code = axum::http::StatusCode::from_u16(status).map_err(|error| {
+                AppError::internal_server_error(format!(
+                    "provider returned invalid direct body status code {status}: {error}"
+                ))
+            })?;
+            let content_type = HeaderValue::from_str(&content_type).map_err(|error| {
+                AppError::internal_server_error(format!(
+                    "provider returned invalid direct body content type: {error}"
+                ))
+            })?;
+            let mut response = axum::response::Response::new(axum::body::Body::from(body));
+            *response.status_mut() = status_code;
+            response
+                .headers_mut()
+                .insert(axum::http::header::CONTENT_TYPE, content_type);
+            Ok(response)
         }
     }
 }
@@ -323,9 +335,19 @@ pub(crate) async fn proxy_options_preflight(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|value| value.to_str().ok());
+    let origin = match headers.get(axum::http::header::ORIGIN) {
+        Some(value) => {
+            if let Ok(origin) = value.to_str() {
+                Some(origin)
+            } else {
+                let mut response =
+                    axum::response::Response::new(axum::body::Body::from("Invalid Origin header"));
+                *response.status_mut() = StatusCode::FORBIDDEN;
+                return response;
+            }
+        }
+        None => None,
+    };
     let cors_config = std::sync::Arc::new(synctv_proxy::CorsConfig::new(
         state.config.server.cors_allowed_origins.clone(),
     ));
@@ -581,14 +603,10 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::{RoomStatus, SignupMethod, UserStatus};
     use synctv_core::provider::error::ProviderError;
     use synctv_core::provider::proxy::{ProxyProviderRegistry, ProxyRequestContext};
-    use synctv_core::provider::{
-        AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-        ProviderProxy, ProviderSet, RtmpProvider,
-    };
+    use synctv_core::provider::{ProviderProxy, ProviderSet};
     use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
     use synctv_core::repository::UserRepository;
     use synctv_core::service::SettingsRegistry;
@@ -875,6 +893,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_proxy_action_direct_body_sets_status_content_type_and_body() {
+        let action = ProxyAction::DirectBody {
+            body: b"provider-body".to_vec(),
+            content_type: "application/vnd.synctv.test+json".to_string(),
+            status: 202,
+        };
+
+        let response = execute_proxy_action(
+            &reqwest::Client::new(),
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+            action,
+            &HeaderMap::new(),
+            None,
+        )
+        .await
+        .expect("direct body action should build a response");
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/vnd.synctv.test+json"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        assert_eq!(body.as_ref(), b"provider-body");
+    }
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_direct_body_rejects_invalid_status() {
+        let action = ProxyAction::DirectBody {
+            body: b"provider-body".to_vec(),
+            content_type: "text/plain".to_string(),
+            status: 999,
+        };
+
+        let err = execute_proxy_action(
+            &reqwest::Client::new(),
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+            action,
+            &HeaderMap::new(),
+            None,
+        )
+        .await
+        .expect_err("invalid provider status should fail");
+
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(err.message.contains("invalid direct body status code"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_direct_body_rejects_invalid_content_type() {
+        let action = ProxyAction::DirectBody {
+            body: b"provider-body".to_vec(),
+            content_type: "text/plain\r\nx-bad: yes".to_string(),
+            status: 200,
+        };
+
+        let err = execute_proxy_action(
+            &reqwest::Client::new(),
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+            action,
+            &HeaderMap::new(),
+            None,
+        )
+        .await
+        .expect_err("invalid provider content type should fail");
+
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(err.message.contains("invalid direct body content type"));
+    }
+
+    #[tokio::test]
     async fn test_execute_proxy_action_maps_unsatisfiable_range_to_416() {
         let Some(mock_server) = start_mock_server_or_skip().await else {
             return;
@@ -1097,30 +1188,29 @@ mod tests {
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
-        let user_service = Arc::new(UserService::new(
+        let user_service = Arc::new(UserService::new_for_tests(
             &pool,
             synctv_core::service::JwtService::new(
                 "test-secret-key-for-http-router-tests-minimum-32-chars",
             )
             .expect("jwt"),
             username_cache,
-            PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         )));
-        let providers = ProviderSet {
-            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
-            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
-            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
-            direct_url: Arc::new(DirectUrlProvider::new()),
-            rtmp: Arc::new(RtmpProvider::new()),
-            live_proxy: Arc::new(LiveProxyProvider::new()),
-        };
+        let providers = ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
         let jwt_service = synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
         )
@@ -1130,10 +1220,12 @@ mod tests {
         crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
-                    .expect("user cache"),
-            ),
+            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )),
             room_service,
             content_filter: ContentFilter::new(),
             provider_instance_manager,
@@ -1141,14 +1233,12 @@ mod tests {
                 synctv_core::repository::UserProviderCredentialRepository::new(pool),
             ),
             providers,
-            event_service: None,
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
             connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
                 synctv_realtime::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
-                None, false,
-            ),
+            realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
             oauth2_service: None,
             passkey_service: None,
             settings_service: None,
@@ -1213,41 +1303,37 @@ mod tests {
             "test-secret-key-for-http-router-tests-minimum-32-chars",
         )
         .expect("jwt");
-        let user_service = Arc::new(UserService::new(
+        let user_service = Arc::new(UserService::new_for_tests(
             &pool,
             jwt_service.clone(),
             username_cache,
-            PasswordComplexityConfig::default(),
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         )));
-        let providers = ProviderSet {
-            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
-            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
-            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
-            direct_url: Arc::new(DirectUrlProvider::new()),
-            rtmp: Arc::new(RtmpProvider::new()),
-            live_proxy: Arc::new(LiveProxyProvider::new()),
-        };
+        let providers = ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
         let mut state =
             crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
                 config: Arc::new(synctv_core::Config::default()),
                 user_service,
-                user_cache: Arc::new(
-                    synctv_core::cache::UserCache::local_only(
-                        128,
-                        60,
-                        300,
-                        "test:user:".to_string(),
-                    )
-                    .expect("user cache"),
-                ),
+                user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )),
                 room_service: room_service.clone(),
                 content_filter: ContentFilter::new(),
                 provider_instance_manager,
@@ -1255,14 +1341,12 @@ mod tests {
                     synctv_core::repository::UserProviderCredentialRepository::new(pool),
                 ),
                 providers,
-                event_service: None,
+                event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
                 connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
                     synctv_realtime::sync::ConnectionLimits::default(),
                 )),
                 jwt_service,
-                realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
-                    None, false,
-                ),
+                realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
                 oauth2_service: None,
                 passkey_service: None,
                 settings_service: None,
@@ -1583,6 +1667,32 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
             "rejected preflight must not advertise a wildcard or echoed origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_options_preflight_rejects_non_utf8_origin() {
+        let state = test_app_state_with_proxy_cache(
+            None,
+            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                SliceCacheConfig::default(),
+            )),
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"https://app.example.com\xff").unwrap(),
+        );
+
+        let response = proxy_options_preflight(State(state), headers).await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "invalid preflight origin must not produce a CORS allow-origin header"
         );
     }
 }

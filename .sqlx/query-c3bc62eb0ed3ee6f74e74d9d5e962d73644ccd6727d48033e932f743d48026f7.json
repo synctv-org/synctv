@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id as \"id!: PlaylistId\",\n                   room_id as \"room_id!: RoomId\",\n                   creator_id as \"creator_id: crate::models::UserId\",\n                   name as \"name!\",\n                   description as \"description!\",\n                   cover_file_reference_id,\n                   parent_id as \"parent_id: PlaylistId\",\n                   position as \"position!\",\n                   source_provider,\n                   source_config,\n                   NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                   created_at as \"created_at!\",\n                   updated_at as \"updated_at!\",\n                   version as \"version!\"\n            FROM playlists\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_id: crate::models::UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "name!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "description!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "parent_id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "position!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 8,
+        "name": "source_provider",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 9,
+        "name": "source_config",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "provider_instance_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "version!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c3bc62eb0ed3ee6f74e74d9d5e962d73644ccd6727d48033e932f743d48026f7"
+}

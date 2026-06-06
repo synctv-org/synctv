@@ -2,7 +2,6 @@
 //!
 //! Tests for version-based optimistic locking on playlist updates.
 //!
-//! Run with: cargo test --test `playlist_optimistic_lock_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

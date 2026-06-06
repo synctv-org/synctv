@@ -61,6 +61,35 @@ pub fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
     msg.contains("READONLY") || msg.contains("LOADING")
 }
 
+fn publish_admin_event(admin_event_tx: &broadcast::Sender<RealtimeEvent>, event: RealtimeEvent) {
+    let event_type = event.event_type();
+    let room_id = event.room_id().map(ToString::to_string);
+    match admin_event_tx.send(event) {
+        Ok(receiver_count) => {
+            debug!(
+                event_type = %event_type,
+                room_id = room_id.as_deref().unwrap_or("n/a"),
+                receiver_count,
+                "Published Redis realtime admin event"
+            );
+        }
+        Err(error) => {
+            warn!(
+                event_type = %event_type,
+                room_id = room_id.as_deref().unwrap_or("n/a"),
+                error = %error,
+                "Failed to publish Redis realtime admin event"
+            );
+        }
+    }
+}
+
+async fn log_join_result<T>(task_name: &'static str, handle: tokio::task::JoinHandle<T>) {
+    if let Err(error) = handle.await {
+        warn!(task = task_name, "Redis Pub/Sub task join failed: {error}");
+    }
+}
+
 /// Initial backoff delay for subscriber reconnection
 const INITIAL_BACKOFF_SECS: u64 = 1;
 
@@ -428,7 +457,13 @@ impl RedisPubSub {
     fn catchup_start_id(&self) -> String {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|error| {
+                warn!(
+                    error = %error,
+                    "System clock is before UNIX_EPOCH; using zero Redis catch-up timestamp fallback"
+                );
+                Duration::ZERO
+            })
             .as_millis();
         let start_ms = now_ms.saturating_sub(self.catchup_window_ms);
         format!("{start_ms}-0")
@@ -1090,9 +1125,9 @@ impl RedisPubSub {
             Ok(Err(_)) => {
                 self.cancel_token.cancel();
                 if let Some(handle) = self.subscriber_handle.lock().await.take() {
-                    let _ = handle.await;
+                    log_join_result("subscriber", handle).await;
                 }
-                let _ = publisher_handle.await;
+                log_join_result("publisher", publisher_handle).await;
                 return Err(anyhow::anyhow!(
                     "Redis subscriber exited before reporting readiness"
                 ));
@@ -1100,9 +1135,9 @@ impl RedisPubSub {
             Err(_) => {
                 self.cancel_token.cancel();
                 if let Some(handle) = self.subscriber_handle.lock().await.take() {
-                    let _ = handle.await;
+                    log_join_result("subscriber", handle).await;
                 }
-                let _ = publisher_handle.await;
+                log_join_result("publisher", publisher_handle).await;
                 return Err(anyhow::anyhow!(
                     "Redis subscriber did not become ready within timeout"
                 ));
@@ -1318,14 +1353,7 @@ impl RedisPubSub {
             // New node: catch up on recent historical events from each stream.
             // Instead of reading from "0" (all history), we start from `catchup_window_ms`
             // ago to avoid processing a large backlog in big clusters.
-            let catchup_start_id = {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                let start_ms = now_ms.saturating_sub(self.catchup_window_ms);
-                format!("{start_ms}-0")
-            };
+            let catchup_start_id = self.catchup_start_id();
             let mut total_caught_up = 0usize;
             let total_skipped = 0usize;
             for stream_key in &streams_to_catchup {
@@ -1525,7 +1553,9 @@ impl RedisPubSub {
         // leading to them being delivered via PubSub while catch-up is still
         // in progress and potentially processed out of order.
         if let Some(ready_tx) = subscriber_ready_tx.take() {
-            let _ = ready_tx.send(());
+            if ready_tx.send(()).is_err() {
+                debug!("Redis subscriber readiness receiver was dropped after catch-up");
+            }
         }
 
         // Process incoming messages with dynamic room subscription management.
@@ -1891,7 +1921,7 @@ impl RedisPubSub {
         // admin subscribers such as resource observers.
         if matches!(&event, RealtimeEvent::CacheInvalidate { .. }) {
             self.handle_remote_event(None, &event).await;
-            let _ = self.admin_event_tx.send(event);
+            publish_admin_event(&self.admin_event_tx, event);
             return;
         }
 
@@ -1901,7 +1931,7 @@ impl RedisPubSub {
         if self.is_admin_channel(channel) {
             let room_id = event.room_id().copied();
             self.handle_remote_event(room_id, &event).await;
-            let _ = self.admin_event_tx.send(event.clone());
+            publish_admin_event(&self.admin_event_tx, event.clone());
             if let Some(room_id) = room_id {
                 if matches!(
                     &event,
@@ -1943,7 +1973,7 @@ impl RedisPubSub {
                     | RealtimeEvent::RoomOwnerInactive { .. }
                     | RealtimeEvent::UserLeft { .. }
             ) {
-                let _ = self.admin_event_tx.send(event.clone());
+                publish_admin_event(&self.admin_event_tx, event.clone());
             }
 
             // Handle terminal room-wide admin events before dropping local room state.
@@ -2397,13 +2427,25 @@ impl PublishRequest {
 
     pub fn acknowledge_success(&mut self) {
         if let Some(ack) = self.ack.take() {
-            let _ = ack.send(Ok(()));
+            if ack.send(Ok(())).is_err() {
+                debug!(
+                    event_type = %self.event.event_type(),
+                    "Redis publish ack receiver dropped before success acknowledgement"
+                );
+            }
         }
     }
 
     pub fn acknowledge_failure(&mut self, error: impl Into<String>) {
         if let Some(ack) = self.ack.take() {
-            let _ = ack.send(Err(error.into()));
+            let error = error.into();
+            if ack.send(Err(error.clone())).is_err() {
+                debug!(
+                    event_type = %self.event.event_type(),
+                    error = %error,
+                    "Redis publish ack receiver dropped before failure acknowledgement"
+                );
+            }
         }
     }
 

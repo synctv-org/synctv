@@ -143,7 +143,7 @@ pub struct Services {
     pub rate_limit_config: synctv_core::service::RateLimitConfig,
     pub content_filter: synctv_core::service::ContentFilter,
     pub realtime_connection_service: Arc<dyn RealtimeConnectionService>,
-    pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
     pub provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
@@ -197,8 +197,11 @@ struct SharedProviderPlaybackRuntime {
 }
 
 impl SharedProviderPlaybackRuntime {
-    fn new(config: &Config, redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>) -> Self {
-        Self {
+    fn new(
+        config: &Config,
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             provider_stores:
                 synctv_core::provider::store::build_provider_store_resolver_from_profile(
                     &synctv_core::SharedStateProfile::best_effort(
@@ -206,10 +209,13 @@ impl SharedProviderPlaybackRuntime {
                         config.redis.key_prefix.clone(),
                     ),
                 ),
-            signing_key: Arc::new(synctv_core::proxy_signature::ProxySigningKey::derive_from(
-                config.jwt.secret.as_bytes(),
-            )),
-        }
+            signing_key: Arc::new(
+                synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                    config.jwt.secret.as_bytes(),
+                )
+                .map_err(|error| anyhow::anyhow!("Failed to derive proxy signing key: {error}"))?,
+            ),
+        })
     }
 }
 
@@ -290,10 +296,19 @@ where
         let app = app.clone();
         async move {
             let app = app.into_service();
-            let response = app
-                .oneshot(request)
-                .await
-                .unwrap_or_else(|_| unreachable!("metrics router should be infallible"));
+            let response = match app.oneshot(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    tracing::error!(
+                        error = ?error,
+                        "metrics router failed to handle request"
+                    );
+                    axum::http::Response::builder()
+                        .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(axum::body::Body::from("metrics router error"))
+                        .unwrap_or_else(|_| axum::http::Response::new(axum::body::Body::empty()))
+                }
+            };
             Ok::<_, std::convert::Infallible>(response)
         }
     });
@@ -452,6 +467,21 @@ fn map_background_task_exit(
         )),
         Err(err) if err.is_cancelled() => Err(anyhow::anyhow!("{name} task was cancelled")),
         Err(err) => Err(anyhow::anyhow!("{name} task panicked: {err}")),
+    }
+}
+
+fn signal_server_shutdown(sender: &watch::Sender<bool>, reason: &'static str) {
+    if sender.send(true).is_err() {
+        warn!(reason, "Server shutdown signal had no active receivers");
+    }
+}
+
+async fn await_optional_runtime_server(
+    handle: &mut Option<JoinHandle<anyhow::Result<()>>>,
+) -> Result<anyhow::Result<()>, tokio::task::JoinError> {
+    match handle.as_mut() {
+        Some(handle) => handle.await,
+        None => std::future::pending().await,
     }
 }
 
@@ -664,7 +694,7 @@ async fn cleanup_partial_startup(
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
 ) {
-    let _ = shutdown_tx.send(true);
+    signal_server_shutdown(shutdown_tx, "partial startup cleanup");
     cleanup_cancel.cancel();
 
     if let Some(handle) = cleanup_handle {
@@ -758,7 +788,7 @@ async fn shutdown_after_cluster_activation_failure(
         coordinator,
     } = context;
 
-    let _ = shutdown_tx.send(true);
+    signal_server_shutdown(&shutdown_tx, "cluster activation failure cleanup");
     cleanup_cancel.cancel();
 
     if let Some(handle) = cleanup_handle {
@@ -1060,7 +1090,7 @@ impl SyncTvServer {
             .realtime_connection_service
             .spawn_cleanup_task(Duration::from_mins(1), cleanup_cancel.clone());
         let shared_provider_runtime =
-            SharedProviderPlaybackRuntime::new(&self.config, self.services.redis_runtime.clone());
+            SharedProviderPlaybackRuntime::new(&self.config, self.services.redis_runtime.clone())?;
         let (http_router, shared_http_app_state) = match self
             .build_shared_http_runtime(&shared_provider_runtime)
             .await
@@ -1250,20 +1280,18 @@ impl SyncTvServer {
 
         // Spawn streaming event listener for replica-wide kicks
         let admin_event_cancel = tokio_util::sync::CancellationToken::new();
-        let admin_event_handle: Option<JoinHandle<()>> = if let (Some(event_service), Some(infra)) = (
-            &self.services.realtime_event_service,
-            &self.services.live_streaming_infrastructure,
-        ) {
-            let handle = spawn_admin_event_listener(
-                Arc::clone(event_service),
-                Arc::clone(infra),
-                admin_event_cancel.clone(),
-            );
-            info!("Admin event listener spawned for replica-wide stream kicks");
-            Some(handle)
-        } else {
-            None
-        };
+        let admin_event_handle: Option<JoinHandle<()>> =
+            if let Some(infra) = &self.services.live_streaming_infrastructure {
+                let handle = spawn_admin_event_listener(
+                    Arc::clone(&self.services.realtime_event_service),
+                    Arc::clone(infra),
+                    admin_event_cancel.clone(),
+                );
+                info!("Admin event listener spawned for replica-wide stream kicks");
+                Some(handle)
+            } else {
+                None
+            };
 
         info!("All servers started successfully");
 
@@ -1284,12 +1312,7 @@ impl SyncTvServer {
             management_handle,
             defer_management_shutdown_wait,
         ) = tokio::select! {
-            result = async {
-                api_handle
-                    .as_mut()
-                    .expect("API server handle should be present before select")
-                    .await
-            } => {
+            result = await_optional_runtime_server(&mut api_handle) => {
                 let _ = api_handle.take();
                 (
                     ShutdownMode::Graceful,
@@ -1300,12 +1323,7 @@ impl SyncTvServer {
                     false,
                 )
             },
-            result = async {
-                metrics_handle
-                    .as_mut()
-                    .expect("metrics server handle should be present before select")
-                    .await
-            }, if metrics_handle.is_some() => {
+            result = await_optional_runtime_server(&mut metrics_handle), if metrics_handle.is_some() => {
                 let _ = metrics_handle.take();
                 (
                     ShutdownMode::Graceful,
@@ -1316,12 +1334,7 @@ impl SyncTvServer {
                     false,
                 )
             },
-            result = async {
-                management_handle
-                    .as_mut()
-                    .expect("management server handle should be present before select")
-                    .await
-            }, if management_handle.is_some() => {
+            result = await_optional_runtime_server(&mut management_handle), if management_handle.is_some() => {
                 let _ = management_handle.take();
                 (
                     ShutdownMode::Graceful,
@@ -1364,7 +1377,7 @@ impl SyncTvServer {
         };
 
         // Signal API server to shut down
-        let _ = shutdown_tx.send(true);
+        signal_server_shutdown(&shutdown_tx, "runtime shutdown");
         cleanup_cancel.cancel();
         self.lifecycle_controller.publish_runtime_draining();
 
@@ -1463,15 +1476,9 @@ impl SyncTvServer {
         )
         .await;
 
-        // Shut down the realtime manager so the admin event broadcast channel
-        // closes, allowing the admin_event_handle listener to exit.
-        if let Some(ref event_service) = self.services.realtime_event_service {
-            info!(
-                "Shutting down realtime event service (post-drain, closing admin event channel)..."
-            );
-            event_service.shutdown().await;
-            info!("Realtime event service shut down (admin event channel closed)");
-        }
+        info!("Shutting down realtime event service (post-drain, closing admin event channel)...");
+        self.services.realtime_event_service.shutdown().await;
+        info!("Realtime event service shut down (admin event channel closed)");
 
         // Wait for admin event listener
         if let Some(handle) = admin_event_handle {
@@ -1577,19 +1584,19 @@ impl SyncTvServer {
     }
 
     async fn shutdown_startup_failure_components(&mut self, deadline: tokio::time::Instant) {
-        if let Some(ref event_service) = self.services.realtime_event_service {
-            info!("Shutting down realtime event service during startup rollback...");
-            let timeout = remaining_budget(deadline);
-            if timeout.is_zero() {
-                warn!("Skipping realtime event service shutdown during startup rollback: no budget left");
-            } else if tokio::time::timeout(timeout, event_service.shutdown())
-                .await
-                .is_ok()
-            {
-                info!("Realtime event service shut down during startup rollback");
-            } else {
-                warn!("Realtime event service shutdown exceeded startup rollback budget");
-            }
+        info!("Shutting down realtime event service during startup rollback...");
+        let timeout = remaining_budget(deadline);
+        if timeout.is_zero() {
+            warn!(
+                "Skipping realtime event service shutdown during startup rollback: no budget left"
+            );
+        } else if tokio::time::timeout(timeout, self.services.realtime_event_service.shutdown())
+            .await
+            .is_ok()
+        {
+            info!("Realtime event service shut down during startup rollback");
+        } else {
+            warn!("Realtime event service shutdown exceeded startup rollback budget");
         }
 
         self.shutdown_components(remaining_budget(deadline)).await;
@@ -1737,7 +1744,9 @@ impl SyncTvServer {
                 &shared_http_app_state.proxy_slice_cache,
             );
             let graceful = async move {
-                let _ = rx.changed().await;
+                if rx.changed().await.is_err() {
+                    warn!("API server shutdown signal channel closed");
+                }
             };
 
             let server = axum::serve(
@@ -1748,28 +1757,32 @@ impl SyncTvServer {
             )
             .with_graceful_shutdown(graceful);
 
-            let server_result = if let Some(lifecycle) = proxy_cache_lifecycle {
-                let mut lifecycle_handle = lifecycle.handle;
-                let lifecycle_cancel = lifecycle.cancel;
-
-                let result = tokio::select! {
-                    server_result = server => {
-                        lifecycle_cancel.cancel();
-                        let _ = lifecycle_handle.await;
-                        server_result
+            let mut lifecycle_handle = proxy_cache_lifecycle.handle;
+            let lifecycle_cancel = proxy_cache_lifecycle.cancel;
+            let server_result = tokio::select! {
+                server_result = server => {
+                    lifecycle_cancel.cancel();
+                    match lifecycle_handle.await {
+                        Ok(()) => info!("API proxy cache lifecycle stopped after API server exit"),
+                        Err(error) if error.is_cancelled() => {
+                            info!("API proxy cache lifecycle task cancelled during shutdown");
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                "API proxy cache lifecycle task failed during shutdown"
+                            );
+                        }
                     }
-                    lifecycle_result = &mut lifecycle_handle => {
-                            lifecycle_cancel.cancel();
-                            return map_background_task_exit(
-                            "API proxy cache lifecycle",
-                            lifecycle_result,
-                        );
-                    }
-                };
-
-                result
-            } else {
-                server.await
+                    server_result
+                }
+                lifecycle_result = &mut lifecycle_handle => {
+                    lifecycle_cancel.cancel();
+                    return map_background_task_exit(
+                        "API proxy cache lifecycle",
+                        lifecycle_result,
+                    );
+                }
             };
 
             server_result.map_err(|e| anyhow::anyhow!("API server error: {e}"))?;
@@ -1868,10 +1881,7 @@ impl SyncTvServer {
         shared_http_app_state: Arc<synctv_api::http::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let management_apis = management_apis_from_http_state(shared_http_app_state.as_ref())?;
-        let node_id = self.services.realtime_event_service.as_ref().map_or_else(
-            || "single-node".to_string(),
-            |service| service.node_id().to_string(),
-        );
+        let node_id = self.services.realtime_event_service.node_id().to_string();
         let cluster_client = self
             .services
             .node_registry
@@ -1990,7 +2000,6 @@ mod tests {
     use std::time::Duration;
     use synctv_core::{
         cache::UsernameCache,
-        config::PasswordComplexityConfig,
         repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
         service::{JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService},
         Config,
@@ -2008,11 +2017,10 @@ mod tests {
             JwtService::new("test-jwt-secret-key-for-testing-minimum-length").expect("jwt");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 64, 60);
 
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             jwt_service,
             username_cache,
-            PasswordComplexityConfig::default(),
             create_test_token_blacklist_store_service(),
             synctv_core::cache::KeyBuilder::new("test"),
             create_test_brute_force_protection_service(),
@@ -2026,27 +2034,25 @@ mod tests {
             .expect("lazy pool");
         let config = Arc::new(Config::default());
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
-        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None);
+        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None)
+            .expect("test proxy signing key should derive");
         let user_service = Arc::new(test_user_service(&pool));
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             ProviderInstanceRepository::new(pool.clone()),
         )));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager.clone()));
-        let providers = synctv_core::provider::ProviderSet {
-            alist: Arc::new(synctv_core::provider::AlistProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            bilibili: Arc::new(synctv_core::provider::BilibiliProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            emby: Arc::new(synctv_core::provider::EmbyProvider::new(
-                provider_instance_manager.clone(),
-            )),
-            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
-            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
-            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
-        };
+        let providers_manager = Arc::new(
+            ProvidersManager::new(provider_instance_manager.clone())
+                .expect("providers manager should build"),
+        );
+        let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager.clone(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("provider set should build");
         let settings_service = Arc::new(synctv_core::service::SettingsService::new(
             synctv_core::repository::SettingsRepository::new(pool.clone()),
             pool.clone(),
@@ -2059,26 +2065,23 @@ mod tests {
             synctv_api::http::create_app_state_from_config(synctv_api::http::RouterConfig {
                 config: config.clone(),
                 user_service,
-                user_cache: Arc::new(
-                    synctv_core::cache::UserCache::local_only(
-                        128,
-                        60,
-                        300,
-                        "test:user:".to_string(),
-                    )
-                    .expect("user cache"),
-                ),
+                user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )),
                 room_service,
                 content_filter: synctv_core::service::ContentFilter::new(),
                 provider_instance_manager,
                 user_provider_credential_repository: credential_repo.clone(),
                 providers,
-                event_service: None,
+                event_service: Arc::new(synctv_api::runtime::LocalNoopRealtimeEventService::new()),
                 connection_manager: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
                 jwt_service: JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
                     .expect("jwt"),
                 realtime_fanout_service:
-                    synctv_api::realtime_fanout::default_realtime_fanout_service(None, false),
+                    synctv_api::realtime_fanout::disabled_realtime_fanout_service(),
                 oauth2_service: None,
                 passkey_service: None,
                 settings_service: Some(settings_service),
@@ -2114,7 +2117,8 @@ mod tests {
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(providers_manager),
-            });
+            })
+            .expect("test HTTP app state should build");
         let management_apis =
             management_apis_from_http_state(&http_state).expect("shared management APIs");
 
@@ -2194,7 +2198,8 @@ mod tests {
     #[test]
     fn shared_provider_runtime_uses_exact_configured_key_prefix() {
         let config = Config::default();
-        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None);
+        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None)
+            .expect("test proxy signing key should derive");
 
         assert_eq!(
             shared_runtime.provider_stores.key_prefix(),
@@ -2563,9 +2568,7 @@ mod tests {
         let api_dropped_clone = Arc::clone(&api_dropped);
         let api_handle = tokio::spawn(async move {
             let _guard = DropFlag(api_dropped_clone);
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
+            std::future::pending::<Result<(), anyhow::Error>>().await
         });
 
         let (cleanup_tx, cleanup_rx) = oneshot::channel::<()>();
@@ -3198,8 +3201,6 @@ mod tests {
     async fn test_runtime_server_exit_propagates_panic() {
         let handle = tokio::spawn(async move {
             panic!("boom");
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
         });
 
         let err = map_runtime_server_exit("gRPC server", handle.await)

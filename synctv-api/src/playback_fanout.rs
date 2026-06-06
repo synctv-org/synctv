@@ -1,0 +1,341 @@
+use parking_lot::Mutex;
+use std::sync::Arc;
+use synctv_core::models::{RoomPlaybackState, UserId};
+use synctv_core::service::playback::RealtimeOutboxPlaybackStateEventFactory;
+use synctv_realtime::sync::RealtimeEvent;
+
+use crate::realtime_fanout::{PreparedOutboxFanout, RealtimeFanoutService};
+
+pub trait PlaybackFanoutService: Send + Sync {
+    fn prepare_state_changed_outbox_fanout(
+        &self,
+        actor: PlaybackFanoutActor<'_>,
+    ) -> PreparedPlaybackStateFanout;
+
+    fn prepare_system_state_changed_outbox_fanout(&self) -> PreparedPlaybackStateFanout {
+        self.prepare_state_changed_outbox_fanout(PlaybackFanoutActor::system())
+    }
+
+    fn prepare_system_state_changed_batch_outbox_fanout(&self) -> PreparedPlaybackStateBatchFanout;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlaybackFanoutActor<'a> {
+    user_id: UserId,
+    username: &'a str,
+}
+
+impl<'a> PlaybackFanoutActor<'a> {
+    #[must_use]
+    pub const fn new(user_id: UserId, username: &'a str) -> Self {
+        Self { user_id, username }
+    }
+
+    #[must_use]
+    pub fn system() -> Self {
+        Self {
+            user_id: system_user_id(),
+            username: synctv_common::reserved::SYSTEM_USERNAME,
+        }
+    }
+}
+
+pub struct DefaultPlaybackFanoutService {
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+}
+
+impl DefaultPlaybackFanoutService {
+    #[must_use]
+    pub fn new(realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
+        Self { realtime_fanout }
+    }
+}
+
+impl std::fmt::Debug for DefaultPlaybackFanoutService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultPlaybackFanoutService")
+            .field(
+                "realtime_fanout_distributed",
+                &self.realtime_fanout.is_distributed_enabled(),
+            )
+            .finish()
+    }
+}
+
+impl PlaybackFanoutService for DefaultPlaybackFanoutService {
+    fn prepare_state_changed_outbox_fanout(
+        &self,
+        actor: PlaybackFanoutActor<'_>,
+    ) -> PreparedPlaybackStateFanout {
+        let actor = OwnedPlaybackFanoutActor {
+            user_id: actor.user_id,
+            username: actor.username.to_string(),
+        };
+        PreparedPlaybackStateFanout {
+            prepared: PreparedOutboxFanout::new(self.realtime_fanout.clone(), move |state| {
+                playback_state_changed_event(actor.as_borrowed(), state)
+            }),
+        }
+    }
+
+    fn prepare_system_state_changed_batch_outbox_fanout(&self) -> PreparedPlaybackStateBatchFanout {
+        PreparedPlaybackStateBatchFanout::new(
+            self.realtime_fanout.clone(),
+            OwnedPlaybackFanoutActor {
+                user_id: system_user_id(),
+                username: synctv_common::reserved::SYSTEM_USERNAME.to_string(),
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OwnedPlaybackFanoutActor {
+    user_id: UserId,
+    username: String,
+}
+
+impl OwnedPlaybackFanoutActor {
+    fn as_borrowed(&self) -> PlaybackFanoutActor<'_> {
+        PlaybackFanoutActor::new(self.user_id, &self.username)
+    }
+}
+
+#[derive(Clone)]
+pub struct PreparedPlaybackStateFanout {
+    prepared: PreparedOutboxFanout<RoomPlaybackState>,
+}
+
+impl PreparedPlaybackStateFanout {
+    #[must_use]
+    pub fn outbox_factory(&self) -> RealtimeOutboxPlaybackStateEventFactory {
+        let factory = self.prepared.outbox_factory();
+        Arc::new(move |state| factory(state))
+    }
+
+    pub fn publish_after_outbox_commit(&self) {
+        self.prepared.publish_after_outbox_commit();
+    }
+}
+
+#[derive(Clone)]
+pub struct PreparedPlaybackStateBatchFanout {
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    actor: OwnedPlaybackFanoutActor,
+    events: Arc<Mutex<Vec<RealtimeEvent>>>,
+}
+
+impl PreparedPlaybackStateBatchFanout {
+    fn new(
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
+        actor: OwnedPlaybackFanoutActor,
+    ) -> Self {
+        Self {
+            realtime_fanout,
+            actor,
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn outbox_factory(&self) -> RealtimeOutboxPlaybackStateEventFactory {
+        let realtime_fanout = self.realtime_fanout.clone();
+        let actor = self.actor.clone();
+        let events = self.events.clone();
+        Arc::new(move |state: &RoomPlaybackState| {
+            let event = playback_state_changed_event(actor.as_borrowed(), state);
+            events.lock().push(event.clone());
+            realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
+        })
+    }
+
+    pub fn publish_after_outbox_commit(&self) {
+        let events = std::mem::take(&mut *self.events.lock());
+        for event in events {
+            self.realtime_fanout.publish_after_outbox_commit(event);
+        }
+    }
+}
+
+fn playback_state_changed_event(
+    actor: PlaybackFanoutActor<'_>,
+    state: &RoomPlaybackState,
+) -> RealtimeEvent {
+    RealtimeEvent::PlaybackStateChanged {
+        event_id: synctv_common::snanoid!(16),
+        room_id: state.room_id,
+        user_id: actor.user_id,
+        username: actor.username.to_string(),
+        state: state.clone(),
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+fn system_user_id() -> UserId {
+    UserId::MAX
+}
+
+#[must_use]
+pub fn default_playback_fanout_service(
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+) -> Arc<dyn PlaybackFanoutService> {
+    Arc::new(DefaultPlaybackFanoutService::new(realtime_fanout))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_playback_fanout_service, PlaybackFanoutActor};
+    use crate::realtime_fanout::RealtimeFanoutService;
+    use async_trait::async_trait;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+    use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
+    use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
+    use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
+
+    #[derive(Default)]
+    struct RecordingRealtimeFanout {
+        published: AtomicUsize,
+        events: Mutex<Vec<RealtimeEvent>>,
+    }
+
+    #[async_trait]
+    impl RealtimeFanoutService for RecordingRealtimeFanout {
+        async fn try_publish(&self, request: PublishRequest) -> bool {
+            self.published.fetch_add(1, Ordering::SeqCst);
+            *self
+                .events
+                .lock()
+                .expect("event mutex should not be poisoned") = vec![request.event];
+            true
+        }
+
+        fn outbox_event(&self, _event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+            Ok(NewRealtimeOutboxEvent {
+                id: "test-playback-outbox".to_string(),
+                enqueue_outbox: false,
+                aggregate_type: "room_playback_state".to_string(),
+                aggregate_id: "160001".to_string(),
+                event_type: "playback_state_changed".to_string(),
+                event_version: 1,
+                aggregate_version: Some(7),
+                payload: serde_json::json!({}),
+            })
+        }
+
+        fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
+            self.published.fetch_add(1, Ordering::SeqCst);
+            self.events
+                .lock()
+                .expect("event mutex should not be poisoned")
+                .push(event);
+        }
+
+        fn is_distributed_enabled(&self) -> bool {
+            false
+        }
+
+        fn accepts_immediate_publish(&self) -> bool {
+            true
+        }
+    }
+
+    fn playback_state_with_version(version: i64) -> RoomPlaybackState {
+        RoomPlaybackState {
+            room_id: RoomId::expect_positive(160_001),
+            playing_media_id: Some(MediaId::expect_positive(160_002)),
+            playing_playlist_id: None,
+            target: Vec::new(),
+            current_progress_id: None,
+            position: 12.5,
+            speed: 1.0,
+            is_playing: true,
+            updated_at: chrono::Utc::now(),
+            version,
+        }
+    }
+
+    fn playback_state() -> RoomPlaybackState {
+        playback_state_with_version(7)
+    }
+
+    #[tokio::test]
+    async fn test_playback_fanout_publishes_prepared_state_changed_event_after_commit() {
+        let realtime = Arc::new(RecordingRealtimeFanout::default());
+        let service = default_playback_fanout_service(realtime.clone());
+        let actor = PlaybackFanoutActor::new(UserId::expect_positive(160_003), "alice");
+        let prepared = service.prepare_state_changed_outbox_fanout(actor);
+        let factory = prepared.outbox_factory();
+
+        let outbox_event = factory(&playback_state()).expect("outbox event should be prepared");
+        assert!(!outbox_event.enqueue_outbox);
+        prepared.publish_after_outbox_commit();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if realtime.published.load(Ordering::SeqCst) == 1 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("playback fanout should publish");
+
+        let event = realtime
+            .events
+            .lock()
+            .expect("event mutex should not be poisoned")
+            .first()
+            .cloned()
+            .expect("published event should be recorded");
+        match event {
+            RealtimeEvent::PlaybackStateChanged {
+                user_id,
+                username,
+                state,
+                ..
+            } => {
+                assert_eq!(user_id, UserId::expect_positive(160_003));
+                assert_eq!(username, "alice");
+                assert_eq!(state.version, 7);
+            }
+            other => panic!("expected PlaybackStateChanged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_playback_batch_fanout_publishes_all_prepared_events_after_commit() {
+        let realtime = Arc::new(RecordingRealtimeFanout::default());
+        let service = default_playback_fanout_service(realtime.clone());
+        let prepared = service.prepare_system_state_changed_batch_outbox_fanout();
+        let factory = prepared.outbox_factory();
+
+        let first_event = factory(&playback_state_with_version(7))
+            .expect("first batch outbox event should prepare");
+        let second_event = factory(&playback_state_with_version(8))
+            .expect("second batch outbox event should prepare");
+        assert_eq!(first_event.event_type, "playback_state_changed");
+        assert_eq!(second_event.event_type, "playback_state_changed");
+        assert_eq!(realtime.published.load(Ordering::SeqCst), 0);
+
+        prepared.publish_after_outbox_commit();
+
+        assert_eq!(realtime.published.load(Ordering::SeqCst), 2);
+        let versions = realtime
+            .events
+            .lock()
+            .expect("event mutex should not be poisoned")
+            .iter()
+            .map(|event| match event {
+                RealtimeEvent::PlaybackStateChanged { state, .. } => state.version,
+                other => panic!("expected PlaybackStateChanged, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(versions, vec![7, 8]);
+    }
+}

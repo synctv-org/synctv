@@ -3,7 +3,6 @@
 //! Tests: upsert conflict handling, transaction executor path,
 //!        `delete_all_for_user_with_executor`.
 //!
-//! Run with: cargo test -p synctv-core --test `user_oauth_provider_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

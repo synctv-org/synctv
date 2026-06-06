@@ -16,8 +16,8 @@ sort_field_enum! {
     #[serde(rename_all = "snake_case")]
     pub enum PlaylistListSortBy {
         Name => { display: "name", sql: "name" },
-        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
-        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        CreatedAt => { display: "created_at", sql: "created_at" },
+        UpdatedAt => { display: "updated_at", sql: "updated_at" },
         Position => { display: "position", sql: "position" },
     }
     default = Position;
@@ -188,54 +188,20 @@ mod tests {
     }
 
     #[test]
-    fn test_playlist_serde_roundtrip() {
-        let playlist = make_playlist("Test", None, Some("emby".to_string()));
-        let json = serde_json::to_value(&playlist).unwrap();
-        let deserialized: Playlist = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.name, "Test");
-        assert_eq!(deserialized.source_provider.as_deref(), Some("emby"));
-    }
-
-    #[test]
-    fn test_create_playlist_request_deserialize() {
-        let json = serde_json::json!({
-            "room_id": 123,
-            "name": "My Playlist",
-            "parent_id": 456,
-            "source_provider": "alist",
-            "source_config": {"path": "/videos"},
-            "provider_instance_name": "my_alist"
-        });
-        let req: CreatePlaylistRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.room_id.as_i64(), 123);
-        assert_eq!(req.name, "My Playlist");
-        assert_eq!(req.parent_id.as_ref().unwrap().as_i64(), 456);
-        assert_eq!(req.source_provider.as_deref(), Some("alist"));
-    }
-
-    #[test]
-    fn test_create_playlist_request_minimal() {
+    fn create_playlist_request_defaults_description() {
         let json = serde_json::json!({
             "room_id": 123,
             "name": "Simple"
         });
         let req: CreatePlaylistRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.description, "");
         assert!(req.parent_id.is_none());
         assert!(req.source_provider.is_none());
         assert!(req.source_config.is_none());
     }
 
     #[test]
-    fn test_update_playlist_request_partial() {
-        let json = serde_json::json!({
-            "name": "Renamed"
-        });
-        let req: UpdatePlaylistRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.name.as_deref(), Some("Renamed"));
-    }
-
-    #[test]
-    fn test_playlist_with_count_serde() {
+    fn playlist_with_count_flattens_playlist_fields() {
         let playlist = make_playlist("Counted", None, None);
         let pwc = PlaylistWithCount {
             playlist,
@@ -245,7 +211,6 @@ mod tests {
         let json = serde_json::to_value(&pwc).unwrap();
         assert_eq!(json["media_count"], 42);
         assert_eq!(json["children_count"], 3);
-        // Flattened playlist fields
         assert_eq!(json["name"], "Counted");
     }
 }

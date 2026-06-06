@@ -28,7 +28,11 @@ use synctv_core::models::{
 use synctv_core::provider::{BilibiliProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::{get_provider_credentials, publish_provider_credential_changed};
+use super::ProviderApiRuntime;
+use super::{
+    get_provider_credentials, provider_instance_name_for_provider,
+    publish_provider_credential_changed,
+};
 
 /// Bilibili API implementation
 ///
@@ -39,7 +43,7 @@ pub struct BilibiliApiImpl {
     provider: Arc<BilibiliProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
     access_service: Option<Arc<dyn ProviderAccessService>>,
-    event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+    event_service: Arc<dyn crate::runtime::RealtimeEventService>,
     sms_login_token_codec: Arc<BilibiliSmsLoginTokenCodec>,
     qr_login_status_cache: Arc<moka::sync::Cache<String, BilibiliQrLoginStatusSnapshot>>,
 }
@@ -71,20 +75,34 @@ const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
 const QR_LOGIN_STATUS_CACHE_TTL_SECONDS: u64 = 2;
 type HmacSha256 = Hmac<Sha256>;
 
+fn parse_bilibili_match_id(
+    raw: &str,
+    field: &str,
+) -> Result<u64, synctv_core::provider::ProviderError> {
+    raw.parse::<u64>().map_err(|error| {
+        synctv_core::provider::ProviderError::ParseError(format!(
+            "Invalid Bilibili {field} id '{raw}': {error}"
+        ))
+    })
+}
+
 struct BilibiliSmsLoginTokenCodec {
     cipher: Aes256Gcm,
 }
 
 impl BilibiliSmsLoginTokenCodec {
-    fn derive_from(secret: &[u8]) -> Self {
-        let mut derivation_mac =
-            HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    fn derive_from(secret: &[u8]) -> Result<Self, synctv_core::provider::ProviderError> {
+        let mut derivation_mac = HmacSha256::new_from_slice(secret).map_err(|error| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to derive Bilibili SMS login token key: {error}"
+            ))
+        })?;
         derivation_mac.update(SMS_LOGIN_DOMAIN_SEPARATOR);
         let derived = derivation_mac.finalize().into_bytes();
         let key = Key::<Aes256Gcm>::from_slice(&derived);
-        Self {
+        Ok(Self {
             cipher: Aes256Gcm::new(key),
-        }
+        })
     }
 
     fn encode(
@@ -162,48 +180,34 @@ fn ensure_login_cookies_present(
 }
 
 impl BilibiliApiImpl {
-    #[must_use]
-    pub fn new(
+    pub fn new_with_runtime(
         provider: Arc<BilibiliProvider>,
         credential_repo: Arc<UserProviderCredentialRepository>,
         sms_login_secret: &[u8],
-    ) -> Self {
-        Self {
+        runtime: ProviderApiRuntime,
+    ) -> Result<Self, synctv_core::provider::ProviderError> {
+        Ok(Self {
             provider,
             credential_repo,
-            access_service: None,
-            event_service: None,
+            access_service: runtime.access_service,
+            event_service: runtime.event_service,
             sms_login_token_codec: Arc::new(BilibiliSmsLoginTokenCodec::derive_from(
                 sms_login_secret,
-            )),
+            )?),
             qr_login_status_cache: Arc::new(
                 moka::sync::Cache::builder()
                     .max_capacity(10_000)
                     .time_to_live(Duration::from_secs(QR_LOGIN_STATUS_CACHE_TTL_SECONDS))
                     .build(),
             ),
-        }
-    }
-
-    #[must_use]
-    pub fn with_access_service(mut self, access_service: Arc<dyn ProviderAccessService>) -> Self {
-        self.access_service = Some(access_service);
-        self
-    }
-
-    #[must_use]
-    pub fn with_event_service(
-        mut self,
-        event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
-    ) -> Self {
-        self.event_service = event_service;
-        self
+        })
     }
 
     fn resolve_effective_instance_name(
         requested_instance_name: Option<&str>,
         credential_instance_name: CredentialProviderInstanceName<'_>,
     ) -> Result<Option<String>, synctv_core::provider::ProviderError> {
+        let requested_instance_name = provider_instance_name_for_provider(requested_instance_name)?;
         resolve_provider_instance_binding(requested_instance_name, credential_instance_name)
             .map_err(|error| synctv_core::provider::ProviderError::InvalidConfig(error.to_string()))
     }
@@ -308,7 +312,7 @@ impl BilibiliApiImpl {
                 .await?;
         }
         publish_provider_credential_changed(
-            self.event_service.as_ref(),
+            &self.event_service,
             *caller_user_id,
             synctv_core::provider::BilibiliProvider::NAME,
             &server_id,
@@ -350,8 +354,8 @@ impl BilibiliApiImpl {
         if requested.is_none() {
             return Ok(());
         }
-        let expected = normalize_provider_instance_name(session.instance_name.as_deref());
-        let requested = normalize_provider_instance_name(requested);
+        let expected = provider_instance_name_for_provider(session.instance_name.as_deref())?;
+        let requested = provider_instance_name_for_provider(requested)?;
         if expected != requested {
             return Err(synctv_core::provider::ProviderError::Authentication(
                 "Bilibili SMS login session does not match the requested provider instance"
@@ -371,9 +375,12 @@ impl BilibiliApiImpl {
         })
     }
 
-    fn qr_login_status_cache_key(instance_name: Option<&str>, key: &str) -> String {
-        let instance_name = normalize_provider_instance_name(instance_name).unwrap_or_default();
-        format!("{instance_name}:{key}")
+    fn qr_login_status_cache_key(
+        instance_name: Option<&str>,
+        key: &str,
+    ) -> Result<String, synctv_core::provider::ProviderError> {
+        let instance_name = provider_instance_name_for_provider(instance_name)?.unwrap_or_default();
+        Ok(format!("{instance_name}:{key}"))
     }
 
     fn require_sms_captcha_key(
@@ -444,7 +451,7 @@ impl BilibiliApiImpl {
                         String::new()
                     },
                     aid: if match_resp.r#type == "av" {
-                        match_resp.id.parse().unwrap_or(0)
+                        parse_bilibili_match_id(&match_resp.id, "aid")?
                     } else {
                         0
                     },
@@ -463,12 +470,12 @@ impl BilibiliApiImpl {
                 let parse_req = synctv_media_providers::grpc::bilibili::ParsePgcPageReq {
                     cookies: cookies.clone(),
                     epid: if match_resp.r#type == "ep" {
-                        match_resp.id.parse().unwrap_or(0)
+                        parse_bilibili_match_id(&match_resp.id, "epid")?
                     } else {
                         0
                     },
                     ssid: if match_resp.r#type == "ss" {
-                        match_resp.id.parse().unwrap_or(0)
+                        parse_bilibili_match_id(&match_resp.id, "ssid")?
                     } else {
                         0
                     },
@@ -485,7 +492,7 @@ impl BilibiliApiImpl {
             "live" => {
                 let parse_req = synctv_media_providers::grpc::bilibili::ParseLivePageReq {
                     cookies: cookies.clone(),
-                    room_id: match_resp.id.parse().unwrap_or(0),
+                    room_id: parse_bilibili_match_id(&match_resp.id, "room")?,
                 };
 
                 self.provider
@@ -593,7 +600,7 @@ impl BilibiliApiImpl {
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<QrStatusResponse, synctv_core::provider::ProviderError> {
-        let cache_key = Self::qr_login_status_cache_key(instance_name, &req.key);
+        let cache_key = Self::qr_login_status_cache_key(instance_name, &req.key)?;
         if let Some(snapshot) = self.qr_login_status_cache.get(&cache_key) {
             return Ok(QrStatusResponse {
                 status: snapshot.status,
@@ -851,7 +858,7 @@ impl BilibiliApiImpl {
                     .await?;
             }
             publish_provider_credential_changed(
-                self.event_service.as_ref(),
+                &self.event_service,
                 *caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
                 &server_id,
@@ -892,7 +899,9 @@ impl BilibiliApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_login_cookies_present, BilibiliApiImpl, BilibiliSmsLoginSession};
+    use super::{
+        ensure_login_cookies_present, BilibiliApiImpl, BilibiliSmsLoginSession, ProviderApiRuntime,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use synctv_core::credential_encryption::CredentialEncryption;
@@ -909,9 +918,10 @@ mod tests {
     fn provider() -> Arc<BilibiliProvider> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(BilibiliProvider::new(Arc::new(RemoteProviderManager::new(
-            repo,
-        ))))
+        Arc::new(
+            BilibiliProvider::new(Arc::new(RemoteProviderManager::new(repo)))
+                .expect("provider should build"),
+        )
     }
 
     fn test_encryption() -> CredentialEncryption {
@@ -920,6 +930,26 @@ mod tests {
 
     fn test_sms_login_secret() -> &'static [u8] {
         b"test-bilibili-sms-login-secret"
+    }
+
+    fn test_provider_runtime() -> ProviderApiRuntime {
+        ProviderApiRuntime {
+            access_service: None,
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        }
+    }
+
+    fn test_api(
+        provider: Arc<BilibiliProvider>,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> BilibiliApiImpl {
+        BilibiliApiImpl::new_with_runtime(
+            provider,
+            credential_repo,
+            test_sms_login_secret(),
+            test_provider_runtime(),
+        )
+        .expect("Bilibili API test fixture should initialize")
     }
 
     fn test_user(username: &str) -> User {
@@ -971,6 +1001,21 @@ mod tests {
     }
 
     #[test]
+    fn effective_instance_rejects_invalid_requested_instance_name() {
+        let err = BilibiliApiImpl::resolve_effective_instance_name(
+            Some("bad instance!"),
+            CredentialProviderInstanceName::NotCredentialBacked,
+        )
+        .expect_err("invalid explicit instance should be rejected");
+
+        assert!(matches!(
+            err,
+            synctv_core::provider::ProviderError::InvalidConfig(message)
+                if message.contains("provider instance name")
+        ));
+    }
+
+    #[test]
     fn effective_instance_rejects_explicit_instance_for_unbound_credential() {
         let err = BilibiliApiImpl::resolve_effective_instance_name(
             Some("bilibili_remote"),
@@ -981,6 +1026,18 @@ mod tests {
         assert!(matches!(
             err,
             synctv_core::provider::ProviderError::InvalidConfig(_)
+        ));
+    }
+
+    #[test]
+    fn qr_login_status_cache_key_rejects_invalid_instance_name() {
+        let err = BilibiliApiImpl::qr_login_status_cache_key(Some("bad instance!"), "qr-key")
+            .expect_err("invalid instance name must not share the default QR cache key");
+
+        assert!(matches!(
+            err,
+            synctv_core::provider::ProviderError::InvalidConfig(message)
+                if message.contains("provider instance name")
         ));
     }
 
@@ -1005,20 +1062,17 @@ mod tests {
 
     #[tokio::test]
     async fn sms_login_session_token_decodes_across_api_instances() {
-        let secret = test_sms_login_secret();
-        let api_one = BilibiliApiImpl::new(
+        let api_one = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(
                 sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
             )),
-            secret,
         );
-        let api_two = BilibiliApiImpl::new(
+        let api_two = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(
                 sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
             )),
-            secret,
         );
         let session = BilibiliSmsLoginSession {
             token: "captcha-token".to_string(),
@@ -1052,12 +1106,11 @@ mod tests {
 
     #[tokio::test]
     async fn sms_login_session_token_rejects_tampering_and_expiry() {
-        let api = BilibiliApiImpl::new(
+        let api = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(
                 sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
             )),
-            test_sms_login_secret(),
         );
         let valid = BilibiliSmsLoginSession {
             token: "captcha-token".to_string(),
@@ -1091,10 +1144,9 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn get_user_info_without_binding_reports_logged_out() {
         let (_postgres, pool) = create_test_pool().await;
-        let api = BilibiliApiImpl::new(
+        let api = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
-            test_sms_login_secret(),
         );
 
         let response = api
@@ -1116,10 +1168,9 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn logout_without_binding_is_idempotent() {
         let (_postgres, pool) = create_test_pool().await;
-        let api = BilibiliApiImpl::new(
+        let api = test_api(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
-            test_sms_login_secret(),
         );
 
         let response = api
@@ -1144,8 +1195,7 @@ mod tests {
             pool.clone(),
             test_encryption(),
         ));
-        let api =
-            BilibiliApiImpl::new(provider(), credential_repo.clone(), test_sms_login_secret());
+        let api = test_api(provider(), credential_repo.clone());
         let user = user_repo
             .create(&test_user("bilibili_instance_login"))
             .await
@@ -1181,7 +1231,7 @@ mod tests {
             pool.clone(),
             test_encryption(),
         ));
-        let api = BilibiliApiImpl::new(provider(), credential_repo, test_sms_login_secret());
+        let api = test_api(provider(), credential_repo);
         let user = user_repo
             .create(&test_user("bilibili_bind_filter"))
             .await

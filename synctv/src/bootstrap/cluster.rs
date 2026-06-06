@@ -348,9 +348,8 @@ pub async fn activate_cluster_node(
     .await;
 
     match health_monitor.start() {
-        Ok(hm_handle) => {
+        Ok(()) => {
             info!("Health monitor started");
-            health_monitor.set_join_handle(hm_handle);
             Ok(())
         }
         Err(e) => {
@@ -401,7 +400,7 @@ mod tests {
     use synctv_core::{config::ClusterDiscoveryMode, Config};
     use synctv_realtime::sync::{
         build_room_message_runtime, ConnectionLimits, ConnectionManager, RealtimeConfig,
-        RealtimeManager,
+        RealtimeManager, RealtimeManagerRuntime,
     };
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
@@ -536,11 +535,16 @@ mod tests {
             event_handler: None,
             parent_cancel_token: Some(CancellationToken::new()),
         };
-        let mut manager = RealtimeManager::new(realtime_config)
-            .await
-            .expect("realtime manager");
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-        manager.set_connection_manager(connection_manager.clone());
+        let manager = RealtimeManager::new_with_runtime(
+            realtime_config,
+            RealtimeManagerRuntime {
+                connection_runtime: Some(connection_manager.clone()),
+                leader_runtime: None,
+            },
+        )
+        .await
+        .expect("realtime manager");
         let manager = Arc::new(manager);
 
         let mut config = test_realtime_config();

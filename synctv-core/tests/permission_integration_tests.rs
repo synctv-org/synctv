@@ -2,7 +2,6 @@
 //!
 //! Tests verify Allow/Deny permission pattern and integration with database.
 //!
-//! Run with: cargo test --test `permission_integration_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
@@ -82,6 +81,7 @@ fn make_perm_service(
     room_repo: RoomRepository,
 ) -> PermissionService {
     PermissionService::new(member_repo, room_repo, None, 1000, 300)
+        .expect("permission service should build")
 }
 
 #[tokio::test]

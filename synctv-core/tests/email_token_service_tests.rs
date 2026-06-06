@@ -5,7 +5,6 @@
 //!
 //! Requires real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test --test `email_token_service_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;

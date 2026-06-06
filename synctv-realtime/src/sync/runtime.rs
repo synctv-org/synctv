@@ -120,7 +120,7 @@ pub trait RoomMessageRuntime: Send + Sync {
         &self,
         cleanup_interval: Duration,
         cancel_token: CancellationToken,
-    ) -> JoinHandle<()>;
+    ) -> Option<JoinHandle<()>>;
 
     async fn shutdown(&self);
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[async_trait]
     impl RedisConnectionRuntime for HangingRedisRuntime {
-        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
             std::future::pending().await
         }
 

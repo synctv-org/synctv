@@ -4,6 +4,14 @@ use webauthn_rs::prelude::Passkey;
 
 use crate::{models::UserId, Error, InternalExt, Result};
 
+fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
+    value.ok_or_else(|| {
+        Error::Internal(format!(
+            "{query_description} COUNT query returned no scalar value"
+        ))
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct WebAuthnCredential {
     pub id: i64,
@@ -228,7 +236,7 @@ impl WebAuthnCredentialRepository {
         )
         .fetch_one(executor)
         .await?;
-        Ok(count.unwrap_or(0))
+        count_value(count, "WebAuthn credential")
     }
 
     pub async fn exists_for_user_with_executor<'e, E>(

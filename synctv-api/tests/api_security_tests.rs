@@ -1,8 +1,6 @@
 //! API Security Tests //!
 //! Tests for API security behavior:
 //! - Guest-token validation must use GuestTokenValidator (blacklist check)
-//! - WebSocket Bearer token case-sensitivity
-//! - Logout must require auth token
 //! - sqlx::Error must not leak DB details in gRPC responses
 
 #![allow(clippy::unwrap_used)]
@@ -11,9 +9,7 @@ use std::sync::Arc;
 use synctv_core::cache::KeyBuilder;
 use synctv_core::models::RoomId;
 use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
-use synctv_core::service::auth::{
-    GuestTokenValidator, JwtService, JwtValidator, TokenBlacklistStore,
-};
+use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklistStore};
 use synctv_core::Error;
 
 /// A blacklisted guest token MUST be rejected by validate_async.
@@ -26,7 +22,7 @@ async fn test_blacklisted_guest_token_rejected_by_validator() {
     let blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
     let kb = KeyBuilder::new("test");
-    let validator = GuestTokenValidator::new(jwt.clone()).with_blacklist(blacklist, kb);
+    let validator = GuestTokenValidator::new(jwt.clone(), blacklist, kb);
 
     let room_id = RoomId::new();
     let token = jwt.sign_guest_token(&room_id).unwrap();
@@ -57,7 +53,7 @@ async fn test_non_blacklisted_guest_token_passes() {
     let blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
     let kb = KeyBuilder::new("test");
-    let validator = GuestTokenValidator::new(jwt.clone()).with_blacklist(blacklist, kb);
+    let validator = GuestTokenValidator::new(jwt.clone(), blacklist, kb);
 
     let room_id = RoomId::new();
     let token = jwt.sign_guest_token(&room_id).unwrap();
@@ -73,10 +69,6 @@ async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
 
     #[async_trait::async_trait]
     impl TokenBlacklistStore for FailingBlacklistStore {
-        async fn is_blacklisted(&self, _key: &str) -> bool {
-            false
-        }
-
         async fn is_blacklisted_checked(&self, _key: &str) -> Result<bool, Error> {
             Err(Error::Internal("blacklist backend unavailable".to_string()))
         }
@@ -87,10 +79,6 @@ async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
 
         async fn blacklist_if_not_exists(&self, _key: &str, _ttl_secs: u64) -> Result<bool, Error> {
             Ok(false)
-        }
-
-        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-            None
         }
 
         async fn get_family_revoked_at_checked(&self, _key: &str) -> Result<Option<i64>, Error> {
@@ -110,7 +98,7 @@ async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
     let jwt = create_test_jwt_service();
     let blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FailingBlacklistStore);
     let kb = KeyBuilder::new("test");
-    let validator = GuestTokenValidator::new(jwt.clone()).with_blacklist(blacklist, kb);
+    let validator = GuestTokenValidator::new(jwt.clone(), blacklist, kb);
 
     let room_id = RoomId::new();
     let token = jwt.sign_guest_token(&room_id).unwrap();
@@ -124,76 +112,6 @@ async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
         matches!(err, Error::ServiceUnavailable(ref msg) if msg.contains("temporarily unavailable")),
         "guest token validator must surface service unavailability, got: {err}"
     );
-}
-
-/// "bearer " (lowercase) should be accepted by extract_bearer_token.
-/// The shared Bearer parsing path uses JwtValidator::extract_bearer_token,
-/// which is case-insensitive. WebSocket's extract_user_id must match.
-#[test]
-fn test_bearer_lowercase_accepted() {
-    let result = JwtValidator::extract_bearer_token("bearer some_token_value");
-    assert!(
-        result.is_ok(),
-        "lowercase 'bearer ' should be accepted, got: {:?}",
-        result.err()
-    );
-    assert_eq!(result.unwrap(), "some_token_value");
-}
-
-/// "BEARER " (uppercase) should be accepted
-#[test]
-fn test_bearer_uppercase_accepted() {
-    let result = JwtValidator::extract_bearer_token("BEARER some_token_value");
-    assert!(result.is_ok(), "uppercase 'BEARER ' should be accepted");
-    assert_eq!(result.unwrap(), "some_token_value");
-}
-
-/// Mixed case "BeArEr " should be accepted
-#[test]
-fn test_bearer_mixed_case_accepted() {
-    let result = JwtValidator::extract_bearer_token("BeArEr my_jwt_token");
-    assert!(result.is_ok(), "mixed case 'BeArEr ' should be accepted");
-    assert_eq!(result.unwrap(), "my_jwt_token");
-}
-
-/// Non-Bearer auth scheme should be rejected
-#[test]
-fn test_non_bearer_rejected() {
-    let result = JwtValidator::extract_bearer_token("Basic dXNlcjpwYXNz");
-    assert!(result.is_err(), "Non-Bearer auth scheme should be rejected");
-}
-
-/// When Authorization header is present but invalid format, WebSocket should
-/// return an error rather than silently falling through to query params.
-#[test]
-fn test_invalid_auth_header_should_error() {
-    // "Bearer" without a space and token should fail
-    let result = JwtValidator::extract_bearer_token("Bearer");
-    assert!(result.is_err(), "'Bearer' without token should be rejected");
-}
-
-/// Logout without an Authorization header should return an error.
-/// confuses clients and doesn't actually perform any blacklisting.
-#[test]
-fn test_logout_without_token_should_fail() {
-    // Test the structural requirement: extract_bearer_token should fail
-    // when given None (no header).
-    // The logout handler should check this and return an error.
-
-    // Simulate what happens when no header is provided
-    let no_auth: Option<&str> = None;
-    let token = no_auth.and_then(|v| JwtValidator::extract_bearer_token(v).ok());
-    assert!(
-        token.is_none(),
-        "No Authorization header should produce no token"
-    );
-}
-
-/// Logout with a valid Bearer token format should proceed to blacklisting.
-#[test]
-fn test_logout_with_valid_header_extracts_token() {
-    let token = JwtValidator::extract_bearer_token("Bearer valid.jwt.token").unwrap();
-    assert_eq!(token, "valid.jwt.token");
 }
 
 /// Internal errors (including sqlx::Error) must be sanitized before
@@ -218,97 +136,6 @@ fn test_api_error_internal_sanitized_for_grpc() {
         !proto_err.message.contains("connection"),
         "DB connection details must not leak"
     );
-}
-
-/// Non-internal errors should preserve their message.
-#[test]
-fn test_non_internal_errors_preserved_for_grpc() {
-    use synctv_api::impls::ApiError;
-
-    let api_err = ApiError::NotFound("Room not found".to_string());
-    let proto_err = api_err.to_proto_error();
-    assert_eq!(proto_err.message, "Room not found");
-
-    let api_err = ApiError::InvalidInput("Password too short".to_string());
-    let proto_err = api_err.to_proto_error();
-    assert_eq!(proto_err.message, "Password too short");
-}
-
-/// sqlx::Error conversion to ApiError should map to Internal variant.
-#[test]
-fn test_sqlx_error_maps_to_internal() {
-    use synctv_api::impls::ApiError;
-
-    // ApiError implements From<sqlx::Error>
-    // We verify the classify() returns Internal
-    let err = ApiError::Internal("Database error: connection refused".to_string());
-    assert!(
-        matches!(err.classify(), synctv_api::impls::ErrorKind::Internal),
-        "sqlx errors should classify as Internal"
-    );
-}
-
-/// The gRPC map_api_error must sanitize internal error messages.
-/// We test this indirectly by verifying ApiError::Internal display
-/// goes through classify_error -> Internal -> sanitized message.
-#[test]
-fn test_classify_error_database_errors() {
-    use synctv_api::impls::classify_error;
-
-    // Database-specific errors should classify as Internal
-    assert!(matches!(
-        classify_error("Database error: connection refused"),
-        synctv_api::impls::ErrorKind::Internal
-    ));
-
-    assert!(matches!(
-        classify_error("error returned from database: timeout"),
-        synctv_api::impls::ErrorKind::Internal
-    ));
-}
-
-// Input validation: i32-to-u32 conversion safety
-
-/// Verify that u32::try_from handles negative i32 values safely.
-/// This is the pattern used in the fixed list endpoints, including `list_my_rooms`.
-#[test]
-fn test_i32_to_u32_negative_conversion() {
-    // Negative i32 values must not wrap to huge u32 values
-    let negative: i32 = -1;
-    assert_eq!(u32::try_from(negative).unwrap_or(1), 1);
-
-    let negative: i32 = i32::MIN;
-    assert_eq!(u32::try_from(negative).unwrap_or(1), 1);
-
-    // Positive values pass through
-    let positive: i32 = 5;
-    assert_eq!(u32::try_from(positive).unwrap_or(1), 5);
-
-    // Zero defaults to 1
-    let zero: i32 = 0;
-    assert_eq!(u32::try_from(zero).unwrap_or(1), 0); // 0 converts fine, PageParams handles it
-}
-
-/// Verify that the `as u32` cast on negative i32 would be dangerous.
-/// This documents WHY we use try_from instead.
-#[test]
-fn test_i32_as_u32_is_dangerous() {
-    // This demonstrates the bug we fixed: -1i32 as u32 wraps to u32::MAX
-    let negative: u32 = (-1i32).cast_unsigned();
-    let wrapped = negative;
-    assert_eq!(wrapped, u32::MAX, "Demonstrates the wrapping bug");
-
-    // And PageParams::new would NOT clamp this since it only clamps page_size, not page
-    let params = synctv_core::models::PageParams::new(Some(wrapped), Some(20));
-    assert_eq!(
-        params.page,
-        u32::MAX,
-        "PageParams does not clamp page number down from u32::MAX"
-    );
-
-    // offset() must use wide arithmetic so even a wrapped caller input does not panic
-    // or silently truncate before later validation rejects the request.
-    assert_eq!(params.offset(), (u64::from(u32::MAX) - 1) * 20);
 }
 
 // Test helpers

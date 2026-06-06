@@ -11,12 +11,27 @@ use crate::{
     Error, InternalExt, Result,
 };
 
+#[allow(clippy::cast_precision_loss)]
 fn usize_to_f64(value: usize) -> f64 {
-    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+    value as f64
 }
 
-fn u64_to_i64(value: u64) -> i64 {
-    value.cast_signed()
+fn u64_to_i64(value: u64, field: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::InvalidInput(format!("{field} exceeds i64::MAX")))
+}
+
+fn duration_hours(value: u64, field: &'static str) -> Result<Duration> {
+    Ok(Duration::hours(u64_to_i64(value, field)?))
+}
+
+fn duration_days(value: u64, field: &'static str) -> Result<Duration> {
+    Ok(Duration::days(u64_to_i64(value, field)?))
+}
+
+fn duration_hours_to_seconds(value: u64, field: &'static str) -> Result<i64> {
+    u64_to_i64(value, field)?
+        .checked_mul(3600)
+        .ok_or_else(|| Error::InvalidInput(format!("{field} seconds exceed i64::MAX")))
 }
 
 const MIN_JWT_SECRET_ENTROPY_BITS_F64: f64 = 128.0;
@@ -38,6 +53,21 @@ impl TokenType {
             "refresh" => Some(Self::Refresh),
             "guest" => Some(Self::Guest),
             _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserTokenSigningKind {
+    Access,
+    Refresh,
+}
+
+impl UserTokenSigningKind {
+    const fn claim_typ(self) -> &'static str {
+        match self {
+            Self::Access => "access",
+            Self::Refresh => "refresh",
         }
     }
 }
@@ -157,24 +187,34 @@ impl Claims {
         matches!(self.amr.as_deref(), Some("local_2fa" | "oauth2"))
     }
 
-    #[must_use]
-    pub fn credential_binding(&self) -> Option<TokenCredentialBinding> {
+    pub fn credential_binding(&self) -> Result<TokenCredentialBinding> {
         match self.cbm.as_deref() {
-            Some("password") => Some(TokenCredentialBinding::Password { version: self.pv }),
-            Some("oauth2") => Some(TokenCredentialBinding::OAuth2 {
-                provider_instance_name: self.opi.clone()?,
-                provider_user_id: self.ops.clone()?,
-            }),
+            Some("password") => Ok(TokenCredentialBinding::Password { version: self.pv }),
+            Some("oauth2") => {
+                Ok(TokenCredentialBinding::OAuth2 {
+                    provider_instance_name: self.opi.clone().ok_or_else(|| {
+                        Error::Authentication("Authentication failed".to_string())
+                    })?,
+                    provider_user_id: self.ops.clone().ok_or_else(|| {
+                        Error::Authentication("Authentication failed".to_string())
+                    })?,
+                })
+            }
             Some("webauthn") => {
                 let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(self.wcid.as_deref()?)
-                    .ok()?;
-                Some(TokenCredentialBinding::WebAuthn { credential_id })
+                    .decode(self.wcid.as_deref().ok_or_else(|| {
+                        Error::Authentication("Authentication failed".to_string())
+                    })?)
+                    .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+                Ok(TokenCredentialBinding::WebAuthn { credential_id })
             }
-            Some("email") => Some(TokenCredentialBinding::Email {
-                email: self.eml.clone()?,
+            Some("email") => Ok(TokenCredentialBinding::Email {
+                email: self
+                    .eml
+                    .clone()
+                    .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?,
             }),
-            _ => None,
+            Some(_) | None => Err(Error::Authentication("Authentication failed".to_string())),
         }
     }
 }
@@ -363,6 +403,10 @@ impl JwtService {
 
         // Always validate secret entropy
         Self::validate_secret_entropy(secret)?;
+        duration_hours(access_token_duration_hours, "access token duration hours")?;
+        duration_days(refresh_token_duration_days, "refresh token duration days")?;
+        duration_hours(guest_token_duration_hours, "guest token duration hours")?;
+        duration_hours_to_seconds(access_token_duration_hours, "access token duration hours")?;
 
         let encoding_key = EncodingKey::from_secret(secret.as_bytes());
         let decoding_key = DecodingKey::from_secret(secret.as_bytes());
@@ -596,35 +640,21 @@ impl JwtService {
         false
     }
 
-    /// Sign a token
-    ///
-    /// # Arguments
-    /// * `user_id` - User ID
-    /// * `token_type` - Access or refresh token
-    ///
-    /// Note: Role is NOT included in token - it must be fetched from database on each request
-    pub fn sign_token(
-        &self,
-        user_id: &UserId,
-        token_type: TokenType,
-        password_version: i32,
-    ) -> Result<String> {
-        self.sign_token_with_auth_context(user_id, token_type, password_version, None)
+    pub fn sign_access_token(&self, user_id: &UserId, password_version: i32) -> Result<String> {
+        self.sign_access_token_with_auth_context(user_id, password_version, None)
     }
 
-    pub fn sign_token_with_auth_context(
+    pub fn sign_access_token_with_auth_context(
         &self,
         user_id: &UserId,
-        token_type: TokenType,
         password_version: i32,
         auth_context: Option<TokenAuthContext>,
     ) -> Result<String> {
         let credential_binding = TokenCredentialBinding::Password {
             version: password_version,
         };
-        self.sign_token_with_auth_context_and_session(
+        self.sign_access_token_with_auth_context_and_session(
             user_id,
-            token_type,
             password_version,
             auth_context,
             None,
@@ -632,20 +662,68 @@ impl JwtService {
         )
     }
 
-    pub fn sign_token_with_auth_context_and_session(
+    pub fn sign_access_token_with_auth_context_and_session(
         &self,
         user_id: &UserId,
-        token_type: TokenType,
         password_version: i32,
         auth_context: Option<TokenAuthContext>,
         session_id: Option<&str>,
         credential_binding: &TokenCredentialBinding,
     ) -> Result<String> {
+        self.sign_user_token_with_auth_context_and_session(
+            user_id,
+            UserTokenSigningKind::Access,
+            password_version,
+            auth_context,
+            session_id,
+            credential_binding,
+        )
+    }
+
+    pub fn sign_refresh_token_with_session(
+        &self,
+        user_id: &UserId,
+        password_version: i32,
+        auth_context: Option<TokenAuthContext>,
+        session_id: &str,
+        credential_binding: &TokenCredentialBinding,
+    ) -> Result<String> {
+        self.sign_user_token_with_auth_context_and_session(
+            user_id,
+            UserTokenSigningKind::Refresh,
+            password_version,
+            auth_context,
+            Some(session_id),
+            credential_binding,
+        )
+    }
+
+    fn sign_user_token_with_auth_context_and_session(
+        &self,
+        user_id: &UserId,
+        token_kind: UserTokenSigningKind,
+        password_version: i32,
+        auth_context: Option<TokenAuthContext>,
+        session_id: Option<&str>,
+        credential_binding: &TokenCredentialBinding,
+    ) -> Result<String> {
+        if matches!(token_kind, UserTokenSigningKind::Refresh)
+            && session_id.is_none_or(str::is_empty)
+        {
+            return Err(Error::InvalidInput(
+                "Refresh token signing requires a session id".to_string(),
+            ));
+        }
         let now = Utc::now();
-        let duration = match token_type {
-            TokenType::Access => Duration::hours(u64_to_i64(self.access_token_duration_hours)),
-            TokenType::Refresh => Duration::days(u64_to_i64(self.refresh_token_duration_days)),
-            TokenType::Guest => Duration::hours(u64_to_i64(self.guest_token_duration_hours)),
+        let duration = match token_kind {
+            UserTokenSigningKind::Access => duration_hours(
+                self.access_token_duration_hours,
+                "access token duration hours",
+            )?,
+            UserTokenSigningKind::Refresh => duration_days(
+                self.refresh_token_duration_days,
+                "refresh token duration days",
+            )?,
         };
         let (cbm, opi, ops, eml, wcid) = match credential_binding {
             TokenCredentialBinding::Password { .. } => {
@@ -679,11 +757,7 @@ impl JwtService {
 
         let claims = Claims {
             sub: user_id.to_string(),
-            typ: match token_type {
-                TokenType::Access => "access".to_string(),
-                TokenType::Refresh => "refresh".to_string(),
-                TokenType::Guest => "guest".to_string(),
-            },
+            typ: token_kind.claim_typ().to_string(),
             jti: synctv_common::snanoid!(16),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
@@ -760,7 +834,7 @@ impl JwtService {
                 "Refresh token missing jti".to_string(),
             ));
         }
-        if matches!(claims.sid.as_deref(), Some("")) {
+        if claims.sid.as_deref().is_none_or(str::is_empty) {
             return Err(Error::Authentication(
                 "Refresh token missing session id".to_string(),
             ));
@@ -799,7 +873,10 @@ impl JwtService {
         room_guest_version: i64,
     ) -> Result<String> {
         let now = Utc::now();
-        let duration = Duration::hours(u64_to_i64(self.guest_token_duration_hours));
+        let duration = duration_hours(
+            self.guest_token_duration_hours,
+            "guest token duration hours",
+        )?;
         let session_id = synctv_common::snanoid!(16); // Generate random session ID
 
         let guest_claims = GuestClaims {
@@ -878,9 +955,11 @@ impl JwtService {
     /// Get access token duration in seconds
     ///
     /// Used by `OAuth2` token response to report the correct `expires_in` value.
-    #[must_use]
-    pub fn access_token_duration_seconds(&self) -> i64 {
-        u64_to_i64(self.access_token_duration_hours) * 3600
+    pub fn access_token_duration_seconds(&self) -> Result<i64> {
+        duration_hours_to_seconds(
+            self.access_token_duration_hours,
+            "access token duration hours",
+        )
     }
 
     /// Get refresh token duration in seconds
@@ -959,12 +1038,23 @@ mod tests {
         JwtService::new(TEST_JWT_SECRET).unwrap()
     }
 
+    fn sign_test_refresh_token(jwt: &JwtService, user_id: &UserId) -> String {
+        jwt.sign_refresh_token_with_session(
+            user_id,
+            0,
+            None,
+            "test-refresh-session",
+            &TokenCredentialBinding::Password { version: 0 },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn test_sign_and_verify_access_token() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let claims = jwt.verify_access_token(&token).unwrap();
 
         assert_eq!(claims.sub, user_id.to_string());
@@ -975,12 +1065,40 @@ mod tests {
     fn test_sign_and_verify_refresh_token() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
+        let session_id = synctv_common::snanoid!(32);
 
-        let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
+        let token = jwt
+            .sign_refresh_token_with_session(
+                &user_id,
+                0,
+                None,
+                &session_id,
+                &TokenCredentialBinding::Password { version: 0 },
+            )
+            .unwrap();
         let claims = jwt.verify_refresh_token(&token).unwrap();
 
         assert_eq!(claims.sub, user_id.to_string());
         assert!(claims.is_refresh_token());
+        assert_eq!(claims.sid.as_deref(), Some(session_id.as_str()));
+    }
+
+    #[test]
+    fn test_refresh_token_without_session_id_is_rejected() {
+        let jwt = create_jwt_service();
+        let user_id = UserId::new();
+
+        let result = jwt.sign_refresh_token_with_session(
+            &user_id,
+            0,
+            None,
+            "",
+            &TokenCredentialBinding::Password { version: 0 },
+        );
+
+        assert!(
+            matches!(result, Err(Error::InvalidInput(message)) if message.contains("session id"))
+        );
     }
 
     #[test]
@@ -990,9 +1108,8 @@ mod tests {
         let session_id = synctv_common::snanoid!(32);
 
         let access_token = jwt
-            .sign_token_with_auth_context_and_session(
+            .sign_access_token_with_auth_context_and_session(
                 &user_id,
-                TokenType::Access,
                 0,
                 None,
                 Some(&session_id),
@@ -1000,12 +1117,11 @@ mod tests {
             )
             .unwrap();
         let refresh_token = jwt
-            .sign_token_with_auth_context_and_session(
+            .sign_refresh_token_with_session(
                 &user_id,
-                TokenType::Refresh,
                 0,
                 None,
-                Some(&session_id),
+                &session_id,
                 &TokenCredentialBinding::Password { version: 0 },
             )
             .unwrap();
@@ -1022,11 +1138,11 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
         let result = jwt.verify_refresh_token(&access_token);
         assert!(result.is_err());
 
-        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
+        let refresh_token = sign_test_refresh_token(&jwt, &user_id);
         let result = jwt.verify_access_token(&refresh_token);
         assert!(result.is_err());
     }
@@ -1104,7 +1220,7 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let mut parts: Vec<&str> = token.split('.').collect();
         parts[1] = "tampered_payload";
         let tampered_token = parts.join(".");
@@ -1158,7 +1274,7 @@ mod tests {
         assert!(jwt.is_guest_token(&guest_token));
 
         let user_id = UserId::new();
-        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
         assert!(!jwt.is_guest_token(&access_token));
     }
 
@@ -1167,7 +1283,7 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
         let result = jwt.verify_guest_token(&access_token);
         assert!(result.is_err());
     }
@@ -1176,7 +1292,7 @@ mod tests {
     fn test_access_token_rejected_as_refresh() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let result = jwt.verify_refresh_token(&token);
         assert!(result.is_err());
     }
@@ -1185,27 +1301,8 @@ mod tests {
     fn test_refresh_token_rejected_as_access() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
+        let token = sign_test_refresh_token(&jwt, &user_id);
         let result = jwt.verify_access_token(&token);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_guest_type_token_rejected_as_access() {
-        // A token signed with TokenType::Guest via sign_token has typ="guest"
-        let jwt = create_jwt_service();
-        let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Guest, 0).unwrap();
-        let result = jwt.verify_access_token(&token);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_guest_type_token_rejected_as_refresh() {
-        let jwt = create_jwt_service();
-        let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Guest, 0).unwrap();
-        let result = jwt.verify_refresh_token(&token);
         assert!(result.is_err());
     }
 
@@ -1213,7 +1310,7 @@ mod tests {
     fn test_claims_user_id_extraction() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
         assert_eq!(claims.user_id().unwrap(), user_id);
     }
@@ -1284,6 +1381,63 @@ mod tests {
         assert!(guest.is_guest_token());
     }
 
+    fn base_test_claims() -> Claims {
+        Claims {
+            sub: "1".into(),
+            typ: "refresh".into(),
+            jti: "test-jti".into(),
+            iat: 0,
+            exp: 3600,
+            pv: 7,
+            sid: Some("session".into()),
+            amr: None,
+            cbm: None,
+            opi: None,
+            ops: None,
+            eml: None,
+            wcid: None,
+            iss: None,
+            aud: None,
+        }
+    }
+
+    #[test]
+    fn test_claims_credential_binding_parses_password_binding() {
+        let mut claims = base_test_claims();
+        claims.cbm = Some("password".to_string());
+
+        assert!(matches!(
+            claims.credential_binding().unwrap(),
+            TokenCredentialBinding::Password { version: 7 }
+        ));
+    }
+
+    #[test]
+    fn test_claims_credential_binding_rejects_malformed_binding() {
+        let mut missing_oauth_field = base_test_claims();
+        missing_oauth_field.cbm = Some("oauth2".to_string());
+        missing_oauth_field.opi = Some("github".to_string());
+        assert!(matches!(
+            missing_oauth_field.credential_binding(),
+            Err(Error::Authentication(_))
+        ));
+
+        let mut invalid_webauthn = base_test_claims();
+        invalid_webauthn.cbm = Some("webauthn".to_string());
+        invalid_webauthn.wcid = Some("***not-base64url***".to_string());
+        assert!(matches!(
+            invalid_webauthn.credential_binding(),
+            Err(Error::Authentication(_))
+        ));
+
+        let mut unknown = base_test_claims();
+        unknown.cbm = Some("unknown".to_string());
+        assert!(matches!(
+            unknown.credential_binding(),
+            Err(Error::Authentication(_))
+        ));
+    }
+
     #[test]
     fn test_guest_claims_room_id_extraction() {
         let jwt = create_jwt_service();
@@ -1326,7 +1480,7 @@ mod tests {
         let jwt2 = JwtService::new("secret-KEY-Two-LONG-ENOUGH-0987654321!@#$").unwrap();
         let user_id = UserId::new();
 
-        let token = jwt1.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt1.sign_access_token(&user_id, 0).unwrap();
         let result = jwt2.verify_token(&token);
         assert!(result.is_err());
     }
@@ -1343,7 +1497,7 @@ mod tests {
         .unwrap();
 
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
 
         // Verify token has exp roughly 2 hours from iat
@@ -1355,7 +1509,7 @@ mod tests {
     fn test_refresh_token_duration() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
+        let token = sign_test_refresh_token(&jwt, &user_id);
         let claims = jwt.verify_token(&token).unwrap();
         let duration = claims.exp - claims.iat;
         assert_eq!(duration, 30 * 86400); // 30 days in seconds
@@ -1427,8 +1581,8 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token1 = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
-        let token2 = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token1 = jwt.sign_access_token(&user_id, 0).unwrap();
+        let token2 = jwt.sign_access_token(&user_id, 0).unwrap();
 
         let claims1 = jwt.verify_token(&token1).unwrap();
         let claims2 = jwt.verify_token(&token2).unwrap();
@@ -1447,7 +1601,7 @@ mod tests {
         let user_id = UserId::new();
 
         let before = Utc::now().timestamp();
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let after = Utc::now().timestamp();
 
         let claims = jwt.verify_token(&token).unwrap();
@@ -1508,7 +1662,7 @@ mod tests {
         .unwrap();
 
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
 
         assert_eq!(claims.iss.as_deref(), Some("synctv"));
@@ -1520,7 +1674,7 @@ mod tests {
         // Service without issuer validation
         let jwt = JwtService::new("secret-no-issuer-validation-LONG-ENOUGH-1234567890").unwrap();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt.sign_access_token(&user_id, 0).unwrap();
         let result = jwt.verify_token(&token);
         assert!(result.is_ok());
     }
@@ -1552,9 +1706,7 @@ mod tests {
         .unwrap();
 
         let user_id = UserId::new();
-        let token = jwt_other
-            .sign_token(&user_id, TokenType::Access, 0)
-            .unwrap();
+        let token = jwt_other.sign_access_token(&user_id, 0).unwrap();
         let result = jwt_expected.verify_token(&token);
 
         assert!(
@@ -1590,9 +1742,7 @@ mod tests {
         .unwrap();
 
         let user_id = UserId::new();
-        let token = jwt_other
-            .sign_token(&user_id, TokenType::Access, 0)
-            .unwrap();
+        let token = jwt_other.sign_access_token(&user_id, 0).unwrap();
         let result = jwt_expected.verify_token(&token);
 
         assert!(

@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS chat_messages_default_idx_playback_playlist_target
     ON chat_messages_default(
         room_id,
         ((metadata #>> '{playback,playlist_id}')),
-        ((metadata #>> '{playback,target_hash}')),
+        ((metadata #>> '{playback,target_hex}')),
         (
             CASE
                 WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'

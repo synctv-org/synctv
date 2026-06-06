@@ -14,7 +14,8 @@ fn stable_test_id(id: &str) -> i64 {
     }
     let mut hasher = DefaultHasher::new();
     id.hash(&mut hasher);
-    i64::try_from((hasher.finish() % (i64::MAX as u64 - 1)) + 1).expect("bounded positive id")
+    let bounded = (hasher.finish() % (i64::MAX as u64 - 1)) + 1;
+    i64::try_from(bounded).expect("bounded test id should fit in i64")
 }
 
 /// Create a test user ID

@@ -356,7 +356,7 @@ pub fn default_realtime_lifecycle_service(
 #[cfg(test)]
 mod tests {
     use super::default_realtime_lifecycle_service;
-    use crate::realtime_fanout::default_realtime_fanout_service;
+    use crate::realtime_fanout::disabled_realtime_fanout_service;
     use crate::runtime::RealtimeConnectionService;
     use crate::test_support::channel_realtime_fanout_service;
     use std::sync::Arc;
@@ -524,7 +524,7 @@ mod tests {
         let service = default_realtime_lifecycle_service(
             connection_service.clone(),
             Some(infra),
-            default_realtime_fanout_service(None, false),
+            disabled_realtime_fanout_service(),
         );
 
         service.disconnect_user_from_room(&room_one, &user_id).await;

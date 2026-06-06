@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
     models::id::{RoomId, UserId},
@@ -80,8 +81,20 @@ fn ttl_refresh_interval_secs(ttl_secs: i64) -> u64 {
     u64::try_from(refresh_secs).unwrap_or(30)
 }
 
+fn room_members_after_prune(results: &[i64]) -> Result<i64, String> {
+    results.last().copied().ok_or_else(|| {
+        "Redis prune stale distributed room subscribers returned no HLEN result".to_string()
+    })
+}
+
+fn log_best_effort_redis_cleanup(operation: &'static str, result: Result<(), String>) {
+    if let Err(error) = result {
+        warn!(operation, error = %error, "Best-effort Redis room hub cleanup failed");
+    }
+}
+
 fn ttl_secs_unsigned(ttl_secs: i64) -> u64 {
-    u64::try_from(ttl_secs.max(0)).unwrap_or_default()
+    ttl_secs.max(0).cast_unsigned()
 }
 
 async fn deliver_reliable_event(
@@ -304,7 +317,17 @@ impl RoomMessageHub {
                 "RoomMessageHub shutdown budget exhausted before task stopped; aborting immediately"
             );
             handle.abort();
-            let _ = handle.await;
+            match handle.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    warn!(
+                        task = task_name,
+                        error = %error,
+                        "RoomMessageHub background task returned join error after immediate abort"
+                    );
+                }
+            }
             return;
         }
 
@@ -369,7 +392,7 @@ impl RoomMessageHub {
         key_prefix: &str,
     ) -> Self {
         if let Some(redis_runtime) = redis_runtime {
-            Self::new().with_redis_runtime(redis_runtime, key_prefix)
+            Self::new_with_redis_runtime(redis_runtime, key_prefix)
         } else {
             Self::new()
         }
@@ -389,15 +412,15 @@ impl RoomMessageHub {
     ///
     /// Both tasks are cancelled when `shutdown()` is called.
     #[must_use]
-    pub(crate) fn with_redis_runtime(
-        mut self,
+    pub(crate) fn new_with_redis_runtime(
         conn: Arc<dyn RedisConnectionRuntime>,
         key_prefix: &str,
     ) -> Self {
-        self.redis_conn = Some(conn);
-        self.redis_key_prefix = key_prefix.to_string();
-        self.start();
-        self
+        let mut hub = Self::new();
+        hub.redis_conn = Some(conn);
+        hub.redis_key_prefix = key_prefix.to_string();
+        hub.start();
+        hub
     }
 
     async fn redis_conn_clone(
@@ -408,7 +431,10 @@ impl RoomMessageHub {
             return Ok(None);
         };
         match tokio::time::timeout(conn.operation_timeout(), conn.snapshot()).await {
-            Ok(snapshot) => Ok(Some(snapshot)),
+            Ok(Ok(snapshot)) => Ok(Some(snapshot)),
+            Ok(Err(error)) => Err(format!(
+                "Redis {operation} connection snapshot failed: {error}"
+            )),
             Err(_) => Err(format!(
                 "Redis {operation} connection snapshot timed out after {}ms",
                 conn.operation_timeout().as_millis()
@@ -447,7 +473,9 @@ impl RoomMessageHub {
         if tokio::runtime::Handle::try_current().is_err() {
             self.background_tasks_started
                 .store(false, Ordering::Release);
-            warn!("RoomMessageHub::start() called without Tokio runtime; deferring background task startup");
+            warn!(
+                "RoomMessageHub::start() called without Tokio runtime; deferring background task startup"
+            );
             return;
         }
 
@@ -455,19 +483,30 @@ impl RoomMessageHub {
         // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
         let refresh_interval_secs = ttl_refresh_interval_secs(self.redis_key_ttl_secs);
         let stale_cancel = (*self.stale_cleanup_cancel).clone();
-        let ttl_handle =
-            self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), ttl_cancel);
-        let cleanup_handle =
-            self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel);
+        let Some(ttl_handle) =
+            self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), ttl_cancel)
+        else {
+            self.background_tasks_started
+                .store(false, Ordering::Release);
+            warn!(
+                "RoomMessageHub TTL refresh task spawn failed; background tasks were not started"
+            );
+            return;
+        };
+        let Some(cleanup_handle) =
+            self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel)
+        else {
+            ttl_handle.abort();
+            self.background_tasks_started
+                .store(false, Ordering::Release);
+            warn!(
+                "RoomMessageHub stale subscription cleanup task spawn failed; background tasks were not started"
+            );
+            return;
+        };
 
-        *self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned") = Some(ttl_handle);
-        *self
-            .stale_cleanup_handle
-            .lock()
-            .expect("stale cleanup handle mutex poisoned") = Some(cleanup_handle);
+        *self.ttl_refresh_handle.lock() = Some(ttl_handle);
+        *self.stale_cleanup_handle.lock() = Some(cleanup_handle);
     }
 
     /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup)
@@ -477,11 +516,7 @@ impl RoomMessageHub {
         self.ttl_refresh_cancel.cancel();
         self.stale_cleanup_cancel.cancel();
 
-        let ttl_handle = self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned")
-            .take();
+        let ttl_handle = self.ttl_refresh_handle.lock().take();
         if let Some(handle) = ttl_handle {
             Self::await_shutdown_handle(
                 "ttl refresh",
@@ -490,11 +525,7 @@ impl RoomMessageHub {
             )
             .await;
         }
-        let stale_cleanup_handle = self
-            .stale_cleanup_handle
-            .lock()
-            .expect("stale cleanup handle mutex poisoned")
-            .take();
+        let stale_cleanup_handle = self.stale_cleanup_handle.lock().take();
         if let Some(handle) = stale_cleanup_handle {
             Self::await_shutdown_handle(
                 "stale cleanup",
@@ -763,17 +794,28 @@ impl RoomMessageHub {
 
                 let cleanup_fut = async move {
                     let timeout = redis_conn.operation_timeout();
-                    let Ok(mut conn_clone) =
-                        tokio::time::timeout(timeout, redis_conn.snapshot()).await
-                    else {
-                        cleanup_pending_redis_cleanup
-                            .insert(cleanup_connection_id, cleanup_room_id);
-                        warn!(
-                            timeout_ms = timeout.as_millis(),
-                            "Timed out acquiring Redis connection for unsubscribe cleanup"
-                        );
-                        return;
-                    };
+                    let mut conn_clone =
+                        match tokio::time::timeout(timeout, redis_conn.snapshot()).await {
+                            Ok(Ok(conn)) => conn,
+                            Ok(Err(error)) => {
+                                cleanup_pending_redis_cleanup
+                                    .insert(cleanup_connection_id, cleanup_room_id);
+                                warn!(
+                                    error = %error,
+                                    "Failed to acquire Redis connection for unsubscribe cleanup"
+                                );
+                                return;
+                            }
+                            Err(_) => {
+                                cleanup_pending_redis_cleanup
+                                    .insert(cleanup_connection_id, cleanup_room_id);
+                                warn!(
+                                    timeout_ms = timeout.as_millis(),
+                                    "Timed out acquiring Redis connection for unsubscribe cleanup"
+                                );
+                                return;
+                            }
+                        };
                     let mut cleanup_failed = false;
 
                     // Remove connection from room's subscriber hash
@@ -821,7 +863,9 @@ impl RoomMessageHub {
                         Ok(_) => {}
                         Err(e) => {
                             cleanup_failed = true;
-                            warn!("Failed to inspect room subscription hash cardinality in Redis: {e}");
+                            warn!(
+                                "Failed to inspect room subscription hash cardinality in Redis: {e}"
+                            );
                         }
                     }
                     // Remove connection mapping
@@ -1318,14 +1362,24 @@ impl RoomMessageHub {
 
         let cleanup_fut = async move {
             let timeout = redis_conn.operation_timeout();
-            let Ok(mut conn_clone) = tokio::time::timeout(timeout, redis_conn.snapshot()).await
-            else {
-                cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
-                warn!(
-                    timeout_ms = timeout.as_millis(),
-                    "Timed out acquiring Redis connection for scheduled room cleanup"
-                );
-                return;
+            let mut conn_clone = match tokio::time::timeout(timeout, redis_conn.snapshot()).await {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(error)) => {
+                    cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
+                    warn!(
+                        error = %error,
+                        "Failed to acquire Redis connection for scheduled room cleanup"
+                    );
+                    return;
+                }
+                Err(_) => {
+                    cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
+                    warn!(
+                        timeout_ms = timeout.as_millis(),
+                        "Timed out acquiring Redis connection for scheduled room cleanup"
+                    );
+                    return;
+                }
             };
             let mut cleanup_failed = false;
 
@@ -1447,12 +1501,14 @@ impl RoomMessageHub {
             {
                 Ok(entries) => {
                     if entries.is_empty() {
-                        let _: Result<(), _> = self
-                            .redis_op(
+                        log_best_effort_redis_cleanup(
+                            "prune empty room from room index directory",
+                            self.redis_op(
                                 "prune empty room from room index directory",
                                 conn_clone.srem(&room_index_directory_key, &room_key),
                             )
-                            .await;
+                            .await,
+                        );
                         return Ok(Vec::new());
                     }
 
@@ -1502,20 +1558,36 @@ impl RoomMessageHub {
                             .await
                         {
                             Ok(results) => {
-                                let room_members_after_prune = results.last().copied().unwrap_or(0);
+                                let room_members_after_prune = match room_members_after_prune(
+                                    &results,
+                                ) {
+                                    Ok(count) => count,
+                                    Err(error) => {
+                                        warn!(
+                                            room_id = %room_id,
+                                            removed_members = stale_connection_ids.len(),
+                                            "Failed to validate stale distributed room subscriber prune result: {error}"
+                                        );
+                                        return Ok(subscribers);
+                                    }
+                                };
                                 if room_members_after_prune == 0 {
-                                    let _: Result<(), _> = self
-                                        .redis_op(
+                                    log_best_effort_redis_cleanup(
+                                        "delete empty room subscription hash",
+                                        self.redis_op(
                                             "delete empty room subscription hash",
                                             conn_clone.del(&room_key),
                                         )
-                                        .await;
-                                    let _: Result<(), _> = self
-                                        .redis_op(
+                                        .await,
+                                    );
+                                    log_best_effort_redis_cleanup(
+                                        "remove empty room from room index directory",
+                                        self.redis_op(
                                             "remove empty room from room index directory",
                                             conn_clone.srem(&room_index_directory_key, &room_key),
                                         )
-                                        .await;
+                                        .await,
+                                    );
                                 }
                                 debug!(
                                     room_id = %room_id,
@@ -1567,7 +1639,9 @@ impl RoomMessageHub {
     /// subscriptions via `subscribe()`. This method only logs what Redis knows
     /// about for dashboards and debugging.
     pub async fn audit_redis_subscriptions(&self) -> Result<usize, String> {
-        info!("Auditing cluster subscription state from Redis (observability only, clients must reconnect for message routing)");
+        info!(
+            "Auditing cluster subscription state from Redis (observability only, clients must reconnect for message routing)"
+        );
         let Some(mut conn_clone) = self.redis_conn_clone("audit room subscriptions").await? else {
             return Err("Redis not configured".to_string());
         };
@@ -1608,9 +1682,11 @@ impl RoomMessageHub {
             };
             if entries.is_empty() {
                 stale_directory_members.push(key.clone());
-                let _: Result<(), _> = self
-                    .redis_op("delete empty audited room key", conn_clone.del(&key))
-                    .await;
+                log_best_effort_redis_cleanup(
+                    "delete empty audited room key",
+                    self.redis_op("delete empty audited room key", conn_clone.del(&key))
+                        .await,
+                );
                 continue;
             }
 
@@ -1624,12 +1700,14 @@ impl RoomMessageHub {
         }
 
         if !stale_directory_members.is_empty() {
-            let _: Result<(), _> = self
-                .redis_op(
+            log_best_effort_redis_cleanup(
+                "remove stale room subscription directory members",
+                self.redis_op(
                     "remove stale room subscription directory members",
                     conn_clone.srem(&room_index_directory_key, stale_directory_members),
                 )
-                .await;
+                .await,
+            );
         }
 
         Ok(recovered)
@@ -1643,13 +1721,19 @@ impl RoomMessageHub {
     /// periodically refreshed, causing cross-replica visibility to silently
     /// stop working.
     async fn refresh_redis_key_ttls(&self) {
-        let Some(mut conn) = self
+        let mut conn = match self
             .redis_conn_clone("refresh room subscription TTLs")
             .await
-            .ok()
-            .flatten()
-        else {
-            return;
+        {
+            Ok(Some(conn)) => conn,
+            Ok(None) => return,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Failed to acquire Redis connection for room subscription TTL refresh"
+                );
+                return;
+            }
         };
         let ttl_secs = self.redis_key_ttl_secs;
 
@@ -1711,13 +1795,19 @@ impl RoomMessageHub {
     /// node cannot reliably distinguish its own stale entries from another
     /// replica's still-active subscriptions.
     async fn cleanup_orphaned_redis_subscriptions(&self) {
-        let Some(mut conn) = self
+        let mut conn = match self
             .redis_conn_clone("cleanup orphaned room subscriptions")
             .await
-            .ok()
-            .flatten()
-        else {
-            return;
+        {
+            Ok(Some(conn)) => conn,
+            Ok(None) => return,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Failed to acquire Redis connection for orphaned room subscription cleanup"
+                );
+                return;
+            }
         };
         let mut cleaned = 0u64;
         let mut errors = 0u64;
@@ -1792,7 +1882,7 @@ impl RoomMessageHub {
         &self,
         interval: Duration,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> Option<tokio::task::JoinHandle<()>> {
         let hub = self.clone();
         try_spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -1810,7 +1900,6 @@ impl RoomMessageHub {
                 }
             }
         })
-        .expect("spawn_stale_subscription_cleanup_task requires a Tokio runtime")
     }
 
     /// Spawn a background task that periodically refreshes TTLs on Redis
@@ -1824,7 +1913,7 @@ impl RoomMessageHub {
         &self,
         interval: Duration,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> Option<tokio::task::JoinHandle<()>> {
         let hub = self.clone();
         try_spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -1842,7 +1931,6 @@ impl RoomMessageHub {
                 }
             }
         })
-        .expect("spawn_ttl_refresh_task requires a Tokio runtime")
     }
 }
 
@@ -1923,7 +2011,7 @@ impl RoomMessageRuntime for RoomMessageHub {
         &self,
         cleanup_interval: Duration,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> Option<tokio::task::JoinHandle<()>> {
         RoomMessageHub::spawn_stale_subscription_cleanup_task(self, cleanup_interval, cancel_token)
     }
 
@@ -2046,7 +2134,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl RedisConnectionRuntime for HangingRedisRuntime {
-            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 std::future::pending().await
             }
 
@@ -2055,8 +2143,8 @@ mod tests {
             }
         }
 
-        let hub = RoomMessageHub::new()
-            .with_redis_runtime(Arc::new(HangingRedisRuntime), "test-timeout:");
+        let hub =
+            RoomMessageHub::new_with_redis_runtime(Arc::new(HangingRedisRuntime), "test-timeout:");
         let room_id = RoomId::expect_positive(10_000_196);
         let user_id = UserId::expect_positive(10_000_197);
         let connection_id = "local-only-would-be-misleading".to_string();
@@ -2637,8 +2725,9 @@ mod tests {
         // Verify the stale cleanup task respects cancellation tokens
         let hub = RoomMessageHub::new();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let handle =
-            hub.spawn_stale_subscription_cleanup_task(Duration::from_millis(50), cancel.clone());
+        let handle = hub
+            .spawn_stale_subscription_cleanup_task(Duration::from_millis(50), cancel.clone())
+            .expect("stale cleanup task should spawn inside Tokio runtime");
 
         // Let it run briefly
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2661,11 +2750,15 @@ mod tests {
         let ttl_cancel = tokio_util::sync::CancellationToken::new();
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
 
-        let ttl_handle = hub.spawn_ttl_refresh_task(Duration::from_millis(50), ttl_cancel.clone());
-        let cleanup_handle = hub.spawn_stale_subscription_cleanup_task(
-            Duration::from_millis(50),
-            cleanup_cancel.clone(),
-        );
+        let ttl_handle = hub
+            .spawn_ttl_refresh_task(Duration::from_millis(50), ttl_cancel.clone())
+            .expect("TTL refresh task should spawn inside Tokio runtime");
+        let cleanup_handle = hub
+            .spawn_stale_subscription_cleanup_task(
+                Duration::from_millis(50),
+                cleanup_cancel.clone(),
+            )
+            .expect("stale cleanup task should spawn inside Tokio runtime");
 
         // Let tasks start running
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2692,18 +2785,12 @@ mod tests {
     async fn test_shutdown_aborts_stuck_background_tasks() {
         let hub = RoomMessageHub::new();
 
-        hub.ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned")
-            .replace(tokio::spawn(async {
-                futures::future::pending::<()>().await;
-            }));
-        hub.stale_cleanup_handle
-            .lock()
-            .expect("stale cleanup handle mutex poisoned")
-            .replace(tokio::spawn(async {
-                futures::future::pending::<()>().await;
-            }));
+        hub.ttl_refresh_handle.lock().replace(tokio::spawn(async {
+            futures::future::pending::<()>().await;
+        }));
+        hub.stale_cleanup_handle.lock().replace(tokio::spawn(async {
+            futures::future::pending::<()>().await;
+        }));
 
         let result = tokio::time::timeout(Duration::from_secs(6), hub.shutdown()).await;
         assert!(
@@ -2711,17 +2798,11 @@ mod tests {
             "shutdown should abort stuck RoomMessageHub background tasks instead of hanging"
         );
         assert!(
-            hub.ttl_refresh_handle
-                .lock()
-                .expect("ttl refresh handle mutex poisoned")
-                .is_none(),
+            hub.ttl_refresh_handle.lock().is_none(),
             "shutdown must drain timed-out ttl refresh handles"
         );
         assert!(
-            hub.stale_cleanup_handle
-                .lock()
-                .expect("stale cleanup handle mutex poisoned")
-                .is_none(),
+            hub.stale_cleanup_handle.lock().is_none(),
             "shutdown must drain timed-out stale cleanup handles"
         );
     }

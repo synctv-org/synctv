@@ -320,6 +320,46 @@ pub struct RequestExecutor {
     rate_limiter: Arc<dyn RequestRateLimiterService>,
 }
 
+enum AuthenticationAttempt {
+    Missing,
+    Authenticated(Box<AuthenticatedToken>),
+    Failed(ApiError),
+}
+
+impl AuthenticationAttempt {
+    fn rate_limit_identity(&self) -> Option<&AuthenticatedToken> {
+        match self {
+            Self::Authenticated(authenticated) => Some(authenticated.as_ref()),
+            Self::Missing | Self::Failed(_) => None,
+        }
+    }
+
+    fn into_optional(self) -> Result<Option<AuthenticatedToken>, ApiError> {
+        match self {
+            Self::Missing => Ok(None),
+            Self::Authenticated(authenticated) => Ok(Some(*authenticated)),
+            Self::Failed(err) => Err(err),
+        }
+    }
+
+    fn into_optional_if_valid(self) -> Option<AuthenticatedToken> {
+        match self {
+            Self::Authenticated(authenticated) => Some(*authenticated),
+            Self::Missing | Self::Failed(_) => None,
+        }
+    }
+
+    fn into_required(self) -> Result<AuthenticatedToken, ApiError> {
+        match self {
+            Self::Missing => Err(ApiError::Authentication(
+                synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
+            )),
+            Self::Authenticated(authenticated) => Ok(*authenticated),
+            Self::Failed(err) => Err(err),
+        }
+    }
+}
+
 impl RequestExecutor {
     #[must_use]
     pub fn new(
@@ -362,19 +402,31 @@ impl RequestExecutor {
         &self,
         metadata: &RequestMetadata,
     ) -> Result<Option<AuthenticatedToken>, ApiError> {
+        Ok(self
+            .authenticate_for_request(metadata)
+            .await?
+            .into_optional_if_valid())
+    }
+
+    async fn authenticate_for_request(
+        &self,
+        metadata: &RequestMetadata,
+    ) -> Result<AuthenticationAttempt, ApiError> {
         let Some(authorization) = metadata.authorization.as_deref() else {
-            return Ok(None);
+            return Ok(AuthenticationAttempt::Missing);
         };
 
         match self.authenticate_authorization(authorization).await {
-            Ok(authenticated) => Ok(Some(authenticated)),
+            Ok(authenticated) => Ok(AuthenticationAttempt::Authenticated(Box::new(
+                authenticated,
+            ))),
             Err(err)
                 if matches!(
                     err.classify(),
                     ErrorKind::Unauthenticated | ErrorKind::PermissionDenied
                 ) =>
             {
-                Ok(None)
+                Ok(AuthenticationAttempt::Failed(err))
             }
             Err(err) => Err(err),
         }
@@ -510,18 +562,15 @@ impl RequestExecutor {
             request_context.check_active()?;
             request_control
                 .run(async move {
-                    let rate_limit_identity = self.authenticate_optional_if_valid(metadata).await?;
+                    let authentication = self.authenticate_for_request(metadata).await?;
                     self.enforce_rate_limit(
                         metadata,
                         category,
-                        rate_limit_identity.as_ref(),
+                        authentication.rate_limit_identity(),
                         Some(request_context.control()),
                     )
                     .await?;
-                    let authenticated = match rate_limit_identity {
-                        Some(authenticated) => Some(authenticated),
-                        None => self.authenticate_optional(metadata).await?,
-                    };
+                    let authenticated = authentication.into_optional()?;
                     request_context.check_active()?;
                     operation(request_context, authenticated).await
                 })
@@ -586,14 +635,15 @@ impl RequestExecutor {
             request_context.check_active()?;
             request_control
                 .run(async move {
-                    let authenticated = self.authenticate_optional_if_valid(metadata).await?;
+                    let authentication = self.authenticate_for_request(metadata).await?;
                     self.enforce_rate_limit(
                         metadata,
                         category,
-                        authenticated.as_ref(),
+                        authentication.rate_limit_identity(),
                         Some(request_context.control()),
                     )
                     .await?;
+                    let authenticated = authentication.into_optional_if_valid();
                     request_context.check_active()?;
                     operation(request_context, authenticated).await
                 })
@@ -656,18 +706,15 @@ impl RequestExecutor {
             request_context.check_active()?;
             request_control
                 .run(async move {
-                    let rate_limit_identity = self.authenticate_optional_if_valid(metadata).await?;
+                    let authentication = self.authenticate_for_request(metadata).await?;
                     self.enforce_rate_limit(
                         metadata,
                         category,
-                        rate_limit_identity.as_ref(),
+                        authentication.rate_limit_identity(),
                         Some(request_context.control()),
                     )
                     .await?;
-                    let authenticated = match rate_limit_identity {
-                        Some(authenticated) => authenticated,
-                        None => self.authenticate_required(metadata).await?,
-                    };
+                    let authenticated = authentication.into_required()?;
                     request_context.check_active()?;
                     operation(request_context, authenticated).await
                 })
@@ -711,27 +758,19 @@ impl RequestExecutor {
             request_context.check_active()?;
             request_control
                 .run(async move {
-                    let authenticated = match self.jwt_validator.validate_token(token) {
-                        Ok(claims) => self.security_check_claims(&claims).await.ok(),
-                        Err(_) => None,
-                    };
+                    let claims = self.jwt_validator.validate_token(token).map_err(|_| {
+                        ApiError::Authentication(
+                            synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                        )
+                    })?;
+                    let authenticated = self.security_check_claims(&claims).await?;
                     self.enforce_rate_limit(
                         metadata,
                         category,
-                        authenticated.as_ref(),
+                        Some(&authenticated),
                         Some(request_context.control()),
                     )
                     .await?;
-                    let authenticated = if let Some(authenticated) = authenticated {
-                        authenticated
-                    } else {
-                        let claims = self.jwt_validator.validate_token(token).map_err(|_| {
-                            ApiError::Authentication(
-                                synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
-                            )
-                        })?;
-                        self.security_check_claims(&claims).await?
-                    };
                     request_context.check_active()?;
                     operation(request_context.child_execution_control(), authenticated).await
                 })

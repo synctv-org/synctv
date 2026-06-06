@@ -494,6 +494,34 @@ impl EmailService {
         .await
     }
 
+    pub async fn send_email_registration_token_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::validate_email(email)?;
+
+        if let Some(control) = control {
+            control
+                .check_active()
+                .map_err(|error| Error::Timeout(error.to_string()))?;
+        }
+
+        let config = self.current_config()?.ok_or_else(|| {
+            Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            )
+        })?;
+
+        self.send_email_registration_email_impl(&config, email, token, control)
+            .await
+            .map_err(map_email_send_failure)?;
+
+        tracing::info!("Sent email registration code to {}", mask_email(email));
+        Ok(())
+    }
+
     /// Send a test email to verify email configuration
     pub async fn send_test_email(&self, to: &str) -> Result<()> {
         self.send_test_email_with_control(to, None).await
@@ -572,6 +600,23 @@ impl EmailService {
         let (html_body, plain_text_body) = self
             .template_manager
             .render_email_login_email(token, "15 minutes")
+            .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
+
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
+            .await
+    }
+
+    async fn send_email_registration_email_impl(
+        &self,
+        config: &EmailConfig,
+        to: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), EmailError> {
+        let subject = "Your SyncTV registration code";
+        let (html_body, plain_text_body) = self
+            .template_manager
+            .render_email_registration_email(token, "15 minutes")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
         self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
@@ -667,12 +712,13 @@ impl EmailService {
             });
         }
 
-        cached
-            .as_ref()
-            .expect("SMTP transport cache must be populated")
-            .transport
-            .clone()
-            .map_err(EmailError::SendError)
+        if let Some(cached) = cached.as_ref() {
+            return cached.transport.clone().map_err(EmailError::SendError);
+        }
+
+        Err(EmailError::SendError(
+            "SMTP transport cache was unavailable after rebuild".to_string(),
+        ))
     }
 
     /// Check if email service is configured

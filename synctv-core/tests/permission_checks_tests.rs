@@ -87,9 +87,10 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
         user_service,
         RoomServiceOptions {
             version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
-    );
+    )
+    .expect("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("perm_fence_creator"))
@@ -170,9 +171,10 @@ async fn test_strong_permission_read_rejects_stale_l1_after_room_settings_fence_
         user_service,
         RoomServiceOptions {
             version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
-    );
+    )
+    .expect("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("perm_room_fence_creator"))
@@ -245,9 +247,10 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
         user_service,
         RoomServiceOptions {
             version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
-    );
+    )
+    .expect("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -351,9 +354,10 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
         user_service,
         RoomServiceOptions {
             version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
-    );
+    )
+    .expect("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("perm_missing_fence_creator"))
@@ -541,9 +545,10 @@ async fn test_check_permissions_batch_rejects_stale_l1_after_room_settings_fence
         user_service,
         RoomServiceOptions {
             version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::default()
+            ..RoomServiceOptions::test_defaults()
         },
-    );
+    )
+    .expect("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("batch_stale_creator"))

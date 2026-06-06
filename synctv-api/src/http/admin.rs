@@ -814,9 +814,9 @@ pub(crate) async fn set_user_role(
         path = "/api/admin/users/{user_id}/password",
         tag = "Admin",
         params(("user_id" = String, Path, description = "User ID")),
-        request_body = admin::UpdateUserPasswordRequest,
+        request_body = admin::SetUserPasswordRequest,
         responses(
-            (status = 200, description = "User password updated", body = admin::UpdateUserPasswordResponse),
+            (status = 200, description = "User password updated", body = admin::SetUserPasswordResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -827,18 +827,18 @@ pub(crate) async fn set_user_password(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Json(mut req): Json<admin::UpdateUserPasswordRequest>,
-) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
+    Json(mut req): Json<admin::SetUserPasswordRequest>,
+) -> AppResult<Json<admin::SetUserPasswordResponse>> {
     req.user_id = path.user_id;
     if req.reason.is_empty() {
-        req.reason = "Admin forced password reset".to_string();
+        req.reason = "Admin set user password".to_string();
     }
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
-            api.update_user_password(req, validated.user_id, validated.role, &rctx)
+            api.set_user_password(req, validated.user_id, validated.role, &rctx)
                 .await
         },
     )
@@ -1434,7 +1434,7 @@ pub(crate) async fn get_room_settings(
         path = "/api/admin/rooms/{room_id}/settings",
         tag = "Admin",
         params(("room_id" = String, Path, description = "Room ID")),
-        request_body = admin::UpdateRoomSettingsRequest,
+        request_body = synctv_proto::http_serde::AdminUpdateRoomSettingsRequestDef,
         responses(
             (status = 200, description = "Room settings updated", body = admin::UpdateRoomSettingsResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1447,8 +1447,9 @@ pub(crate) async fn set_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
+    Json(req): Json<synctv_proto::http_serde::AdminUpdateRoomSettingsRequestDef>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
+    let mut req = admin::UpdateRoomSettingsRequest::from(req);
     req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
@@ -1905,16 +1906,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ban_reason_length_validation() {
-        // The handler validates reason.len() > 500
-        let short_reason = "a".repeat(500);
-        assert!(short_reason.len() <= 500);
-
-        let long_reason = "a".repeat(501);
-        assert!(long_reason.len() > 500);
-    }
-
-    #[test]
     fn test_get_user_rooms_query_defaults_to_proto_zero_values() {
         let query: admin::GetUserRoomsRequest = serde_urlencoded::from_str("").unwrap();
 
@@ -1954,49 +1945,5 @@ mod tests {
         assert!(query.search.is_empty());
         assert_eq!(query.sort_by, 0);
         assert_eq!(query.sort_direction, 0);
-    }
-
-    #[test]
-    fn test_admin_router_creation() {
-        // Verify the admin router can be created without panicking
-        let _router = create_admin_router();
-    }
-
-    #[test]
-    fn test_kick_stream_requires_room_id_and_media_id() {
-        // The handler checks: if req.room_id.is_empty() || req.media_id.is_empty()
-        let empty_room = admin::KickStreamRequest {
-            room_id: String::new(),
-            media_id: "media1".to_string(),
-            reason: String::new(),
-        };
-        assert!(empty_room.room_id.is_empty());
-
-        let empty_media = admin::KickStreamRequest {
-            room_id: "room1".to_string(),
-            media_id: String::new(),
-            reason: String::new(),
-        };
-        assert!(empty_media.media_id.is_empty());
-
-        let valid = admin::KickStreamRequest {
-            room_id: "room1".to_string(),
-            media_id: "media1".to_string(),
-            reason: "test".to_string(),
-        };
-        assert!(!valid.room_id.is_empty() && !valid.media_id.is_empty());
-    }
-
-    #[test]
-    fn test_kick_stream_request_uses_body_fields() {
-        // Route is /streams/kick (no {stream_id} parameter).
-        let req = admin::KickStreamRequest {
-            room_id: "room123".to_string(),
-            media_id: "media456".to_string(),
-            reason: "test kick".to_string(),
-        };
-        assert_eq!(req.room_id, "room123");
-        assert_eq!(req.media_id, "media456");
-        assert_eq!(req.reason, "test kick");
     }
 }

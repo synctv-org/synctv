@@ -3,7 +3,6 @@
 //! Tests: `mark_as_read` cross-user guard, `mark_all_as_read` before parameter,
 //!        `delete_older_than` boundary, `list_by_user_with_count` empty `total_count=0`.
 //!
-//! Run with: cargo test -p synctv-core --test `notification_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};

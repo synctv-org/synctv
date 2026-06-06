@@ -4,7 +4,6 @@ use chrono::Utc;
 use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::PasswordComplexityConfig,
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
@@ -40,11 +39,10 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    UserService::new(
+    UserService::new_for_tests(
         pool,
         jwt_service,
         username_cache,
-        PasswordComplexityConfig::default(),
         token_blacklist,
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test:user".to_string()),
@@ -58,17 +56,25 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     connection_manager.start();
 
-    synctv_api::impls::ClientApiImpl::new(
-        user_service,
-        room_service,
-        connection_manager,
-        Arc::new(Config::default()),
-        None,
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
-        None,
-        None,
-        None,
-        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
+    synctv_api::impls::ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            user_service,
+            room_service,
+            connection_service: connection_manager,
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            providers_manager: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            chat_service: None,
+            credential_encryption: None,
+            provider_stores: None,
+            email_api: None,
+            passkey_service: None,
+        },
+        synctv_api::impls::ClientApiRuntime::test_disabled(),
     )
 }
 
@@ -79,7 +85,10 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     let user_repo = UserRepository::new(pool.clone());
 
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
     let client_api = make_client_api(user_service, room_service.clone());
 
     let actor = user_repo
@@ -139,7 +148,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(created_only.rooms.len(), 1);
     assert_eq!(
         created_only.rooms[0].room.as_ref().unwrap().id,
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(created_room.id)
             .unwrap()
     );
@@ -169,7 +178,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(participating_only.rooms.len(), 1);
     assert_eq!(
         participating_only.rooms[0].room.as_ref().unwrap().id,
-        synctv_api::PublicIdCodec::default_for_tests()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(participating_room.id)
             .unwrap()
     );

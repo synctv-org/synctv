@@ -3,7 +3,6 @@
 //! Tests `set_if_newer` (absent key, newer wins, older rejected, concurrent)
 //! and namespaced prefix invalidation/index maintenance.
 //!
-//! Run with: cargo test --test `redis_cache_l2_tests`
 #![allow(clippy::unwrap_used)]
 
 use redis::AsyncCommands;

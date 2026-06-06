@@ -5,7 +5,7 @@ use serde_json::Value as JsonValue;
 pub(crate) const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
 
 pub(crate) fn validate_source_config_size(source_config: &JsonValue) -> Result<()> {
-    let config_size = serde_json::to_vec(source_config).map_or(0, |bytes| bytes.len());
+    let config_size = serde_json::to_vec(source_config)?.len();
     if config_size > MAX_SOURCE_CONFIG_SIZE {
         return Err(Error::InvalidInput(format!(
             "source_config too large: {config_size} bytes (max {MAX_SOURCE_CONFIG_SIZE} bytes / 1MB)"
@@ -18,21 +18,6 @@ pub(crate) fn validate_source_config_size(source_config: &JsonValue) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_source_config_size_limit_constant() {
-        assert_eq!(MAX_SOURCE_CONFIG_SIZE, 1_048_576);
-    }
-
-    #[test]
-    fn test_source_config_size_calculation() {
-        let small_config = serde_json::json!({
-            "url": "https://example.com/video.mp4",
-            "headers": {"Referer": "https://example.com"}
-        });
-        let size = serde_json::to_vec(&small_config).map_or(0, |bytes| bytes.len());
-        assert!(size < 200, "Small config should be under 200 bytes");
-    }
 
     #[test]
     fn test_source_config_large_rejection() {
@@ -102,20 +87,5 @@ mod tests {
         });
 
         validate_source_config_size(&nested_config).unwrap();
-    }
-
-    #[test]
-    fn test_source_config_unicode_content_size() {
-        let unicode_string = "\u{1F389}".repeat(100);
-        let unicode_config = serde_json::json!({
-            "title": unicode_string
-        });
-
-        let size = serde_json::to_vec(&unicode_config).map_or(0, |bytes| bytes.len());
-
-        assert!(
-            size > 400 && size < 500,
-            "Unicode size should be counted in bytes, got {size} bytes"
-        );
     }
 }

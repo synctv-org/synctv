@@ -321,7 +321,13 @@ impl K8sDnsDiscovery {
                         return;
                     }
                     _ = timer.tick() => {
-                        let _ = this.refresh().await;
+                        if let Err(error) = this.refresh().await {
+                            tracing::warn!(
+                                error = %error,
+                                dns_name = %this.dns_name,
+                                "K8s DNS discovery refresh failed"
+                            );
+                        }
                     }
                 }
             }

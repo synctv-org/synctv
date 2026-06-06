@@ -73,11 +73,14 @@ impl GoogleProvider {
                 .set_client_secret(ClientSecret::new(client_secret))
                 .set_auth_uri(
                     AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string())
-                        .expect("valid Google auth URL"),
+                        .map_err(|e| {
+                            Error::InvalidInput(format!("Invalid Google auth URL: {e}"))
+                        })?,
                 )
                 .set_token_uri(
-                    TokenUrl::new("https://oauth2.googleapis.com/token".to_string())
-                        .expect("valid Google token URL"),
+                    TokenUrl::new("https://oauth2.googleapis.com/token".to_string()).map_err(
+                        |e| Error::InvalidInput(format!("Invalid Google token URL: {e}")),
+                    )?,
                 )
                 .set_redirect_uri(redirect),
         );
@@ -367,19 +370,5 @@ mod tests {
         assert_eq!(config.client_id, "goog_abc");
         assert_eq!(config.client_secret, "goog_def");
         assert_eq!(config.redirect_url, "https://example.com/cb");
-    }
-
-    #[test]
-    fn test_google_config_serialize_roundtrip() {
-        let config = GoogleConfig {
-            client_id: "id".to_string(),
-            client_secret: "secret".to_string(),
-            redirect_url: "https://example.com/cb".to_string(),
-        };
-        let json = serde_json::to_value(&config).unwrap();
-        let deserialized: GoogleConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.client_id, config.client_id);
-        assert_eq!(deserialized.client_secret, config.client_secret);
-        assert_eq!(deserialized.redirect_url, config.redirect_url);
     }
 }

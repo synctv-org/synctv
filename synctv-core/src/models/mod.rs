@@ -6,7 +6,6 @@ macro_rules! sort_field_enum {
                 $variant:ident => {
                     display: $display:literal,
                     sql: $sql:literal
-                    $(, aliases: [$($alias:literal),* $(,)?])?
                 }
             ),+ $(,)?
         }
@@ -46,7 +45,7 @@ macro_rules! sort_field_enum {
             fn from_str(raw: &str) -> Result<Self, Self::Err> {
                 let normalized = raw.trim().to_ascii_lowercase();
                 match normalized.as_str() {
-                    $($display $(| $($alias)|*)? => Ok(Self::$variant),)+
+                    $($display => Ok(Self::$variant),)+
                     other => Err(format!("{}: {other}", $error)),
                 }
             }
@@ -146,12 +145,14 @@ pub use file_storage::{
     FileReferenceTarget, FileUploadPolicy, FileUploadSession, NewStoredFile, StoredFileReference,
 };
 pub use id::{
-    generate_id, BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId,
+    generate_id, BanRecordId, EmailRegistrationTokenId, MediaId, PlaylistId, ReviewRequestId,
+    RoomId, TypedId, UserId,
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
-    Danmaku, Media, MediaListQuery, MediaListSortBy, PlaybackInfo, PlaybackResult, PlaybackUrl,
-    PlaybackUrlMetadata, ProviderType, ProviderTypeName, ProviderTypeNames, Subtitle, SubtitleUrl,
+    Danmaku, DirectMultimodeParams, FromProviderParams, Media, MediaListQuery, MediaListSortBy,
+    PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata, ProviderType, ProviderTypeName,
+    ProviderTypeNames, Subtitle, SubtitleUrl,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
@@ -194,10 +195,7 @@ pub use room_member::{
     RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser,
 };
 pub use room_settings::RoomSettings;
-pub use settings::{
-    default_email_settings, default_oauth_settings, default_server_settings, get_default_settings,
-    SettingsError, SettingsGroup,
-};
+pub use settings::{get_default_settings, SettingsGroup};
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,
     UserRole, UserStatus,
@@ -211,12 +209,11 @@ mod tests {
     use super::*;
 
     macro_rules! assert_sort_field {
-        ($ty:ty, $variant:expr, $display:literal, $sql:literal $(, $alias:literal)?) => {
+        ($ty:ty, $variant:expr, $display:literal, $sql:literal) => {
             assert_eq!($variant.as_str(), $display);
             assert_eq!($variant.to_string(), $display);
             assert_eq!($variant.as_sql(), $sql);
             assert_eq!($display.parse::<$ty>().unwrap(), $variant);
-            $(assert_eq!($alias.parse::<$ty>().unwrap(), $variant);)?
         };
     }
 
@@ -227,8 +224,7 @@ mod tests {
             MediaListSortBy,
             MediaListSortBy::ProviderInstanceName,
             "provider_instance_name",
-            "provider_instance_name",
-            "providerinstancename"
+            "provider_instance_name"
         );
         assert_eq!(MediaListSortBy::default(), MediaListSortBy::Position);
 
@@ -236,8 +232,7 @@ mod tests {
             PlaylistListSortBy,
             PlaylistListSortBy::CreatedAt,
             "created_at",
-            "created_at",
-            "createdat"
+            "created_at"
         );
         assert_eq!(PlaylistListSortBy::default(), PlaylistListSortBy::Position);
 
@@ -245,8 +240,7 @@ mod tests {
             RoomListSortBy,
             RoomListSortBy::LastActivityAt,
             "last_activity_at",
-            "r.last_activity_at",
-            "lastactivityat"
+            "r.last_activity_at"
         );
         assert_eq!(RoomListSortBy::default(), RoomListSortBy::CreatedAt);
 
@@ -254,8 +248,7 @@ mod tests {
             RoomMemberListSortBy,
             RoomMemberListSortBy::JoinedAt,
             "joined_at",
-            "rm.joined_at",
-            "joinedat"
+            "rm.joined_at"
         );
         assert_eq!(
             RoomMemberListSortBy::default(),
@@ -266,8 +259,7 @@ mod tests {
             MyRoomListSortBy,
             MyRoomListSortBy::LastActivityAt,
             "last_activity_at",
-            "r.last_activity_at",
-            "lastactivityat"
+            "r.last_activity_at"
         );
         assert_eq!(MyRoomListSortBy::default(), MyRoomListSortBy::JoinedAt);
 
@@ -275,8 +267,7 @@ mod tests {
             NotificationListSortBy,
             NotificationListSortBy::UpdatedAt,
             "updated_at",
-            "updated_at",
-            "updatedat"
+            "updated_at"
         );
         assert_eq!(
             NotificationListSortBy::default(),
@@ -298,8 +289,7 @@ mod tests {
             UserListSortBy,
             UserListSortBy::UpdatedAt,
             "updated_at",
-            "updated_at",
-            "updatedat"
+            "updated_at"
         );
         assert_eq!(UserListSortBy::default(), UserListSortBy::CreatedAt);
     }

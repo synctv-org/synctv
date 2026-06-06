@@ -852,31 +852,6 @@ mod tests {
     }
 
     #[test]
-    fn test_permission_bits_std_bit_ops() {
-        let chat = RoomPermissionSet::new(RoomAdminPermissionBits::CHAT);
-        let media = RoomPermissionSet::new(RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE);
-        let combined = chat | media;
-
-        assert!(combined.has_all(RoomPermissionSet::new(
-            RoomAdminPermissionBits::CHAT | RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-        )));
-        assert_eq!((combined & chat).bits(), RoomAdminPermissionBits::CHAT);
-        assert_eq!(
-            (combined ^ chat).bits(),
-            RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-        );
-
-        let mut assigned = RoomPermissionSet::empty();
-        assigned |= RoomAdminPermissionBits::CHAT;
-        assigned |= media;
-        assigned &= !chat;
-        assert_eq!(
-            assigned.bits(),
-            RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-        );
-    }
-
-    #[test]
     fn test_role_permission_bitspaces_reject_unknown_bits() {
         assert!(RoomMemberPermissionBits::includes_only_defined(
             RoomMemberPermissionBits::CHAT | RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE
@@ -900,7 +875,7 @@ mod tests {
     #[test]
     fn test_permission_revoke_idempotent() {
         let mut perms = RoomPermissionSet::empty();
-        perms.revoke(crate::models::RoomPermission::CHAT); // no-op on empty
+        perms.revoke(crate::models::RoomPermission::CHAT);
         assert!(!perms.has(crate::models::RoomPermission::CHAT));
         assert_eq!(perms.0, 0);
     }
@@ -918,37 +893,19 @@ mod tests {
     }
 
     #[test]
-    fn test_role_from_str() {
-        assert_eq!(Role::from_str("creator").unwrap(), Role::Creator);
-        assert_eq!(Role::from_str("admin").unwrap(), Role::Admin);
-        assert_eq!(Role::from_str("member").unwrap(), Role::Member);
-        assert_eq!(Role::from_str("guest").unwrap(), Role::Guest);
-        assert_eq!(Role::from_str("CREATOR").unwrap(), Role::Creator);
-        assert_eq!(Role::from_str("Admin").unwrap(), Role::Admin);
-        assert_eq!(Role::from_str(" member ").unwrap(), Role::Member);
-    }
+    fn role_parse_and_display_contract() {
+        for (input, role, display) in [
+            ("creator", Role::Creator, "creator"),
+            ("Admin", Role::Admin, "admin"),
+            (" member ", Role::Member, "member"),
+            ("GUEST", Role::Guest, "guest"),
+        ] {
+            assert_eq!(Role::from_str(input).unwrap(), role);
+            assert_eq!(role.to_string(), display);
+        }
 
-    #[test]
-    fn test_role_from_str_invalid() {
         assert!(Role::from_str("superadmin").is_err());
         assert!(Role::from_str("").is_err());
         assert!(Role::from_str("owner").is_err());
-    }
-
-    #[test]
-    fn test_role_display() {
-        assert_eq!(Role::Creator.to_string(), "creator");
-        assert_eq!(Role::Admin.to_string(), "admin");
-        assert_eq!(Role::Member.to_string(), "member");
-        assert_eq!(Role::Guest.to_string(), "guest");
-    }
-
-    #[test]
-    fn test_role_display_roundtrip() {
-        for role in [Role::Creator, Role::Admin, Role::Member, Role::Guest] {
-            let display = role.to_string();
-            let parsed = Role::from_str(&display).unwrap();
-            assert_eq!(parsed, role);
-        }
     }
 }

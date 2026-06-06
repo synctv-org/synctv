@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id as \"id: MediaId\",\n                   playlist_id as \"playlist_id: PlaylistId\",\n                   room_id as \"room_id: RoomId\",\n                   creator_id as \"creator_id: UserId\",\n                   name,\n                   description,\n                   position,\n                   source_provider as \"source_provider: ProviderTypeName\",\n                   source_config,\n                   NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                   cover_file_reference_id,\n                   added_at, updated_at, version\n             FROM media\n             WHERE room_id = $1 AND id = ANY($2)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "playlist_id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "creator_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "position",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 7,
+        "name": "source_provider: ProviderTypeName",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 8,
+        "name": "source_config",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "provider_instance_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "added_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d394ead77d4784b3480a1995344815566482133cee1a7d4b6ef9280b7175f36c"
+}

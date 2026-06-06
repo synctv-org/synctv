@@ -174,6 +174,65 @@ pub enum StreamLifecycleEvent {
     },
 }
 
+impl StreamLifecycleEvent {
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Started { .. } => "started",
+            Self::Stopped { .. } => "stopped",
+        }
+    }
+
+    fn room_id(&self) -> &str {
+        match self {
+            Self::Started { room_id, .. } | Self::Stopped { room_id, .. } => room_id,
+        }
+    }
+
+    fn media_id(&self) -> &str {
+        match self {
+            Self::Started { media_id, .. } | Self::Stopped { media_id, .. } => media_id,
+        }
+    }
+
+    fn user_id(&self) -> &str {
+        match self {
+            Self::Started { user_id, .. } | Self::Stopped { user_id, .. } => user_id,
+        }
+    }
+}
+
+fn publish_stream_lifecycle_event(
+    tx: &tokio::sync::broadcast::Sender<StreamLifecycleEvent>,
+    event: StreamLifecycleEvent,
+) {
+    let lifecycle_event = event.kind();
+    let room_id = event.room_id().to_string();
+    let media_id = event.media_id().to_string();
+    let user_id = event.user_id().to_string();
+    match tx.send(event) {
+        Ok(receiver_count) => {
+            tracing::debug!(
+                lifecycle_event,
+                room_id = %room_id,
+                media_id = %media_id,
+                user_id = %user_id,
+                receiver_count,
+                "Published RTMP stream lifecycle event"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                lifecycle_event,
+                room_id = %room_id,
+                media_id = %media_id,
+                user_id = %user_id,
+                error = %error,
+                "Failed to publish RTMP stream lifecycle event: no active receivers"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingPublishCleanup {
     epoch: u64,
@@ -222,31 +281,34 @@ pub struct SyncTvRtmpAuth {
     pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
 }
 
+pub struct SyncTvRtmpAuthConfig {
+    pub room_service: Arc<RoomService>,
+    pub user_service: Arc<UserService>,
+    pub publish_key_service: Arc<dyn StreamingPublishKeyService>,
+    pub user_stream_tracker: Arc<StreamTracker>,
+    pub registry: Arc<dyn StreamRegistryTrait>,
+    pub node_id: String,
+    pub api_address: String,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+    pub is_restarting: Option<Arc<AtomicBool>>,
+    pub user_stream_index: Arc<dyn UserStreamIndex>,
+}
+
 impl SyncTvRtmpAuth {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        room_service: Arc<RoomService>,
-        user_service: Arc<UserService>,
-        publish_key_service: Arc<dyn StreamingPublishKeyService>,
-        user_stream_tracker: Arc<StreamTracker>,
-        registry: Arc<dyn StreamRegistryTrait>,
-        node_id: String,
-        api_address: String,
-        public_id_codec: Arc<synctv_core::PublicIdCodec>,
-        stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
-    ) -> Self {
+    pub fn new(config: SyncTvRtmpAuthConfig) -> Self {
         Self {
-            room_service,
-            user_service,
-            publish_key_service,
-            user_stream_tracker,
-            registry,
-            node_id,
-            api_address,
-            stream_event_tx,
-            public_id_codec,
-            is_restarting: None,
-            user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
+            room_service: config.room_service,
+            user_service: config.user_service,
+            publish_key_service: config.publish_key_service,
+            user_stream_tracker: config.user_stream_tracker,
+            registry: config.registry,
+            node_id: config.node_id,
+            api_address: config.api_address,
+            stream_event_tx: config.stream_event_tx,
+            public_id_codec: config.public_id_codec,
+            is_restarting: config.is_restarting,
+            user_stream_index: config.user_stream_index,
             pending_publish_cleanups: Arc::new(DashMap::new()),
         }
     }
@@ -267,19 +329,6 @@ impl SyncTvRtmpAuth {
         self.public_id_codec
             .decode_media_id(stream_name)
             .map_err(|error| format!("Invalid RTMP media id: {error}").into())
-    }
-
-    #[must_use]
-    pub fn with_user_stream_index(mut self, index: Arc<dyn UserStreamIndex>) -> Self {
-        self.user_stream_index = index;
-        self
-    }
-
-    /// Reject new RTMP publications while StreamHub is restarting.
-    #[must_use]
-    pub fn with_restarting_flag(mut self, is_restarting: Arc<AtomicBool>) -> Self {
-        self.is_restarting = Some(is_restarting);
-        self
     }
 
     fn remember_pending_publish_cleanup(
@@ -526,11 +575,14 @@ impl AuthCallback for SyncTvRtmpAuth {
             .await;
 
         if let Some(ref tx) = self.stream_event_tx {
-            let _ = tx.send(StreamLifecycleEvent::Stopped {
-                room_id: app_name.to_string(),
-                media_id: stream_name.to_string(),
-                user_id: attempt.user_id.to_string(),
-            });
+            publish_stream_lifecycle_event(
+                tx,
+                StreamLifecycleEvent::Stopped {
+                    room_id: app_name.to_string(),
+                    media_id: stream_name.to_string(),
+                    user_id: attempt.user_id.to_string(),
+                },
+            );
         }
     }
 
@@ -938,11 +990,14 @@ impl SyncTvRtmpAuth {
 
         // Emit stream lifecycle event
         if let Some(ref tx) = self.stream_event_tx {
-            let _ = tx.send(StreamLifecycleEvent::Started {
-                room_id: validated.room_id.to_string(),
-                media_id: validated.media_id.to_string(),
-                user_id: validated.user_id.to_string(),
-            });
+            publish_stream_lifecycle_event(
+                tx,
+                StreamLifecycleEvent::Started {
+                    room_id: validated.room_id.to_string(),
+                    media_id: validated.media_id.to_string(),
+                    user_id: validated.user_id.to_string(),
+                },
+            );
         }
 
         self.remember_pending_publish_cleanup(
@@ -1246,33 +1301,39 @@ mod tests {
     #[tokio::test]
     async fn test_on_publish_rejects_during_streamhub_restart() {
         let restarting = Arc::new(AtomicBool::new(true));
-        let auth = SyncTvRtmpAuth::new(
-            Arc::new(RoomService::new(
-                sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                    .expect("lazy pool"),
-                UserService::new(
-                    &sqlx::postgres::PgPoolOptions::new()
+        let auth = SyncTvRtmpAuth::new(SyncTvRtmpAuthConfig {
+            room_service: Arc::new(
+                RoomService::new_for_tests(
+                    sqlx::postgres::PgPoolOptions::new()
                         .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                         .expect("lazy pool"),
-                    synctv_core::service::JwtService::new(
-                        "test-secret-key-for-http-router-tests-minimum-32-chars",
-                    )
-                    .expect("jwt"),
-                    synctv_core::cache::UsernameCache::local_only(
-                        "test:username:".to_string(),
-                        16,
-                        60,
+                    UserService::new_for_tests(
+                        &sqlx::postgres::PgPoolOptions::new()
+                            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                            .expect("lazy pool"),
+                        synctv_core::service::JwtService::new(
+                            "test-secret-key-for-http-router-tests-minimum-32-chars",
+                        )
+                        .expect("jwt"),
+                        synctv_core::cache::UsernameCache::local_only(
+                            "test:username:".to_string(),
+                            16,
+                            60,
+                        ),
+                        Arc::new(
+                            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                                128, 3600, 86400,
+                            ),
+                        ),
+                        synctv_core::cache::KeyBuilder::new("test"),
+                        synctv_core::service::auth::BruteForceProtection::in_memory(
+                            "test".to_string(),
+                        ),
                     ),
-                    synctv_core::config::PasswordComplexityConfig::default(),
-                    Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                        128, 3600, 86400,
-                    )),
-                    synctv_core::cache::KeyBuilder::new("test"),
-                    synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
-                ),
-            )),
-            Arc::new(UserService::new(
+                )
+                .expect("room service should build"),
+            ),
+            user_service: Arc::new(UserService::new_for_tests(
                 &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
@@ -1285,27 +1346,30 @@ mod tests {
                     16,
                     60,
                 ),
-                synctv_core::config::PasswordComplexityConfig::default(),
                 Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                     128, 3600, 86400,
                 )),
                 synctv_core::cache::KeyBuilder::new("test"),
                 synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
             )),
-            Arc::new(synctv_core::service::PublishKeyService::with_default_ttl(
+        publish_key_service: Arc::new(
+            synctv_core::service::PublishKeyService::with_default_ttl(
                 synctv_core::service::JwtService::new(
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )
                 .expect("jwt"),
-            )),
-            Arc::new(synctv_livestream::api::StreamTracker::new()),
-            synctv_livestream::relay::local_stream_registry(),
-            "node-1".to_string(),
-            "127.0.0.1:50051".to_string(),
-            Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
-            None,
-        )
-        .with_restarting_flag(restarting);
+            )
+            .expect("publish key service should build"),
+        ),
+        user_stream_tracker: Arc::new(synctv_livestream::api::StreamTracker::new()),
+        registry: synctv_livestream::relay::local_stream_registry(),
+        node_id: "node-1".to_string(),
+        api_address: "127.0.0.1:50051".to_string(),
+        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        stream_event_tx: None,
+        is_restarting: Some(restarting),
+        user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
+    });
 
         let result = auth.on_publish("room", "stream", None).await;
         let err = result.expect_err("publish must be rejected while restarting");
@@ -1637,14 +1701,13 @@ mod tests {
                 .expect("lazy pool")
         };
         let make_user_service = || {
-            UserService::new(
+            UserService::new_for_tests(
                 &lazy_pool(),
                 synctv_core::service::JwtService::new(
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )
                 .expect("jwt"),
                 synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 16, 60),
-                synctv_core::config::PasswordComplexityConfig::default(),
                 Arc::new(
                     synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                         128, 3600, 86400,
@@ -1655,22 +1718,30 @@ mod tests {
             )
         };
 
-        SyncTvRtmpAuth::new(
-            Arc::new(RoomService::new(lazy_pool(), make_user_service())),
-            Arc::new(make_user_service()),
-            Arc::new(synctv_core::service::PublishKeyService::with_default_ttl(
-                synctv_core::service::JwtService::new(
-                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+        SyncTvRtmpAuth::new(SyncTvRtmpAuthConfig {
+            room_service: Arc::new(
+                RoomService::new_for_tests(lazy_pool(), make_user_service())
+                    .expect("room service should build"),
+            ),
+            user_service: Arc::new(make_user_service()),
+            publish_key_service: Arc::new(
+                synctv_core::service::PublishKeyService::with_default_ttl(
+                    synctv_core::service::JwtService::new(
+                        "test-secret-key-for-http-router-tests-minimum-32-chars",
+                    )
+                    .expect("jwt"),
                 )
-                .expect("jwt"),
-            )),
-            Arc::new(synctv_livestream::api::StreamTracker::new()),
+                .expect("publish key service should build"),
+            ),
+            user_stream_tracker: Arc::new(synctv_livestream::api::StreamTracker::new()),
             registry,
-            "node-1".to_string(),
-            "127.0.0.1:50051".to_string(),
-            Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
-            None,
-        )
+            node_id: "node-1".to_string(),
+            api_address: "127.0.0.1:50051".to_string(),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            stream_event_tx: None,
+            is_restarting: None,
+            user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
+        })
     }
 
     #[test]
@@ -1708,7 +1779,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RedisConnectionRuntime for MockRedisRuntime {
-        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
             panic!("mock redis runtime snapshot should not be called in factory tests");
         }
     }

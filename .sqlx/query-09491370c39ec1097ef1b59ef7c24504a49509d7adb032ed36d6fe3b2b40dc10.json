@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT p.id AS \"id!: UserId\",\n                   p.username AS \"username!\",\n                   p.signup_method AS \"signup_method!: SignupMethod\",\n                   p.role AS \"role!: UserRole\",\n                   p.avatar_file_reference_id,\n                   p.status AS \"status!: UserStatus\",\n                   p.is_banned AS \"is_banned!\",\n                   p.banned_at,\n                   p.banned_by AS \"banned_by?: UserId\",\n                   p.banned_reason,\n                   p.created_at AS \"created_at!\",\n                   p.updated_at AS \"updated_at!\",\n                   p.version AS \"version!\",\n                   p.deleted_at\n            FROM user_account_profiles p\n            WHERE LOWER(p.username) = LOWER($1) AND p.deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "username!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "signup_method!: SignupMethod",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "role!: UserRole",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "avatar_file_reference_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "status!: UserStatus",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_banned!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "banned_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "banned_by?: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "banned_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "version!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "09491370c39ec1097ef1b59ef7c24504a49509d7adb032ed36d6fe3b2b40dc10"
+}

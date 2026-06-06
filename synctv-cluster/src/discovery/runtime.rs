@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::health_monitor::NodeHealth;
@@ -47,8 +46,7 @@ pub trait ClusterNodeDirectoryFactory: Send + Sync {
 
 #[async_trait]
 pub trait ClusterHealthRuntime: Send + Sync {
-    fn start(&self) -> Result<JoinHandle<()>>;
-    fn set_join_handle(&self, handle: JoinHandle<()>);
+    fn start(&self) -> Result<()>;
     async fn shutdown(&self);
     async fn get_all_status(&self) -> HashMap<String, NodeHealth>;
     async fn get_node_status(&self, node_id: &str) -> Option<NodeHealth>;

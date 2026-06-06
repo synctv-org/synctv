@@ -34,10 +34,11 @@ use std::sync::{
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::http::{AppError, AppState};
+use crate::http::{optional_header_str, AppError, AppState};
 use crate::impls::messaging::{
-    GuestRealtimeIdentity, MessageSender, ProtoCodec, RealtimeJoinError, RealtimePrincipal,
-    StreamMessage, StreamMessageHandler,
+    GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, ProtoCodec, RealtimeJoinError,
+    RealtimePrincipal, StreamMessage, StreamMessageHandler, StreamMessageHandlerConfig,
+    StreamMessageHandlerRuntime,
 };
 use crate::impls::{
     ApiError, EndpointRateLimitCategory, EndpointRateLimitScope,
@@ -114,7 +115,7 @@ impl RealtimeTransportFormat {
     pub(crate) fn parse(value: Option<&str>) -> Result<Self, AppError> {
         match value.map(str::trim).filter(|value| !value.is_empty()) {
             None | Some("json") => Ok(Self::Json),
-            Some("protobuf" | "proto") => Ok(Self::Protobuf),
+            Some("protobuf") => Ok(Self::Protobuf),
             Some(other) => Err(AppError::bad_request(format!(
                 "Invalid format '{other}'. Expected json or protobuf"
             ))),
@@ -123,6 +124,7 @@ impl RealtimeTransportFormat {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WsQuery {
     #[serde(default)]
     ticket: String,
@@ -136,7 +138,10 @@ fn websocket_connect_request(query: &WsQuery) -> crate::proto::client::WebSocket
     }
 }
 
-fn guest_principal_from_ticket(room_id: RoomId, guest: &ValidatedGuestTicket) -> RealtimePrincipal {
+fn guest_principal_from_ticket(
+    room_id: RoomId,
+    guest: &ValidatedGuestTicket,
+) -> Result<RealtimePrincipal, RealtimeJoinError> {
     RealtimePrincipal::guest(
         room_id,
         GuestRealtimeIdentity {
@@ -229,12 +234,13 @@ fn websocket_request_metadata(
                 .map_err(|_| AppError::invalid_authorization_header_non_utf8())
         })
         .transpose()?;
-    let user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+    let user_agent = optional_header_str(headers, &header::USER_AGENT)?.map(str::to_owned);
     let client_ip = direct_peer_ip
-        .map(|peer_ip| crate::client_ip::extract_client_ip_from_headers(config, peer_ip, headers));
+        .map(|peer_ip| {
+            crate::client_ip::extract_client_ip_from_headers(config, peer_ip, headers)
+                .map_err(|error| AppError::bad_request(error.to_string()))
+        })
+        .transpose()?;
 
     Ok(ApiRequestMetadata::new(TransportProtocol::Http)
         .with_authorization(authorization)
@@ -282,15 +288,10 @@ async fn extract_handshake_auth(
         ));
     }
 
-    if request_meta.authorization.is_some() {
-        validate_websocket_authorization_header(request_meta.authorization.as_deref())?;
-        let token = JwtValidator::extract_bearer_token(
-            request_meta
-                .authorization
-                .as_deref()
-                .expect("authorization checked above"),
-        )
-        .map_err(|_| AppError::invalid_authorization_header())?;
+    if let Some(authorization) = request_meta.authorization.as_deref() {
+        validate_websocket_authorization_header(Some(authorization))?;
+        let token = JwtValidator::extract_bearer_token(authorization)
+            .map_err(|_| AppError::invalid_authorization_header())?;
         if synctv_core::service::JwtService::token_type_hint(&token)
             == Some(synctv_core::service::TokenType::Guest)
         {
@@ -319,7 +320,8 @@ async fn extract_handshake_auth(
                             room_guest_version: access.room_guest_version,
                             permissions: access.permissions,
                         };
-                        let principal = RealtimePrincipal::guest(*room_id, identity);
+                        let principal = RealtimePrincipal::guest(*room_id, identity)
+                            .map_err(|error| crate::impls::ApiError::Internal(error.to_string()))?;
                         Ok(HandshakeAuthContext {
                             user_id: principal.connection_user_id(),
                             principal,
@@ -375,12 +377,13 @@ async fn extract_handshake_auth(
 
                 let principal = match &pending {
                     PendingValidatedTicket::User { user_id, .. } => {
-                        RealtimePrincipal::user(*user_id, String::new())
+                        Ok(RealtimePrincipal::user(*user_id, String::new()))
                     }
                     PendingValidatedTicket::Guest { guest, .. } => {
                         guest_principal_from_ticket(*room_id, guest)
                     }
-                };
+                }
+                .map_err(|error| crate::impls::ApiError::Internal(error.to_string()))?;
                 Ok(HandshakeAuthContext {
                     user_id: principal.connection_user_id(),
                     principal,
@@ -472,20 +475,22 @@ fn validate_websocket_origin(
         ));
     }
 
-    if let Some(host) = headers
-        .get(header::HOST)
-        .and_then(|host| host.to_str().ok())
-    {
-        let forwarded_proto = direct_peer_ip.and_then(|peer_ip| {
-            if server_config.is_trusted_proxy(&peer_ip) {
-                headers
-                    .get("x-forwarded-proto")
-                    .and_then(|value| value.to_str().ok())
-            } else {
-                None
-            }
-        });
-        if same_origin_as_host(&parsed_origin, host, forwarded_proto) {
+    if let Some(host_header) = headers.get(header::HOST) {
+        let host = host_header
+            .to_str()
+            .map_err(|_| AppError::forbidden("Invalid Host header: non-UTF-8 value"))?;
+        let forwarded_proto = match direct_peer_ip {
+            Some(peer_ip) if server_config.is_trusted_proxy(&peer_ip) => headers
+                .get("x-forwarded-proto")
+                .map(|value| {
+                    value.to_str().map_err(|_| {
+                        AppError::forbidden("Invalid x-forwarded-proto header: non-UTF-8 value")
+                    })
+                })
+                .transpose()?,
+            _ => None,
+        };
+        if same_origin_as_host(&parsed_origin, host, forwarded_proto)? {
             return Ok(());
         }
     }
@@ -503,42 +508,53 @@ fn same_origin_as_host(
     origin: &url::Url,
     host_header: &str,
     forwarded_proto: Option<&str>,
-) -> bool {
+) -> Result<bool, AppError> {
     let Some(origin_host) = origin.host_str() else {
-        return false;
+        return Ok(false);
     };
 
-    let (request_host, request_port) = split_host_and_port(host_header);
+    let (request_host, request_port) = split_host_and_port(host_header)?;
     if !origin_host.eq_ignore_ascii_case(request_host) {
-        return false;
+        return Ok(false);
     }
 
     if let Some(request_scheme) = forwarded_proto {
         if !origin.scheme().eq_ignore_ascii_case(request_scheme) {
-            return false;
+            return Ok(false);
         }
     }
 
-    origin.port_or_known_default()
-        == request_port.or_else(|| default_port_for_scheme(origin.scheme()))
+    Ok(origin.port_or_known_default()
+        == request_port.or_else(|| default_port_for_scheme(origin.scheme())))
 }
 
-fn split_host_and_port(host_header: &str) -> (&str, Option<u16>) {
+fn split_host_and_port(host_header: &str) -> Result<(&str, Option<u16>), AppError> {
     if let Some(stripped) = host_header.strip_prefix('[') {
         if let Some(end) = stripped.find(']') {
             let host = &stripped[..end];
             let remainder = &stripped[end + 1..];
-            let port = remainder
-                .strip_prefix(':')
-                .and_then(|port| port.parse().ok());
-            return (host, port);
+            let port = match remainder.strip_prefix(':') {
+                Some(port) => Some(parse_host_port(port)?),
+                None if remainder.is_empty() => None,
+                _ => return Err(AppError::forbidden("Invalid Host header format")),
+            };
+            return Ok((host, port));
         }
+        return Err(AppError::forbidden("Invalid Host header format"));
     }
 
     match host_header.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => (host, port.parse().ok()),
-        _ => (host_header, None),
+        Some((host, port)) if !host.contains(':') => Ok((host, Some(parse_host_port(port)?))),
+        _ => Ok((host_header, None)),
     }
+}
+
+fn parse_host_port(port: &str) -> Result<u16, AppError> {
+    if port.is_empty() {
+        return Err(AppError::forbidden("Invalid Host header port"));
+    }
+    port.parse()
+        .map_err(|_| AppError::forbidden("Invalid Host header port"))
 }
 
 fn default_port_for_scheme(scheme: &str) -> Option<u16> {
@@ -550,7 +566,7 @@ fn default_port_for_scheme(scheme: &str) -> Option<u16> {
 }
 
 pub(crate) fn websocket_runtime_dependencies_available(state: &AppState) -> bool {
-    state.event_service.is_some() && state.chat_service.is_some()
+    state.chat_service.is_some()
 }
 
 pub(crate) fn validate_websocket_runtime_dependencies(state: &AppState) -> Result<(), AppError> {
@@ -1329,18 +1345,8 @@ async fn handle_socket(
         user_id, room_id
     );
 
-    // Check if realtime_manager is available BEFORE incrementing metrics.
-    // This prevents counter drift: if we return early, we never incremented,
-    // so there's nothing to decrement.
-    let event_service = if let Some(ref service) = state.event_service {
-        service.clone()
-    } else {
-        error!("Realtime event service not available, WebSocket connection not supported");
-        return;
-    };
+    let event_service = state.event_service.clone();
 
-    // Create RAII guard for metrics - ensures metrics are decremented even on panic.
-    // This must be created AFTER all early-return checks to prevent false decrements.
     let _metrics_guard = MetricsGuard::new();
 
     // Use the shared rate limiter from app state
@@ -1371,38 +1377,42 @@ async fn handle_socket(
     };
 
     // Create StreamMessageHandler with all configuration
-    let stream_handler = StreamMessageHandler::new_with_principal(
-        room_id,
-        principal,
-        &state.room_service,
-        chat_service,
-        event_service,
-        state.connection_manager.clone(),
-        rate_limiter,
-        rate_limit_config,
-        content_filter,
-        state.shared_api_runtime.public_id_codec.clone(),
-        ws_sender_for_handler,
-    )
-    .with_playback_snapshot_service(state.shared_api_runtime.client_api.clone())
-    .with_playlist_items_snapshot_service(state.shared_api_runtime.client_api.clone())
-    .with_room_members_snapshot_service(state.shared_api_runtime.client_api.clone())
-    .with_connection_id(connection_id.clone())
-    .with_heartbeat_schedule(state.shared_api_runtime.heartbeat_schedule)
-    .with_filter_private_ice_candidates(state.config.webrtc.filter_private_ice_candidates)
-    .with_ws_message_rate_limit(
-        state
-            .config
-            .connection_limits
-            .ws_message_rate_limit_per_second,
+    let stream_handler = StreamMessageHandler::new_with_runtime(
+        StreamMessageHandlerConfig {
+            room_id,
+            principal,
+            connection_id: Some(connection_id.clone()),
+            room_service: state.room_service.clone(),
+            chat_service,
+            event_service: event_service.clone(),
+            connection_service: state.connection_manager.clone(),
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
+            sender: ws_sender_for_handler,
+            concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
+        },
+        StreamMessageHandlerRuntime {
+            playback_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+            playlist_items_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+            room_members_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+            room_settings_snapshot_service: None,
+            playback_fanout: state.shared_api_runtime.client_api.playback_fanout.clone(),
+            chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
+                event_service.clone(),
+            ),
+            notification_service: state.notification_service.clone(),
+            ws_message_rate_limit: Some(
+                state
+                    .config
+                    .connection_limits
+                    .ws_message_rate_limit_per_second,
+            ),
+            heartbeat_schedule: Some(state.shared_api_runtime.heartbeat_schedule),
+            filter_private_ice_candidates: state.config.webrtc.filter_private_ice_candidates,
+        },
     );
-
-    // Wire notification service for direct real-time push.
-    let stream_handler = if let Some(ref notif_svc) = state.notification_service {
-        stream_handler.with_notification_service(Arc::clone(notif_svc))
-    } else {
-        stream_handler
-    };
     let connection_id = stream_handler.connection_id().to_string();
 
     let (incoming_tx, cancel_token) = match stream_handler.start().await {
@@ -1453,7 +1463,14 @@ async fn handle_socket(
         loop {
             tokio::select! {
                 () = input_cancel_token.cancelled() => {
-                    let _ = close_sender_on_cancel.try_send(axum::extract::ws::Message::Close(None));
+                    if let Err(error) = close_sender_on_cancel
+                        .try_send(axum::extract::ws::Message::Close(None))
+                    {
+                        warn!(
+                            error = %error,
+                            "Failed to enqueue WebSocket close frame after cancellation"
+                        );
+                    }
                     break;
                 }
                 message = stream.recv() => {
@@ -1495,10 +1512,10 @@ mod tests {
     use std::sync::Arc;
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
-        config::PasswordComplexityConfig,
         models::{RoomId, UserId},
         service::{
             auth::{BruteForceProtection, JwtService},
+            user::UserServiceRuntimeOptions,
             InMemoryTokenBlacklistStore, RoomService, UserService, UserValidationResult,
             UserValidator,
         },
@@ -1525,21 +1542,44 @@ mod tests {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
 
-        let mut service = UserService::new(
+        UserService::new_with_runtime(
             pool,
             jwt_service,
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
-        );
-        service.enable_password_registration_for_tests();
-        service
+            UserServiceRuntimeOptions {
+                password_registration_policy_override: Some(
+                    synctv_core::service::RegistrationPolicy {
+                        enabled: true,
+                        need_review: false,
+                    },
+                ),
+                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            },
+        )
     }
 
     fn test_room_service(pool: &sqlx::PgPool) -> RoomService {
-        RoomService::new(pool.clone(), test_user_service(pool))
+        RoomService::new_for_tests(pool.clone(), test_user_service(pool))
+            .expect("room service should build")
+    }
+
+    async fn register_test_user(
+        user_service: &UserService,
+        username: &str,
+        email: &str,
+    ) -> synctv_core::models::User {
+        synctv_core_testing::opaque_register_user(
+            user_service,
+            username,
+            Some(email.to_string()),
+            "Password123!",
+        )
+        .await
+        .expect("test user should register")
+        .0
     }
 
     #[test]
@@ -1573,13 +1613,9 @@ mod tests {
     }
 
     #[test]
-    fn test_realtime_transport_format_accepts_protobuf_aliases() {
+    fn test_realtime_transport_format_accepts_protobuf() {
         assert_eq!(
             RealtimeTransportFormat::parse(Some("protobuf")).expect("protobuf format"),
-            RealtimeTransportFormat::Protobuf
-        );
-        assert_eq!(
-            RealtimeTransportFormat::parse(Some("proto")).expect("proto format"),
             RealtimeTransportFormat::Protobuf
         );
     }
@@ -1587,6 +1623,10 @@ mod tests {
     #[test]
     fn test_realtime_transport_format_rejects_unknown_values() {
         let err = RealtimeTransportFormat::parse(Some("xml")).expect_err("invalid format");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid format"));
+
+        let err = RealtimeTransportFormat::parse(Some("proto")).expect_err("invalid format");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert!(err.message.contains("Invalid format"));
     }
@@ -1607,8 +1647,24 @@ mod tests {
     }
 
     #[test]
+    fn test_websocket_request_metadata_rejects_non_utf8_user_agent() {
+        let config = synctv_core::Config::default();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::USER_AGENT,
+            axum::http::HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        );
+
+        let err = websocket_request_metadata(&config, &headers, None)
+            .expect_err("invalid user-agent must be rejected");
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid user-agent header"));
+    }
+
+    #[test]
     fn test_websocket_content_filter_reuses_shared_filter() {
-        let shared = Arc::new(ContentFilter::with_config(
+        let shared = Arc::new(ContentFilter::new_with_config(
             17,
             Some(vec!["blocked".to_string()]),
             false,
@@ -1641,10 +1697,9 @@ mod tests {
     }
 
     #[test]
-    fn test_ws_query_deserialization_ignores_extra_fields() {
+    fn test_ws_query_deserialization_rejects_extra_fields() {
         let json = r#"{"ticket":"tix","extra":"ignored"}"#;
-        let query: WsQuery = serde_json::from_str(json).expect("deserialize with extra");
-        assert_eq!(query.ticket, "tix");
+        serde_json::from_str::<WsQuery>(json).expect_err("extra fields should be rejected");
     }
 
     #[test]
@@ -1857,6 +1912,65 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_websocket_origin_rejects_non_utf8_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            axum::http::HeaderValue::from_bytes(b"app.example.com\xff").unwrap(),
+        );
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+
+        let err =
+            validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
+                .expect_err("invalid Host header must fail closed");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert!(err.message.contains("Host"));
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_rejects_malformed_host_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com:bad".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+
+        let err =
+            validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
+                .expect_err("malformed Host port must fail closed");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert!(err.message.contains("Host"));
+    }
+
+    #[test]
+    fn test_split_host_and_port_rejects_malformed_ipv6_host_header() {
+        let err = split_host_and_port("[::1:8080").expect_err("malformed IPv6 host");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert!(err.message.contains("Host"));
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_rejects_non_utf8_forwarded_proto_from_trusted_proxy() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+        headers.insert(
+            "x-forwarded-proto",
+            axum::http::HeaderValue::from_bytes(b"https\xff").unwrap(),
+        );
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
+
+        let err = validate_websocket_origin(
+            &headers,
+            &[],
+            Some("127.0.0.1".parse().unwrap()),
+            &config.server,
+        )
+        .expect_err("invalid trusted proxy metadata must fail closed");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert!(err.message.contains("x-forwarded-proto"));
+    }
+
+    #[test]
     fn test_validate_websocket_origin_ignores_forwarded_proto_from_untrusted_peer() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
@@ -1887,7 +2001,8 @@ mod tests {
 
         let direct_peer_ip = "10.2.3.4".parse().unwrap();
         let resolved_client_ip =
-            crate::client_ip::extract_client_ip_from_headers(&config, direct_peer_ip, &headers);
+            crate::client_ip::extract_client_ip_from_headers(&config, direct_peer_ip, &headers)
+                .expect("client ip should parse");
         assert_eq!(
             resolved_client_ip,
             "203.0.113.10".parse::<std::net::IpAddr>().unwrap()
@@ -1906,7 +2021,7 @@ mod tests {
 
     #[test]
     fn test_split_host_and_port_supports_ipv6_host_header() {
-        let (host, port) = split_host_and_port("[::1]:8080");
+        let (host, port) = split_host_and_port("[::1]:8080").expect("valid IPv6 host");
         assert_eq!(host, "::1");
         assert_eq!(port, Some(8080));
     }
@@ -1957,11 +2072,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_websocket_handshake_timeout_returns_request_timeout_error() {
-        let handshake = async {
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), AppError>(())
-        };
+        let handshake = async { std::future::pending::<Result<(), AppError>>().await };
 
         let timeout_task =
             tokio::spawn(async move { run_websocket_handshake_with_timeout(handshake).await });
@@ -2150,26 +2261,18 @@ mod tests {
         let room_service = test_room_service(&pool);
         let user_service = room_service.user_service().clone();
 
-        let owner = user_service
-            .register(
-                "ws-owner-inactive".to_string(),
-                Some("ws-owner-inactive@test.invalid".to_string()),
-                "Password123!".to_string(),
-                None,
-            )
-            .await
-            .expect("owner should register")
-            .0;
-        let member = user_service
-            .register(
-                "ws-member-inactive-owner".to_string(),
-                Some("ws-member-inactive-owner@test.invalid".to_string()),
-                "Password123!".to_string(),
-                None,
-            )
-            .await
-            .expect("member should register")
-            .0;
+        let owner = register_test_user(
+            &user_service,
+            "ws-owner-inactive",
+            "ws-owner-inactive@test.invalid",
+        )
+        .await;
+        let member = register_test_user(
+            &user_service,
+            "ws-member-inactive-owner",
+            "ws-member-inactive-owner@test.invalid",
+        )
+        .await;
 
         let room = room_service
             .create_room(
@@ -2533,9 +2636,8 @@ mod tests {
             run_websocket_handshake_with_timeout(async move {
                 let prepared =
                     commit_websocket_upgrade(&timeout_state, prepared, &handshake_control).await?;
-                std::future::pending::<()>().await;
-                #[allow(unreachable_code)]
-                Ok::<PreparedWebSocketUpgrade, AppError>(prepared)
+                drop(prepared);
+                std::future::pending::<Result<PreparedWebSocketUpgrade, AppError>>().await
             })
             .await
         });

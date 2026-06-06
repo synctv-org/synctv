@@ -272,15 +272,6 @@ impl KeyBuilder {
         format!("{}:auth:at_blacklist:{}", self.prefix, jti)
     }
 
-    /// Refresh token family revocation key (legacy per-user fallback).
-    ///
-    /// Type: String + TTL (max refresh token lifetime)
-    /// Value: Unix timestamp when the family was revoked
-    #[must_use]
-    pub fn refresh_token_family_revoked(&self, user_id: &str) -> String {
-        format!("{}:auth:rt_family_revoked:{}", self.prefix, user_id)
-    }
-
     /// Refresh token session revocation key (per user login session).
     ///
     /// Type: String + TTL (max refresh token lifetime)
@@ -482,10 +473,6 @@ mod tests {
         let builder = KeyBuilder::from_config(&config);
 
         assert_eq!(builder.prefix(), "tenant-a");
-        assert_eq!(
-            builder.refresh_token_family_revoked("user_1"),
-            "tenant-a:auth:rt_family_revoked:user_1"
-        );
     }
 
     #[test]

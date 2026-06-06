@@ -62,7 +62,6 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,7 +69,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_monitored_success() {
-        let result = spawn_monitored("test_success", async { 42 }).await.unwrap();
+        let result = spawn_monitored("test_success", async { 42 })
+            .await
+            .expect("monitored task should complete");
         assert_eq!(result, 42);
     }
 
@@ -94,7 +95,7 @@ mod tests {
             flag_clone.store(true, Ordering::SeqCst);
         })
         .await
-        .unwrap();
+        .expect("monitored task should complete");
 
         assert!(flag.load(Ordering::SeqCst));
     }

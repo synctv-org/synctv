@@ -1,9 +1,8 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use super::user::USER_SELECT_COLUMNS;
 use crate::{
-    models::{User, UserId},
+    models::{SignupMethod, User, UserId, UserRole, UserStatus},
     Error, Result,
 };
 
@@ -13,26 +12,50 @@ pub struct UserWithEmail {
     pub email: Option<String>,
 }
 
+#[derive(sqlx::FromRow)]
 struct UserWithEmailRow {
-    user: User,
+    id: UserId,
+    username: String,
+    signup_method: SignupMethod,
+    role: UserRole,
+    avatar_file_reference_id: Option<i64>,
+    status: UserStatus,
+    is_banned: bool,
+    banned_at: Option<DateTime<Utc>>,
+    banned_by: Option<UserId>,
+    banned_reason: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    version: i32,
+    deleted_at: Option<DateTime<Utc>>,
     email: Option<String>,
 }
 
-impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for UserWithEmailRow {
-    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-        use sqlx::Row;
-
-        Ok(Self {
-            user: User::from_row(row)?,
-            email: row.try_get("email")?,
-        })
+impl UserWithEmailRow {
+    fn to_user(&self) -> User {
+        User {
+            id: self.id,
+            username: self.username.clone(),
+            role: self.role,
+            avatar_file_reference_id: self.avatar_file_reference_id,
+            status: self.status,
+            is_banned: self.is_banned,
+            banned_at: self.banned_at,
+            banned_by: self.banned_by,
+            banned_reason: self.banned_reason.clone(),
+            signup_method: self.signup_method,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            version: self.version,
+            deleted_at: self.deleted_at,
+        }
     }
 }
 
 impl From<UserWithEmailRow> for UserWithEmail {
     fn from(row: UserWithEmailRow) -> Self {
         Self {
-            user: row.user,
+            user: row.to_user(),
             email: row.email,
         }
     }
@@ -62,7 +85,7 @@ impl UserEmailRepository {
             return Ok(None);
         };
 
-        let inserted = sqlx::query_scalar::<_, String>(
+        let inserted = sqlx::query_scalar!(
             r"
             INSERT INTO auth_email_identities (
                 user_id, email, created_at, updated_at
@@ -70,11 +93,11 @@ impl UserEmailRepository {
             VALUES ($1, $2, $3, $4)
             RETURNING email
             ",
+            user.id.as_i64(),
+            email,
+            user.created_at,
+            user.updated_at
         )
-        .bind(user.id)
-        .bind(email)
-        .bind(user.created_at)
-        .bind(user.updated_at)
         .fetch_one(executor)
         .await
         .map_err(map_email_identity_error)?;
@@ -92,13 +115,17 @@ impl UserEmailRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let sql = format!(
-            r"
+        sqlx::query_as!(
+            UserWithEmailRow,
+            r#"
             WITH updated_user AS (
                 UPDATE users
                 SET updated_at = $3, version = version + 1
                 WHERE id = $1 AND deleted_at IS NULL
-                RETURNING *
+                RETURNING id, username, signup_method, role,
+                          avatar_file_reference_id,
+                          created_at, updated_at,
+                          version, deleted_at
             ),
             updated_email AS (
                 INSERT INTO auth_email_identities (
@@ -112,21 +139,48 @@ impl UserEmailRepository {
                     updated_at = EXCLUDED.updated_at
                 RETURNING user_id, email
             )
-            SELECT {USER_SELECT_COLUMNS}, updated_email.email
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.signup_method AS "signup_method!: SignupMethod",
+                   u.role AS "role!: UserRole",
+                   u.avatar_file_reference_id,
+                   CASE
+                       WHEN active_ban.user_id IS NULL THEN 1::SMALLINT
+                       ELSE 2::SMALLINT
+                   END AS "status!: UserStatus",
+                   (active_ban.user_id IS NOT NULL) AS "is_banned!",
+                   active_ban.starts_at AS banned_at,
+                   active_ban.banned_by AS "banned_by?: UserId",
+                   active_ban.reason AS banned_reason,
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
+                   u.deleted_at,
+                   updated_email.email
             FROM updated_user u
             LEFT JOIN updated_email ON updated_email.user_id = u.id
-            "
-        );
-
-        sqlx::query_as::<_, UserWithEmailRow>(&sql)
-            .bind(user_id)
-            .bind(email)
-            .bind(now)
-            .fetch_optional(executor)
-            .await
-            .map_err(map_email_identity_error)?
-            .map(Into::into)
-            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))
+            LEFT JOIN LATERAL (
+                SELECT ub.user_id,
+                       ub.starts_at,
+                       ub.banned_by,
+                       ub.reason
+                FROM user_bans ub
+                WHERE ub.user_id = u.id
+                  AND ub.revoked_at IS NULL
+                  AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ORDER BY ub.starts_at DESC
+                LIMIT 1
+            ) active_ban ON TRUE
+            "#,
+            user_id.as_i64(),
+            email,
+            now
+        )
+        .fetch_optional(executor)
+        .await
+        .map_err(map_email_identity_error)?
+        .map(Into::into)
+        .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))
     }
 
     pub async fn delete_with_executor<'e, E>(
@@ -138,78 +192,145 @@ impl UserEmailRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let sql = format!(
-            r"
+        sqlx::query_as!(
+            User,
+            r#"
             WITH updated_user AS (
                 UPDATE users
                 SET updated_at = $2, version = version + 1
                 WHERE id = $1 AND deleted_at IS NULL
-                RETURNING *
+                RETURNING id, username, signup_method, role,
+                          avatar_file_reference_id,
+                          created_at, updated_at,
+                          version, deleted_at
             ),
             deleted_email AS (
                 DELETE FROM auth_email_identities
                 USING updated_user
                 WHERE auth_email_identities.user_id = updated_user.id
             )
-            SELECT {USER_SELECT_COLUMNS}
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.signup_method AS "signup_method!: SignupMethod",
+                   u.role AS "role!: UserRole",
+                   u.avatar_file_reference_id,
+                   CASE
+                       WHEN active_ban.user_id IS NULL THEN 1::SMALLINT
+                       ELSE 2::SMALLINT
+                   END AS "status!: UserStatus",
+                   (active_ban.user_id IS NOT NULL) AS "is_banned!",
+                   active_ban.starts_at AS banned_at,
+                   active_ban.banned_by AS "banned_by?: UserId",
+                   active_ban.reason AS banned_reason,
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
+                   u.deleted_at
             FROM updated_user u
-            "
-        );
-
-        sqlx::query_as::<_, User>(&sql)
-            .bind(user_id)
-            .bind(now)
-            .fetch_optional(executor)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))
+            LEFT JOIN LATERAL (
+                SELECT ub.user_id,
+                       ub.starts_at,
+                       ub.banned_by,
+                       ub.reason
+                FROM user_bans ub
+                WHERE ub.user_id = u.id
+                  AND ub.revoked_at IS NULL
+                  AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ORDER BY ub.starts_at DESC
+                LIMIT 1
+            ) active_ban ON TRUE
+            "#,
+            user_id.as_i64(),
+            now
+        )
+        .fetch_optional(executor)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))
     }
 
     pub async fn get_email(&self, user_id: &UserId) -> Result<Option<String>> {
-        sqlx::query_scalar::<_, String>(
+        self.get_email_with_executor(user_id, &self.pool).await
+    }
+
+    pub async fn get_email_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<Option<String>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        sqlx::query_scalar!(
             r"
             SELECT aei.email
             FROM auth_email_identities aei
             JOIN users u ON u.id = aei.user_id
             WHERE u.id = $1 AND u.deleted_at IS NULL
             ",
+            user_id.as_i64()
         )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await
         .map_err(Error::Database)
     }
 
     pub async fn get_by_user_id(&self, user_id: &UserId) -> Result<Option<UserWithEmail>> {
-        let sql = format!(
-            r"
-            SELECT {USER_SELECT_COLUMNS}, aei.email
-            FROM users u
+        let row = sqlx::query_as!(
+            UserWithEmailRow,
+            r#"
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.signup_method AS "signup_method!: SignupMethod",
+                   u.role AS "role!: UserRole",
+                   u.avatar_file_reference_id,
+                   u.status AS "status!: UserStatus",
+                   u.is_banned AS "is_banned!",
+                   u.banned_at,
+                   u.banned_by AS "banned_by?: UserId",
+                   u.banned_reason,
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
+                   u.deleted_at,
+                   aei.email
+            FROM user_account_profiles u
             LEFT JOIN auth_email_identities aei ON aei.user_id = u.id
             WHERE u.id = $1 AND u.deleted_at IS NULL
-            "
-        );
-
-        let row = sqlx::query_as::<_, UserWithEmailRow>(&sql)
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await?;
+            "#,
+            user_id.as_i64()
+        )
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(Into::into))
     }
 
     pub async fn get_by_email(&self, email: &str) -> Result<Option<UserWithEmail>> {
-        let sql = format!(
-            r"
-            SELECT {USER_SELECT_COLUMNS}, aei.email
-            FROM users u
+        let row = sqlx::query_as!(
+            UserWithEmailRow,
+            r#"
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.signup_method AS "signup_method!: SignupMethod",
+                   u.role AS "role!: UserRole",
+                   u.avatar_file_reference_id,
+                   u.status AS "status!: UserStatus",
+                   u.is_banned AS "is_banned!",
+                   u.banned_at,
+                   u.banned_by AS "banned_by?: UserId",
+                   u.banned_reason,
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
+                   u.deleted_at,
+                   aei.email
+            FROM user_account_profiles u
             JOIN auth_email_identities aei ON aei.user_id = u.id
             WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
-            "
-        );
-
-        let row = sqlx::query_as::<_, UserWithEmailRow>(&sql)
-            .bind(email)
-            .fetch_optional(&self.pool)
-            .await?;
+            "#,
+            email
+        )
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(Into::into))
     }
 
@@ -221,35 +342,55 @@ impl UserEmailRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let sql = format!(
-            r"
-            SELECT {USER_SELECT_COLUMNS}, aei.email
-            FROM users u
+        let row = sqlx::query_as!(
+            UserWithEmailRow,
+            r#"
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.signup_method AS "signup_method!: SignupMethod",
+                   u.role AS "role!: UserRole",
+                   u.avatar_file_reference_id,
+                   u.status AS "status!: UserStatus",
+                   u.is_banned AS "is_banned!",
+                   u.banned_at,
+                   u.banned_by AS "banned_by?: UserId",
+                   u.banned_reason,
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
+                   u.deleted_at,
+                   aei.email
+            FROM user_account_profiles u
             JOIN auth_email_identities aei ON aei.user_id = u.id
             WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
-            "
-        );
-
-        let row = sqlx::query_as::<_, UserWithEmailRow>(&sql)
-            .bind(email)
-            .fetch_optional(executor)
-            .await?;
+            "#,
+            email
+        )
+        .fetch_optional(executor)
+        .await?;
         Ok(row.map(Into::into))
     }
 
     pub async fn email_exists(&self, email: &str) -> Result<bool> {
-        sqlx::query_scalar::<_, bool>(
-            r"
+        self.email_exists_with_executor(email, &self.pool).await
+    }
+
+    pub async fn email_exists_with_executor<'e, E>(&self, email: &str, executor: E) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        sqlx::query_scalar!(
+            r#"
             SELECT EXISTS(
                 SELECT 1
                 FROM auth_email_identities aei
                 JOIN users u ON u.id = aei.user_id
                 WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            email
         )
-        .bind(email)
-        .fetch_one(&self.pool)
+        .fetch_one(executor)
         .await
         .map_err(Error::Database)
     }

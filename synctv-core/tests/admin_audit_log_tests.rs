@@ -6,7 +6,6 @@
 //! - Graceful degradation when database fails
 //! - Async write verification
 //!
-//! Run with: cargo test -p synctv-core --test `admin_audit_log_tests` -- --nocapture
 //! Docker tests: cargo test -p synctv-core --test `admin_audit_log_tests` -- --ignored --nocapture
 #![allow(clippy::unwrap_used)]
 
@@ -14,47 +13,48 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::models::{AuditAction, AuditTargetType};
-use synctv_core::service::AuditService;
+use synctv_core::service::{AuditEventParams, AuditService, StreamKickAuditRequest};
 use synctv_core_testing::create_test_pool;
 // Test Infrastructure
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_audit_log_integrity_all_fields() {
+    #[derive(sqlx::FromRow)]
+    struct AuditLogRow {
+        id: i64,
+        actor_id: i64,
+        actor_username: String,
+        action: i16,
+        target_type: Option<i16>,
+        target_id: Option<String>,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    }
+
     let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
     // Log a complete audit event
     service
-        .log(
-            "100101".to_string(),
-            "test_admin".to_string(),
-            AuditAction::UserBanned,
-            AuditTargetType::User,
-            Some("target_user_002".to_string()),
-            serde_json::json!({
+        .log(AuditEventParams {
+            actor_id: "100101".to_string(),
+            actor_username: "test_admin".to_string(),
+            action: AuditAction::UserBanned,
+            target_type: AuditTargetType::User,
+            target_id: Some("target_user_002".to_string()),
+            details: serde_json::json!({
                 "reason": "Policy violation",
                 "duration": "permanent"
             }),
-            Some("192.168.1.100".to_string()),
-            Some("Mozilla/5.0 TestAgent/1.0".to_string()),
-        )
+            ip_address: Some("192.168.1.100".to_string()),
+            user_agent: Some("Mozilla/5.0 TestAgent/1.0".to_string()),
+        })
         .await
         .expect("Log should succeed");
 
-    // Verify all fields are stored correctly
-    #[allow(clippy::type_complexity)]
-    let row: (
-        i64,
-        i64,
-        String,
-        i16,
-        Option<i16>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = sqlx::query_as(
+    let row: AuditLogRow = sqlx::query_as(
         r"
         SELECT id, actor_id, actor_username, action, target_type, target_id, ip_address, user_agent
         FROM audit_logs
@@ -65,31 +65,35 @@ async fn test_audit_log_integrity_all_fields() {
     .await
     .expect("Query should succeed");
 
-    assert!(row.0 > 0, "ID should be generated");
-    assert_eq!(row.1, 100_101, "Actor ID should match");
-    assert_eq!(row.2, "test_admin", "Actor username should match");
+    assert!(row.id > 0, "ID should be generated");
+    assert_eq!(row.actor_id, 100_101, "Actor ID should match");
     assert_eq!(
-        AuditAction::try_from(row.3).unwrap(),
+        row.actor_username, "test_admin",
+        "Actor username should match"
+    );
+    assert_eq!(
+        AuditAction::try_from(row.action).unwrap(),
         AuditAction::UserBanned,
         "Action should match"
     );
     assert_eq!(
-        row.4.map(|value| AuditTargetType::try_from(value).unwrap()),
+        row.target_type
+            .map(|value| AuditTargetType::try_from(value).unwrap()),
         Some(AuditTargetType::User),
         "Target type should match"
     );
     assert_eq!(
-        row.5,
+        row.target_id,
         Some("target_user_002".to_string()),
         "Target ID should match"
     );
     assert_eq!(
-        row.6,
+        row.ip_address,
         Some("192.168.1.100".to_string()),
         "IP address should match"
     );
     assert_eq!(
-        row.7,
+        row.user_agent,
         Some("Mozilla/5.0 TestAgent/1.0".to_string()),
         "User agent should match"
     );
@@ -116,16 +120,16 @@ async fn test_audit_log_details_json_integrity() {
     });
 
     service
-        .log(
-            "100102".to_string(),
-            "json_tester".to_string(),
-            AuditAction::SettingsUpdated,
-            AuditTargetType::Settings,
-            None,
-            details.clone(),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100102".to_string(),
+            actor_username: "json_tester".to_string(),
+            action: AuditAction::SettingsUpdated,
+            target_type: AuditTargetType::Settings,
+            target_id: None,
+            details: details.clone(),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("Log should succeed");
 
@@ -153,16 +157,16 @@ async fn test_audit_log_created_at_timestamp() {
     let before = chrono::Utc::now();
 
     service
-        .log(
-            "100103".to_string(),
-            "time_tester".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("new_user".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100103".to_string(),
+            actor_username: "time_tester".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some("new_user".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("Log should succeed");
 
@@ -197,20 +201,20 @@ async fn test_audit_log_multiple_actions_same_actor() {
 
     for action in &actions {
         service
-            .log(
-                "100104".to_string(),
-                "multi_tester".to_string(),
-                *action,
-                match action {
+            .log(AuditEventParams {
+                actor_id: "100104".to_string(),
+                actor_username: "multi_tester".to_string(),
+                action: *action,
+                target_type: match action {
                     AuditAction::UserCreated | AuditAction::UserBanned => AuditTargetType::User,
                     AuditAction::RoomCreated | AuditAction::RoomBanned => AuditTargetType::Room,
                     _ => AuditTargetType::Settings,
                 },
-                Some("target".to_string()),
-                serde_json::json!({}),
-                None,
-                None,
-            )
+                target_id: Some("target".to_string()),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await
             .expect("Log should succeed");
     }
@@ -247,7 +251,7 @@ async fn test_audit_log_multiple_actions_same_actor() {
 #[ignore = "Requires Docker"]
 async fn test_buffer_full_drops_events_with_fake_pool() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let (service, _handle) = AuditService::with_capacity(pool, 5);
+    let (service, _handle) = AuditService::new_with_capacity(pool, 5);
 
     // Fill buffer rapidly
     let mut ok_count = 0;
@@ -255,16 +259,16 @@ async fn test_buffer_full_drops_events_with_fake_pool() {
 
     for i in 0..100 {
         match service
-            .log(
-                format!("buffer_actor_{i}"),
-                "buffer_tester".to_string(),
-                AuditAction::UserCreated,
-                AuditTargetType::User,
-                Some(format!("target_{i}")),
-                serde_json::json!({}),
-                None,
-                None,
-            )
+            .log(AuditEventParams {
+                actor_id: format!("buffer_actor_{i}"),
+                actor_username: "buffer_tester".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: Some(format!("target_{i}")),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await
         {
             Ok(()) => ok_count += 1,
@@ -294,7 +298,7 @@ async fn test_buffer_full_drops_events_with_fake_pool() {
 #[ignore = "Requires Docker"]
 async fn test_dropped_count_starts_at_zero() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let (service, _handle) = AuditService::with_capacity(pool, 100);
+    let (service, _handle) = AuditService::new_with_capacity(pool, 100);
 
     assert_eq!(
         service.dropped_count(),
@@ -312,16 +316,16 @@ async fn test_unbuffered_service_never_drops() {
     // Unbuffered service always attempts direct write
     // With fake pool, it will return an error but not drop
     let result = service
-        .log(
-            "unbuf_actor".to_string(),
-            "unbuffered_tester".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("target".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "unbuf_actor".to_string(),
+            actor_username: "unbuffered_tester".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some("target".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await;
 
     // Should fail (fake pool) but dropped_count should remain 0
@@ -342,16 +346,16 @@ async fn test_buffered_write_eventually_visible() {
 
     // Log an event
     service
-        .log(
-            "100105".to_string(),
-            "buffered_writer".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("target".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
+        .log(AuditEventParams {
+            actor_id: "100105".to_string(),
+            actor_username: "buffered_writer".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some("target".to_string()),
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("Buffered log should succeed");
 
@@ -383,16 +387,16 @@ async fn test_concurrent_audit_logging() {
 
         let handle = tokio::spawn(async move {
             b.wait().await;
-            s.log(
-                format!("1002{i}"),
-                format!("concurrent_tester_{i}"),
-                AuditAction::UserCreated,
-                AuditTargetType::User,
-                Some(format!("concurrent_target_{i}")),
-                serde_json::json!({"index": i}),
-                None,
-                None,
-            )
+            s.log(AuditEventParams {
+                actor_id: format!("1002{i}"),
+                actor_username: format!("concurrent_tester_{i}"),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: Some(format!("concurrent_target_{i}")),
+                details: serde_json::json!({"index": i}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await
         });
         handles.push(handle);
@@ -440,11 +444,11 @@ async fn test_all_audit_actions_are_logged() {
 
     for (i, action) in actions.iter().enumerate() {
         service
-            .log(
-                format!("act_actr_{i}"),
-                "action_tester".to_string(),
-                *action,
-                match action {
+            .log(AuditEventParams {
+                actor_id: format!("act_actr_{i}"),
+                actor_username: "action_tester".to_string(),
+                action: *action,
+                target_type: match action {
                     AuditAction::UserCreated
                     | AuditAction::UserBanned
                     | AuditAction::UserUnbanned
@@ -457,11 +461,11 @@ async fn test_all_audit_actions_are_logged() {
                     AuditAction::ChatMessageDeleted => AuditTargetType::ChatMessage,
                     _ => AuditTargetType::Settings,
                 },
-                Some(format!("action_target_{i}")),
-                serde_json::json!({}),
-                None,
-                None,
-            )
+                target_id: Some(format!("action_target_{i}")),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await
             .expect("Log should succeed");
     }
@@ -502,16 +506,16 @@ async fn test_all_target_types_are_logged() {
 
     for (i, target_type) in target_types.iter().enumerate() {
         service
-            .log(
-                format!("tgt_actr_{i}"),
-                "target_tester".to_string(),
-                AuditAction::UserCreated,
-                *target_type,
-                Some(format!("target_{i}")),
-                serde_json::json!({}),
-                None,
-                None,
-            )
+            .log(AuditEventParams {
+                actor_id: format!("tgt_actr_{i}"),
+                actor_username: "target_tester".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: *target_type,
+                target_id: Some(format!("target_{i}")),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
             .await
             .expect("Log should succeed");
     }
@@ -543,16 +547,16 @@ async fn test_audit_log_with_all_null_optionals() {
     let service = AuditService::new_unbuffered(pool.clone());
 
     service
-        .log(
-            "100106".to_string(),
-            "null_tester".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            None, // No target
-            serde_json::json!({}),
-            None, // No IP
-            None, // No user agent
-        )
+        .log(AuditEventParams {
+            actor_id: "100106".to_string(),
+            actor_username: "null_tester".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: None,
+            details: serde_json::json!({}),
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("Log should succeed");
 
@@ -576,16 +580,16 @@ async fn test_audit_log_with_all_optionals() {
     let service = AuditService::new_unbuffered(pool.clone());
 
     service
-        .log(
-            "100107".to_string(),
-            "all_optionals_tester".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("target_id".to_string()),
-            serde_json::json!({"key": "value"}),
-            Some("10.0.0.1".to_string()),
-            Some("TestClient/2.0".to_string()),
-        )
+        .log(AuditEventParams {
+            actor_id: "100107".to_string(),
+            actor_username: "all_optionals_tester".to_string(),
+            action: AuditAction::UserCreated,
+            target_type: AuditTargetType::User,
+            target_id: Some("target_id".to_string()),
+            details: serde_json::json!({"key": "value"}),
+            ip_address: Some("10.0.0.1".to_string()),
+            user_agent: Some("TestClient/2.0".to_string()),
+        })
         .await
         .expect("Log should succeed");
 
@@ -610,15 +614,15 @@ async fn test_log_stream_kicked_helper() {
     let service = AuditService::new_unbuffered(pool.clone());
 
     service
-        .log_stream_kicked(
-            "100108".to_string(),
-            "stream_kicker".to_string(),
-            "room_123".to_string(),
-            "media_456".to_string(),
-            Some("Inappropriate content".to_string()),
-            Some("192.168.1.1".to_string()),
-            Some("StreamClient/1.0".to_string()),
-        )
+        .log_stream_kicked(StreamKickAuditRequest {
+            actor_id: "100108".to_string(),
+            actor_username: "stream_kicker".to_string(),
+            room_id: "room_123".to_string(),
+            media_id: "media_456".to_string(),
+            reason: Some("Inappropriate content".to_string()),
+            ip_address: Some("192.168.1.1".to_string()),
+            user_agent: Some("StreamClient/1.0".to_string()),
+        })
         .await
         .expect("Stream kick log should succeed");
 
@@ -656,15 +660,16 @@ async fn test_log_stream_kicked_without_reason() {
     let service = AuditService::new_unbuffered(pool.clone());
 
     service
-        .log_stream_kicked(
-            "100109".to_string(),
-            "stream_admin".to_string(),
-            "room_abc".to_string(),
-            "media_xyz".to_string(),
-            None, // No reason
+        .log_stream_kicked(StreamKickAuditRequest {
+                    actor_id: "100109".to_string(),
+                    actor_username: "stream_admin".to_string(),
+                    room_id: "room_abc".to_string(),
+                    media_id: "media_xyz".to_string(),
+                    reason: None,
+                    ip_address: // No reason
             None,
-            None,
-        )
+                    user_agent: None,
+                })
         .await
         .expect("Stream kick log should succeed");
 
@@ -688,19 +693,19 @@ async fn test_settings_viewed_audit_log() {
 
     // Log a settings view event
     service
-        .log(
-            "100110".to_string(),
-            "admin_user".to_string(),
-            AuditAction::SettingsViewed,
-            AuditTargetType::Settings,
-            None,
-            serde_json::json!({
+        .log(AuditEventParams {
+            actor_id: "100110".to_string(),
+            actor_username: "admin_user".to_string(),
+            action: AuditAction::SettingsViewed,
+            target_type: AuditTargetType::Settings,
+            target_id: None,
+            details: serde_json::json!({
                 "group_count": 5,
                 "groups": ["general", "security", "proxy", "email", "p2p"],
             }),
-            Some("192.168.1.50".to_string()),
-            Some("Mozilla/5.0 AdminClient/1.0".to_string()),
-        )
+            ip_address: Some("192.168.1.50".to_string()),
+            user_agent: Some("Mozilla/5.0 AdminClient/1.0".to_string()),
+        })
         .await
         .expect("Settings viewed log should succeed");
 
@@ -738,18 +743,18 @@ async fn test_settings_group_viewed_audit_log() {
 
     // Log a settings group view event
     service
-        .log(
-            "100111".to_string(),
-            "admin_user".to_string(),
-            AuditAction::SettingsGroupViewed,
-            AuditTargetType::Settings,
-            None,
-            serde_json::json!({
+        .log(AuditEventParams {
+            actor_id: "100111".to_string(),
+            actor_username: "admin_user".to_string(),
+            action: AuditAction::SettingsGroupViewed,
+            target_type: AuditTargetType::Settings,
+            target_id: None,
+            details: serde_json::json!({
                 "group": "security",
             }),
-            Some("10.0.0.1".to_string()),
-            None,
-        )
+            ip_address: Some("10.0.0.1".to_string()),
+            user_agent: None,
+        })
         .await
         .expect("Settings group viewed log should succeed");
 

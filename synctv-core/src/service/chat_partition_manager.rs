@@ -12,7 +12,9 @@ use tracing::{error, info, warn};
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::service::global_settings::SettingsRegistry;
-use crate::service::partitioning::{current_database_date, quote_ident, size_mb, table_exists};
+use crate::service::partitioning::{
+    current_database_date, quote_ident, size_centi_mib, table_exists,
+};
 use crate::{Error, Result};
 
 /// Default retention period in days for chat messages
@@ -24,14 +26,32 @@ const DEFAULT_DAYS_AHEAD: i32 = 30;
 const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
 const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
 
+fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
+    i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn len_to_i64(len: usize, field: &'static str) -> Result<i64> {
+    i64::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
+}
+
 /// Health check result for chat message partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatPartitionHealth {
     pub total_partitions: i32,
-    pub total_size_mb: f64,
+    pub total_size_centi_mib: i64,
     pub missing_partitions: Vec<String>,
     pub missing_count: i32,
     pub health_status: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionNameRow {
+    tablename: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PartitionSizeRow {
+    size_bytes: i64,
 }
 
 /// Chat message partition manager (fixed daily granularity)
@@ -147,21 +167,24 @@ impl ChatPartitionManager {
         let current_date = current_database_date(&self.pool).await?;
         let cutoff_date = current_date - chrono::Duration::days(i64::from(keep_days));
         let cutoff_name = format!("chat_messages_{}", cutoff_date.format("%Y_%m_%d"));
-        let partitions = sqlx::query_scalar_unchecked!(
-            "SELECT tablename
+        let partitions = sqlx::query_as!(
+            PartitionNameRow,
+            r#"
+            SELECT tablename AS "tablename!"
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename LIKE 'chat_messages_%'
                AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'
                AND tablename < $1
-             ORDER BY tablename",
+             ORDER BY tablename
+             "#,
             cutoff_name
         )
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| Error::Internal(format!("Failed to drop old chat partitions: {e}")))?
         .into_iter()
-        .flatten()
+        .map(|row| row.tablename)
         .collect::<Vec<_>>();
 
         for partition in &partitions {
@@ -171,7 +194,7 @@ impl ChatPartitionManager {
                 .map_err(|e| Error::Internal(format!("Failed to drop old chat partition: {e}")))?;
         }
 
-        let dropped_count = i64::try_from(partitions.len()).unwrap_or(i64::MAX);
+        let dropped_count = len_to_i64(partitions.len(), "dropped chat partition count")?;
         if dropped_count > 0 {
             info!("Dropped {} old chat message partitions", dropped_count);
         }
@@ -197,23 +220,26 @@ impl ChatPartitionManager {
             }
         }
 
-        let rows = sqlx::query_as::<_, (i64,)>(
-            "SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT
+        let rows = sqlx::query_as!(
+            PartitionSizeRow,
+            r#"
+            SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT AS "size_bytes!"
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename LIKE 'chat_messages_%'
-               AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'",
+               AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'
+             "#,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|e| Error::Internal(format!("Failed to check chat partition health: {e}")))?;
 
-        let total_partitions = i32::try_from(rows.len()).unwrap_or(i32::MAX);
-        let total_size_bytes = rows.iter().map(|(size,)| *size).sum::<i64>();
-        let missing_count = i32::try_from(missing_partitions.len()).unwrap_or(i32::MAX);
+        let total_partitions = len_to_i32(rows.len(), "chat partition count")?;
+        let total_size_bytes = rows.iter().map(|row| row.size_bytes).sum::<i64>();
+        let missing_count = len_to_i32(missing_partitions.len(), "missing chat partition count")?;
         let health = ChatPartitionHealth {
             total_partitions,
-            total_size_mb: size_mb(total_size_bytes),
+            total_size_centi_mib: size_centi_mib(total_size_bytes),
             missing_partitions,
             missing_count,
             health_status: if missing_count == 0 {
@@ -445,7 +471,7 @@ mod tests {
     fn test_chat_partition_health_deserialization() {
         let json = r#"{
             "total_partitions": 7,
-            "total_size_mb": 128.5,
+            "total_size_centi_mib": 12850,
             "missing_partitions": [],
             "missing_count": 0,
             "health_status": "healthy"
@@ -461,7 +487,7 @@ mod tests {
     fn test_chat_partition_health_warning() {
         let json = r#"{
             "total_partitions": 5,
-            "total_size_mb": 64.0,
+            "total_size_centi_mib": 6400,
             "missing_partitions": ["chat_messages_2026_08"],
             "missing_count": 1,
             "health_status": "warning"

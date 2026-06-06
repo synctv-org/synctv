@@ -106,7 +106,7 @@ curl -sS http://localhost:8080/api/auth/opaque/login/start \
   }'
 ```
 
-继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。典型 finish 响应会包含 `access_token`、`refresh_token`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA，不要把这次响应当作已登录。`/api/auth/login` 只用于无密码邮箱 token 登录。
+继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。典型 finish 响应会包含 `access_token`、`refresh_token`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA。无密码邮箱 token 登录使用 `/api/auth/email/confirm`。
 
   </TabItem>
   <TabItem label="创建 WebSocket ticket" icon="document">
@@ -188,7 +188,7 @@ Authorization: Bearer <access_token_or_guest_token>
 7. 第二因素成功后，最终响应会返回可用 token。
 </Steps>
 
-`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式。Password 是通过 OPAQUE 登录完成的第一因素，不是明文密码 MFA 完成方式；OAuth2 不计入本地 2FA 因素。
+`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式。Password 是通过 OPAQUE 或直接密码登录完成的第一因素；OAuth2 不计入本地 2FA 因素。
 
 <Aside type="note">
 OPAQUE 是本地密码登录协议。当 password 第一因素触发 MFA 时，客户端应使用服务端返回的非 password 方法完成挑战，例如 email 或 WebAuthn。

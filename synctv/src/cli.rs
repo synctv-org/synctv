@@ -165,18 +165,12 @@ pub struct GlobalConfigArgs {
     pub endpoint: Option<String>,
 
     /// Management bearer token for remote management commands.
-    #[arg(
-        long = "auth-token",
-        alias = "management-auth-token",
-        global = true,
-        conflicts_with = "auth_token_file"
-    )]
+    #[arg(long = "auth-token", global = true, conflicts_with = "auth_token_file")]
     pub auth_token: Option<String>,
 
     /// Read the management bearer token for remote management commands from a file.
     #[arg(
         long = "auth-token-file",
-        alias = "management-auth-token-file",
         value_name = "PATH",
         global = true,
         conflicts_with = "auth_token"
@@ -185,7 +179,7 @@ pub struct GlobalConfigArgs {
 }
 
 impl GlobalConfigArgs {
-    pub fn load_options(&self, validate: bool, strict_unknown: bool) -> LoadConfigOptions {
+    pub fn load_options(&self, validate: bool) -> LoadConfigOptions {
         LoadConfigOptions {
             config_path: self.config.as_ref().map(|path| path.display().to_string()),
             data_dir: self
@@ -194,7 +188,6 @@ impl GlobalConfigArgs {
                 .map(|path| path.display().to_string()),
             load_dotenv: !self.no_dotenv,
             validate,
-            strict_unknown,
             verbose: self.verbose > 0,
         }
     }
@@ -243,7 +236,7 @@ impl CliConfigContext {
     }
 
     fn strict_validated_config(&self) -> Result<synctv_core::Config> {
-        load_config_with_options(&self.global.load_options(true, true))
+        load_config_with_options(&self.global.load_options(true))
     }
 
     fn load(&self, validate: bool) -> Result<synctv_core::Config> {
@@ -254,7 +247,7 @@ impl CliConfigContext {
         };
 
         match cache.get_or_init(|| {
-            load_config_with_options(&self.global.load_options(validate, false))
+            load_config_with_options(&self.global.load_options(validate))
                 .map_err(|error| error.to_string())
         }) {
             Ok(config) => Ok(config.clone()),
@@ -613,7 +606,7 @@ pub enum UserSubcommand {
     Unban(UserUnbanArgs),
     /// Update a user's global role
     SetRole(UserSetRoleArgs),
-    /// Reset a user's password
+    /// Set a user's direct password credential
     SetPassword(UserSetPasswordArgs),
     /// Update a user's username
     SetUsername(UserSetUsernameArgs),
@@ -769,7 +762,7 @@ pub struct RoomTransferTargetUserArgs {
 }
 
 impl RoomTransferTargetUserArgs {
-    fn to_management_proto(&self) -> management_proto::UserRef {
+    fn to_management_proto(&self) -> Result<management_proto::UserRef> {
         UserRefArgs {
             username: self.new_owner_username.clone(),
             user_id: self.new_owner_user_id.clone(),
@@ -1446,18 +1439,15 @@ pub struct UserRefArgs {
 }
 
 impl UserRefArgs {
-    fn to_management_proto(&self) -> management_proto::UserRef {
+    fn to_management_proto(&self) -> Result<management_proto::UserRef> {
         let value = if let Some(user_id) = self.user_id.as_deref() {
             management_proto::user_ref::Value::UserId(user_id.to_string())
+        } else if let Some(username) = self.username.as_deref() {
+            management_proto::user_ref::Value::Username(username.to_string())
         } else {
-            management_proto::user_ref::Value::Username(
-                self.username
-                    .as_deref()
-                    .expect("clap should require username when user_id is absent")
-                    .to_string(),
-            )
+            bail!("user reference requires USER or --user-id")
         };
-        management_proto::UserRef { value: Some(value) }
+        Ok(management_proto::UserRef { value: Some(value) })
     }
 }
 
@@ -1479,7 +1469,7 @@ pub struct ActorUserArgs {
 }
 
 impl ActorUserArgs {
-    fn to_management_proto(&self) -> management_proto::UserRef {
+    fn to_management_proto(&self) -> Result<management_proto::UserRef> {
         UserRefArgs {
             username: self.username.clone(),
             user_id: self.user_id.clone(),
@@ -1509,16 +1499,17 @@ pub struct RoomCreatorRefArgs {
 }
 
 impl RoomCreatorRefArgs {
-    fn to_management_proto(&self) -> Option<management_proto::UserRef> {
+    fn to_management_proto(&self) -> Result<Option<management_proto::UserRef>> {
         if self.creator.is_none() && self.creator_id.is_none() {
-            return None;
+            return Ok(None);
         }
 
-        Some(UserRefArgs {
+        UserRefArgs {
             username: self.creator.clone(),
             user_id: self.creator_id.clone(),
-        })
-        .map(|user| user.to_management_proto())
+        }
+        .to_management_proto()
+        .map(Some)
     }
 }
 
@@ -1539,16 +1530,17 @@ pub struct StreamUserFilterArgs {
 }
 
 impl StreamUserFilterArgs {
-    fn to_management_proto(&self) -> Option<management_proto::UserRef> {
+    fn to_management_proto(&self) -> Result<Option<management_proto::UserRef>> {
         if self.username.is_none() && self.user_id.is_none() {
-            return None;
+            return Ok(None);
         }
 
-        Some(UserRefArgs {
+        UserRefArgs {
             username: self.username.clone(),
             user_id: self.user_id.clone(),
-        })
-        .map(|user| user.to_management_proto())
+        }
+        .to_management_proto()
+        .map(Some)
     }
 }
 
@@ -1714,8 +1706,8 @@ pub struct UserAddArgs {
     #[arg(long, value_name = "EMAIL")]
     pub email: Option<String>,
 
-    #[arg(long)]
-    pub password: String,
+    #[arg(long, value_name = "PASSWORD")]
+    pub password: Option<String>,
 
     #[arg(long, value_enum, default_value_t = CliUserRole::User)]
     pub role: CliUserRole,
@@ -1776,10 +1768,10 @@ pub struct UserSetRoleArgs {
 }
 
 impl UserSetRoleArgs {
-    fn resolved_role(&self) -> CliUserRole {
+    fn resolved_role(&self) -> Result<CliUserRole> {
         self.role
             .or(self.role_arg)
-            .expect("clap should require one role value for user set-role")
+            .ok_or_else(|| anyhow!("user set-role requires ROLE or --role"))
     }
 }
 
@@ -1791,8 +1783,8 @@ pub struct UserSetPasswordArgs {
     #[command(flatten)]
     pub user: UserRefArgs,
 
-    #[arg(long = "password", value_name = "PASSWORD")]
-    pub new_password: String,
+    #[arg(long)]
+    pub password: String,
 
     #[arg(long)]
     pub reason: Option<String>,
@@ -1916,11 +1908,11 @@ pub struct RoomMembersArgs {
 }
 
 impl RoomMembersArgs {
-    fn resolved_room_id(&self) -> &str {
+    fn resolved_room_id(&self) -> Result<&str> {
         self.room_id
             .as_deref()
             .or(self.room_id_flag.as_deref())
-            .expect("clap should require one room identifier for room member list")
+            .ok_or_else(|| anyhow!("room member list requires ROOM_ID or --room-id"))
     }
 }
 
@@ -2109,11 +2101,11 @@ pub struct RoomSettingsScopeArgs {
 }
 
 impl RoomSettingsScopeArgs {
-    fn resolved_room_id(&self) -> &str {
+    fn resolved_room_id(&self) -> Result<&str> {
         self.room_id
             .as_deref()
             .or(self.room_id_flag.as_deref())
-            .expect("clap should require one room identifier for room settings")
+            .ok_or_else(|| anyhow!("room settings requires ROOM_ID or --room-id"))
     }
 }
 
@@ -3261,6 +3253,40 @@ pub struct ProviderEmbyLoginArgs {
     pub instance: ProviderServiceInstanceArgs,
 }
 
+fn alist_login_credential(
+    args: &ProviderAlistLoginArgs,
+) -> Result<synctv_proto::providers::alist::login_request::Credential> {
+    if let Some(password) = &args.password {
+        return Ok(
+            synctv_proto::providers::alist::login_request::Credential::Password(password.clone()),
+        );
+    }
+    if let Some(hashed_password) = &args.hashed_password {
+        return Ok(
+            synctv_proto::providers::alist::login_request::Credential::HashedPassword(
+                hashed_password.clone(),
+            ),
+        );
+    }
+    bail!("Alist login requires --password or --hashed-password")
+}
+
+fn emby_login_credential(
+    args: &ProviderEmbyLoginArgs,
+) -> Result<synctv_proto::providers::emby::login_request::Credential> {
+    if let Some(password) = &args.password {
+        return Ok(
+            synctv_proto::providers::emby::login_request::Credential::Password(password.clone()),
+        );
+    }
+    if let Some(api_key) = &args.api_key {
+        return Ok(
+            synctv_proto::providers::emby::login_request::Credential::ApiKey(api_key.clone()),
+        );
+    }
+    bail!("Emby login requires --password or --api-key")
+}
+
 #[derive(Debug, Args)]
 pub struct ProviderEmbyListArgs {
     #[command(flatten)]
@@ -3444,11 +3470,13 @@ pub struct ProviderRtmpPublishKeyArgs {
 }
 
 impl ProviderRtmpPublishKeyArgs {
-    fn resolved_media_id(&self) -> &str {
+    fn resolved_media_id(&self) -> Result<&str> {
         self.media_id
             .as_deref()
             .or(self.media_id_flag.as_deref())
-            .expect("clap should require one media identifier for provider rtmp create-publish-key")
+            .ok_or_else(|| {
+                anyhow!("provider rtmp create-publish-key requires MEDIA_ID or --media-id")
+            })
     }
 }
 
@@ -3483,11 +3511,11 @@ pub struct ProviderRtmpGetStreamInfoArgs {
 }
 
 impl ProviderRtmpGetStreamInfoArgs {
-    fn resolved_media_id(&self) -> &str {
+    fn resolved_media_id(&self) -> Result<&str> {
         self.media_id
             .as_deref()
             .or(self.media_id_flag.as_deref())
-            .expect("clap should require one media identifier for provider rtmp get-stream-info")
+            .ok_or_else(|| anyhow!("provider rtmp get-stream-info requires MEDIA_ID or --media-id"))
     }
 }
 
@@ -4376,7 +4404,7 @@ fn execute_config(config_command: ConfigCommand) -> Result<()> {
     match config_command.command {
         ConfigSubcommand::Validate(args) => {
             let config = if args.strict {
-                load_config_with_options(&config_command.global.load_options(true, true))?
+                load_config_with_options(&config_command.global.load_options(true))?
             } else {
                 context.validated_config()?
             };
@@ -4625,7 +4653,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "get user",
                 get_user,
                 management_proto::GetUserRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                 }
             )?;
             args.remote.print_output(&response)
@@ -4638,7 +4666,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     "get user preferences",
                     get_user_preferences,
                     management_proto::GetUserPreferencesRequest {
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                     }
                 )?;
                 print_humanized_structured_output(args.remote.output, &response)
@@ -4659,7 +4687,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     "update user preferences",
                     update_user_preferences,
                     management_proto::UpdateUserPreferencesRequest {
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                         two_factor_enabled: args.two_factor_enabled,
                         notifications,
                     }
@@ -4675,10 +4703,10 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 create_user,
                 management_proto::CreateUserRequest {
                     username: args.username,
-                    password: args.password,
                     email: args.email.unwrap_or_default(),
                     role: args.role.to_proto(),
                     status: args.status.to_proto(),
+                    password: args.password.unwrap_or_default(),
                 }
             )?;
             args.remote.print_output(&response)
@@ -4690,7 +4718,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "delete user",
                 delete_user,
                 management_proto::DeleteUserRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                 }
             )?;
             args.remote.print_output(&response)
@@ -4702,7 +4730,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "ban user",
                 ban_user,
                 management_proto::BanUserRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                     reason: args.reason.unwrap_or_default(),
                 }
             )?;
@@ -4715,20 +4743,20 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "unban user",
                 unban_user,
                 management_proto::UnbanUserRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                 }
             )?;
             args.remote.print_output(&response)
         }
         UserSubcommand::SetRole(args) => {
             let session = connect_remote_access(&args.remote).await?;
-            let role = args.resolved_role();
+            let role = args.resolved_role()?;
             let response = management_unary_call!(
                 session,
                 "update user role",
                 update_user_role,
                 management_proto::UpdateUserRoleRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                     role: role.to_proto(),
                 }
             )?;
@@ -4741,17 +4769,17 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
             let session = connect_remote_access(&args.remote).await?;
             let response = management_unary_call!(
                 session,
-                "update user password",
-                update_user_password,
-                management_proto::UpdateUserPasswordRequest {
-                    user: Some(args.user.to_management_proto()),
-                    new_password: args.new_password,
+                "set user password",
+                set_user_password,
+                management_proto::SetUserPasswordRequest {
+                    user: Some(args.user.to_management_proto()?),
+                    password: args.password,
                     reason: args.reason.unwrap_or_default(),
                 }
             )?;
             args.remote.print_output(&UserMutationCliOutput {
                 success: response.success,
-                user: None,
+                user: response.user,
             })
         }
         UserSubcommand::SetUsername(args) => {
@@ -4761,7 +4789,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "update user username",
                 update_user_username,
                 management_proto::UpdateUserUsernameRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                     new_username: args.new_username,
                 }
             )?;
@@ -4777,7 +4805,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "get user rooms",
                 get_user_rooms,
                 management_proto::GetUserRoomsRequest {
-                    user: Some(args.user.to_management_proto()),
+                    user: Some(args.user.to_management_proto()?),
                     page: args.page,
                     page_size: args.page_size,
                     status: args.status.map_or(
@@ -4803,7 +4831,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     "add admin",
                     add_admin,
                     management_proto::AddAdminRequest {
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -4815,7 +4843,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     "remove admin",
                     remove_admin,
                     management_proto::RemoveAdminRequest {
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -4880,7 +4908,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 "create room",
                 create_room,
                 management_proto::CreateRoomRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     name: args.name,
                     settings_json: raw_optional_bytes(args.settings_json.as_deref()),
                     description: args.description.unwrap_or_default(),
@@ -4903,7 +4931,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                         CliRoomStatus::to_proto,
                     ),
                     search: args.search.unwrap_or_default(),
-                    creator: args.creator.to_management_proto(),
+                    creator: args.creator.to_management_proto()?,
                     is_banned: args.is_banned,
                     sort_by: args.sort_by.map_or(
                         management_proto::RoomListSortBy::CreatedAt as i32,
@@ -4934,8 +4962,8 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 transfer_room_ownership,
                 management_proto::TransferRoomOwnershipRequest {
                     room_id: args.room_id,
-                    actor: Some(args.actor.to_management_proto()),
-                    new_owner: Some(args.new_owner.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
+                    new_owner: Some(args.new_owner.to_management_proto()?),
                 }
             )?;
             args.remote.print_output(&response)
@@ -4948,7 +4976,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "get room settings",
                     get_room_settings,
                     management_proto::GetRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id().to_string(),
+                        room_id: args.room.resolved_room_id()?.to_string(),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -4960,7 +4988,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "update room settings",
                     update_room_settings,
                     management_proto::UpdateRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id().to_string(),
+                        room_id: args.room.resolved_room_id()?.to_string(),
                         settings_json: args.settings_json.into_bytes(),
                     }
                 )?;
@@ -4973,7 +5001,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "reset room settings",
                     reset_room_settings,
                     management_proto::ResetRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id().to_string(),
+                        room_id: args.room.resolved_room_id()?.to_string(),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -4987,7 +5015,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "get room members",
                     get_room_members,
                     management_proto::GetRoomMembersRequest {
-                        room_id: args.resolved_room_id().to_string(),
+                        room_id: args.resolved_room_id()?.to_string(),
                         page: args.page,
                         page_size: args.page_size,
                         search: args.search.unwrap_or_default(),
@@ -5012,7 +5040,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     add_member,
                     management_proto::AddMemberRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                         role: args.role.to_proto(),
                         notify: args.notify,
                     }
@@ -5027,7 +5055,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     update_member_permissions,
                     management_proto::UpdateMemberPermissionsRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                         role: args.role.map_or(
                             synctv_proto::common::RoomMemberRole::Unspecified as i32,
                             CliRoomMemberRole::to_proto,
@@ -5050,7 +5078,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     kick_member,
                     management_proto::KickMemberRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()),
+                        user: Some(args.user.to_management_proto()?),
                         kick_cooldown_seconds: args.kick_cooldown_seconds,
                     }
                 )?;
@@ -5329,7 +5357,7 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                 "create playlist",
                 create_playlist,
                 management_proto::CreatePlaylistRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     name: args.name,
                     parent_id: normalized_optional_cli_value(args.parent_id.as_deref())
@@ -5441,7 +5469,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 "add media",
                 add_media,
                 management_proto::AddMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
@@ -5462,7 +5490,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 "add direct url media",
                 add_direct_url_media,
                 management_proto::AddDirectUrlMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     url: args.url,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
@@ -5718,7 +5746,7 @@ async fn execute_playlist_provider(command: PlaylistProviderCommand) -> Result<(
                 "create alist dynamic playlist",
                 create_alist_playlist,
                 management_proto::CreateAlistPlaylistRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     name: args.name,
                     parent_id: normalized_optional_cli_value(args.parent_id.as_deref())
@@ -5740,7 +5768,7 @@ async fn execute_playlist_provider(command: PlaylistProviderCommand) -> Result<(
                 "create emby dynamic playlist",
                 create_emby_playlist,
                 management_proto::CreateEmbyPlaylistRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     name: args.name,
                     parent_id: normalized_optional_cli_value(args.parent_id.as_deref())
@@ -5766,7 +5794,7 @@ async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
                 "add alist media",
                 add_alist_media,
                 management_proto::AddAlistMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
@@ -5788,7 +5816,7 @@ async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
                 "add emby media",
                 add_emby_media,
                 management_proto::AddEmbyMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
@@ -5817,7 +5845,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
                 "add bilibili video media",
                 add_bilibili_video_media,
                 management_proto::AddBilibiliVideoMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
@@ -5840,7 +5868,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
                 "add bilibili pgc media",
                 add_bilibili_pgc_media,
                 management_proto::AddBilibiliPgcMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
@@ -5862,7 +5890,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
                 "add bilibili live media",
                 add_bilibili_live_media,
                 management_proto::AddBilibiliLiveMediaRequest {
-                    actor: Some(args.actor.to_management_proto()),
+                    actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
@@ -5883,6 +5911,7 @@ async fn execute_provider_alist(command: ProviderAlistCommand) -> Result<()> {
     match command.command {
         ProviderAlistSubcommand::Login(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let credential = alist_login_credential(&args)?;
             let response = management_unary_call!(
                 session,
                 "alist login",
@@ -5892,17 +5921,7 @@ async fn execute_provider_alist(command: ProviderAlistCommand) -> Result<()> {
                     request: Some(synctv_proto::providers::alist::LoginRequest {
                         host: args.host,
                         username: args.account_username,
-                        credential: Some(if let Some(password) = args.password {
-                            synctv_proto::providers::alist::login_request::Credential::Password(
-                                password,
-                            )
-                        } else {
-                            synctv_proto::providers::alist::login_request::Credential::HashedPassword(
-                                    args.hashed_password.expect(
-                                        "clap should guarantee hashed password when password is absent",
-                                    ),
-                                )
-                        },),
+                        credential: Some(credential),
                         otp_code: args.otp_code.unwrap_or_default(),
                         otp_secret: args.otp_secret.unwrap_or_default(),
                         instance_name: provider_service_instance_name(&args.instance),
@@ -6008,6 +6027,7 @@ async fn execute_provider_emby(command: ProviderEmbyCommand) -> Result<()> {
     match command.command {
         ProviderEmbySubcommand::Login(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let credential = emby_login_credential(&args)?;
             let response = management_unary_call!(
                 session,
                 "emby login",
@@ -6017,17 +6037,7 @@ async fn execute_provider_emby(command: ProviderEmbyCommand) -> Result<()> {
                     request: Some(synctv_proto::providers::emby::LoginRequest {
                         host: args.host,
                         username: args.account_username,
-                        credential: Some(if let Some(password) = args.password {
-                            synctv_proto::providers::emby::login_request::Credential::Password(
-                                password,
-                            )
-                        } else {
-                            synctv_proto::providers::emby::login_request::Credential::ApiKey(
-                                args.api_key.expect(
-                                    "clap should guarantee api key when password is absent",
-                                ),
-                            )
-                        },),
+                        credential: Some(credential),
                         instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
@@ -6254,7 +6264,7 @@ async fn execute_provider_rtmp(command: ProviderRtmpCommand) -> Result<()> {
         ProviderRtmpSubcommand::CreatePublishKey(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
             let room_id = args.room_id.clone();
-            let media_id = args.resolved_media_id().to_string();
+            let media_id = args.resolved_media_id()?.to_string();
             let response = management_unary_call!(
                 session,
                 "create rtmp publish key",
@@ -6269,7 +6279,7 @@ async fn execute_provider_rtmp(command: ProviderRtmpCommand) -> Result<()> {
         }
         ProviderRtmpSubcommand::GetStreamInfo(args) => {
             let session = connect_remote_access(&args.remote).await?;
-            let media_id = args.resolved_media_id().to_string();
+            let media_id = args.resolved_media_id()?.to_string();
             let response = management_unary_call!(
                 session,
                 "get rtmp stream info",
@@ -6364,7 +6374,7 @@ async fn execute_system(system_command: SystemCommand) -> Result<()> {
                         page: args.page,
                         page_size: args.page_size,
                         room_id: args.room_id.unwrap_or_default(),
-                        user: args.user.to_management_proto(),
+                        user: args.user.to_management_proto()?,
                         node_id: args.node_id.unwrap_or_default(),
                         search: args.search.unwrap_or_default(),
                         sort_by: args.sort_by.map_or(
@@ -6560,7 +6570,7 @@ async fn connect_provider_actor_access(
     access: &ProviderServiceRemoteActorArgs,
 ) -> Result<(RemoteAdminSession, management_proto::UserRef)> {
     let session = connect_remote_access(&access.remote).await?;
-    Ok((session, access.actor.to_management_proto()))
+    Ok((session, access.actor.to_management_proto()?))
 }
 
 fn batch_user_refs_to_proto(
@@ -7178,8 +7188,8 @@ struct HumanReviewRequest {
     status: String,
     requested_at: String,
     reviewed_at: String,
-    reviewed_by: String,
-    rejection_reason: String,
+    reviewed_by: Option<String>,
+    rejection_reason: Option<String>,
     username: String,
     email: String,
     signup_method: i32,
@@ -7191,8 +7201,8 @@ struct HumanRoomCreationReview {
     status: String,
     requested_at: String,
     reviewed_at: String,
-    reviewed_by: String,
-    rejection_reason: String,
+    reviewed_by: Option<String>,
+    rejection_reason: Option<String>,
     requested_by: String,
     requested_by_username: String,
     name: String,
@@ -7205,8 +7215,8 @@ struct HumanRoomJoinReview {
     status: String,
     requested_at: String,
     reviewed_at: String,
-    reviewed_by: String,
-    rejection_reason: String,
+    reviewed_by: Option<String>,
+    rejection_reason: Option<String>,
     room_id: String,
     room_name: String,
     user_id: String,
@@ -8652,7 +8662,7 @@ impl ToHuman for synctv_proto::client::ListRoomStreamsResponse {
 
 impl_identity_to_human!(
     synctv_proto::admin::DeleteUserResponse,
-    synctv_proto::admin::UpdateUserPasswordResponse,
+    synctv_proto::admin::SetUserPasswordResponse,
     synctv_proto::admin::GetRoomSettingsResponse,
     synctv_proto::admin::UpdateRoomPasswordResponse,
     synctv_proto::admin::DeleteRoomResponse,
@@ -9555,7 +9565,8 @@ mod tests {
             username: Some("alice".to_string()),
             user_id: None,
         }
-        .to_management_proto();
+        .to_management_proto()
+        .expect("username user ref should encode");
         assert!(matches!(
             username_ref.value,
             Some(management_proto::user_ref::Value::Username(ref username)) if username == "alice"
@@ -9565,7 +9576,8 @@ mod tests {
             username: None,
             user_id: Some("m6K3dSXiWUjU".to_string()),
         }
-        .to_management_proto();
+        .to_management_proto()
+        .expect("id user ref should encode");
         assert!(matches!(
             id_ref.value,
             Some(management_proto::user_ref::Value::UserId(ref user_id)) if user_id == "m6K3dSXiWUjU"
@@ -9678,15 +9690,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_removed_management_access_token_flag() {
-        let result = Cli::try_parse_from(["synctv", "user", "list", "--access-token", "token-123"]);
-        assert!(
-            result.is_err(),
-            "management CLI must not accept user access tokens anymore"
-        );
-    }
-
-    #[test]
     fn cli_parses_remote_room_members() {
         let cli = Cli::parse_from([
             "synctv",
@@ -9707,7 +9710,10 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.resolved_room_id(), "room-123");
+                assert_eq!(
+                    args.resolved_room_id().expect("room id should resolve"),
+                    "room-123"
+                );
                 assert_eq!(args.page, 3);
                 assert_eq!(args.page_size, 10);
             }
@@ -9735,7 +9741,10 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.resolved_room_id(), "room-123");
+                assert_eq!(
+                    args.resolved_room_id().expect("room id should resolve"),
+                    "room-123"
+                );
                 assert_eq!(args.page, 2);
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -9845,7 +9854,12 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room.resolved_room_id(), "room-123");
+                assert_eq!(
+                    args.room
+                        .resolved_room_id()
+                        .expect("room id should resolve"),
+                    "room-123"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9862,7 +9876,12 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room.resolved_room_id(), "room-123");
+                assert_eq!(
+                    args.room
+                        .resolved_room_id()
+                        .expect("room id should resolve"),
+                    "room-123"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9996,7 +10015,12 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room.resolved_room_id(), "room-123");
+                assert_eq!(
+                    args.room
+                        .resolved_room_id()
+                        .expect("room id should resolve"),
+                    "room-123"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10021,7 +10045,12 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room.resolved_room_id(), "room-123");
+                assert_eq!(
+                    args.room
+                        .resolved_room_id()
+                        .expect("room id should resolve"),
+                    "room-123"
+                );
                 assert_eq!(args.settings_json, "{\"chat_enabled\":false}");
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -10059,14 +10088,16 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_user_set_password_with_password_flag() {
+    fn cli_parses_user_set_password_reason() {
         let cli = Cli::parse_from([
             "synctv",
             "user",
             "set-password",
             "alice",
             "--password",
-            "StrongPass123!",
+            "NewPassword123!",
+            "--reason",
+            "support reset",
         ]);
         match cli.command {
             Commands::User(UserCommand {
@@ -10074,7 +10105,8 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.user.username.as_deref(), Some("alice"));
-                assert_eq!(args.new_password, "StrongPass123!");
+                assert_eq!(args.password, "NewPassword123!");
+                assert_eq!(args.reason.as_deref(), Some("support reset"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10112,7 +10144,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.user.username.as_deref(), Some("alice"));
-                assert!(matches!(args.resolved_role(), CliUserRole::Admin));
+                assert!(matches!(args.resolved_role(), Ok(CliUserRole::Admin)));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10127,7 +10159,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.user.username.as_deref(), Some("alice"));
-                assert!(matches!(args.resolved_role(), CliUserRole::Admin));
+                assert!(matches!(args.resolved_role(), Ok(CliUserRole::Admin)));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10150,12 +10182,12 @@ mod tests {
         let set_password_help =
             String::from_utf8(set_password_help).expect("user set-password help should be utf-8");
         assert!(
-            set_password_help.contains("--password <PASSWORD>"),
-            "user set-password help should use --password: {set_password_help}"
+            set_password_help.contains("--reason <REASON>"),
+            "user set-password help should expose reset reason: {set_password_help}"
         );
         assert!(
-            !set_password_help.contains("--new-password"),
-            "user set-password help should not expose --new-password: {set_password_help}"
+            set_password_help.contains("--password <PASSWORD>"),
+            "user set-password help should accept replacement passwords: {set_password_help}"
         );
         assert!(
             set_password_help.contains("<USER|--user-id <USER_ID>>"),
@@ -10235,8 +10267,6 @@ mod tests {
             "alice",
             "--email",
             "alice@example.com",
-            "--password",
-            "StrongPass123",
         ]);
         match cli.command {
             Commands::User(UserCommand {
@@ -10245,7 +10275,6 @@ mod tests {
             }) => {
                 assert_eq!(args.username, "alice");
                 assert_eq!(args.email.as_deref(), Some("alice@example.com"));
-                assert_eq!(args.password, "StrongPass123");
                 assert!(matches!(args.status, CliUserStatus::Active));
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -12019,7 +12048,10 @@ mod tests {
             }) => {
                 assert_eq!(args.room_id, "room-1");
                 assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.resolved_media_id(), "media-1");
+                assert_eq!(
+                    args.resolved_media_id().expect("media id should resolve"),
+                    "media-1"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12042,7 +12074,10 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.room_id, "room-1");
-                assert_eq!(args.resolved_media_id(), "media-1");
+                assert_eq!(
+                    args.resolved_media_id().expect("media id should resolve"),
+                    "media-1"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12069,7 +12104,10 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.room_id, "room-1");
-                assert_eq!(args.resolved_media_id(), "media-1");
+                assert_eq!(
+                    args.resolved_media_id().expect("media id should resolve"),
+                    "media-1"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12961,7 +12999,10 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.room_id, "room-123");
-                assert_eq!(args.resolved_media_id(), "-99tNxdXRosK");
+                assert_eq!(
+                    args.resolved_media_id().expect("media id should resolve"),
+                    "-99tNxdXRosK"
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

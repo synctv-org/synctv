@@ -13,28 +13,30 @@ use std::sync::Arc;
 use synctv_core::models::{
     MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
     PlaylistId, PlaylistListQuery as CorePlaylistListQuery,
-    PlaylistListSortBy as CorePlaylistListSortBy, ReviewRequestId, RoomId,
+    PlaylistListSortBy as CorePlaylistListSortBy, ReviewRequestId, RoomId, RoomStatus,
     SortDirection as CoreSortDirection, UserAuthFactors, UserId, UserPreferences, UserRole,
     UserStatus,
 };
 use synctv_core::provider::{DynamicListQuery, ExecutionControl};
 use synctv_core::service::{
-    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuditService,
-    AuthorizedAdminActor, BanRecordListQuery, BanRecordRow, BanRecordService, BanRecordTargetType,
-    EmailService, RemoteProviderManager, ReviewService, RoomCreationReviewListQuery,
-    RoomCreationReviewRecord, RoomJoinReviewListQuery, RoomJoinReviewRecord, RoomService,
-    SettingsRegistry, SettingsService, UserRegistrationReviewListQuery,
-    UserRegistrationReviewRecord, UserService,
+    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuditEventParams,
+    AuditService, AuthorizedAdminActor, BanRecordListQuery, BanRecordRow, BanRecordService,
+    BanRecordTargetType, EmailService, PlaybackStatePatch, PlaybackUpdateRequest,
+    RemoteProviderManager, ReviewService, RoomCreationReviewListQuery, RoomCreationReviewRecord,
+    RoomJoinReviewListQuery, RoomJoinReviewRecord, RoomService, SettingsRegistry, SettingsService,
+    StreamKickAuditRequest, UserRegistrationReviewListQuery, UserRegistrationReviewRecord,
+    UserService,
 };
 use synctv_core::Error as CoreError;
 use synctv_livestream::api::LiveStreamingInfrastructure;
 
 use super::client::convert::{
-    bilibili_live_danmaku_for_static_media, map_slice_preserve_order, media_list_to_proto,
-    media_to_proto_with_availability, members_to_proto, playback_client_profile_from_proto,
-    playback_snapshot_to_proto, playback_state_to_proto, playlist_list_to_proto,
-    playlist_path_node_to_proto, playlist_to_proto, playlist_to_proto_with_availability,
-    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls, user_status_to_proto,
+    json_to_vec, playback_client_profile_from_proto, provider_playback_info_to_model,
+    sign_local_bilibili_danmaku_urls, try_bilibili_live_danmaku_for_static_media,
+    try_media_list_to_proto, try_media_to_proto, try_media_to_proto_with_availability,
+    try_members_to_proto, try_playback_snapshot_to_proto, try_playback_state_to_proto,
+    try_playlist_list_to_proto, try_playlist_path_node_to_proto, try_playlist_to_proto,
+    try_playlist_to_proto_with_availability, user_status_to_proto,
 };
 use super::client::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 use super::ApiError;
@@ -42,6 +44,21 @@ use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutServ
 use crate::impls::client::media::{
     build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
 };
+
+fn public_id_encode_error(kind: &str, error: &str) -> ApiError {
+    ApiError::Internal(format!("Failed to encode {kind} public id: {error}"))
+}
+
+fn required_room_settings<'a>(
+    settings: &'a std::collections::HashMap<RoomId, synctv_core::models::RoomSettings>,
+    room_id: &RoomId,
+) -> Result<&'a synctv_core::models::RoomSettings, ApiError> {
+    settings.get(room_id).ok_or_else(|| {
+        ApiError::Internal(format!(
+            "Missing room settings for room {room_id} in batch response"
+        ))
+    })
+}
 use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use crate::impls::client::proto_role_to_assignable_room_role;
 use crate::impls::client::{proto_role_filter_to_room_role, proto_role_to_room_role};
@@ -55,17 +72,21 @@ use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{
     default_membership_event_fanout_service, MembershipEventFanoutService,
 };
+use crate::playback_fanout::{
+    default_playback_fanout_service, PlaybackFanoutActor, PlaybackFanoutService,
+};
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
-use crate::realtime_fanout::{default_realtime_fanout_service, RealtimeFanoutService};
+use crate::realtime_fanout::RealtimeFanoutService;
 use crate::realtime_lifecycle::{
     default_realtime_lifecycle_service, DeletedRoomAfterCommitFanout, RealtimeLifecycleService,
 };
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
-    default_room_lifecycle_fanout_service, default_room_lifecycle_fanout_service_with_realtime,
-    RoomLifecycleFanoutService,
+    default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
 };
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::runtime::{
+    LocalNoopRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
+};
 
 /// HTTP request context for audit logging (IP address and User-Agent).
 #[derive(Debug, Clone, Default)]
@@ -76,42 +97,87 @@ pub struct RequestContext {
 
 pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: UserId = UserId::MAX;
 
-fn page_i32_to_usize(value: i32) -> usize {
-    usize::try_from(value.max(1)).unwrap_or(usize::MAX)
+fn page_i32_to_usize(value: i32) -> Result<usize, ApiError> {
+    let normalized = if value > 0 { value.cast_unsigned() } else { 1 };
+    usize::try_from(normalized).map_err(|_| ApiError::Internal("page exceeds usize::MAX".into()))
 }
 
-fn page_size_i32_to_usize(value: i32, max: i32) -> usize {
-    usize::try_from(value.clamp(1, max)).unwrap_or(usize::MAX)
-}
-
-fn usize_to_i32_saturating(value: usize) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
-fn i64_to_i32_saturating(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or_else(|_| {
-        if value.is_negative() {
-            i32::MIN
-        } else {
-            i32::MAX
-        }
-    })
-}
-
-fn usize_to_i64_saturating(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-fn i64_to_usize_saturating(value: i64) -> usize {
-    if value.is_negative() {
-        0
+fn page_size_i32_to_usize(value: i32, max: i32) -> Result<usize, ApiError> {
+    let max = max.max(1).cast_unsigned();
+    let normalized = if value > 0 {
+        value.cast_unsigned().clamp(1, max)
     } else {
-        usize::try_from(value).unwrap_or(usize::MAX)
-    }
+        1
+    };
+    usize::try_from(normalized)
+        .map_err(|_| ApiError::Internal("page_size exceeds usize::MAX".into()))
 }
 
-fn u64_to_i64_saturating(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn usize_to_i32_api(value: usize, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> {
+    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
+}
+
+fn i64_count_to_usize(value: i64, field: &'static str) -> Result<usize, ApiError> {
+    if value < 0 {
+        return Err(ApiError::Internal(format!(
+            "{field} returned a negative count"
+        )));
+    }
+    usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
+}
+
+fn u64_to_i64_api(value: u64, field: &'static str) -> Result<i64, ApiError> {
+    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
+}
+
+fn page_offset_usize(
+    page: usize,
+    page_size: usize,
+    field: &'static str,
+) -> Result<usize, ApiError> {
+    page.saturating_sub(1)
+        .checked_mul(page_size)
+        .ok_or_else(|| ApiError::Internal(format!("{field} exceeds usize::MAX")))
+}
+
+fn proto_review_status_filter(value: i32) -> Result<synctv_core::models::ReviewStatus, ApiError> {
+    synctv_core::models::ReviewStatus::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported review status".to_string()))
+}
+
+fn proto_room_status_filter(value: i32) -> Result<Option<RoomStatus>, ApiError> {
+    if value == synctv_proto::common::RoomStatus::Unspecified as i32 {
+        return Ok(None);
+    }
+    RoomStatus::try_from(value)
+        .map(Some)
+        .map_err(|_| ApiError::InvalidInput("Unsupported room status".to_string()))
+}
+
+fn proto_user_status_filter(value: i32) -> Result<Option<UserStatus>, ApiError> {
+    if value == synctv_proto::common::UserStatus::Unspecified as i32 {
+        return Ok(None);
+    }
+    UserStatus::try_from(value)
+        .map(Some)
+        .map_err(|_| ApiError::InvalidInput("Unsupported user status".to_string()))
+}
+
+fn proto_user_role_filter(value: i32) -> Result<Option<UserRole>, ApiError> {
+    if value == synctv_proto::common::UserRole::Unspecified as i32 {
+        return Ok(None);
+    }
+    UserRole::try_from(value)
+        .map(Some)
+        .map_err(|_| ApiError::InvalidInput("Unsupported user role".to_string()))
 }
 
 async fn load_creator_status_map(
@@ -139,22 +205,118 @@ async fn load_room_creator_status(
     }
 }
 
-fn user_list_sort_by_from_proto(sort_by: i32) -> synctv_core::models::UserListSortBy {
-    match crate::proto::admin::UserListSortBy::try_from(sort_by) {
-        Ok(crate::proto::admin::UserListSortBy::Username) => {
-            synctv_core::models::UserListSortBy::Username
+fn proto_admin_sort_direction(
+    sort_direction: i32,
+    default: CoreSortDirection,
+) -> Result<CoreSortDirection, ApiError> {
+    match crate::proto::admin::SortDirection::try_from(sort_direction)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        crate::proto::admin::SortDirection::Unspecified => Ok(default),
+        crate::proto::admin::SortDirection::Asc => Ok(CoreSortDirection::Asc),
+        crate::proto::admin::SortDirection::Desc => Ok(CoreSortDirection::Desc),
+    }
+}
+
+fn proto_admin_user_list_sort_by(
+    sort_by: i32,
+) -> Result<synctv_core::models::UserListSortBy, ApiError> {
+    match crate::proto::admin::UserListSortBy::try_from(sort_by)
+        .map_err(|_| ApiError::InvalidInput("Unsupported user list sort field".to_string()))?
+    {
+        crate::proto::admin::UserListSortBy::Unspecified
+        | crate::proto::admin::UserListSortBy::CreatedAt => {
+            Ok(synctv_core::models::UserListSortBy::CreatedAt)
         }
-        Ok(crate::proto::admin::UserListSortBy::Email) => {
-            synctv_core::models::UserListSortBy::Email
+        crate::proto::admin::UserListSortBy::Username => {
+            Ok(synctv_core::models::UserListSortBy::Username)
         }
-        Ok(crate::proto::admin::UserListSortBy::Status) => {
-            synctv_core::models::UserListSortBy::Status
+        crate::proto::admin::UserListSortBy::Email => {
+            Ok(synctv_core::models::UserListSortBy::Email)
         }
-        Ok(crate::proto::admin::UserListSortBy::Role) => synctv_core::models::UserListSortBy::Role,
-        Ok(crate::proto::admin::UserListSortBy::UpdatedAt) => {
-            synctv_core::models::UserListSortBy::UpdatedAt
+        crate::proto::admin::UserListSortBy::Status => {
+            Ok(synctv_core::models::UserListSortBy::Status)
         }
-        _ => synctv_core::models::UserListSortBy::CreatedAt,
+        crate::proto::admin::UserListSortBy::Role => Ok(synctv_core::models::UserListSortBy::Role),
+        crate::proto::admin::UserListSortBy::UpdatedAt => {
+            Ok(synctv_core::models::UserListSortBy::UpdatedAt)
+        }
+    }
+}
+
+fn proto_admin_room_list_sort_by(
+    sort_by: i32,
+) -> Result<synctv_core::models::RoomListSortBy, ApiError> {
+    match crate::proto::admin::RoomListSortBy::try_from(sort_by)
+        .map_err(|_| ApiError::InvalidInput("Unsupported room list sort field".to_string()))?
+    {
+        crate::proto::admin::RoomListSortBy::Unspecified
+        | crate::proto::admin::RoomListSortBy::CreatedAt => {
+            Ok(synctv_core::models::RoomListSortBy::CreatedAt)
+        }
+        crate::proto::admin::RoomListSortBy::Name => Ok(synctv_core::models::RoomListSortBy::Name),
+        crate::proto::admin::RoomListSortBy::UpdatedAt => {
+            Ok(synctv_core::models::RoomListSortBy::UpdatedAt)
+        }
+        crate::proto::admin::RoomListSortBy::LastActivityAt => {
+            Ok(synctv_core::models::RoomListSortBy::LastActivityAt)
+        }
+    }
+}
+
+fn proto_admin_room_member_list_sort_by(
+    sort_by: i32,
+) -> Result<synctv_core::models::RoomMemberListSortBy, ApiError> {
+    match crate::proto::admin::RoomMemberListSortBy::try_from(sort_by).map_err(|_| {
+        ApiError::InvalidInput("Unsupported room member list sort field".to_string())
+    })? {
+        crate::proto::admin::RoomMemberListSortBy::Unspecified
+        | crate::proto::admin::RoomMemberListSortBy::JoinedAt => {
+            Ok(synctv_core::models::RoomMemberListSortBy::JoinedAt)
+        }
+        crate::proto::admin::RoomMemberListSortBy::Username => {
+            Ok(synctv_core::models::RoomMemberListSortBy::Username)
+        }
+        crate::proto::admin::RoomMemberListSortBy::Role => {
+            Ok(synctv_core::models::RoomMemberListSortBy::Role)
+        }
+    }
+}
+
+fn proto_admin_active_stream_list_sort_by(
+    sort_by: i32,
+) -> Result<crate::proto::admin::ActiveStreamListSortBy, ApiError> {
+    match crate::proto::admin::ActiveStreamListSortBy::try_from(sort_by).map_err(|_| {
+        ApiError::InvalidInput("Unsupported active stream list sort field".to_string())
+    })? {
+        crate::proto::admin::ActiveStreamListSortBy::Unspecified
+        | crate::proto::admin::ActiveStreamListSortBy::StartedAt => {
+            Ok(crate::proto::admin::ActiveStreamListSortBy::StartedAt)
+        }
+        crate::proto::admin::ActiveStreamListSortBy::RoomId => {
+            Ok(crate::proto::admin::ActiveStreamListSortBy::RoomId)
+        }
+        crate::proto::admin::ActiveStreamListSortBy::MediaId => {
+            Ok(crate::proto::admin::ActiveStreamListSortBy::MediaId)
+        }
+        crate::proto::admin::ActiveStreamListSortBy::UserId => {
+            Ok(crate::proto::admin::ActiveStreamListSortBy::UserId)
+        }
+        crate::proto::admin::ActiveStreamListSortBy::NodeId => {
+            Ok(crate::proto::admin::ActiveStreamListSortBy::NodeId)
+        }
+    }
+}
+
+fn proto_admin_active_stream_sort_direction(
+    sort_direction: i32,
+) -> Result<crate::proto::admin::SortDirection, ApiError> {
+    match crate::proto::admin::SortDirection::try_from(sort_direction)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        crate::proto::admin::SortDirection::Unspecified
+        | crate::proto::admin::SortDirection::Desc => Ok(crate::proto::admin::SortDirection::Desc),
+        crate::proto::admin::SortDirection::Asc => Ok(crate::proto::admin::SortDirection::Asc),
     }
 }
 
@@ -169,13 +331,15 @@ fn map_batch_result_error(error: impl Into<ApiError>) -> String {
     }
 }
 
-fn auth_factors_to_proto(factors: &UserAuthFactors) -> crate::proto::client::UserAuthFactors {
-    crate::proto::client::UserAuthFactors {
+fn auth_factors_to_proto(
+    factors: &UserAuthFactors,
+) -> Result<crate::proto::client::UserAuthFactors, ApiError> {
+    Ok(crate::proto::client::UserAuthFactors {
         password: factors.password,
         webauthn: factors.webauthn,
         email: factors.email,
-        eligible_count: i32::try_from(factors.eligible_count()).unwrap_or(i32::MAX),
-    }
+        eligible_count: usize_to_i32_api(factors.eligible_count(), "auth factor count")?,
+    })
 }
 
 fn user_preferences_to_proto(
@@ -297,6 +461,46 @@ pub async fn validate_admin_auth(
     })
 }
 
+#[derive(Clone)]
+pub struct AdminApiConfig {
+    pub room_service: Arc<RoomService>,
+    pub user_service: Arc<UserService>,
+    pub settings_service: Arc<SettingsService>,
+    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub email_service: Arc<EmailService>,
+    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub provider_instance_manager: Arc<RemoteProviderManager>,
+    pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
+    pub config: Arc<synctv_core::Config>,
+    pub audit_service: Arc<AuditService>,
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
+}
+
+pub struct AdminApiRuntime {
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
+    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
+    pub request_executor: Option<Arc<RequestExecutor>>,
+}
+
+impl AdminApiRuntime {
+    #[must_use]
+    pub fn test_disabled() -> Self {
+        let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
+        Self {
+            realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
+                realtime_event_service.clone(),
+            ),
+            realtime_event_service,
+            provider_stores: None,
+            provider_access_service: None,
+            request_executor: None,
+        }
+    }
+}
+
 /// Admin API implementation
 #[derive(Clone)]
 pub struct AdminApiImpl {
@@ -316,11 +520,12 @@ pub struct AdminApiImpl {
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
     pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
     pub media_fanout: Arc<dyn MediaFanoutService>,
+    pub playback_fanout: Arc<dyn PlaybackFanoutService>,
     pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
     pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
     pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
-    pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub audit_service: Arc<AuditService>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
@@ -341,13 +546,19 @@ fn encode_optional_user_id(
     public_id_codec: &crate::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<String, ApiError> {
+    encode_optional_user_id_option(public_id_codec, id).map(std::option::Option::unwrap_or_default)
+}
+
+fn encode_optional_user_id_option(
+    public_id_codec: &crate::PublicIdCodec,
+    id: Option<UserId>,
+) -> Result<Option<String>, ApiError> {
     id.map(|id| {
         public_id_codec
             .encode_user_id(id)
             .map_err(ApiError::InvalidInput)
     })
     .transpose()
-    .map(std::option::Option::unwrap_or_default)
 }
 
 fn encode_optional_room_id(
@@ -377,24 +588,20 @@ fn user_registration_review_row_to_proto(
         status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
-        reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
-        rejection_reason: row.rejection_reason.clone().unwrap_or_default(),
-        oauth2_provider: row.oauth2_provider.clone().unwrap_or_default(),
-        oauth2_provider_instance_name: row
-            .oauth2_provider_instance_name
-            .clone()
-            .unwrap_or_default(),
-        oauth2_provider_issuer: row.oauth2_provider_issuer.clone().unwrap_or_default(),
-        oauth2_provider_user_id: row.oauth2_provider_user_id.clone().unwrap_or_default(),
-        oauth2_provider_username: row.oauth2_provider_username.clone().unwrap_or_default(),
-        oauth2_avatar_url: row.oauth2_avatar_url.clone().unwrap_or_default(),
+        reviewed_by: encode_optional_user_id_option(public_id_codec, row.reviewed_by)?,
+        rejection_reason: row.rejection_reason.clone(),
+        oauth2_provider: row.oauth2_provider.clone(),
+        oauth2_provider_instance_name: row.oauth2_provider_instance_name.clone(),
+        oauth2_provider_issuer: row.oauth2_provider_issuer.clone(),
+        oauth2_provider_user_id: row.oauth2_provider_user_id.clone(),
+        oauth2_provider_username: row.oauth2_provider_username.clone(),
+        oauth2_avatar_url: row.oauth2_avatar_url.clone(),
         oauth2_email_trusted: row.oauth2_email_trusted,
         webauthn_credential_id: row
             .webauthn_credential_id
             .as_deref()
-            .map(synctv_core::service::PasskeyService::encode_credential_id)
-            .unwrap_or_default(),
-        webauthn_credential_name: row.webauthn_credential_name.clone().unwrap_or_default(),
+            .map(synctv_core::service::PasskeyService::encode_credential_id),
+        webauthn_credential_name: row.webauthn_credential_name.clone(),
     })
 }
 
@@ -415,8 +622,8 @@ fn room_creation_review_row_to_proto(
         status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
-        reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
-        rejection_reason: row.rejection_reason.clone().unwrap_or_default(),
+        reviewed_by: encode_optional_user_id_option(public_id_codec, row.reviewed_by)?,
+        rejection_reason: row.rejection_reason.clone(),
     })
 }
 
@@ -440,8 +647,8 @@ fn room_join_review_row_to_proto(
         status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
-        reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
-        rejection_reason: row.rejection_reason.clone().unwrap_or_default(),
+        reviewed_by: encode_optional_user_id_option(public_id_codec, row.reviewed_by)?,
+        rejection_reason: row.rejection_reason.clone(),
     })
 }
 
@@ -469,67 +676,85 @@ fn ban_row_to_proto(
     })
 }
 
-fn map_client_sort_direction(sort_direction: i32) -> CoreSortDirection {
-    match crate::proto::client::SortDirection::try_from(sort_direction) {
-        Ok(crate::proto::client::SortDirection::Desc) => CoreSortDirection::Desc,
-        _ => CoreSortDirection::Asc,
+fn map_client_sort_direction(sort_direction: i32) -> Result<CoreSortDirection, ApiError> {
+    match crate::proto::client::SortDirection::try_from(sort_direction)
+        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
+    {
+        crate::proto::client::SortDirection::Unspecified
+        | crate::proto::client::SortDirection::Asc => Ok(CoreSortDirection::Asc),
+        crate::proto::client::SortDirection::Desc => Ok(CoreSortDirection::Desc),
     }
 }
 
-fn map_admin_playlist_sort(sort_by: i32) -> CorePlaylistListSortBy {
+fn map_admin_playlist_sort(sort_by: i32) -> Result<CorePlaylistListSortBy, ApiError> {
     match crate::proto::client::PlaylistListSortBy::try_from(sort_by)
-        .unwrap_or(crate::proto::client::PlaylistListSortBy::Position)
+        .map_err(|_| ApiError::InvalidInput("Unsupported playlist list sort field".to_string()))?
     {
-        crate::proto::client::PlaylistListSortBy::Name => CorePlaylistListSortBy::Name,
-        crate::proto::client::PlaylistListSortBy::CreatedAt => CorePlaylistListSortBy::CreatedAt,
-        crate::proto::client::PlaylistListSortBy::UpdatedAt => CorePlaylistListSortBy::UpdatedAt,
-        _ => CorePlaylistListSortBy::Position,
+        crate::proto::client::PlaylistListSortBy::Unspecified
+        | crate::proto::client::PlaylistListSortBy::Position => {
+            Ok(CorePlaylistListSortBy::Position)
+        }
+        crate::proto::client::PlaylistListSortBy::Name => Ok(CorePlaylistListSortBy::Name),
+        crate::proto::client::PlaylistListSortBy::CreatedAt => {
+            Ok(CorePlaylistListSortBy::CreatedAt)
+        }
+        crate::proto::client::PlaylistListSortBy::UpdatedAt => {
+            Ok(CorePlaylistListSortBy::UpdatedAt)
+        }
     }
 }
 
-fn map_admin_playlist_sort_from_media_sort(sort_by: i32) -> CorePlaylistListSortBy {
+fn map_admin_playlist_sort_from_media_sort(
+    sort_by: i32,
+) -> Result<CorePlaylistListSortBy, ApiError> {
     match crate::proto::client::MediaListSortBy::try_from(sort_by)
-        .unwrap_or(crate::proto::client::MediaListSortBy::Position)
+        .map_err(|_| ApiError::InvalidInput("Unsupported media list sort field".to_string()))?
     {
-        crate::proto::client::MediaListSortBy::Name => CorePlaylistListSortBy::Name,
-        crate::proto::client::MediaListSortBy::AddedAt => CorePlaylistListSortBy::CreatedAt,
-        crate::proto::client::MediaListSortBy::UpdatedAt => CorePlaylistListSortBy::UpdatedAt,
-        _ => CorePlaylistListSortBy::Position,
+        crate::proto::client::MediaListSortBy::Unspecified
+        | crate::proto::client::MediaListSortBy::Position => Ok(CorePlaylistListSortBy::Position),
+        crate::proto::client::MediaListSortBy::Name => Ok(CorePlaylistListSortBy::Name),
+        crate::proto::client::MediaListSortBy::AddedAt => Ok(CorePlaylistListSortBy::CreatedAt),
+        crate::proto::client::MediaListSortBy::UpdatedAt => Ok(CorePlaylistListSortBy::UpdatedAt),
+        crate::proto::client::MediaListSortBy::SourceProvider
+        | crate::proto::client::MediaListSortBy::ProviderInstanceName => {
+            Ok(CorePlaylistListSortBy::Position)
+        }
     }
 }
 
-fn map_admin_media_sort(sort_by: i32) -> CoreMediaListSortBy {
+fn map_admin_media_sort(sort_by: i32) -> Result<CoreMediaListSortBy, ApiError> {
     match crate::proto::client::MediaListSortBy::try_from(sort_by)
-        .unwrap_or(crate::proto::client::MediaListSortBy::Position)
+        .map_err(|_| ApiError::InvalidInput("Unsupported media list sort field".to_string()))?
     {
-        crate::proto::client::MediaListSortBy::Name => CoreMediaListSortBy::Name,
-        crate::proto::client::MediaListSortBy::AddedAt => CoreMediaListSortBy::AddedAt,
-        crate::proto::client::MediaListSortBy::UpdatedAt => CoreMediaListSortBy::UpdatedAt,
+        crate::proto::client::MediaListSortBy::Unspecified
+        | crate::proto::client::MediaListSortBy::Position => Ok(CoreMediaListSortBy::Position),
+        crate::proto::client::MediaListSortBy::Name => Ok(CoreMediaListSortBy::Name),
+        crate::proto::client::MediaListSortBy::AddedAt => Ok(CoreMediaListSortBy::AddedAt),
+        crate::proto::client::MediaListSortBy::UpdatedAt => Ok(CoreMediaListSortBy::UpdatedAt),
         crate::proto::client::MediaListSortBy::SourceProvider => {
-            CoreMediaListSortBy::SourceProvider
+            Ok(CoreMediaListSortBy::SourceProvider)
         }
         crate::proto::client::MediaListSortBy::ProviderInstanceName => {
-            CoreMediaListSortBy::ProviderInstanceName
+            Ok(CoreMediaListSortBy::ProviderInstanceName)
         }
-        _ => CoreMediaListSortBy::Position,
     }
 }
 
-fn map_resource_availability_filter(filter: i32) -> Option<bool> {
+fn map_resource_availability_filter(filter: i32) -> Result<Option<bool>, ApiError> {
     match crate::proto::client::ResourceAvailabilityFilter::try_from(filter)
-        .unwrap_or(crate::proto::client::ResourceAvailabilityFilter::All)
+        .map_err(|_| ApiError::InvalidInput("Unsupported availability filter".to_string()))?
     {
-        crate::proto::client::ResourceAvailabilityFilter::All => None,
-        crate::proto::client::ResourceAvailabilityFilter::Available => Some(true),
-        crate::proto::client::ResourceAvailabilityFilter::Unavailable => Some(false),
+        crate::proto::client::ResourceAvailabilityFilter::All => Ok(None),
+        crate::proto::client::ResourceAvailabilityFilter::Available => Ok(Some(true)),
+        crate::proto::client::ResourceAvailabilityFilter::Unavailable => Ok(Some(false)),
     }
 }
 
-fn paginate_vec<T>(items: Vec<T>, page: i32, page_size: i32) -> Vec<T> {
-    let page = page_i32_to_usize(page);
-    let page_size = page_size_i32_to_usize(page_size, 100);
+fn paginate_vec<T>(items: Vec<T>, page: i32, page_size: i32) -> Result<Vec<T>, ApiError> {
+    let page = page_i32_to_usize(page)?;
+    let page_size = page_size_i32_to_usize(page_size, 100)?;
     let offset = (page - 1) * page_size;
-    items.into_iter().skip(offset).take(page_size).collect()
+    Ok(items.into_iter().skip(offset).take(page_size).collect())
 }
 
 fn compare_active_streams(
@@ -578,11 +803,7 @@ impl AdminApiImpl {
             .get_email(&user.id)
             .await
             .map_err(ApiError::from)?;
-        Ok(admin_user_to_proto(
-            user,
-            email.as_deref(),
-            &self.public_id_codec,
-        ))
+        try_admin_user_to_proto(user, email.as_deref(), &self.public_id_codec)
     }
 
     fn publish_room_cache_invalidation(&self, room_id: &RoomId) {
@@ -593,31 +814,26 @@ impl AdminApiImpl {
         &self,
         room_ids: &[RoomId],
         deleted_by: &UserId,
-    ) -> (
-        HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
-        Vec<DeletedRoomAfterCommitFanout>,
-    ) {
+    ) -> Result<
+        (
+            HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
+            Vec<DeletedRoomAfterCommitFanout>,
+        ),
+        ApiError,
+    > {
         let mut outbox_events = HashMap::with_capacity(room_ids.len());
         let mut fanout = Vec::with_capacity(room_ids.len());
         for room_id in room_ids {
             let prepared = self
                 .room_lifecycle_fanout
-                .prepare_room_deleted_outbox_fanout(room_id, deleted_by);
-            if let Some(outbox_event) = prepared.cloned_outbox_event() {
-                outbox_events.insert(*room_id, outbox_event);
-            }
+                .prepare_room_deleted_outbox_fanout(room_id, deleted_by)?;
+            outbox_events.insert(*room_id, prepared.cloned_outbox_event());
             fanout.push(DeletedRoomAfterCommitFanout {
                 room_id: *room_id,
                 event: prepared.into_event(),
             });
         }
-        (outbox_events, fanout)
-    }
-
-    #[must_use]
-    pub fn with_request_executor(mut self, request_executor: Arc<RequestExecutor>) -> Self {
-        self.request_executor = Some(request_executor);
-        self
+        Ok((outbox_events, fanout))
     }
 
     fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
@@ -635,12 +851,12 @@ impl AdminApiImpl {
             .get_room_settings(&member.room_id)
             .await
             .map_err(ApiError::from)?;
-        Ok(admin_room_member_to_proto_with_settings(
+        try_admin_room_member_to_proto_with_settings(
             member,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
-        ))
+        )
     }
 
     async fn load_admin_room_proto(
@@ -648,12 +864,24 @@ impl AdminApiImpl {
         room: &synctv_core::models::Room,
         settings: Option<&synctv_core::models::RoomSettings>,
     ) -> Result<crate::proto::admin::AdminRoom, ApiError> {
+        let loaded_settings;
+        let settings = if let Some(settings) = settings {
+            settings
+        } else {
+            loaded_settings = self
+                .room_service
+                .get_room_settings(&room.id)
+                .await
+                .map_err(ApiError::from)?;
+            &loaded_settings
+        };
         let creator_username = self
             .user_service
             .get_usernames(std::slice::from_ref(&room.created_by))
             .await
-            .ok()
-            .and_then(|usernames| usernames.into_values().next());
+            .map_err(ApiError::from)?
+            .into_values()
+            .next();
         let creator_status = load_room_creator_status(&self.user_service, room).await?;
         let member_count = self
             .room_service
@@ -662,14 +890,14 @@ impl AdminApiImpl {
             .map(Some)
             .map_err(ApiError::from)?;
 
-        Ok(admin_room_to_proto(
+        try_admin_room_to_proto(
             room,
-            settings,
+            Some(settings),
             member_count,
             creator_username.as_deref(),
             creator_status,
             &self.public_id_codec,
-        ))
+        )
     }
 
     pub fn execute_admin_endpoint<'a, T, F, Fut>(
@@ -789,7 +1017,7 @@ impl AdminApiImpl {
                         &room_id,
                         target_user_id,
                         admin_user_id,
-                    ),
+                    )?,
             );
         }
         let user = self
@@ -824,11 +1052,18 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let prepared_playback_reset = self
+            .playback_fanout
+            .prepare_system_state_changed_batch_outbox_fanout();
         self.room_service
             .playback_service()
-            .reset_playback_for_creator(target_user_id)
+            .reset_playback_for_creator_with_outbox(
+                target_user_id,
+                Some(prepared_playback_reset.outbox_factory()),
+            )
             .await
             .map_err(ApiError::from)?;
+        prepared_playback_reset.publish_after_outbox_commit();
 
         for prepared_fanout in owner_inactive_fanout {
             let room_id = *prepared_fanout.event().room_id().ok_or_else(|| {
@@ -901,7 +1136,10 @@ impl AdminApiImpl {
         let mut visible_keys = None;
 
         if let Some(registry) = &self.settings_registry {
-            let defaults = registry.storage.registered_defaults();
+            let defaults = registry
+                .storage
+                .registered_defaults()
+                .map_err(ApiError::from)?;
             visible_keys = Some(
                 defaults
                     .iter()
@@ -950,17 +1188,20 @@ impl AdminApiImpl {
         media: synctv_core::models::Media,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
             self.config.jwt.secret.as_bytes(),
-        );
+        )
+        .map_err(|error| {
+            ApiError::Internal(format!("Failed to derive proxy signing key: {error}"))
+        })?;
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id)
-            .expect("positive user id must encode as public ID");
+            .map_err(|error| public_id_encode_error("user", &error))?;
         let public_room_id = self
             .public_id_codec
             .encode_room_id(*room_id)
-            .expect("positive room id must encode as public ID");
+            .map_err(|error| public_id_encode_error("room", &error))?;
 
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider_name = media.source_provider.trim();
@@ -1009,13 +1250,13 @@ impl AdminApiImpl {
             .playback_infos
             .get(&provider_result.default_mode)
             .and_then(|info| info.expires_at);
-        let live_danmaku = bilibili_live_danmaku_for_static_media(
+        let live_danmaku = try_bilibili_live_danmaku_for_static_media(
             &media,
             &public_user_id,
             &self.public_id_codec,
             Some(&signing_key),
             default_mode_expires_at,
-        );
+        )?;
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id,
@@ -1046,7 +1287,6 @@ impl AdminApiImpl {
             Some(&signing_key),
             default_mode_expires_at,
         );
-        let mut snapshot = playback_snapshot_to_proto(&full_result, &self.public_id_codec);
         let credential_dependencies = provider
             .credential_dependencies(&ctx, &media.source_config)
             .map_err(ApiError::from)?;
@@ -1058,10 +1298,14 @@ impl AdminApiImpl {
             &credential_dependencies,
         )
         .await?;
-        snapshot.version = compose_playback_snapshot_version(
-            static_playback_snapshot_version(&media),
-            credential_fingerprint.as_deref(),
-        );
+        let mut snapshot = try_playback_snapshot_to_proto(
+            &full_result,
+            compose_playback_snapshot_version(
+                static_playback_snapshot_version(&media),
+                credential_fingerprint.as_deref(),
+            ),
+            &self.public_id_codec,
+        )?;
         snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
         Ok(snapshot)
     }
@@ -1112,17 +1356,20 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::derive_from(
+        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
             self.config.jwt.secret.as_bytes(),
-        );
+        )
+        .map_err(|error| {
+            ApiError::Internal(format!("Failed to derive proxy signing key: {error}"))
+        })?;
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id_model)
-            .expect("positive user id must encode as public ID");
+            .map_err(|error| public_id_encode_error("user", &error))?;
         let public_room_id = self
             .public_id_codec
             .encode_room_id(*room_id_model)
-            .expect("positive room id must encode as public ID");
+            .map_err(|error| public_id_encode_error("room", &error))?;
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(*user_id_model)
             .with_public_user_id(public_user_id)
@@ -1176,7 +1423,6 @@ impl AdminApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let mut snapshot = playback_snapshot_to_proto(&full_result, &self.public_id_codec);
         let playlist_source_config = playlist.source_config.as_ref().ok_or_else(|| {
             ApiError::Internal("Dynamic playlist missing source_config".to_string())
         })?;
@@ -1191,10 +1437,14 @@ impl AdminApiImpl {
             &credential_dependencies,
         )
         .await?;
-        snapshot.version = compose_playback_snapshot_version(
-            dynamic_playback_snapshot_version(&playlist),
-            credential_fingerprint.as_deref(),
-        );
+        let mut snapshot = try_playback_snapshot_to_proto(
+            &full_result,
+            compose_playback_snapshot_version(
+                dynamic_playback_snapshot_version(&playlist),
+                credential_fingerprint.as_deref(),
+            ),
+            &self.public_id_codec,
+        )?;
         snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
         Ok(snapshot)
     }
@@ -1242,7 +1492,7 @@ impl AdminApiImpl {
             room_id: self
                 .public_id_codec
                 .encode_room_id(*room_id)
-                .expect("positive room id must encode as public ID"),
+                .map_err(|error| public_id_encode_error("room", &error))?,
             name: String::new(),
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
@@ -1422,28 +1672,33 @@ impl AdminApiImpl {
     }
 
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        room_service: Arc<RoomService>,
-        user_service: Arc<UserService>,
-        settings_service: Arc<SettingsService>,
-        settings_registry: Option<Arc<SettingsRegistry>>,
-        email_service: Arc<EmailService>,
-        connection_service: Arc<dyn RealtimeConnectionService>,
-        provider_instance_manager: Arc<RemoteProviderManager>,
-        live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-        publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
-        config: Arc<synctv_core::Config>,
-        audit_service: Arc<AuditService>,
-        public_id_codec: Arc<crate::PublicIdCodec>,
-    ) -> Self {
+    pub fn new_with_runtime(config: AdminApiConfig, runtime: AdminApiRuntime) -> Self {
+        let AdminApiConfig {
+            room_service,
+            user_service,
+            settings_service,
+            settings_registry,
+            email_service,
+            connection_service,
+            provider_instance_manager,
+            live_streaming_infrastructure,
+            publish_key_service,
+            config,
+            audit_service,
+            public_id_codec,
+        } = config;
+
         let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
         let ban_record_service = Arc::new(BanRecordService::new(user_service.pool().clone()));
-        let realtime_fanout = default_realtime_fanout_service(None, false);
+        let realtime_fanout = runtime.realtime_fanout;
+        let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
-        let membership_event_fanout =
-            default_membership_event_fanout_service(realtime_fanout.clone(), None);
+        let membership_event_fanout = default_membership_event_fanout_service(
+            realtime_fanout.clone(),
+            realtime_event_service.clone(),
+        );
         let media_fanout = default_media_fanout_service(realtime_fanout.clone());
+        let playback_fanout = default_playback_fanout_service(realtime_fanout.clone());
         let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -1451,7 +1706,10 @@ impl AdminApiImpl {
             live_streaming_infrastructure.clone(),
             realtime_fanout.clone(),
         );
-        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
+            realtime_fanout.clone(),
+            realtime_event_service.clone(),
+        );
         Self {
             room_service,
             user_service,
@@ -1469,89 +1727,21 @@ impl AdminApiImpl {
             room_settings_fanout,
             membership_event_fanout,
             media_fanout,
+            playback_fanout,
             playlist_fanout,
             room_cache_fanout,
             realtime_lifecycle,
             room_lifecycle_fanout,
-            realtime_event_service: None,
+            realtime_event_service,
             audit_service,
-            provider_stores: None,
-            provider_access_service: None,
+            provider_stores: runtime.provider_stores,
+            provider_access_service: runtime.provider_access_service,
             public_id_codec,
-            request_executor: None,
+            request_executor: runtime.request_executor,
         }
     }
 
-    #[must_use]
-    pub fn with_realtime_fanout_service(
-        mut self,
-        realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    ) -> Self {
-        self.room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
-        self.membership_event_fanout = default_membership_event_fanout_service(
-            realtime_fanout.clone(),
-            self.realtime_event_service.clone(),
-        );
-        self.media_fanout = default_media_fanout_service(realtime_fanout.clone());
-        self.playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
-        self.room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
-        self.realtime_lifecycle = default_realtime_lifecycle_service(
-            self.connection_service.clone(),
-            self.live_streaming_infrastructure.clone(),
-            realtime_fanout.clone(),
-        );
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
-            realtime_fanout.clone(),
-            self.realtime_event_service.clone(),
-        );
-        self.realtime_fanout = realtime_fanout;
-        self
-    }
-
-    #[must_use]
-    pub fn with_realtime_event_service(
-        mut self,
-        event_service: Arc<dyn RealtimeEventService>,
-    ) -> Self {
-        self.membership_event_fanout = default_membership_event_fanout_service(
-            self.realtime_fanout.clone(),
-            Some(event_service.clone()),
-        );
-        self.room_settings_fanout =
-            default_room_settings_fanout_service(self.realtime_fanout.clone());
-        self.media_fanout = default_media_fanout_service(self.realtime_fanout.clone());
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
-            self.realtime_fanout.clone(),
-            Some(event_service.clone()),
-        );
-        self.realtime_event_service = Some(event_service);
-        self
-    }
-
-    #[must_use]
-    pub fn with_provider_stores(
-        mut self,
-        stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    ) -> Self {
-        self.provider_stores = Some(stores);
-        self
-    }
-
-    #[must_use]
-    pub fn with_provider_access_service(
-        mut self,
-        service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    ) -> Self {
-        self.provider_access_service = Some(service);
-        self
-    }
-
     /// Best-effort admin audit log helper.
-    ///
-    /// Resolves the admin username (falling back to the raw ID on lookup failure),
-    /// then writes an audit entry. If the audit write fails, it logs an ERROR
-    /// but does **not** propagate the error to the caller -- the primary operation
-    /// has already succeeded and should not be rolled back by an audit failure.
     async fn log_admin_action(
         &self,
         admin_user_id: &UserId,
@@ -1563,21 +1753,29 @@ impl AdminApiImpl {
     ) {
         let admin_username = match self.load_admin_actor(admin_user_id).await {
             Ok(actor) => actor.username,
-            Err(_) => admin_user_id.to_string(),
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    admin_user_id = %admin_user_id,
+                    action = %action,
+                    "AUDIT LOG SKIPPED: failed to resolve admin actor username. Manual review required.",
+                );
+                return;
+            }
         };
 
         if let Err(e) = self
             .audit_service
-            .log(
-                admin_user_id.to_string(),
-                admin_username.clone(),
+            .log(AuditEventParams {
+                actor_id: admin_user_id.to_string(),
+                actor_username: admin_username.clone(),
                 action,
                 target_type,
                 target_id,
                 details,
-                ctx.ip_address.clone(),
-                ctx.user_agent.clone(),
-            )
+                ip_address: ctx.ip_address.clone(),
+                user_agent: ctx.user_agent.clone(),
+            })
             .await
         {
             tracing::error!(
@@ -1595,7 +1793,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let status = synctv_core::models::RoomStatus::try_from(req.status).ok();
+        let status = proto_room_status_filter(req.status)?;
 
         let query = synctv_core::models::RoomListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
@@ -1614,24 +1812,11 @@ impl AdminApiImpl {
                     &self.public_id_codec,
                 )?)
             },
-            sort_by: match crate::proto::admin::RoomListSortBy::try_from(req.sort_by) {
-                Ok(crate::proto::admin::RoomListSortBy::Name) => {
-                    synctv_core::models::RoomListSortBy::Name
-                }
-                Ok(crate::proto::admin::RoomListSortBy::UpdatedAt) => {
-                    synctv_core::models::RoomListSortBy::UpdatedAt
-                }
-                Ok(crate::proto::admin::RoomListSortBy::LastActivityAt) => {
-                    synctv_core::models::RoomListSortBy::LastActivityAt
-                }
-                _ => synctv_core::models::RoomListSortBy::CreatedAt,
-            },
-            sort_direction: match crate::proto::admin::SortDirection::try_from(req.sort_direction) {
-                Ok(crate::proto::admin::SortDirection::Asc) => {
-                    synctv_core::models::SortDirection::Asc
-                }
-                _ => synctv_core::models::SortDirection::Desc,
-            },
+            sort_by: proto_admin_room_list_sort_by(req.sort_by)?,
+            sort_direction: proto_admin_sort_direction(
+                req.sort_direction,
+                CoreSortDirection::Desc,
+            )?,
         };
 
         let (rooms, total) = self
@@ -1651,7 +1836,7 @@ impl AdminApiImpl {
             .user_service
             .get_usernames(&creator_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
         let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
@@ -1676,21 +1861,21 @@ impl AdminApiImpl {
                     .get(&r.created_by)
                     .copied()
                     .unwrap_or(UserStatus::Banned);
-                let settings = room_settings_map.get(&r.id);
-                admin_room_to_proto(
+                let settings = required_room_settings(&room_settings_map, &r.id)?;
+                try_admin_room_to_proto(
                     &r,
-                    settings,
+                    Some(settings),
                     member_count,
                     creator_username,
                     creator_status,
                     &self.public_id_codec,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, ApiError>>()?;
 
         Ok(crate::proto::admin::ListRoomsResponse {
             rooms: room_list,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i64_to_i32_api(total, "room count")?,
         })
     }
 
@@ -1721,13 +1906,13 @@ impl AdminApiImpl {
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let prepared_outbox_fanout = self
             .room_lifecycle_fanout
-            .prepare_room_deleted_outbox_fanout(&rid, admin_user_id);
+            .prepare_room_deleted_outbox_fanout(&rid, admin_user_id)?;
 
         self.room_service
             .admin_delete_room_as_with_outbox(
                 &rid,
                 &actor,
-                prepared_outbox_fanout.cloned_outbox_event(),
+                Some(prepared_outbox_fanout.cloned_outbox_event()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -1767,10 +1952,8 @@ impl AdminApiImpl {
         } else {
             Some(req.new_password.as_str())
         };
-        let admin_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
+        let admin_actor = self.require_admin_actor(admin_user_id).await?;
+        let admin_username = admin_actor.username;
         let state = self
             .room_service
             .admin_set_room_password_as_internal(&room_id, new_password, Some(admin_user_id))
@@ -1811,27 +1994,14 @@ impl AdminApiImpl {
 
         let rid =
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
-        let role = proto_role_filter_to_room_role(req.role);
+        let role = proto_role_filter_to_room_role(req.role)?;
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             role,
             is_online: None,
-            sort_by: match crate::proto::admin::RoomMemberListSortBy::try_from(req.sort_by) {
-                Ok(crate::proto::admin::RoomMemberListSortBy::Username) => {
-                    synctv_core::models::RoomMemberListSortBy::Username
-                }
-                Ok(crate::proto::admin::RoomMemberListSortBy::Role) => {
-                    synctv_core::models::RoomMemberListSortBy::Role
-                }
-                _ => synctv_core::models::RoomMemberListSortBy::JoinedAt,
-            },
-            sort_direction: match crate::proto::admin::SortDirection::try_from(req.sort_direction) {
-                Ok(crate::proto::admin::SortDirection::Desc) => {
-                    synctv_core::models::SortDirection::Desc
-                }
-                _ => synctv_core::models::SortDirection::Asc,
-            },
+            sort_by: proto_admin_room_member_list_sort_by(req.sort_by)?,
+            sort_direction: proto_admin_sort_direction(req.sort_direction, CoreSortDirection::Asc)?,
         };
         let (members, total) = self
             .room_service
@@ -1844,16 +2014,16 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let proto_members = members_to_proto(
+        let proto_members = try_members_to_proto(
             &members,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
-        );
+        )?;
 
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i64_to_i32_api(total, "room member count")?,
         })
     }
 
@@ -2199,6 +2369,7 @@ impl AdminApiImpl {
         let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             *admin_user_id,
@@ -2211,7 +2382,10 @@ impl AdminApiImpl {
             reason: "kicked".to_string(),
             timestamp: chrono::Utc::now(),
         };
-        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
+        let lifecycle_outbox_event = self
+            .realtime_fanout
+            .outbox_event(&lifecycle_event)
+            .map_err(ApiError::Internal)?;
         self.room_service
             .admin_kick_member_with_outbox(
                 rid,
@@ -2222,7 +2396,7 @@ impl AdminApiImpl {
                 synctv_core::service::room::KickMemberOutboxOptions {
                     permission_changed: Some(prepared_membership_fanout.outbox_factory()),
                     cleanup: Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
-                    lifecycle: lifecycle_outbox_event,
+                    lifecycle: Some(lifecycle_outbox_event),
                 },
             )
             .await
@@ -2263,20 +2437,16 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        // Convert proto enum i32 values to typed enums for UserListQuery
-        let status = synctv_core::models::UserStatus::try_from(req.status).ok();
-        let role = synctv_core::models::UserRole::try_from(req.role).ok();
+        let status = proto_user_status_filter(req.status)?;
+        let role = proto_user_role_filter(req.role)?;
         let search = if req.search.is_empty() {
             None
         } else {
             Some(req.search)
         };
-        let sort_by = user_list_sort_by_from_proto(req.sort_by);
-        let sort_direction = match crate::proto::admin::SortDirection::try_from(req.sort_direction)
-        {
-            Ok(crate::proto::admin::SortDirection::Asc) => synctv_core::models::SortDirection::Asc,
-            _ => synctv_core::models::SortDirection::Desc,
-        };
+        let sort_by = proto_admin_user_list_sort_by(req.sort_by)?;
+        let sort_direction =
+            proto_admin_sort_direction(req.sort_direction, CoreSortDirection::Desc)?;
 
         let query = synctv_core::models::UserListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
@@ -2301,7 +2471,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::ListUsersResponse {
             users: user_list,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i64_to_i32_api(total, "user count")?,
         })
     }
 
@@ -2342,7 +2512,7 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::GetUserPreferencesResponse {
             user: Some(self.admin_user_to_proto_with_email(&user).await?),
             preferences: Some(user_preferences_to_proto(&preferences)?),
-            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
     }
 
@@ -2401,7 +2571,7 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::UpdateUserPreferencesResponse {
             user: Some(self.admin_user_to_proto_with_email(&user).await?),
             preferences: Some(user_preferences_to_proto(&preferences)?),
-            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
     }
 
@@ -2488,13 +2658,13 @@ impl AdminApiImpl {
         })
     }
 
-    pub async fn update_user_password(
+    pub async fn set_user_password(
         &self,
-        req: crate::proto::admin::UpdateUserPasswordRequest,
+        req: crate::proto::admin::SetUserPasswordRequest,
         caller_user_id: UserId,
         caller_role: synctv_core::models::UserRole,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
+    ) -> Result<crate::proto::admin::SetUserPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let uid =
@@ -2507,14 +2677,14 @@ impl AdminApiImpl {
             .await
             .map_err(Self::map_target_user_lookup_error)?;
 
-        // Only root can reset another root user's password
+        // Root role is required to reset another root user's password.
         if target_user.role == UserRole::Root && caller_role != UserRole::Root {
             return Err(ApiError::Authorization(
                 "Only root users can reset root user passwords".to_string(),
             ));
         }
 
-        // Only root can reset admin user passwords (admins cannot reset each other's passwords)
+        // Root role is required to reset admin user passwords.
         if target_user.role == UserRole::Admin && caller_role != UserRole::Root {
             return Err(ApiError::Authorization(
                 "Only root users can reset admin user passwords".to_string(),
@@ -2522,12 +2692,10 @@ impl AdminApiImpl {
         }
 
         self.user_service
-            .set_password(&uid, &req.new_password)
+            .set_direct_password(&uid, &req.password)
             .await
             .map_err(ApiError::from)?;
 
-        // Log to audit trail. Audit failure is best-effort and should not
-        // prevent the password reset from completing.
         {
             let mut details_map = serde_json::Map::new();
             details_map.insert(
@@ -2541,9 +2709,13 @@ impl AdminApiImpl {
             if !req.reason.is_empty() {
                 details_map.insert("reason".to_string(), serde_json::Value::String(req.reason));
             }
+            details_map.insert(
+                "credential_updated".to_string(),
+                serde_json::Value::Bool(true),
+            );
             self.log_admin_action(
                 &caller_user_id,
-                synctv_core::models::AuditAction::UserPasswordUpdated,
+                synctv_core::models::AuditAction::UserPasswordResetRequired,
                 synctv_core::models::AuditTargetType::User,
                 Some(uid.to_string()),
                 serde_json::Value::Object(details_map),
@@ -2552,7 +2724,15 @@ impl AdminApiImpl {
             .await;
         }
 
-        Ok(crate::proto::admin::UpdateUserPasswordResponse { success: true })
+        let updated_user = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::admin::SetUserPasswordResponse {
+            success: true,
+            user: Some(self.admin_user_to_proto_with_email(&updated_user).await?),
+        })
     }
 
     pub async fn get_settings(
@@ -2629,8 +2809,13 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast CacheInvalidate so other replicas refresh their settings caches
-        let _ = self.room_cache_fanout.try_publish_all_invalidation().await;
+        if !self.room_cache_fanout.try_publish_all_invalidation().await {
+            tracing::warn!(
+                group = %group_name,
+                changed_keys = ?changed_keys,
+                "Failed to publish global room cache invalidation after settings update"
+            );
+        }
 
         // Audit log for settings update (best-effort)
         self.log_admin_action(
@@ -2705,6 +2890,10 @@ impl AdminApiImpl {
             "" => None,
             value => Some(value.to_string()),
         };
+        let password = match req.password.as_str() {
+            "" => None,
+            value => Some(value.to_string()),
+        };
 
         // Validate role BEFORE registration to fail fast
         let target_role = if req.role != synctv_proto::common::UserRole::Unspecified as i32
@@ -2733,17 +2922,17 @@ impl AdminApiImpl {
             )
         };
 
-        // Delegate to UserService which handles validation, hashing, creation,
-        // and username cache population atomically.
+        // Delegate to UserService which handles validation, creation, and
+        // username cache population atomically.
         let initial_banned_by = (target_status == Some(UserStatus::Banned)
             && *admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID)
             .then_some(admin_user_id);
         let user = self
             .user_service
-            .create_user_with_role_and_status(
+            .create_user_with_optional_direct_password(
                 req.username.clone(),
                 email,
-                req.password,
+                password,
                 target_role,
                 target_status,
                 initial_banned_by,
@@ -2779,7 +2968,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
         let (deleted_room_outbox_events, deleted_room_fanout) =
-            self.prepare_deleted_room_outbox_fanout(&owned_room_ids, admin_user_id);
+            self.prepare_deleted_room_outbox_fanout(&owned_room_ids, admin_user_id)?;
         let summary = self
             .user_service
             .delete_user_with_summary_and_outbox(&uid, deleted_room_outbox_events)
@@ -2986,16 +3175,18 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListUserRegistrationReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page);
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let page = page_i32_to_usize(req.page)?;
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+        let offset = page_offset_usize(page, page_size, "user registration review offset")?;
+        let limit = usize_to_i64_api(page_size, "user registration review page size")?;
+        let offset = usize_to_i64_api(offset, "user registration review offset")?;
         let page = self
             .review_service
             .list_user_registrations(&UserRegistrationReviewListQuery {
-                status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
+                status: proto_review_status_filter(req.status)?,
                 search: Some(req.search.clone()).filter(|search| !search.is_empty()),
-                limit: usize_to_i64_saturating(page_size),
-                offset: usize_to_i64_saturating(offset),
+                limit,
+                offset,
             })
             .await?;
         let reviews = page
@@ -3005,7 +3196,7 @@ impl AdminApiImpl {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListUserRegistrationReviewsResponse {
             reviews,
-            total: i64_to_i32_saturating(page.total),
+            total: i64_to_i32_api(page.total, "user registration review total")?,
         })
     }
 
@@ -3056,9 +3247,11 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListRoomCreationReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page);
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let page = page_i32_to_usize(req.page)?;
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+        let offset = page_offset_usize(page, page_size, "room creation review offset")?;
+        let limit = usize_to_i64_api(page_size, "room creation review page size")?;
+        let offset = usize_to_i64_api(offset, "room creation review offset")?;
         let requested_by_filter = if req.requested_by.trim().is_empty() {
             None
         } else {
@@ -3072,11 +3265,11 @@ impl AdminApiImpl {
         let page = self
             .review_service
             .list_room_creations(&RoomCreationReviewListQuery {
-                status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
+                status: proto_review_status_filter(req.status)?,
                 requested_by: requested_by_filter,
                 search: Some(req.search.clone()).filter(|search| !search.is_empty()),
-                limit: usize_to_i64_saturating(page_size),
-                offset: usize_to_i64_saturating(offset),
+                limit,
+                offset,
             })
             .await?;
         let reviews = page
@@ -3086,7 +3279,7 @@ impl AdminApiImpl {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListRoomCreationReviewsResponse {
             reviews,
-            total: i64_to_i32_saturating(page.total),
+            total: i64_to_i32_api(page.total, "room creation review total")?,
         })
     }
 
@@ -3140,9 +3333,11 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListRoomJoinReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page);
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let page = page_i32_to_usize(req.page)?;
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+        let offset = page_offset_usize(page, page_size, "room join review offset")?;
+        let limit = usize_to_i64_api(page_size, "room join review page size")?;
+        let offset = usize_to_i64_api(offset, "room join review offset")?;
         let room_id_filter = if req.room_id.trim().is_empty() {
             None
         } else {
@@ -3165,12 +3360,12 @@ impl AdminApiImpl {
         let page = self
             .review_service
             .list_room_joins(&RoomJoinReviewListQuery {
-                status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
+                status: proto_review_status_filter(req.status)?,
                 room_id: room_id_filter,
                 user_id: user_id_filter,
                 search: None,
-                limit: usize_to_i64_saturating(page_size),
-                offset: usize_to_i64_saturating(offset),
+                limit,
+                offset,
             })
             .await?;
         let reviews = page
@@ -3180,7 +3375,7 @@ impl AdminApiImpl {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListRoomJoinReviewsResponse {
             reviews,
-            total: i64_to_i32_saturating(page.total),
+            total: i64_to_i32_api(page.total, "room join review total")?,
         })
     }
 
@@ -3248,9 +3443,11 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListBanRecordsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page);
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let page = page_i32_to_usize(req.page)?;
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+        let offset = page_offset_usize(page, page_size, "ban record offset")?;
+        let limit = usize_to_i64_api(page_size, "ban record page size")?;
+        let offset = usize_to_i64_api(offset, "ban record offset")?;
 
         let user_id_filter = if req.user_id.trim().is_empty() {
             None
@@ -3282,8 +3479,8 @@ impl AdminApiImpl {
                 active: req.active,
                 user_id: user_id_filter,
                 room_id: room_id_filter,
-                limit: usize_to_i64_saturating(page_size),
-                offset: usize_to_i64_saturating(offset),
+                limit,
+                offset,
             })
             .await?;
 
@@ -3294,7 +3491,7 @@ impl AdminApiImpl {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListBanRecordsResponse {
             bans,
-            total: i64_to_i32_saturating(page.total),
+            total: i64_to_i32_api(page.total, "ban record total")?,
         })
     }
 
@@ -3341,30 +3538,17 @@ impl AdminApiImpl {
 
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
-        let status = synctv_core::models::RoomStatus::try_from(req.status).ok();
+        let status = proto_room_status_filter(req.status)?;
         let query = synctv_core::models::RoomListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             status,
             search: normalize_non_empty_filter(&req.search),
             is_banned: req.is_banned,
-            sort_by: match crate::proto::admin::RoomListSortBy::try_from(req.sort_by) {
-                Ok(crate::proto::admin::RoomListSortBy::Name) => {
-                    synctv_core::models::RoomListSortBy::Name
-                }
-                Ok(crate::proto::admin::RoomListSortBy::UpdatedAt) => {
-                    synctv_core::models::RoomListSortBy::UpdatedAt
-                }
-                Ok(crate::proto::admin::RoomListSortBy::LastActivityAt) => {
-                    synctv_core::models::RoomListSortBy::LastActivityAt
-                }
-                _ => synctv_core::models::RoomListSortBy::CreatedAt,
-            },
-            sort_direction: match crate::proto::admin::SortDirection::try_from(req.sort_direction) {
-                Ok(crate::proto::admin::SortDirection::Asc) => {
-                    synctv_core::models::SortDirection::Asc
-                }
-                _ => synctv_core::models::SortDirection::Desc,
-            },
+            sort_by: proto_admin_room_list_sort_by(req.sort_by)?,
+            sort_direction: proto_admin_sort_direction(
+                req.sort_direction,
+                CoreSortDirection::Desc,
+            )?,
             ..Default::default()
         };
 
@@ -3385,7 +3569,7 @@ impl AdminApiImpl {
             .user_service
             .get_usernames(&creator_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
         let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
@@ -3409,21 +3593,21 @@ impl AdminApiImpl {
                     .get(&room.created_by)
                     .copied()
                     .unwrap_or(UserStatus::Banned);
-                let settings = room_settings_map.get(&room.id);
-                admin_room_to_proto(
+                let settings = required_room_settings(&room_settings_map, &room.id)?;
+                try_admin_room_to_proto(
                     room,
-                    settings,
+                    Some(settings),
                     member_counts.get(&room.id).copied(),
                     creator_username,
                     creator_status,
                     &self.public_id_codec,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, ApiError>>()?;
 
         Ok(crate::proto::admin::GetUserRoomsResponse {
             rooms: admin_rooms,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i64_to_i32_api(total, "user room count")?,
         })
     }
 
@@ -3447,14 +3631,14 @@ impl AdminApiImpl {
         }
         let prepared_outbox_fanout = self
             .room_lifecycle_fanout
-            .prepare_room_banned_outbox_fanout(&rid, admin_user_id);
+            .prepare_room_banned_outbox_fanout(&rid, admin_user_id)?;
 
         let updated = self
             .room_service
             .ban_room_with_outbox(
                 &rid,
                 admin_user_id,
-                prepared_outbox_fanout.cloned_outbox_event(),
+                Some(prepared_outbox_fanout.cloned_outbox_event()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -3608,10 +3792,8 @@ impl AdminApiImpl {
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
-        let admin_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
+        let admin_actor = self.require_admin_actor(admin_user_id).await?;
+        let admin_username = admin_actor.username;
         let (_, current_version) = self
             .room_service
             .get_room_settings_with_version(&rid)
@@ -3624,20 +3806,20 @@ impl AdminApiImpl {
             &admin_username,
             settings_json,
             current_version + 1,
-        );
+        )?;
         let snapshot = self
             .room_service
             .set_room_settings_with_outbox(
                 &rid,
                 &settings,
-                prepared_settings_fanout.settings_outbox_factory(),
+                Some(prepared_settings_fanout.settings_outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
 
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout.with_version(snapshot.version),
+                prepared_settings_fanout.with_version(snapshot.version)?,
             );
         self.publish_room_cache_invalidation(&rid);
 
@@ -3662,10 +3844,8 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let default_settings = synctv_core::models::RoomSettings::default();
-        let admin_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
+        let admin_actor = self.require_admin_actor(admin_user_id).await?;
+        let admin_username = admin_actor.username;
         let (_, current_version) = self
             .room_service
             .get_room_settings_with_version(&rid)
@@ -3678,13 +3858,13 @@ impl AdminApiImpl {
             &admin_username,
             settings_json,
             current_version + 1,
-        );
+        )?;
         let snapshot = self
             .room_service
             .set_room_settings_with_outbox(
                 &rid,
                 &default_settings,
-                prepared_settings_fanout.settings_outbox_factory(),
+                Some(prepared_settings_fanout.settings_outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -3696,7 +3876,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout.with_version(snapshot.version),
+                prepared_settings_fanout.with_version(snapshot.version)?,
             );
         self.publish_room_cache_invalidation(&rid);
 
@@ -3810,13 +3990,11 @@ impl AdminApiImpl {
         let query = synctv_core::models::UserListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
-            sort_by: user_list_sort_by_from_proto(req.sort_by),
-            sort_direction: match crate::proto::admin::SortDirection::try_from(req.sort_direction) {
-                Ok(crate::proto::admin::SortDirection::Asc) => {
-                    synctv_core::models::SortDirection::Asc
-                }
-                _ => synctv_core::models::SortDirection::Desc,
-            },
+            sort_by: proto_admin_user_list_sort_by(req.sort_by)?,
+            sort_direction: proto_admin_sort_direction(
+                req.sort_direction,
+                CoreSortDirection::Desc,
+            )?,
             ..Default::default()
         };
 
@@ -3833,7 +4011,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::ListAdminsResponse {
             admins,
-            total: i64_to_i32_saturating(total),
+            total: i64_to_i32_api(total, "admin total")?,
         })
     }
 
@@ -3892,22 +4070,25 @@ impl AdminApiImpl {
             self.room_service.media_service().count_all_media(),
         );
 
-        let (_, total_users) = total_users_res.unwrap_or((vec![], 0));
-        let (_, active_users) = active_users_res.unwrap_or((vec![], 0));
-        let (_, banned_users) = banned_users_res.unwrap_or((vec![], 0));
-        let (_, total_rooms) = total_rooms_res.unwrap_or((vec![], 0));
-        let (_, active_rooms) = active_rooms_res.unwrap_or((vec![], 0));
-        let (_, banned_rooms) = banned_rooms_res.unwrap_or((vec![], 0));
-        let provider_count = provider_count_res.map_or(0, |i| usize_to_i32_saturating(i.len()));
-        let total_media = i64_to_i32_saturating(total_media_res.unwrap_or(0));
+        let (_, total_users) = total_users_res.map_err(ApiError::from)?;
+        let (_, active_users) = active_users_res.map_err(ApiError::from)?;
+        let (_, banned_users) = banned_users_res.map_err(ApiError::from)?;
+        let (_, total_rooms) = total_rooms_res.map_err(ApiError::from)?;
+        let (_, active_rooms) = active_rooms_res.map_err(ApiError::from)?;
+        let (_, banned_rooms) = banned_rooms_res.map_err(ApiError::from)?;
+        let provider_count = usize_to_i32_api(
+            provider_count_res.map_err(ApiError::from)?.len(),
+            "provider instance count",
+        )?;
+        let total_media = i64_to_i32_api(total_media_res.map_err(ApiError::from)?, "media total")?;
 
         Ok(crate::proto::admin::GetSystemStatsResponse {
-            total_users: i64_to_i32_saturating(total_users),
-            active_users: i64_to_i32_saturating(active_users),
-            banned_users: i64_to_i32_saturating(banned_users),
-            total_rooms: i64_to_i32_saturating(total_rooms),
-            active_rooms: i64_to_i32_saturating(active_rooms),
-            banned_rooms: i64_to_i32_saturating(banned_rooms),
+            total_users: i64_to_i32_api(total_users, "user total")?,
+            active_users: i64_to_i32_api(active_users, "active user total")?,
+            banned_users: i64_to_i32_api(banned_users, "banned user total")?,
+            total_rooms: i64_to_i32_api(total_rooms, "room total")?,
+            active_rooms: i64_to_i32_api(active_rooms, "active room total")?,
+            banned_rooms: i64_to_i32_api(banned_rooms, "banned room total")?,
             total_media,
             provider_instances: provider_count,
             additional_stats: vec![],
@@ -3951,10 +4132,8 @@ impl AdminApiImpl {
         let node_filter = normalize_non_empty_filter(&req.node_id);
         let search =
             normalize_non_empty_filter(&req.search).map(|value| value.to_ascii_lowercase());
-        let sort_by = crate::proto::admin::ActiveStreamListSortBy::try_from(req.sort_by)
-            .unwrap_or(crate::proto::admin::ActiveStreamListSortBy::StartedAt);
-        let sort_direction = crate::proto::admin::SortDirection::try_from(req.sort_direction)
-            .unwrap_or(crate::proto::admin::SortDirection::Desc);
+        let sort_by = proto_admin_active_stream_list_sort_by(req.sort_by)?;
+        let sort_direction = proto_admin_active_stream_sort_direction(req.sort_direction)?;
 
         let mut streams = Vec::new();
         for active_publisher in active_publishers {
@@ -4032,12 +4211,12 @@ impl AdminApiImpl {
             streams.push(stream);
         }
 
-        let total = usize_to_i32_saturating(streams.len());
+        let total = usize_to_i32_api(streams.len(), "active stream count")?;
 
         streams.par_sort_by(|left, right| {
             compare_active_streams(left, right, sort_by, sort_direction)
         });
-        let streams = paginate_vec(streams, req.page, req.page_size);
+        let streams = paginate_vec(streams, req.page, req.page_size)?;
 
         Ok(crate::proto::admin::ListActiveStreamsResponse { streams, total })
     }
@@ -4093,25 +4272,23 @@ impl AdminApiImpl {
 
         // Audit log: kick_stream is a critical operation
         {
-            let admin_username = self
-                .load_admin_actor(admin_user_id)
-                .await
-                .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
+            let admin_actor = self.require_admin_actor(admin_user_id).await?;
+            let admin_username = admin_actor.username;
             if let Err(e) = self
                 .audit_service
-                .log_stream_kicked(
-                    admin_user_id.to_string(),
-                    admin_username.clone(),
-                    req.room_id.clone(),
-                    req.media_id.clone(),
-                    if reason.is_empty() {
+                .log_stream_kicked(StreamKickAuditRequest {
+                    actor_id: admin_user_id.to_string(),
+                    actor_username: admin_username.clone(),
+                    room_id: req.room_id.clone(),
+                    media_id: req.media_id.clone(),
+                    reason: if reason.is_empty() {
                         None
                     } else {
                         Some(reason)
                     },
-                    ctx.ip_address.clone(),
-                    ctx.user_agent.clone(),
-                )
+                    ip_address: ctx.ip_address.clone(),
+                    user_agent: ctx.user_agent.clone(),
+                })
                 .await
             {
                 tracing::error!(
@@ -4183,11 +4360,29 @@ impl AdminApiImpl {
             .active_room_stream_media_ids(&rid)
             .await;
 
-        Ok(crate::impls::client::stream::build_room_streams_response(
+        crate::impls::client::stream::build_room_streams_response(
             media_ids,
             &req,
             &self.public_id_codec,
-        ))
+        )
+    }
+
+    async fn handle_provider_lifecycle_transition_after_commit(
+        &self,
+        previous: Option<&synctv_core::models::RoomPlaybackState>,
+        current: &synctv_core::models::RoomPlaybackState,
+    ) {
+        if let Err(error) = ProviderPlaybackLifecycleApi::handle_provider_lifecycle_transition(
+            self, previous, current,
+        )
+        .await
+        {
+            tracing::warn!(
+                room_id = %current.room_id,
+                error = %error,
+                "Provider playback lifecycle transition failed after playback state commit"
+            );
+        }
     }
 
     pub async fn start_playback(
@@ -4201,17 +4396,29 @@ impl AdminApiImpl {
         let target =
             crate::impls::client::build_start_playback_request(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
+        let previous_state = self.state_before_playback_update(&rid).await?;
+        let prepared_fanout =
+            self.playback_fanout
+                .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
+                    *actor.user_id(),
+                    actor.username(),
+                ));
 
-        self.room_service
-            .admin_start_playback_as(
+        let state = self
+            .room_service
+            .admin_start_playback_as_with_outbox(
                 rid,
                 &actor,
                 target.media_id,
                 target.playlist_id,
                 target.target,
+                Some(prepared_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
+        prepared_fanout.publish_after_outbox_commit();
+        self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
+            .await;
 
         self.room_service.touch_room_activity(rid).await;
 
@@ -4236,11 +4443,22 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
+        let previous_state = self.state_before_playback_update(&rid).await?;
+        let prepared_fanout =
+            self.playback_fanout
+                .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
+                    *actor.user_id(),
+                    actor.username(),
+                ));
 
-        self.room_service
-            .admin_stop_playback_as(rid, &actor)
+        let state = self
+            .room_service
+            .admin_stop_playback_as_with_outbox(rid, &actor, Some(prepared_fanout.outbox_factory()))
             .await
             .map_err(ApiError::from)?;
+        prepared_fanout.publish_after_outbox_commit();
+        self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
+            .await;
 
         tracing::info!(
             room_id = %rid,
@@ -4261,7 +4479,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let playback_client_profile =
-            playback_client_profile_from_proto(playback_client_profile.as_ref());
+            playback_client_profile_from_proto(playback_client_profile.as_ref())?;
 
         self.require_admin_actor(admin_user_id).await?;
 
@@ -4307,7 +4525,7 @@ impl AdminApiImpl {
         };
 
         Ok(crate::proto::client::GetPlaybackResponse {
-            playback_state: Some(playback_state_to_proto(&state, &self.public_id_codec)),
+            playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
             playback_snapshot,
         })
     }
@@ -4322,7 +4540,13 @@ impl AdminApiImpl {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let command = crate::impls::client::build_update_playback(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
-        let previous_state = self.state_before_playback_update(&rid).await;
+        let previous_state = self.state_before_playback_update(&rid).await?;
+        let prepared_fanout =
+            self.playback_fanout
+                .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
+                    *actor.user_id(),
+                    actor.username(),
+                ));
 
         let state = match command {
             crate::impls::client::PlaybackUpdateCommand::Patch {
@@ -4332,33 +4556,24 @@ impl AdminApiImpl {
                 version,
                 expected_source,
             } => {
-                let service = self.room_service.playback_service();
-                match expected_source {
-                    Some(expected_source) => {
-                        service
-                            .admin_update_multiple_checked_source_with_version(
-                                rid,
-                                *actor.user_id(),
-                                playing,
-                                position,
-                                speed,
-                                version,
-                                expected_source,
-                            )
-                            .await
-                    }
-                    None => {
-                        self.room_service
-                            .admin_update_playback_as(
-                                rid, &actor, playing, position, speed, version,
-                            )
-                            .await
-                    }
+                let mut request = PlaybackUpdateRequest::new(
+                    rid,
+                    *actor.user_id(),
+                    PlaybackStatePatch::new(playing, position, speed),
+                )
+                .with_expected_version(version)
+                .with_outbox(Some(prepared_fanout.outbox_factory()));
+                if let Some(expected_source) = expected_source {
+                    request = request.with_expected_source(expected_source);
                 }
+                self.room_service
+                    .admin_update_playback_as_request(&actor, request)
+                    .await
             }
         }
         .map_err(ApiError::from)?;
-        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+        prepared_fanout.publish_after_outbox_commit();
+        self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
 
         self.room_service.touch_room_activity(rid).await;
@@ -4372,7 +4587,7 @@ impl AdminApiImpl {
         );
 
         Ok(crate::proto::client::GetPlaybackResponse {
-            playback_state: Some(playback_state_to_proto(&state, &self.public_id_codec)),
+            playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
             playback_snapshot: None,
         })
     }
@@ -4400,27 +4615,29 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
-        let child_folder_count = i64_to_i32_saturating(
+        let child_folder_count = i64_to_i32_api(
             self.room_service
                 .playlist_service()
                 .count_room_children(&rid, &pid)
                 .await
                 .map_err(ApiError::from)?,
-        );
-        let media_count = i64_to_i32_saturating(
+            "child playlist count",
+        )?;
+        let media_count = i64_to_i32_api(
             self.room_service
                 .media_service()
                 .count_room_playlist_media(&rid, &pid)
                 .await
-                .unwrap_or(0),
-        );
+                .map_err(ApiError::from)?,
+            "playlist media count",
+        )?;
 
         Ok(crate::proto::client::GetPlaylistResponse {
-            playlist: Some(playlist_to_proto(
+            playlist: Some(try_playlist_to_proto(
                 &playlist,
                 media_count,
                 &self.public_id_codec,
-            )),
+            )?),
             child_folder_count,
             media_count,
         })
@@ -4438,11 +4655,11 @@ impl AdminApiImpl {
 
         self.require_admin_actor(admin_user_id).await?;
 
-        let page = page_i32_to_usize(req.page);
+        let page = page_i32_to_usize(req.page)?;
         let page_size = if req.page_size <= 0 {
-            page_size_i32_to_usize(50, 100)
+            page_size_i32_to_usize(50, 100)?
         } else {
-            page_size_i32_to_usize(req.page_size, 100)
+            page_size_i32_to_usize(req.page_size, 100)?
         };
         let parent_id = if req.parent_id.is_empty() {
             None
@@ -4463,33 +4680,34 @@ impl AdminApiImpl {
         };
         let query = CorePlaylistListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(u32::try_from(page).unwrap_or(u32::MAX)),
-                Some(u32::try_from(page_size).unwrap_or(u32::MAX)),
+                Some(u32::try_from(page).map_err(|_| {
+                    ApiError::Internal("playlist page exceeds u32::MAX".to_string())
+                })?),
+                Some(u32::try_from(page_size).map_err(|_| {
+                    ApiError::Internal("playlist page_size exceeds u32::MAX".to_string())
+                })?),
             ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             dynamic_only: req.dynamic_only,
-            availability: map_resource_availability_filter(req.availability),
-            sort_by: map_admin_playlist_sort(req.sort_by),
-            sort_direction: map_client_sort_direction(req.sort_direction),
+            availability: map_resource_availability_filter(req.availability)?,
+            sort_by: map_admin_playlist_sort(req.sort_by)?,
+            sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
-        let total = i64_to_i32_saturating(
+        let total = i64_to_i32_api(
             self.room_service
                 .count_client_playlists(&rid, parent_id.as_ref(), &query)
                 .await
                 .map_err(ApiError::from)?,
-        );
+            "playlist total",
+        )?;
         let offset = (page - 1) * page_size;
+        let limit = usize_to_i64_api(page_size, "playlist page size")?;
+        let offset = usize_to_i64_api(offset, "playlist offset")?;
         let playlists = self
             .room_service
-            .list_client_playlists(
-                &rid,
-                parent_id.as_ref(),
-                &query,
-                usize_to_i64_saturating(page_size),
-                usize_to_i64_saturating(offset),
-            )
+            .list_client_playlists(&rid, parent_id.as_ref(), &query, limit, offset)
             .await
             .map_err(ApiError::from)?;
 
@@ -4499,21 +4717,23 @@ impl AdminApiImpl {
             .media_service()
             .count_playlist_media_batch(&playlist_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         let playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count =
-                    i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-                playlist_to_proto_with_availability(
+                let item_count = i64_to_i32_api(
+                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                    "playlist item count",
+                )?;
+                try_playlist_to_proto_with_availability(
                     &entry.playlist,
                     item_count,
                     entry.is_available,
                     &self.public_id_codec,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, ApiError>>()?;
 
         Ok(crate::proto::client::ListPlaylistsResponse { playlists, total })
     }
@@ -4525,15 +4745,12 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
-        self.require_admin_actor(admin_user_id).await?;
+        let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let service_req = crate::impls::client::playlist::build_update_playlist_request(
             req,
             &self.public_id_codec,
         )?;
-        let actor_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
+        let actor_username = admin_actor.username;
 
         let prepared_outbox_fanout = self.playlist_fanout.prepare_updated_outbox_fanout(
             rid,
@@ -4547,7 +4764,7 @@ impl AdminApiImpl {
                 rid,
                 *admin_user_id,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -4560,14 +4777,15 @@ impl AdminApiImpl {
             .media_service()
             .count_room_playlist_media(&rid, &playlist.id)
             .await
-            .map_or(0, i64_to_i32_saturating);
+            .map_err(ApiError::from)
+            .and_then(|count| i64_to_i32_api(count, "playlist media count"))?;
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
-            playlist: Some(playlist_to_proto(
+            playlist: Some(try_playlist_to_proto(
                 &playlist,
                 item_count,
                 &self.public_id_codec,
-            )),
+            )?),
         })
     }
 
@@ -4578,15 +4796,12 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
-        self.require_admin_actor(admin_user_id).await?;
+        let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let service_req = crate::impls::client::playlist::build_move_playlist_request(
             req,
             &self.public_id_codec,
         )?;
-        let actor_username = self
-            .load_admin_actor(admin_user_id)
-            .await
-            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
+        let actor_username = admin_actor.username;
 
         let prepared_outbox_fanout = self.playlist_fanout.prepare_updated_outbox_fanout(
             rid,
@@ -4600,7 +4815,7 @@ impl AdminApiImpl {
                 rid,
                 *admin_user_id,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -4613,14 +4828,15 @@ impl AdminApiImpl {
             .media_service()
             .count_room_playlist_media(&rid, &playlist.id)
             .await
-            .map_or(0, i64_to_i32_saturating);
+            .map_err(ApiError::from)
+            .and_then(|count| i64_to_i32_api(count, "playlist media count"))?;
 
         Ok(crate::proto::client::MovePlaylistResponse {
-            playlist: Some(playlist_to_proto(
+            playlist: Some(try_playlist_to_proto(
                 &playlist,
                 item_count,
                 &self.public_id_codec,
-            )),
+            )?),
         })
     }
 
@@ -4640,6 +4856,7 @@ impl AdminApiImpl {
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             *admin_user_id,
@@ -4713,56 +4930,56 @@ impl AdminApiImpl {
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
                 dynamic_only: None,
-                availability: map_resource_availability_filter(req.availability),
-                sort_by: map_admin_playlist_sort_from_media_sort(req.sort_by),
-                sort_direction: map_client_sort_direction(req.sort_direction),
+                availability: map_resource_availability_filter(req.availability)?,
+                sort_by: map_admin_playlist_sort_from_media_sort(req.sort_by)?,
+                sort_direction: map_client_sort_direction(req.sort_direction)?,
             };
             let media_query = CoreMediaListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
-                availability: map_resource_availability_filter(req.availability),
-                sort_by: map_admin_media_sort(req.sort_by),
-                sort_direction: map_client_sort_direction(req.sort_direction),
+                availability: map_resource_availability_filter(req.availability)?,
+                sort_by: map_admin_media_sort(req.sort_by)?,
+                sort_direction: map_client_sort_direction(req.sort_direction)?,
             };
             let folder_count = self
                 .room_service
                 .count_client_playlists(&rid, None, &playlist_query)
                 .await
                 .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?;
+                .and_then(|count| i64_count_to_usize(count, "root playlist count"))?;
             let file_count = self
                 .room_service
                 .count_client_media(&rid, None, &media_query)
                 .await
                 .map_err(ApiError::from)
-                .map(i64_to_usize_saturating)?;
-            let total = folder_count + file_count;
-            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-            let skip = (page_i32_to_usize(req.page) - 1) * page_size;
+                .and_then(|count| i64_count_to_usize(count, "root media count"))?;
+            let total = folder_count.checked_add(file_count).ok_or_else(|| {
+                ApiError::Internal("root playlist/media count exceeds usize::MAX".to_string())
+            })?;
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+            let page = page_i32_to_usize(req.page)?;
+            let skip = page_offset_usize(page, page_size, "root playlist/media offset")?;
             let (playlists, media) = if skip < folder_count {
+                let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
+                let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
                 let playlists = self
                     .room_service
                     .list_client_playlists(
                         &rid,
                         None,
                         &playlist_query,
-                        usize_to_i64_saturating(page_size),
-                        usize_to_i64_saturating(skip),
+                        playlist_limit,
+                        playlist_offset,
                     )
                     .await
                     .map_err(ApiError::from)?;
                 let remaining = page_size.saturating_sub(playlists.len());
                 let media = if remaining > 0 {
+                    let media_limit = usize_to_i64_api(remaining, "media page size")?;
                     self.room_service
-                        .list_client_media(
-                            &rid,
-                            None,
-                            &media_query,
-                            usize_to_i64_saturating(remaining),
-                            0,
-                        )
+                        .list_client_media(&rid, None, &media_query, media_limit, 0)
                         .await
                         .map_err(ApiError::from)?
                 } else {
@@ -4771,15 +4988,11 @@ impl AdminApiImpl {
                 (playlists, media)
             } else {
                 let media_skip = skip - folder_count;
+                let media_limit = usize_to_i64_api(page_size, "media page size")?;
+                let media_offset = usize_to_i64_api(media_skip, "media offset")?;
                 let media = self
                     .room_service
-                    .list_client_media(
-                        &rid,
-                        None,
-                        &media_query,
-                        usize_to_i64_saturating(page_size),
-                        usize_to_i64_saturating(media_skip),
-                    )
+                    .list_client_media(&rid, None, &media_query, media_limit, media_offset)
                     .await
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
@@ -4790,37 +5003,40 @@ impl AdminApiImpl {
                 .media_service()
                 .count_playlist_media_batch(&folder_ids)
                 .await
-                .unwrap_or_default();
-            let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
-                let item_count =
-                    i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-                playlist_to_proto_with_availability(
+                .map_err(ApiError::from)?;
+            let proto_playlists = try_playlist_list_to_proto(&playlists, |entry| {
+                let item_count = i64_to_i32_api(
+                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                    "playlist item count",
+                )?;
+                try_playlist_to_proto_with_availability(
                     &entry.playlist,
                     item_count,
                     entry.is_available,
                     &self.public_id_codec,
                 )
-            });
-            let proto_media = map_slice_preserve_order(&media, |entry| {
-                media_to_proto_with_availability(
-                    &entry.media,
-                    entry.is_available,
-                    &self.public_id_codec,
-                )
-            });
+            })?;
+            let proto_media =
+                super::client::convert::try_map_slice_preserve_order(&media, |entry| {
+                    try_media_to_proto_with_availability(
+                        &entry.media,
+                        entry.is_available,
+                        &self.public_id_codec,
+                    )
+                })?;
 
             let mut response = crate::proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
                 media: proto_media,
-                total: usize_to_i32_saturating(total),
-                folder_count: usize_to_i32_saturating(folder_count),
-                file_count: usize_to_i32_saturating(file_count),
+                total: usize_to_i32_api(total, "playlist item total")?,
+                folder_count: usize_to_i32_api(folder_count, "playlist folder count")?,
+                file_count: usize_to_i32_api(file_count, "playlist file count")?,
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
                 version: String::new(),
             };
             response.version =
-                crate::impls::client::media::compute_playlist_items_response_version(&response);
+                crate::impls::client::media::compute_playlist_items_response_version(&response)?;
             return Ok(response);
         };
 
@@ -4840,8 +5056,8 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         let mut current_path = static_path
             .iter()
-            .map(|playlist| playlist_path_node_to_proto(playlist, &self.public_id_codec))
-            .collect::<Vec<_>>();
+            .map(|playlist| try_playlist_path_node_to_proto(playlist, &self.public_id_codec))
+            .collect::<Result<Vec<_>, ApiError>>()?;
 
         if playlist.is_dynamic() {
             if !crate::impls::client::media::validate_dynamic_playlist_query_support(
@@ -4858,12 +5074,14 @@ impl AdminApiImpl {
                     version: String::new(),
                 };
                 response.version =
-                    crate::impls::client::media::compute_playlist_items_response_version(&response);
+                    crate::impls::client::media::compute_playlist_items_response_version(
+                        &response,
+                    )?;
                 return Ok(response);
             }
 
-            let page = page_i32_to_usize(req.page);
-            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
+            let page = page_i32_to_usize(req.page)?;
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
             let items = self
                 .room_service
                 .media_service()
@@ -4897,7 +5115,10 @@ impl AdminApiImpl {
                         name: item.name,
                         item_type,
                         target: item.target,
-                        size: item.size.map(u64_to_i64_saturating),
+                        size: item
+                            .size
+                            .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
+                            .transpose()?,
                         thumbnail: Some(item.thumbnail.unwrap_or_default()),
                         modified_at: Some(item.modified_at.unwrap_or(0)),
                         description: item.description.unwrap_or_default(),
@@ -4935,7 +5156,7 @@ impl AdminApiImpl {
                 version: String::new(),
             };
             response.version =
-                crate::impls::client::media::compute_playlist_items_response_version(&response);
+                crate::impls::client::media::compute_playlist_items_response_version(&response)?;
             return Ok(response);
         }
 
@@ -4951,56 +5172,56 @@ impl AdminApiImpl {
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             dynamic_only: None,
-            availability: map_resource_availability_filter(req.availability),
-            sort_by: map_admin_playlist_sort_from_media_sort(req.sort_by),
-            sort_direction: map_client_sort_direction(req.sort_direction),
+            availability: map_resource_availability_filter(req.availability)?,
+            sort_by: map_admin_playlist_sort_from_media_sort(req.sort_by)?,
+            sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
         let media_query = CoreMediaListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
-            availability: map_resource_availability_filter(req.availability),
-            sort_by: map_admin_media_sort(req.sort_by),
-            sort_direction: map_client_sort_direction(req.sort_direction),
+            availability: map_resource_availability_filter(req.availability)?,
+            sort_by: map_admin_media_sort(req.sort_by)?,
+            sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
         let folder_count = self
             .room_service
             .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
             .await
             .map_err(ApiError::from)
-            .map(i64_to_usize_saturating)?;
+            .and_then(|count| i64_count_to_usize(count, "playlist child playlist count"))?;
         let file_count = self
             .room_service
             .count_client_media(&rid, Some(&playlist_id), &media_query)
             .await
             .map_err(ApiError::from)
-            .map(i64_to_usize_saturating)?;
-        let total = folder_count + file_count;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
-        let skip = (page_i32_to_usize(req.page) - 1) * page_size;
+            .and_then(|count| i64_count_to_usize(count, "playlist child media count"))?;
+        let total = folder_count.checked_add(file_count).ok_or_else(|| {
+            ApiError::Internal("playlist child count exceeds usize::MAX".to_string())
+        })?;
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+        let page = page_i32_to_usize(req.page)?;
+        let skip = page_offset_usize(page, page_size, "playlist child offset")?;
         let (playlists, media) = if skip < folder_count {
+            let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
+            let playlist_offset = usize_to_i64_api(skip, "playlist offset")?;
             let playlists = self
                 .room_service
                 .list_client_playlists(
                     &rid,
                     Some(&playlist_id),
                     &playlist_query,
-                    usize_to_i64_saturating(page_size),
-                    usize_to_i64_saturating(skip),
+                    playlist_limit,
+                    playlist_offset,
                 )
                 .await
                 .map_err(ApiError::from)?;
             let remaining = page_size.saturating_sub(playlists.len());
             let media = if remaining > 0 {
+                let media_limit = usize_to_i64_api(remaining, "media page size")?;
                 self.room_service
-                    .list_client_media(
-                        &rid,
-                        Some(&playlist_id),
-                        &media_query,
-                        usize_to_i64_saturating(remaining),
-                        0,
-                    )
+                    .list_client_media(&rid, Some(&playlist_id), &media_query, media_limit, 0)
                     .await
                     .map_err(ApiError::from)?
             } else {
@@ -5009,14 +5230,16 @@ impl AdminApiImpl {
             (playlists, media)
         } else {
             let media_skip = skip - folder_count;
+            let media_limit = usize_to_i64_api(page_size, "media page size")?;
+            let media_offset = usize_to_i64_api(media_skip, "media offset")?;
             let media = self
                 .room_service
                 .list_client_media(
                     &rid,
                     Some(&playlist_id),
                     &media_query,
-                    usize_to_i64_saturating(page_size),
-                    usize_to_i64_saturating(media_skip),
+                    media_limit,
+                    media_offset,
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -5028,37 +5251,39 @@ impl AdminApiImpl {
             .media_service()
             .count_playlist_media_batch(&folder_ids)
             .await
-            .unwrap_or_default();
-        let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
-            let item_count =
-                i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-            playlist_to_proto_with_availability(
+            .map_err(ApiError::from)?;
+        let proto_playlists = try_playlist_list_to_proto(&playlists, |entry| {
+            let item_count = i64_to_i32_api(
+                counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                "playlist item count",
+            )?;
+            try_playlist_to_proto_with_availability(
                 &entry.playlist,
                 item_count,
                 entry.is_available,
                 &self.public_id_codec,
             )
-        });
-        let proto_media = map_slice_preserve_order(&media, |entry| {
-            media_to_proto_with_availability(
+        })?;
+        let proto_media = super::client::convert::try_map_slice_preserve_order(&media, |entry| {
+            try_media_to_proto_with_availability(
                 &entry.media,
                 entry.is_available,
                 &self.public_id_codec,
             )
-        });
+        })?;
 
         let mut response = crate::proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
-            total: usize_to_i32_saturating(total),
-            folder_count: usize_to_i32_saturating(folder_count),
-            file_count: usize_to_i32_saturating(file_count),
+            total: usize_to_i32_api(total, "playlist item total")?,
+            folder_count: usize_to_i32_api(folder_count, "playlist folder count")?,
+            file_count: usize_to_i32_api(file_count, "playlist file count")?,
             dynamic_items: Vec::new(),
             current_path,
             version: String::new(),
         };
         response.version =
-            crate::impls::client::media::compute_playlist_items_response_version(&response);
+            crate::impls::client::media::compute_playlist_items_response_version(&response)?;
         Ok(response)
     }
 
@@ -5088,7 +5313,7 @@ impl AdminApiImpl {
                 *admin_user_id,
                 &actor.username,
                 service_req,
-                prepared_outbox_fanout.outbox_factory(),
+                Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -5097,10 +5322,7 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::EditMediaResponse {
-            media: Some(crate::impls::client::convert::media_to_proto(
-                &media,
-                &self.public_id_codec,
-            )),
+            media: Some(try_media_to_proto(&media, &self.public_id_codec)?),
         })
     }
 
@@ -5118,6 +5340,7 @@ impl AdminApiImpl {
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.playback_fanout.clone(),
             self.realtime_fanout.clone(),
             rid,
             *admin_user_id,
@@ -5201,8 +5424,8 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::MoveMediaResponse {
-            moved_count: usize_to_i32_saturating(media.len()),
-            media: media_list_to_proto(&media, &self.public_id_codec),
+            moved_count: usize_to_i32_api(media.len(), "moved media count")?,
+            media: try_media_list_to_proto(&media, &self.public_id_codec)?,
         })
     }
 
@@ -5363,7 +5586,7 @@ impl AdminApiImpl {
                 };
 
                 let (deleted_room_outbox_events, deleted_room_fanout) =
-                    self.prepare_deleted_room_outbox_fanout(&owned_room_ids, admin_user_id);
+                    self.prepare_deleted_room_outbox_fanout(&owned_room_ids, admin_user_id)?;
 
                 match self
                     .user_service
@@ -5452,12 +5675,12 @@ impl AdminApiImpl {
                 }
                 let prepared_outbox_fanout = self
                     .room_lifecycle_fanout
-                    .prepare_room_banned_outbox_fanout(&rid, admin_user_id);
+                    .prepare_room_banned_outbox_fanout(&rid, admin_user_id)?;
                 self.room_service
                     .ban_room_with_outbox(
                         &rid,
                         admin_user_id,
-                        prepared_outbox_fanout.cloned_outbox_event(),
+                        Some(prepared_outbox_fanout.cloned_outbox_event()),
                     )
                     .await
                     .map_err(ApiError::from)?;
@@ -5537,12 +5760,12 @@ impl AdminApiImpl {
             let result = async {
                 let prepared_outbox_fanout = self
                     .room_lifecycle_fanout
-                    .prepare_room_deleted_outbox_fanout(&rid, admin_user_id);
+                    .prepare_room_deleted_outbox_fanout(&rid, admin_user_id)?;
                 self.room_service
                     .admin_delete_room_as_with_outbox(
                         &rid,
                         &actor,
-                        prepared_outbox_fanout.cloned_outbox_event(),
+                        Some(prepared_outbox_fanout.cloned_outbox_event()),
                     )
                     .await
                     .map_err(ApiError::from)?;
@@ -5612,7 +5835,7 @@ async fn active_room_stream_media_ids_for_infra(
     let realtime_lifecycle = default_realtime_lifecycle_service(
         connection_service,
         live_streaming_infrastructure.cloned(),
-        crate::realtime_fanout::default_realtime_fanout_service(None, false),
+        crate::realtime_fanout::disabled_realtime_fanout_service(),
     );
     realtime_lifecycle
         .active_room_stream_media_ids(room_id)
@@ -5642,7 +5865,10 @@ async fn list_active_user_room_ids(
         }
 
         room_ids.extend(page_room_ids);
-        if usize_to_i64_saturating(room_ids.len()) >= total {
+        let loaded = i64::try_from(room_ids.len()).map_err(|_| {
+            synctv_core::Error::Internal("listed room id count exceeds i64::MAX".to_string())
+        })?;
+        if loaded >= total {
             break;
         }
 
@@ -5672,7 +5898,10 @@ async fn list_owned_room_ids(
         }
 
         room_ids.extend(rooms.into_iter().map(|room| room.id));
-        if usize_to_i64_saturating(room_ids.len()) >= total {
+        let loaded = i64::try_from(room_ids.len()).map_err(|_| {
+            synctv_core::Error::Internal("owned room id count exceeds i64::MAX".to_string())
+        })?;
+        if loaded >= total {
             break;
         }
 
@@ -5695,81 +5924,73 @@ async fn invalidate_user_room_permission_caches(
     }
 }
 
-fn admin_room_to_proto(
+fn try_admin_room_to_proto(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     creator_username: Option<&str>,
     creator_status: UserStatus,
     public_id_codec: &crate::PublicIdCodec,
-) -> crate::proto::admin::AdminRoom {
-    let room_settings = settings.cloned().unwrap_or_default();
-    crate::proto::admin::AdminRoom {
+) -> Result<crate::proto::admin::AdminRoom, ApiError> {
+    let room_settings = settings.ok_or_else(|| {
+        ApiError::Internal(format!("Missing room settings for admin room {}", room.id))
+    })?;
+    let creator_username = creator_username.ok_or_else(|| {
+        ApiError::Internal(format!(
+            "Missing creator username for room {} created_by {}",
+            room.id, room.created_by
+        ))
+    })?;
+    Ok(crate::proto::admin::AdminRoom {
         id: public_id_codec
             .encode_room_id(room.id)
-            .expect("room id must be encodable"),
+            .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?,
         name: room.name.clone(),
         description: room.description.clone(),
         creator_id: public_id_codec
             .encode_user_id(room.created_by)
-            .expect("room creator id must be encodable"),
-        creator_username: creator_username.unwrap_or("").to_string(),
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode room creator id: {error}"))
+            })?,
+        creator_username: creator_username.to_string(),
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
-        settings: serde_json::to_vec(&room_settings).unwrap_or_default(),
+        settings: json_to_vec(room_settings, "admin room settings")?,
         member_count: member_count.unwrap_or(0),
         created_at: room.created_at.timestamp(),
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
         creator_status: user_status_to_proto(creator_status),
         version: i64::from(room.version),
-    }
+    })
 }
 
-#[cfg(test)]
-fn admin_room_member_to_proto(
-    member: &synctv_core::models::RoomMemberWithUser,
-    public_id_codec: &crate::PublicIdCodec,
-) -> synctv_proto::common::RoomMember {
-    let role_default = member.role.permissions();
-    admin_room_member_to_proto_from_role_default(member, role_default, public_id_codec)
-}
-
-fn admin_room_member_to_proto_with_settings(
+fn try_admin_room_member_to_proto_with_settings(
     member: &synctv_core::models::RoomMemberWithUser,
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
     public_id_codec: &crate::PublicIdCodec,
-) -> synctv_proto::common::RoomMember {
+) -> Result<synctv_proto::common::RoomMember, ApiError> {
     let permissions =
         permission_service.effective_member_with_user_permissions(member, room_settings);
-    admin_room_member_to_proto_with_permissions(member, permissions, public_id_codec)
+    try_admin_room_member_to_proto_with_permissions(member, permissions, public_id_codec)
 }
 
-#[cfg(test)]
-fn admin_room_member_to_proto_from_role_default(
-    member: &synctv_core::models::RoomMemberWithUser,
-    role_default: synctv_core::models::RoomPermissionSet,
-    public_id_codec: &crate::PublicIdCodec,
-) -> synctv_proto::common::RoomMember {
-    admin_room_member_to_proto_with_permissions(
-        member,
-        member.effective_permissions(role_default),
-        public_id_codec,
-    )
-}
-
-fn admin_room_member_to_proto_with_permissions(
+fn try_admin_room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
     permissions: synctv_core::models::RoomPermissionSet,
     public_id_codec: &crate::PublicIdCodec,
-) -> synctv_proto::common::RoomMember {
-    synctv_proto::common::RoomMember {
+) -> Result<synctv_proto::common::RoomMember, ApiError> {
+    Ok(synctv_proto::common::RoomMember {
         room_id: public_id_codec
             .encode_room_id(member.room_id)
-            .expect("room member room id must be encodable"),
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode room member room id: {error}"))
+            })?,
         user_id: public_id_codec
             .encode_user_id(member.user_id)
-            .expect("room member user id must be encodable"),
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode room member user id: {error}"))
+            })?,
         username: member.username.clone(),
         role: crate::impls::client::room_role_to_proto(member.role),
         permissions: permissions.0,
@@ -5779,18 +6000,18 @@ fn admin_room_member_to_proto_with_permissions(
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
-    }
+    })
 }
 
-fn admin_user_to_proto(
+fn try_admin_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> crate::proto::admin::AdminUser {
-    crate::proto::admin::AdminUser {
+) -> Result<crate::proto::admin::AdminUser, ApiError> {
+    Ok(crate::proto::admin::AdminUser {
         id: public_id_codec
             .encode_user_id(user.id)
-            .expect("positive user ID must encode"),
+            .map_err(|error| ApiError::Internal(format!("Failed to encode user id: {error}")))?,
         username: user.username.clone(),
         email: email.unwrap_or_default().to_string(),
         role: i32::from(user.role),
@@ -5799,14 +6020,17 @@ fn admin_user_to_proto(
         updated_at: user.updated_at.timestamp(),
         is_banned: user.is_banned,
         banned_at: user.banned_at.map_or(0, |value| value.timestamp()),
-        banned_by: user.banned_by.as_ref().map_or_else(String::new, |id| {
-            public_id_codec
-                .encode_user_id(*id)
-                .expect("positive user ID must encode")
-        }),
+        banned_by: user
+            .banned_by
+            .map(|id| public_id_codec.encode_user_id(id))
+            .transpose()
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode banned_by user id: {error}"))
+            })?
+            .unwrap_or_default(),
         banned_reason: user.banned_reason.clone().unwrap_or_default(),
         avatar_url: String::new(),
-    }
+    })
 }
 
 fn parse_raw_setting_value(raw: &str) -> serde_json::Value {
@@ -5848,11 +6072,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use synctv_core::models::{
-        MemberStatus, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
+        FromProviderParams, MemberStatus, RoomId, RoomRole, RoomStatus, UserId, UserRole,
+        UserStatus,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
-        config::{Config, PasswordComplexityConfig},
+        config::Config,
         repository::{
             MediaRepository, ProviderInstanceRepository, RoomRepository, SettingsRepository,
             UserRepository,
@@ -5878,6 +6103,41 @@ mod tests {
         ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent,
     };
     use tokio::sync::mpsc;
+
+    #[test]
+    fn proto_list_filter_enums_reject_unknown_values() {
+        assert!(matches!(
+            proto_room_status_filter(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("room status")
+        ));
+        assert!(matches!(
+            proto_user_status_filter(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("user status")
+        ));
+        assert!(matches!(
+            proto_user_role_filter(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("user role")
+        ));
+    }
+
+    #[test]
+    fn proto_list_filter_enums_allow_unspecified_as_empty_filter() {
+        assert_eq!(
+            proto_room_status_filter(synctv_proto::common::RoomStatus::Unspecified as i32)
+                .expect("unspecified room status should be accepted"),
+            None
+        );
+        assert_eq!(
+            proto_user_status_filter(synctv_proto::common::UserStatus::Unspecified as i32)
+                .expect("unspecified user status should be accepted"),
+            None
+        );
+        assert_eq!(
+            proto_user_role_filter(synctv_proto::common::UserRole::Unspecified as i32)
+                .expect("unspecified user role should be accepted"),
+            None
+        );
+    }
 
     #[derive(Debug, Default)]
     struct AdminLifecycleTestProvider {
@@ -5985,6 +6245,58 @@ mod tests {
         }
     }
 
+    fn test_realtime_outbox_event(
+        event: &RealtimeEvent,
+    ) -> synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent {
+        synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent {
+            id: event.event_id().to_string(),
+            enqueue_outbox: false,
+            aggregate_type: "test".to_string(),
+            aggregate_id: event
+                .room_id()
+                .map_or_else(|| "global".to_string(), std::string::ToString::to_string),
+            event_type: event.event_type().to_string(),
+            event_version: 1,
+            aggregate_version: None,
+            payload: serde_json::to_value(event).expect("test realtime event should serialize"),
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingRealtimeFanout {
+        publish_attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FailingRealtimeFanout {
+        fn publish_attempts(&self) -> usize {
+            self.publish_attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl RealtimeFanoutService for FailingRealtimeFanout {
+        async fn try_publish(&self, _request: PublishRequest) -> bool {
+            self.publish_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            false
+        }
+
+        fn outbox_event(
+            &self,
+            event: &RealtimeEvent,
+        ) -> Result<synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent, String>
+        {
+            Ok(test_realtime_outbox_event(event))
+        }
+
+        fn publish_after_outbox_commit(&self, _event: RealtimeEvent) {}
+
+        fn is_distributed_enabled(&self) -> bool {
+            true
+        }
+    }
+
     async fn recv_matching_realtime_event(
         receiver: &mut mpsc::Receiver<PublishRequest>,
         description: &str,
@@ -6016,7 +6328,7 @@ mod tests {
         ) -> crate::membership_event_fanout::PreparedPermissionChangedFanout {
             crate::membership_event_fanout::PreparedPermissionChangedFanout::new(
                 Arc::new(self.clone()),
-                None,
+                Arc::new(LocalNoopRealtimeEventService::new()),
                 target_user_id,
                 changed_by,
             )
@@ -6038,7 +6350,8 @@ mod tests {
         fn outbox_event(
             &self,
             event: &RealtimeEvent,
-        ) -> Option<synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent> {
+        ) -> Result<synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent, String>
+        {
             match event {
                 RealtimeEvent::PermissionChanged {
                     room_id,
@@ -6058,7 +6371,7 @@ mod tests {
                 }),
                 _ => {}
             }
-            None
+            Ok(test_realtime_outbox_event(event))
         }
 
         fn publish_after_outbox_commit(&self, _event: RealtimeEvent) {}
@@ -6191,11 +6504,10 @@ mod tests {
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
 
-        UserService::new(
+        UserService::new_for_tests(
             pool,
             jwt_service,
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
@@ -6209,26 +6521,7 @@ mod tests {
         let user_service = make_user_service(&pool);
         let user_repo = UserRepository::new(pool);
 
-        let banned_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "banned_admin_auth".to_string(),
-            role: UserRole::Admin,
-            avatar_file_reference_id: None,
-            status: UserStatus::Banned,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let banned_admin = user_repo
-            .create(&banned_admin)
-            .await
-            .expect("create banned admin");
+        let banned_admin = create_db_user(&user_repo, "banned_admin_auth", UserRole::Admin).await;
         user_repo
             .ban(&banned_admin.id, None, Some("admin auth test".to_string()))
             .await
@@ -6258,12 +6551,8 @@ mod tests {
         let providers_manager = ProvidersManager::new_with_ssrf_guard(
             provider_instance_manager.clone(),
             synctv_common::ssrf::SsrfGuard::disabled(),
-        );
-        let mut room_service = synctv_core::service::RoomService::new_with_providers(
-            pool.clone(),
-            (*user_service).clone(),
-            Arc::new(providers_manager),
-        );
+        )
+        .expect("providers manager should build");
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
             pool.clone(),
@@ -6273,7 +6562,16 @@ mod tests {
             .await
             .expect("settings initialized");
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-        room_service.set_settings_registry(settings_registry.clone());
+        let room_service = synctv_core::service::RoomService::new_with_providers_and_options(
+            pool.clone(),
+            (*user_service).clone(),
+            Arc::new(providers_manager),
+            synctv_core::service::room::RoomServiceOptions {
+                settings_registry: Some(settings_registry.clone()),
+                ..synctv_core::service::room::RoomServiceOptions::test_defaults()
+            },
+        )
+        .expect("room service should build");
         let email_service = Arc::new(
             EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
                 settings_registry.clone(),
@@ -6291,34 +6589,45 @@ mod tests {
             .expect("built-in providers should initialize");
         let audit_service = Arc::new(AuditService::new_unbuffered(pool));
         let config = Arc::new(Config::default());
-        let publish_key_service = Arc::new(PublishKeyService::new(
-            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").expect("jwt"),
-            24,
-        ));
+        let publish_key_service = Arc::new(
+            PublishKeyService::new(
+                JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars")
+                    .expect("jwt"),
+                24,
+            )
+            .expect("publish key service should build"),
+        );
         let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
         let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
             synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:".to_string()),
         );
 
         (
-            AdminApiImpl::new(
-                room_service,
-                user_service,
-                settings_service,
-                Some(settings_registry),
-                email_service,
-                connection_manager,
-                provider_instance_manager,
-                None,
-                Some(publish_key_service),
-                config,
-                audit_service,
-                Arc::new(crate::PublicIdCodec::default_for_tests()),
-            )
-            .with_realtime_fanout_service(crate::test_support::channel_realtime_fanout_service(
-                redis_publish_tx,
-            ))
-            .with_provider_stores(provider_stores),
+            AdminApiImpl::new_with_runtime(
+                AdminApiConfig {
+                    room_service,
+                    user_service,
+                    settings_service,
+                    settings_registry: Some(settings_registry),
+                    email_service,
+                    connection_service: connection_manager,
+                    provider_instance_manager,
+                    live_streaming_infrastructure: None,
+                    publish_key_service: Some(publish_key_service),
+                    config,
+                    audit_service,
+                    public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+                },
+                AdminApiRuntime {
+                    realtime_fanout: crate::test_support::channel_realtime_fanout_service(
+                        redis_publish_tx,
+                    ),
+                    realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
+                    provider_stores: Some(provider_stores),
+                    provider_access_service: None,
+                    request_executor: None,
+                },
+            ),
             redis_publish_rx,
         )
     }
@@ -6331,10 +6640,10 @@ mod tests {
         tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
     ) {
         let user_service = Arc::new(make_user_service(&pool));
-        let room_service = Arc::new(synctv_core::service::RoomService::new(
-            pool.clone(),
-            (*user_service).clone(),
-        ));
+        let room_service = Arc::new(
+            synctv_core::service::RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
             pool.clone(),
@@ -6363,10 +6672,14 @@ mod tests {
             .expect("built-in providers should initialize");
         let audit_service = Arc::new(AuditService::new_unbuffered(pool));
         let config = Arc::new(Config::default());
-        let publish_key_service = Arc::new(PublishKeyService::new(
-            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").expect("jwt"),
-            24,
-        ));
+        let publish_key_service = Arc::new(
+            PublishKeyService::new(
+                JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars")
+                    .expect("jwt"),
+                24,
+            )
+            .expect("publish key service should build"),
+        );
         let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
         let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
             synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:".to_string()),
@@ -6400,24 +6713,31 @@ mod tests {
         );
 
         (
-            AdminApiImpl::new(
-                room_service,
-                user_service,
-                settings_service,
-                Some(settings_registry),
-                email_service,
-                connection_manager,
-                provider_instance_manager,
-                Some(live_streaming_infrastructure.clone()),
-                Some(publish_key_service),
-                config,
-                audit_service,
-                Arc::new(crate::PublicIdCodec::default_for_tests()),
-            )
-            .with_realtime_fanout_service(crate::test_support::channel_realtime_fanout_service(
-                redis_publish_tx,
-            ))
-            .with_provider_stores(provider_stores),
+            AdminApiImpl::new_with_runtime(
+                AdminApiConfig {
+                    room_service,
+                    user_service,
+                    settings_service,
+                    settings_registry: Some(settings_registry),
+                    email_service,
+                    connection_service: connection_manager,
+                    provider_instance_manager,
+                    live_streaming_infrastructure: Some(live_streaming_infrastructure.clone()),
+                    publish_key_service: Some(publish_key_service),
+                    config,
+                    audit_service,
+                    public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+                },
+                AdminApiRuntime {
+                    realtime_fanout: crate::test_support::channel_realtime_fanout_service(
+                        redis_publish_tx,
+                    ),
+                    realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
+                    provider_stores: Some(provider_stores),
+                    provider_access_service: None,
+                    request_executor: None,
+                },
+            ),
             live_streaming_infrastructure,
             redis_publish_rx,
         )
@@ -6458,60 +6778,20 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_add_membership_outbox".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_add_membership_outbox".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_add_membership_outbox".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_add_membership_outbox",
+            UserRole::Root,
+        )
+        .await;
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_add_membership_outbox",
+            UserRole::User,
+        )
+        .await;
+        let target =
+            create_db_user(&user_repo, "target_add_membership_outbox", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -6565,60 +6845,24 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_update_membership_outbox".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_update_membership_outbox".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_update_membership_outbox".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_update_membership_outbox",
+            UserRole::Root,
+        )
+        .await;
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_update_membership_outbox",
+            UserRole::User,
+        )
+        .await;
+        let target = create_db_user(
+            &user_repo,
+            "target_update_membership_outbox",
+            UserRole::User,
+        )
+        .await;
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
@@ -6664,60 +6908,24 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool);
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_member_response_permissions".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "owner_member_response_permissions".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_member_response_permissions".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_member_response_permissions",
+            UserRole::Root,
+        )
+        .await;
+        let owner = create_db_user(
+            &user_repo,
+            "owner_member_response_permissions",
+            UserRole::User,
+        )
+        .await;
+        let target = create_db_user(
+            &user_repo,
+            "target_member_response_permissions",
+            UserRole::User,
+        )
+        .await;
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
         let mut settings = admin_api
@@ -6773,60 +6981,20 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_kick_membership_outbox".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_kick_membership_outbox".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_kick_membership_outbox".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_kick_membership_outbox",
+            UserRole::Root,
+        )
+        .await;
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_kick_membership_outbox",
+            UserRole::User,
+        )
+        .await;
+        let target =
+            create_db_user(&user_repo, "target_kick_membership_outbox", UserRole::User).await;
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
@@ -6880,7 +7048,8 @@ mod tests {
                 "default".to_string(),
             ),
             position,
-        );
+        )
+        .expect("direct media should build");
         let created = media_repo
             .create_with_executor(&media, &mut *tx)
             .await
@@ -6930,15 +7099,17 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_basic() {
         let room = make_test_room(RoomStatus::Active);
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
-        let proto = admin_room_to_proto(
+        let public_id_codec = crate::PublicIdCodec::plain();
+        let settings = synctv_core::models::RoomSettings::default();
+        let proto = try_admin_room_to_proto(
             &room,
-            None,
+            Some(&settings),
             Some(10),
             Some("creator_user"),
             UserStatus::Active,
             &public_id_codec,
-        );
+        )
+        .expect("admin room proto should encode");
 
         assert_eq!(proto.id, public_id_codec.encode_room_id(room.id).unwrap());
         assert_eq!(proto.name, "Admin Test Room");
@@ -6959,16 +7130,18 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_banned() {
         let mut room = make_test_room(RoomStatus::Active);
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
+        let settings = synctv_core::models::RoomSettings::default();
         room.is_banned = true;
-        let proto = admin_room_to_proto(
+        let proto = try_admin_room_to_proto(
             &room,
+            Some(&settings),
             None,
-            None,
-            None,
+            Some("creator_user"),
             UserStatus::Banned,
             &public_id_codec,
-        );
+        )
+        .expect("admin room proto should encode");
         assert!(proto.is_banned);
         assert_eq!(proto.member_count, 0);
         assert_eq!(
@@ -6980,20 +7153,21 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_uses_supplied_settings() {
         let room = make_test_room(RoomStatus::Active);
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let settings = synctv_core::models::RoomSettings {
             allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(false),
             ..Default::default()
         };
 
-        let proto = admin_room_to_proto(
+        let proto = try_admin_room_to_proto(
             &room,
             Some(&settings),
             None,
-            None,
+            Some("creator_user"),
             UserStatus::Active,
             &public_id_codec,
-        );
+        )
+        .expect("admin room proto should encode");
         let rendered: serde_json::Value =
             serde_json::from_slice(&proto.settings).expect("settings should be valid json");
 
@@ -7004,15 +7178,17 @@ mod tests {
     fn test_admin_room_to_proto_different_statuses() {
         for status in [RoomStatus::Active, RoomStatus::Closed] {
             let room = make_test_room(status);
-            let public_id_codec = crate::PublicIdCodec::default_for_tests();
-            let proto = admin_room_to_proto(
+            let public_id_codec = crate::PublicIdCodec::plain();
+            let settings = synctv_core::models::RoomSettings::default();
+            let proto = try_admin_room_to_proto(
                 &room,
+                Some(&settings),
                 None,
-                None,
-                None,
+                Some("creator_user"),
                 UserStatus::Active,
                 &public_id_codec,
-            );
+            )
+            .expect("admin room proto should encode");
             assert_eq!(
                 proto.status,
                 synctv_proto::common::RoomStatus::from(status) as i32
@@ -7021,11 +7197,105 @@ mod tests {
     }
 
     #[test]
-    fn test_user_list_sort_by_from_proto_preserves_status_sort() {
+    fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
         assert_eq!(
-            user_list_sort_by_from_proto(crate::proto::admin::UserListSortBy::Status as i32),
+            proto_admin_user_list_sort_by(crate::proto::admin::UserListSortBy::Status as i32)
+                .expect("status sort should be accepted"),
             synctv_core::models::UserListSortBy::Status
         );
+        assert_eq!(
+            proto_admin_user_list_sort_by(crate::proto::admin::UserListSortBy::Unspecified as i32)
+                .expect("unspecified user sort should be accepted"),
+            synctv_core::models::UserListSortBy::CreatedAt
+        );
+        assert_eq!(
+            proto_admin_room_list_sort_by(crate::proto::admin::RoomListSortBy::Unspecified as i32)
+                .expect("unspecified room sort should be accepted"),
+            synctv_core::models::RoomListSortBy::CreatedAt
+        );
+        assert_eq!(
+            proto_admin_room_member_list_sort_by(
+                crate::proto::admin::RoomMemberListSortBy::Unspecified as i32
+            )
+            .expect("unspecified room member sort should be accepted"),
+            synctv_core::models::RoomMemberListSortBy::JoinedAt
+        );
+        assert_eq!(
+            proto_admin_active_stream_list_sort_by(
+                crate::proto::admin::ActiveStreamListSortBy::Unspecified as i32
+            )
+            .expect("unspecified active stream sort should be accepted"),
+            crate::proto::admin::ActiveStreamListSortBy::StartedAt
+        );
+        assert_eq!(
+            proto_admin_sort_direction(
+                crate::proto::admin::SortDirection::Unspecified as i32,
+                CoreSortDirection::Desc
+            )
+            .expect("unspecified sort direction should be accepted"),
+            CoreSortDirection::Desc
+        );
+        assert_eq!(
+            proto_admin_active_stream_sort_direction(
+                crate::proto::admin::SortDirection::Unspecified as i32
+            )
+            .expect("unspecified active stream sort direction should be accepted"),
+            crate::proto::admin::SortDirection::Desc
+        );
+        assert_eq!(
+            map_admin_playlist_sort(crate::proto::client::PlaylistListSortBy::Unspecified as i32)
+                .expect("unspecified playlist sort should be accepted"),
+            CorePlaylistListSortBy::Position
+        );
+        assert_eq!(
+            map_admin_media_sort(crate::proto::client::MediaListSortBy::Unspecified as i32)
+                .expect("unspecified media sort should be accepted"),
+            CoreMediaListSortBy::Position
+        );
+        assert_eq!(
+            map_resource_availability_filter(
+                crate::proto::client::ResourceAvailabilityFilter::All as i32
+            )
+            .expect("all availability filter should be accepted"),
+            None
+        );
+
+        assert!(matches!(
+            proto_admin_user_list_sort_by(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("user list sort")
+        ));
+        assert!(matches!(
+            proto_admin_room_list_sort_by(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("room list sort")
+        ));
+        assert!(matches!(
+            proto_admin_room_member_list_sort_by(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("room member list sort")
+        ));
+        assert!(matches!(
+            proto_admin_active_stream_list_sort_by(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("active stream list sort")
+        ));
+        assert!(matches!(
+            proto_admin_sort_direction(99, CoreSortDirection::Desc),
+            Err(ApiError::InvalidInput(message)) if message.contains("sort direction")
+        ));
+        assert!(matches!(
+            proto_admin_active_stream_sort_direction(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("sort direction")
+        ));
+        assert!(matches!(
+            map_admin_playlist_sort(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("playlist list sort")
+        ));
+        assert!(matches!(
+            map_admin_media_sort(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("media list sort")
+        ));
+        assert!(matches!(
+            map_resource_availability_filter(99),
+            Err(ApiError::InvalidInput(message)) if message.contains("availability")
+        ));
     }
 
     #[tokio::test]
@@ -7206,9 +7476,39 @@ mod tests {
         }
     }
 
+    fn make_db_user(username: &str, role: UserRole) -> synctv_core::models::User {
+        synctv_core::models::User {
+            id: UserId::new(),
+            username: username.to_string(),
+            role,
+            avatar_file_reference_id: None,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            version: 0,
+        }
+    }
+
+    async fn create_db_user(
+        user_repo: &UserRepository,
+        username: &str,
+        role: UserRole,
+    ) -> synctv_core::models::User {
+        user_repo
+            .create(&make_db_user(username, role))
+            .await
+            .expect("create test user")
+    }
+
     #[test]
     fn test_admin_user_to_proto_all_roles() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         for (role, expected) in [
             (UserRole::Root, synctv_proto::common::UserRole::Root as i32),
             (
@@ -7218,14 +7518,15 @@ mod tests {
             (UserRole::User, synctv_proto::common::UserRole::User as i32),
         ] {
             let user = make_test_user(role, UserStatus::Active);
-            let proto = admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec);
+            let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
+                .expect("admin user proto should encode");
             assert_eq!(proto.role, expected);
         }
     }
 
     #[test]
     fn test_admin_user_to_proto_all_statuses() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         for (status, expected) in [
             (
                 UserStatus::Active,
@@ -7237,16 +7538,18 @@ mod tests {
             ),
         ] {
             let user = make_test_user(UserRole::User, status);
-            let proto = admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec);
+            let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
+                .expect("admin user proto should encode");
             assert_eq!(proto.status, expected);
         }
     }
 
     #[test]
     fn test_admin_user_to_proto_fields() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let user = make_test_user(UserRole::Admin, UserStatus::Active);
-        let proto = admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec);
+        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
+            .expect("admin user proto should encode");
 
         assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
         assert_eq!(proto.username, "admin_test");
@@ -7255,14 +7558,94 @@ mod tests {
 
     #[test]
     fn test_admin_user_to_proto_no_email() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let user = make_test_user(UserRole::User, UserStatus::Active);
-        let proto = admin_user_to_proto(&user, None, &public_id_codec);
+        let proto = try_admin_user_to_proto(&user, None, &public_id_codec)
+            .expect("admin user proto should encode");
         assert_eq!(proto.email, "");
     }
 
     #[test]
-    fn test_update_user_password_user_lookup_backend_failure_stays_service_unavailable() {
+    fn review_rows_preserve_absent_optional_fields() {
+        let public_id_codec = crate::PublicIdCodec::plain();
+        let requested_at = chrono::Utc::now();
+
+        let registration = user_registration_review_row_to_proto(
+            &synctv_core::repository::UserRegistrationReviewRecord {
+                id: UserId::new(),
+                username: "pending_user".to_string(),
+                email: "pending@example.com".to_string(),
+                signup_method: synctv_core::models::SignupMethod::Email,
+                status: synctv_core::models::ReviewStatus::Pending,
+                requested_at,
+                reviewed_at: None,
+                reviewed_by: None,
+                rejection_reason: None,
+                oauth2_provider: None,
+                oauth2_provider_instance_name: None,
+                oauth2_provider_issuer: None,
+                oauth2_provider_user_id: None,
+                oauth2_provider_username: None,
+                oauth2_avatar_url: None,
+                oauth2_email_trusted: false,
+                webauthn_credential_id: None,
+                webauthn_credential_name: None,
+            },
+            &public_id_codec,
+        )
+        .expect("registration review should encode");
+
+        assert_eq!(registration.reviewed_by, None);
+        assert_eq!(registration.rejection_reason, None);
+        assert_eq!(registration.oauth2_provider, None);
+        assert_eq!(registration.oauth2_provider_instance_name, None);
+        assert_eq!(registration.webauthn_credential_id, None);
+        assert_eq!(registration.webauthn_credential_name, None);
+
+        let creation = room_creation_review_row_to_proto(
+            &synctv_core::repository::RoomCreationReviewRecord {
+                id: RoomId::new(),
+                requested_by: UserId::new(),
+                requested_by_username: "owner".to_string(),
+                name: "room".to_string(),
+                description: String::new(),
+                status: synctv_core::models::ReviewStatus::Pending,
+                requested_at,
+                reviewed_at: None,
+                reviewed_by: None,
+                rejection_reason: None,
+            },
+            &public_id_codec,
+        )
+        .expect("room creation review should encode");
+
+        assert_eq!(creation.reviewed_by, None);
+        assert_eq!(creation.rejection_reason, None);
+
+        let join = room_join_review_row_to_proto(
+            &synctv_core::repository::RoomJoinReviewRecord {
+                id: ReviewRequestId::new(),
+                room_id: RoomId::new(),
+                room_name: "room".to_string(),
+                user_id: UserId::new(),
+                username: "joiner".to_string(),
+                requested_role: synctv_proto::common::RoomMemberRole::Member as i32,
+                status: synctv_core::models::ReviewStatus::Pending,
+                requested_at,
+                reviewed_at: None,
+                reviewed_by: None,
+                rejection_reason: None,
+            },
+            &public_id_codec,
+        )
+        .expect("room join review should encode");
+
+        assert_eq!(join.reviewed_by, None);
+        assert_eq!(join.rejection_reason, None);
+    }
+
+    #[test]
+    fn test_set_user_password_user_lookup_backend_failure_stays_service_unavailable() {
         let mapped = AdminApiImpl::map_target_user_lookup_error(
             synctv_core::Error::ServiceUnavailable("user lookup unavailable".to_string()),
         );
@@ -7274,7 +7657,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_user_password_user_lookup_not_found_stays_not_found() {
+    fn test_set_user_password_user_lookup_not_found_stays_not_found() {
         let mapped = AdminApiImpl::map_target_user_lookup_error(synctv_core::Error::NotFound(
             "missing row".to_string(),
         ));
@@ -7329,8 +7712,13 @@ mod tests {
     #[test]
     fn test_admin_room_member_to_proto() {
         let member = make_test_member(RoomRole::Admin);
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
-        let proto = admin_room_member_to_proto(&member, &public_id_codec);
+        let public_id_codec = crate::PublicIdCodec::plain();
+        let proto = try_admin_room_member_to_proto_with_permissions(
+            &member,
+            member.effective_permissions(member.role.permissions()),
+            &public_id_codec,
+        )
+        .expect("admin room member proto should encode");
 
         assert_eq!(
             proto.room_id,
@@ -7355,8 +7743,13 @@ mod tests {
         member.removed_permissions = 0x55;
         member.admin_added_permissions = 0xCC;
         member.admin_removed_permissions = 0x33;
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
-        let proto = admin_room_member_to_proto(&member, &public_id_codec);
+        let public_id_codec = crate::PublicIdCodec::plain();
+        let proto = try_admin_room_member_to_proto_with_permissions(
+            &member,
+            member.effective_permissions(member.role.permissions()),
+            &public_id_codec,
+        )
+        .expect("admin room member proto should encode");
 
         assert_eq!(proto.added_permissions, 0xAA);
         assert_eq!(proto.removed_permissions, 0x55);
@@ -7556,27 +7949,7 @@ mod tests {
         let (admin_api, _redis_publish_rx) =
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool);
-        let now = chrono::Utc::now();
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "proto_list_admin".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-        };
-        let admin_user = user_repo
-            .create(&admin_user)
-            .await
-            .expect("create admin user");
+        let admin_user = create_db_user(&user_repo, "proto_list_admin", UserRole::Root).await;
 
         let list_playlists_error = admin_api
             .list_playlists(
@@ -7630,31 +8003,12 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool);
 
-        let now = chrono::Utc::now();
         for (username, role) in [
             ("zzz-admin", UserRole::Admin),
             ("alpha-admin", UserRole::Admin),
             ("plain-user", UserRole::User),
         ] {
-            user_repo
-                .create(&synctv_core::models::User {
-                    id: UserId::new(),
-                    username: username.to_string(),
-                    role,
-                    avatar_file_reference_id: None,
-                    status: UserStatus::Active,
-                    is_banned: false,
-                    banned_at: None,
-                    banned_by: None,
-                    banned_reason: None,
-                    signup_method: synctv_core::models::SignupMethod::Email,
-                    created_at: now,
-                    updated_at: now,
-                    deleted_at: None,
-                    version: 0,
-                })
-                .await
-                .expect("test user should be created");
+            create_db_user(&user_repo, username, role).await;
         }
 
         let response = admin_api
@@ -7681,47 +8035,8 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let now = chrono::Utc::now();
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target-user-rooms".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-        };
-        let other_owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "other-owner-rooms".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("target user should be created");
-        let other_owner = user_repo
-            .create(&other_owner)
-            .await
-            .expect("other owner should be created");
+        let target_user = create_db_user(&user_repo, "target-user-rooms", UserRole::User).await;
+        let other_owner = create_db_user(&user_repo, "other-owner-rooms", UserRole::User).await;
 
         let owned_room = admin_api
             .room_service
@@ -7795,13 +8110,9 @@ mod tests {
         assert_eq!(page2.rooms[0].id, public_room_id(&admin_api, owned_room.id));
     }
 
-    // These verify the role hierarchy rules enforced by update_user_password:
-    // - Root can reset anyone's password (root, admin, user)
-    // - Admin can only reset regular user passwords
-    // - Admin CANNOT reset root or other admin passwords
+    // Role hierarchy rules enforced by set_user_password.
 
-    /// Helper: check if a `caller_role` can reset a `target_role`'s password
-    /// Returns true if the operation should be allowed.
+    /// Helper for password reset role checks.
     fn password_reset_allowed(caller_role: UserRole, target_role: UserRole) -> bool {
         if target_role == UserRole::Root && caller_role != UserRole::Root {
             return false;
@@ -8046,6 +8357,60 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
+    async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fails() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+        let failing_fanout = Arc::new(FailingRealtimeFanout::default());
+        let admin_api = AdminApiImpl::new_with_runtime(
+            AdminApiConfig {
+                room_service: admin_api.room_service.clone(),
+                user_service: admin_api.user_service.clone(),
+                settings_service: admin_api.settings_service.clone(),
+                settings_registry: admin_api.settings_registry.clone(),
+                email_service: admin_api.email_service.clone(),
+                connection_service: admin_api.connection_service.clone(),
+                provider_instance_manager: admin_api.provider_instance_manager.clone(),
+                live_streaming_infrastructure: admin_api.live_streaming_infrastructure.clone(),
+                publish_key_service: admin_api.publish_key_service.clone(),
+                config: admin_api.config.clone(),
+                audit_service: admin_api.audit_service.clone(),
+                public_id_codec: admin_api.public_id_codec.clone(),
+            },
+            AdminApiRuntime {
+                realtime_fanout: failing_fanout.clone(),
+                realtime_event_service: admin_api.realtime_event_service.clone(),
+                provider_stores: admin_api.provider_stores.clone(),
+                provider_access_service: admin_api.provider_access_service.clone(),
+                request_executor: admin_api.request_executor.clone(),
+            },
+        );
+
+        admin_api
+            .update_settings(
+                crate::proto::admin::UpdateSettingsRequest {
+                    group: "server".to_string(),
+                    settings: std::collections::HashMap::from([(
+                        "max_rooms_per_user".to_string(),
+                        "43".to_string(),
+                    )]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("settings update should persist even when cache fanout fails");
+
+        let max_rooms_per_user = admin_api
+            .settings_service
+            .get("server.max_rooms_per_user")
+            .await
+            .expect("settings update should be persisted");
+        assert_eq!(max_rooms_per_user.value, "43");
+        assert_eq!(failing_fanout.publish_attempts(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_update_email_settings_rejects_enabled_incomplete_config() {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
@@ -8121,40 +8486,8 @@ mod tests {
         };
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_admin".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "victim_user".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo.create(&target_user).await.expect("create user");
+        let admin_user = create_db_user(&user_repo, "root_admin", UserRole::Root).await;
+        let target_user = create_db_user(&user_repo, "victim_user", UserRole::User).await;
 
         let (admin_api, mut redis_publish_rx) = admin_api;
         let request = crate::proto::admin::DeleteUserRequest {
@@ -8190,35 +8523,17 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, _redis_publish_rx) =
             make_admin_api_for_delete_user_test(pool.clone()).await;
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_create_user_attrs".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        UserRepository::new(pool.clone())
-            .create(&admin_user)
-            .await
-            .expect("create root admin");
+        let user_repo = UserRepository::new(pool.clone());
+        let admin_user = create_db_user(&user_repo, "root_create_user_attrs", UserRole::Root).await;
 
         let response = admin_api
             .create_user(
                 crate::proto::admin::CreateUserRequest {
                     username: "attr_user".to_string(),
-                    password: "StrongPwd12345!".to_string(),
                     email: String::new(),
                     role: synctv_proto::common::UserRole::Admin as i32,
                     status: synctv_proto::common::UserStatus::Active as i32,
+                    password: String::new(),
                 },
                 UserRole::Root,
                 &admin_user.id,
@@ -8245,44 +8560,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "root_update_username".to_string(),
-                role: UserRole::Root,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create root admin");
-        let target_user = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "target_update_username".to_string(),
-                role: UserRole::User,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create target user");
+        let admin_user = create_db_user(&user_repo, "root_update_username", UserRole::Root).await;
+        let target_user =
+            create_db_user(&user_repo, "target_update_username", UserRole::User).await;
 
         let response = admin_api
             .update_user_username(
@@ -8309,82 +8589,10 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_delete_membership".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "victim_membership".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
-
-        let owner_one = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "room_owner_one".to_string(),
-                role: UserRole::User,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create owner one");
-        let owner_two = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "room_owner_two".to_string(),
-                role: UserRole::User,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create owner two");
+        let admin_user = create_db_user(&user_repo, "root_delete_membership", UserRole::Root).await;
+        let target_user = create_db_user(&user_repo, "victim_membership", UserRole::User).await;
+        let owner_one = create_db_user(&user_repo, "room_owner_one", UserRole::User).await;
+        let owner_two = create_db_user(&user_repo, "room_owner_two", UserRole::User).await;
 
         let room_one = create_room_with_member(&admin_api, &owner_one.id, &target_user.id).await;
         let room_two = create_room_with_member(&admin_api, &owner_two.id, &target_user.id).await;
@@ -8449,43 +8657,8 @@ mod tests {
         let user_repo = UserRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_delete_owned_room".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "owned_room_victim".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
+        let admin_user = create_db_user(&user_repo, "root_delete_owned_room", UserRole::Root).await;
+        let target_user = create_db_user(&user_repo, "owned_room_victim", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -8564,63 +8737,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_user_ban_cleanup".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "banned_membership".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
-
-        let owner = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "room_owner_ban".to_string(),
-                role: UserRole::User,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create owner");
+        let admin_user = create_db_user(&user_repo, "root_user_ban_cleanup", UserRole::Root).await;
+        let target_user = create_db_user(&user_repo, "banned_membership", UserRole::User).await;
+        let owner = create_db_user(&user_repo, "room_owner_ban", UserRole::User).await;
 
         let room = create_room_with_member(&admin_api, &owner.id, &target_user.id).await;
 
@@ -8688,64 +8807,10 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_ban_playback".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "banned_playback_creator".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let room_owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "playback_room_owner".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
-        let room_owner = user_repo
-            .create(&room_owner)
-            .await
-            .expect("create room owner");
+        let admin_user = create_db_user(&user_repo, "root_ban_playback", UserRole::Root).await;
+        let target_user =
+            create_db_user(&user_repo, "banned_playback_creator", UserRole::User).await;
+        let room_owner = create_db_user(&user_repo, "playback_room_owner", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -8811,64 +8876,10 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_ban_owned_room".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "banned_owned_room_creator".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let member_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "owned_room_member".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
-        let member_user = user_repo
-            .create(&member_user)
-            .await
-            .expect("create member user");
+        let admin_user = create_db_user(&user_repo, "root_ban_owned_room", UserRole::Root).await;
+        let target_user =
+            create_db_user(&user_repo, "banned_owned_room_creator", UserRole::User).await;
+        let member_user = create_db_user(&user_repo, "owned_room_member", UserRole::User).await;
 
         let room = create_room_with_member(&admin_api, &target_user.id, &member_user.id).await;
 
@@ -8927,44 +8938,10 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_ban_owned_room_event".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "owned_room_event_creator".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
+        let admin_user =
+            create_db_user(&user_repo, "root_ban_owned_room_event", UserRole::Root).await;
+        let target_user =
+            create_db_user(&user_repo, "owned_room_event_creator", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9027,64 +9004,12 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_batch_ban_playback".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "batch_banned_media_creator".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let room_owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "batch_ban_playback_owner".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
-        let room_owner = user_repo
-            .create(&room_owner)
-            .await
-            .expect("create room owner");
+        let admin_user =
+            create_db_user(&user_repo, "root_batch_ban_playback", UserRole::Root).await;
+        let target_user =
+            create_db_user(&user_repo, "batch_banned_media_creator", UserRole::User).await;
+        let room_owner =
+            create_db_user(&user_repo, "batch_ban_playback_owner", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9153,44 +9078,14 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "root_batch_ban_owned_room_event".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "batch_owned_room_creator".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
-        let target_user = user_repo
-            .create(&target_user)
-            .await
-            .expect("create target user");
+        let admin_user = create_db_user(
+            &user_repo,
+            "root_batch_ban_owned_room_event",
+            UserRole::Root,
+        )
+        .await;
+        let target_user =
+            create_db_user(&user_repo, "batch_owned_room_creator", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9250,7 +9145,7 @@ mod tests {
 
     #[test]
     fn test_parse_batch_user_ids_trims_and_preserves_order() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let first = UserId::expect_positive(901);
         let second = UserId::expect_positive(902);
         let parsed = parse_batch_user_ids(
@@ -9273,60 +9168,10 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_member_update".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_member_update".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_member_update".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_member_update", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_member_update", UserRole::User).await;
+        let target = create_db_user(&user_repo, "target_member_update", UserRole::User).await;
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
@@ -9375,60 +9220,10 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_member_kick".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_member_kick".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let target = synctv_core::models::User {
-            id: UserId::new(),
-            username: "target_member_kick".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
-        let target = user_repo.create(&target).await.expect("create target");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_member_kick", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_member_kick", UserRole::User).await;
+        let target = create_db_user(&user_repo, "target_member_kick", UserRole::User).await;
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
@@ -9465,43 +9260,9 @@ mod tests {
             make_admin_api_with_livestream_for_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_stream_info".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_stream_info".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let _global_admin =
+            create_db_user(&user_repo, "global_admin_stream_info", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_stream_info", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9552,43 +9313,14 @@ mod tests {
             make_admin_api_with_livestream_for_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_stream_kick_failure".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_stream_kick_failure".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_stream_kick_failure",
+            UserRole::Root,
+        )
+        .await;
+        let owner =
+            create_db_user(&user_repo, "room_owner_stream_kick_failure", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9664,43 +9396,14 @@ mod tests {
             make_admin_api_with_livestream_for_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_remote_stream_kick".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_remote_stream_kick".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_remote_stream_kick",
+            UserRole::Root,
+        )
+        .await;
+        let owner =
+            create_db_user(&user_repo, "room_owner_remote_stream_kick", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9773,43 +9476,18 @@ mod tests {
         drop(redis_publish_rx);
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_remote_stream_fanout_failure".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_remote_stream_fanout_failure".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_remote_stream_fanout_failure",
+            UserRole::Root,
+        )
+        .await;
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_remote_stream_fanout_failure",
+            UserRole::User,
+        )
+        .await;
 
         let room = admin_api
             .room_service
@@ -9876,43 +9554,9 @@ mod tests {
             make_admin_api_with_livestream_for_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_stream_list".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_stream_list".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let _global_admin =
+            create_db_user(&user_repo, "global_admin_stream_list", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_stream_list", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -9972,7 +9616,7 @@ mod tests {
 
     #[test]
     fn build_room_stream_list_response_applies_search_sort_and_pagination() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let media_ids = vec![
             MediaId::expect_positive(301),
             MediaId::expect_positive(302),
@@ -9994,7 +9638,8 @@ mod tests {
                 sort_direction: crate::proto::client::SortDirection::Desc as i32,
             },
             &public_id_codec,
-        );
+        )
+        .expect("valid stream ids should encode");
 
         assert_eq!(response.total, 3);
         assert_eq!(response.streams.len(), 1);
@@ -10010,43 +9655,9 @@ mod tests {
             make_admin_api_with_livestream_for_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_publish_key".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_publish_key".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_publish_key", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_publish_key", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10103,43 +9714,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_playback_start".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_playback_start".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_playback_start", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_playback_start", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10186,43 +9763,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_playback_stop".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_playback_stop".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_playback_stop", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_playback_stop", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10278,7 +9821,8 @@ mod tests {
             progress_calls: progress_calls.clone(),
         });
         let provider_for_factory = provider.clone();
-        let mut providers_manager = ProvidersManager::new(provider_instance_manager.clone());
+        let mut providers_manager = ProvidersManager::new(provider_instance_manager.clone())
+            .expect("providers manager should build");
         providers_manager.register_factory(
             "direct_url",
             Box::new(move |_instance_id, _config, _instance_manager| {
@@ -10289,11 +9833,14 @@ mod tests {
             .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
             .await
             .expect("create lifecycle test provider");
-        let room_service = Arc::new(synctv_core::service::RoomService::new_with_providers(
-            pool.clone(),
-            (*user_service).clone(),
-            Arc::new(providers_manager),
-        ));
+        let room_service = Arc::new(
+            synctv_core::service::RoomService::new_with_providers_for_tests(
+                pool.clone(),
+                (*user_service).clone(),
+                Arc::new(providers_manager),
+            )
+            .expect("room service should build"),
+        );
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
             pool.clone(),
@@ -10316,60 +9863,38 @@ mod tests {
             Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "admin-lifecycle-test:provider:".to_string(),
             ));
-        let admin_api = AdminApiImpl::new(
-            room_service,
-            user_service,
-            settings_service,
-            Some(settings_registry),
-            email_service,
-            connection_manager,
-            provider_instance_manager,
-            None,
-            None,
-            Arc::new(Config::default()),
-            audit_service,
-            Arc::new(crate::PublicIdCodec::default_for_tests()),
-        )
-        .with_provider_stores(provider_stores.clone());
+        let admin_api = AdminApiImpl::new_with_runtime(
+            AdminApiConfig {
+                room_service,
+                user_service,
+                settings_service,
+                settings_registry: Some(settings_registry),
+                email_service,
+                connection_service: connection_manager,
+                provider_instance_manager,
+                live_streaming_infrastructure: None,
+                publish_key_service: None,
+                config: Arc::new(Config::default()),
+                audit_service,
+                public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+            },
+            AdminApiRuntime {
+                realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
+                realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
+                provider_stores: Some(provider_stores.clone()),
+                provider_access_service: None,
+                request_executor: None,
+            },
+        );
 
-        let global_admin = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "global_admin_playback_lifecycle".to_string(),
-                role: UserRole::Root,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create global admin");
-        let owner = user_repo
-            .create(&synctv_core::models::User {
-                id: UserId::new(),
-                username: "room_owner_playback_lifecycle".to_string(),
-                role: UserRole::User,
-                avatar_file_reference_id: None,
-                status: UserStatus::Active,
-                is_banned: false,
-                banned_at: None,
-                banned_by: None,
-                banned_reason: None,
-                signup_method: synctv_core::models::SignupMethod::Email,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                deleted_at: None,
-                version: 0,
-            })
-            .await
-            .expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_playback_lifecycle",
+            UserRole::Root,
+        )
+        .await;
+        let owner =
+            create_db_user(&user_repo, "room_owner_playback_lifecycle", UserRole::User).await;
         let room = admin_api
             .room_service
             .create_room(
@@ -10384,15 +9909,18 @@ mod tests {
             .0;
         let media_repo = MediaRepository::new(pool.clone());
         let media = media_repo
-            .create(&synctv_core::models::Media::from_provider(
-                None,
-                room.id,
-                Some(owner.id),
-                "provider lifecycle media".to_string(),
-                serde_json::json!({"item_id": "admin-lifecycle"}),
-                "direct_url",
-                None,
-                0.0,
+            .create(&synctv_core::models::Media::from_provider_with_params(
+                FromProviderParams {
+                    playlist_id: None,
+                    room_id: room.id,
+                    creator_id: Some(owner.id),
+                    name: "provider lifecycle media".to_string(),
+                    description: String::new(),
+                    source_config: serde_json::json!({"item_id": "admin-lifecycle"}),
+                    provider_name: "direct_url".to_string(),
+                    provider_instance_name: None,
+                    position: 0.0,
+                },
             ))
             .await
             .expect("create provider media");
@@ -10410,7 +9938,8 @@ mod tests {
                     "sessions": [{
                         "provider": "direct_url",
                         "provider_instance_name": null,
-                        "credential_owner_id": owner.id.to_string(),
+                        "actor_user_id": owner.id.as_i64(),
+                        "credential_owner_id": owner.id.as_i64(),
                         "source_config": {"item_id": "admin-lifecycle"},
                         "room_target_key": format!("media:{}", media.id),
                         "provider_session_id": "admin-session",
@@ -10465,43 +9994,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_playback_get".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_playback_get".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_playback_get", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_playback_get", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10555,43 +10050,14 @@ mod tests {
         let user_repo = UserRepository::new(pool.clone());
         let media_repo = MediaRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_playback_state_only".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_playback_state_only".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_playback_state_only",
+            UserRole::Root,
+        )
+        .await;
+        let owner =
+            create_db_user(&user_repo, "room_owner_playback_state_only", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10606,16 +10072,17 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media = synctv_core::models::Media::from_provider(
-            None,
-            room.id,
-            Some(owner.id),
-            "Broken Playback Provider".to_string(),
-            serde_json::json!({ "opaque": true }),
-            "live_proxy",
-            None,
-            0.0,
-        );
+        let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
+            playlist_id: None,
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Broken Playback Provider".to_string(),
+            description: String::new(),
+            source_config: serde_json::json!({ "opaque": true }),
+            provider_name: "live_proxy".to_string(),
+            provider_instance_name: None,
+            position: 0.0,
+        });
         let media = media_repo.create(&media).await.expect("create media");
 
         admin_api
@@ -10653,43 +10120,14 @@ mod tests {
         let user_repo = UserRepository::new(pool.clone());
         let media_repo = MediaRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_playback_get_signed".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_playback_get_signed".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_playback_get_signed",
+            UserRole::Root,
+        )
+        .await;
+        let owner =
+            create_db_user(&user_repo, "room_owner_playback_get_signed", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10704,21 +10142,22 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media = synctv_core::models::Media::from_provider(
-            None,
-            room.id,
-            Some(owner.id),
-            "provider-playback-media".to_string(),
-            serde_json::json!({
+        let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
+            playlist_id: None,
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "provider-playback-media".to_string(),
+            description: String::new(),
+            source_config: serde_json::json!({
                 "url": "https://example.com/video.mp4",
                 "headers": {
                     "Authorization": "Bearer admin-provider-token"
                 }
             }),
-            "direct_url",
-            None,
-            0.0,
-        );
+            provider_name: "direct_url".to_string(),
+            provider_instance_name: None,
+            position: 0.0,
+        });
         let media = media_repo
             .create(&media)
             .await
@@ -10771,23 +10210,12 @@ mod tests {
         let user_repo = UserRepository::new(pool.clone());
         let media_repo = MediaRepository::new(pool.clone());
 
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_local_mgmt_playback_get_signed".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_local_mgmt_playback_get_signed",
+            UserRole::User,
+        )
+        .await;
 
         let room = admin_api
             .room_service
@@ -10802,21 +10230,22 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media = synctv_core::models::Media::from_provider(
-            None,
-            room.id,
-            Some(owner.id),
-            "provider-playback-media".to_string(),
-            serde_json::json!({
+        let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
+            playlist_id: None,
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "provider-playback-media".to_string(),
+            description: String::new(),
+            source_config: serde_json::json!({
                 "url": "https://example.com/video.mp4",
                 "headers": {
                     "Authorization": "Bearer admin-provider-token"
                 }
             }),
-            "direct_url",
-            None,
-            0.0,
-        );
+            provider_name: "direct_url".to_string(),
+            provider_instance_name: None,
+            position: 0.0,
+        });
         let media = media_repo
             .create(&media)
             .await
@@ -10877,43 +10306,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_list_playlists".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_list_playlists".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_list_playlists", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_list_playlists", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -10984,43 +10379,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_get_playlist".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_get_playlist".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_get_playlist", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_get_playlist", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11080,43 +10441,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_update_playlist".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_update_playlist".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_update_playlist", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_update_playlist", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11176,43 +10503,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_delete_playlist".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_delete_playlist".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_delete_playlist", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_delete_playlist", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11276,43 +10569,18 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_delete_playlist_cascade".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_delete_playlist_cascade".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_delete_playlist_cascade",
+            UserRole::Root,
+        )
+        .await;
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_delete_playlist_cascade",
+            UserRole::User,
+        )
+        .await;
 
         let room = admin_api
             .room_service
@@ -11427,8 +10695,7 @@ mod tests {
         expected_playlist_ids.sort_unstable();
 
         assert_eq!(
-            deleted_playlist_ids,
-            expected_playlist_ids,
+            deleted_playlist_ids, expected_playlist_ids,
             "admin delete_playlist must publish PlaylistDeleted for every playlist removed by cascade"
         );
         assert_eq!(
@@ -11451,43 +10718,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_list_media".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_list_media".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_list_media", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_list_media", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11537,23 +10770,8 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_reset_room_settings".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let owner =
+            create_db_user(&user_repo, "room_owner_reset_room_settings", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11613,23 +10831,7 @@ mod tests {
         let user_repo = UserRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
 
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_delete_room".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let owner = create_db_user(&user_repo, "room_owner_delete_room", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11675,43 +10877,14 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_list_media_filters".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_list_media_filters".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin = create_db_user(
+            &user_repo,
+            "global_admin_list_media_filters",
+            UserRole::Root,
+        )
+        .await;
+        let owner =
+            create_db_user(&user_repo, "room_owner_list_media_filters", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11785,43 +10958,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_edit_media".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_edit_media".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_edit_media", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_edit_media", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -11882,23 +11021,12 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_management_media_notifications".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let owner = create_db_user(
+            &user_repo,
+            "room_owner_management_media_notifications",
+            UserRole::User,
+        )
+        .await;
 
         let room = admin_api
             .room_service
@@ -11992,43 +11120,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_delete_media".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_delete_media".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_delete_media", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_delete_media", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -12075,43 +11169,9 @@ mod tests {
             make_admin_api_for_delete_user_test(pool.clone()).await;
         let user_repo = UserRepository::new(pool.clone());
 
-        let global_admin = synctv_core::models::User {
-            id: UserId::new(),
-            username: "global_admin_move_media".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let owner = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_owner_move_media".to_string(),
-            role: UserRole::User,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let global_admin = user_repo
-            .create(&global_admin)
-            .await
-            .expect("create global admin");
-        let owner = user_repo.create(&owner).await.expect("create owner");
+        let global_admin =
+            create_db_user(&user_repo, "global_admin_move_media", UserRole::Root).await;
+        let owner = create_db_user(&user_repo, "room_owner_move_media", UserRole::User).await;
 
         let room = admin_api
             .room_service
@@ -12171,23 +11231,7 @@ mod tests {
         let user_repo = UserRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
 
-        let admin_user = synctv_core::models::User {
-            id: UserId::new(),
-            username: "room_admin".to_string(),
-            role: UserRole::Root,
-            avatar_file_reference_id: None,
-            status: UserStatus::Active,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-            version: 0,
-        };
-        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let admin_user = create_db_user(&user_repo, "room_admin", UserRole::Root).await;
 
         let room = make_test_room_model(&admin_user.id);
         let room = room_repo.create(&room).await.expect("create room");

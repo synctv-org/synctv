@@ -237,9 +237,7 @@ impl ProviderProxy for DirectUrlProvider {
                     .playback_infos
                     .get(&versioned.result.default_mode)
                     .map_or_else(HashMap::new, |info| info.headers.clone());
-                return Ok(super::proxy::action_for_signed_target_url(
-                    ctx, version, url, headers,
-                ));
+                return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
             }
 
             let Some(rest) = maybe_rest else {
@@ -314,7 +312,7 @@ impl ProviderProxy for DirectUrlProvider {
                 return Ok(ProxyAction::FetchAndForward {
                     url: url.clone(),
                     headers: playback_info.headers.clone(),
-                    range_header: super::proxy::selected_range_header(ctx),
+                    range_header: super::proxy::selected_range_header(ctx)?,
                 });
             }
 
@@ -330,7 +328,7 @@ impl ProviderProxy for DirectUrlProvider {
                     return Ok(ProxyAction::FetchAndForward {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        range_header: super::proxy::selected_range_header(ctx),
+                        range_header: super::proxy::selected_range_header(ctx)?,
                     });
                 }
                 "m3u8" => {
@@ -455,11 +453,10 @@ mod tests {
         );
         let key_builder = crate::cache::KeyBuilder::new("test");
         let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
-        let user_service = crate::service::UserService::new(
+        let user_service = crate::service::UserService::new_for_tests(
             &pool,
             jwt,
             username_cache,
-            crate::config::PasswordComplexityConfig::default(),
             token_blacklist,
             key_builder,
             brute_force,
@@ -467,16 +464,20 @@ mod tests {
         let credential_repo = Arc::new(crate::repository::UserProviderCredentialRepository::new(
             pool.clone(),
         ));
-        let room_service = crate::service::RoomService::new(pool, user_service);
+        let room_service = crate::service::RoomService::new_for_tests(pool, user_service)
+            .expect("room service should build");
         ProxyServices {
             room_service: Arc::new(room_service),
             credential_encryption: None,
             credential_repo,
             provider_access_service: None,
-            signing_key: Arc::new(crate::proxy_signature::ProxySigningKey::derive_from(
-                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-            )),
-            public_id_codec: Arc::new(crate::PublicIdCodec::default_for_tests()),
+            signing_key: Arc::new(
+                crate::proxy_signature::ProxySigningKey::try_derive_from(
+                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+                )
+                .expect("test proxy signing key should derive"),
+            ),
+            public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
         }
     }
 

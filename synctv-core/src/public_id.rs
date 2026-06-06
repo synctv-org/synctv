@@ -115,11 +115,16 @@ impl std::fmt::Debug for PublicIdCodec {
 }
 
 impl PublicIdCodec {
+    #[must_use]
+    pub const fn plain() -> Self {
+        Self {
+            encoding: PublicIdEncoding::Plain,
+        }
+    }
+
     pub fn from_config(config: &PublicIdsConfig) -> Result<Self, String> {
         let Some(sqids_config) = config.sqids.as_ref() else {
-            return Ok(Self {
-                encoding: PublicIdEncoding::Plain,
-            });
+            return Ok(Self::plain());
         };
 
         let options = sqids::Options::new(
@@ -137,10 +142,10 @@ impl PublicIdCodec {
         })
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn default_for_tests() -> Self {
-        Self::from_config(&PublicIdsConfig::default())
-            .expect("default public ID config must be valid")
+        Self::plain()
     }
 
     pub fn encode<T>(&self, id: T) -> Result<String, String>

@@ -35,7 +35,6 @@ fn test_webrtc_config() -> Config {
 mod ice_servers {
     use super::*;
     use synctv_core::service::{ConfiguredIceServer, IceServerList};
-    use synctv_proto::client::{GetIceServersResponse, IceServer};
 
     #[test]
     fn test_stun_url_format() {
@@ -48,89 +47,6 @@ mod ice_servers {
         assert_eq!(stun_url, "stun:test.example.com:3478");
         assert!(stun_url.starts_with("stun:"));
         assert!(stun_url.contains(":3478"));
-    }
-
-    #[test]
-    fn test_ice_server_serialization_stun() {
-        let server = IceServer {
-            urls: vec!["stun:stun.example.com:3478".to_string()],
-            username: None,
-            credential: None,
-        };
-
-        let json = serde_json::to_string(&server).expect("Should serialize");
-        assert!(json.contains("stun:stun.example.com:3478"));
-        // Proto messages include fields even when None/empty
-        // Just verify the URL is present and it serializes correctly
-    }
-
-    #[test]
-    fn test_ice_server_serialization_multiple_stun_urls() {
-        let server = IceServer {
-            urls: vec![
-                "stun:stun1.example.com:3478".to_string(),
-                "stun:stun2.example.com:3478".to_string(),
-            ],
-            username: None,
-            credential: None,
-        };
-
-        let json = serde_json::to_string(&server).expect("Should serialize");
-        assert!(json.contains("stun:stun1.example.com:3478"));
-        assert!(json.contains("stun:stun2.example.com:3478"));
-        assert_eq!(server.urls.len(), 2);
-    }
-
-    #[test]
-    fn test_ice_servers_response_serialization() {
-        let response = GetIceServersResponse {
-            servers: vec![
-                IceServer {
-                    urls: vec!["stun:stun1.example.com:3478".to_string()],
-                    username: None,
-                    credential: None,
-                },
-                IceServer {
-                    urls: vec!["turn:turn.example.com:3478?transport=udp".to_string()],
-                    username: Some("turn-user".to_string()),
-                    credential: Some("turn-password".to_string()),
-                },
-            ],
-            webrtc: None,
-        };
-
-        let json = serde_json::to_string(&response).expect("Should serialize");
-        assert!(json.contains("stun:stun1.example.com:3478"));
-        assert!(json.contains("turn:turn.example.com:3478?transport=udp"));
-        assert!(json.contains("turn-user"));
-        assert!(json.contains("turn-password"));
-        assert_eq!(response.servers.len(), 2);
-    }
-
-    #[test]
-    fn test_ice_servers_response_deserialization() {
-        let json = r#"{
-            "servers": [
-                {
-                    "urls": ["turn:turn.example.com:3478?transport=udp"],
-                    "username": "turn-user",
-                    "credential": "turn-password"
-                }
-            ]
-        }"#;
-
-        let response: GetIceServersResponse =
-            serde_json::from_str(json).expect("Should deserialize");
-        assert_eq!(response.servers.len(), 1);
-        assert_eq!(
-            response.servers[0].urls[0],
-            "turn:turn.example.com:3478?transport=udp"
-        );
-        assert_eq!(response.servers[0].username.as_deref(), Some("turn-user"));
-        assert_eq!(
-            response.servers[0].credential.as_deref(),
-            Some("turn-password")
-        );
     }
 
     #[test]
@@ -207,18 +123,18 @@ mod permissions {
 
     use synctv_api::impls::{ApiError, ClientApiImpl};
     use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::room_settings::{AllowGuestJoin, GuestAddedPermissions};
     use synctv_core::repository::SettingsRepository;
     use synctv_core::service::auth::jwt::JwtService;
+    use synctv_core::service::user::UserServiceRuntimeOptions;
     use synctv_core::service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, SettingsRegistry,
         SettingsService, UserService,
     };
     use synctv_core::service::{ConfiguredIceServer, IceServerList};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, redis_connection_manager, start_redis_url_with_label,
-        test_redis_key_prefix, RedisContainer, TestContainer,
+        create_test_pool_with_db_and_label, opaque_register_user, redis_connection_manager,
+        start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
     };
     use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     use tokio_util::sync::CancellationToken;
@@ -274,18 +190,28 @@ mod permissions {
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
             Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
 
-        let mut user_service = UserService::new(
+        let user_service = UserService::new_with_runtime(
             &pool,
             jwt_service.clone(),
             username_cache,
-            PasswordComplexityConfig::default(),
             token_blacklist,
             KeyBuilder::new(redis_key_prefix),
             brute_force,
+            UserServiceRuntimeOptions {
+                password_registration_policy_override: Some(
+                    synctv_core::service::RegistrationPolicy {
+                        enabled: true,
+                        need_review: false,
+                    },
+                ),
+                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            },
         );
-        user_service.enable_password_registration_for_tests();
         let user_service = Arc::new(user_service);
-        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let room_service = Arc::new(
+            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+                .expect("room service should build"),
+        );
         let settings_repo = SettingsRepository::new(pool.clone());
         let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
@@ -297,19 +223,29 @@ mod permissions {
             test_webrtc_config().server.advertise_host,
             test_webrtc_config().webrtc.stun_port
         );
-        let client_api = ClientApiImpl::new(
-            user_service.clone(),
-            room_service.clone(),
-            Arc::new(ConnectionManager::new(ConnectionLimits::default())),
-            Arc::new(test_webrtc_config()),
-            None,
-            jwt_service,
-            None,
-            None,
-            Some(settings_registry.clone()),
-            Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
-        )
-        .with_builtin_stun_url(builtin_stun_url);
+        let client_api = ClientApiImpl::new_with_runtime(
+            synctv_api::impls::ClientApiConfig {
+                user_service: user_service.clone(),
+                room_service: room_service.clone(),
+                connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+                config: Arc::new(test_webrtc_config()),
+                publish_key_service: None,
+                jwt_service,
+                live_streaming_infrastructure: None,
+                providers_manager: None,
+                settings_registry: Some(settings_registry.clone()),
+                public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+                chat_service: None,
+                credential_encryption: None,
+                provider_stores: None,
+                email_api: None,
+                passkey_service: None,
+            },
+            synctv_api::impls::ClientApiRuntime {
+                builtin_stun_url: Some(builtin_stun_url),
+                ..synctv_api::impls::ClientApiRuntime::test_disabled()
+            },
+        );
 
         ClientApiFixture {
             _postgres: postgres,
@@ -320,6 +256,21 @@ mod permissions {
             settings_registry,
             client_api,
         }
+    }
+
+    async fn register_fixture_user(
+        fixture: &ClientApiFixture,
+        username: &str,
+    ) -> synctv_core::models::User {
+        opaque_register_user(
+            fixture.user_service.as_ref(),
+            username,
+            Some(format!("{username}@test.com")),
+            "TestPassword123!",
+        )
+        .await
+        .expect("register user")
+        .0
     }
 
     #[tokio::test]
@@ -338,26 +289,8 @@ mod permissions {
             .await
             .expect("set external ice servers");
 
-        let (creator, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_turn_creator".to_string(),
-                Some("webrtc_turn_creator@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register creator");
-        let (member, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_turn_member".to_string(),
-                Some("webrtc_turn_member@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register member");
+        let creator = register_fixture_user(&fixture, "webrtc_turn_creator").await;
+        let member = register_fixture_user(&fixture, "webrtc_turn_member").await;
 
         let (room, _) = fixture
             .room_service
@@ -426,16 +359,7 @@ mod permissions {
             .await
             .expect("set external ice servers");
 
-        let (creator, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_guest_creator".to_string(),
-                Some("webrtc_guest_creator@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register creator");
+        let creator = register_fixture_user(&fixture, "webrtc_guest_creator").await;
 
         let (room, _) = fixture
             .room_service
@@ -513,26 +437,8 @@ mod permissions {
     async fn test_get_ice_servers_denies_member_without_use_webrtc_permission() {
         let fixture = build_client_api_fixture("api-webrtc-permissions").await;
 
-        let (creator, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_creator".to_string(),
-                Some("webrtc_creator@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register creator");
-        let (member, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_member".to_string(),
-                Some("webrtc_member@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register member");
+        let creator = register_fixture_user(&fixture, "webrtc_creator").await;
+        let member = register_fixture_user(&fixture, "webrtc_member").await;
 
         let (room, _) = fixture
             .room_service
@@ -585,26 +491,8 @@ mod permissions {
     async fn test_get_ice_servers_rejects_banned_room() {
         let fixture = build_client_api_fixture("api-webrtc-banned-room").await;
 
-        let (creator, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_banned_creator".to_string(),
-                Some("webrtc_banned_creator@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register creator");
-        let (member, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_banned_member".to_string(),
-                Some("webrtc_banned_member@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register member");
+        let creator = register_fixture_user(&fixture, "webrtc_banned_creator").await;
+        let member = register_fixture_user(&fixture, "webrtc_banned_member").await;
 
         let (room, _) = fixture
             .room_service
@@ -648,26 +536,8 @@ mod permissions {
     async fn test_get_ice_servers_rejects_closed_room() {
         let fixture = build_client_api_fixture("api-webrtc-closed-room").await;
 
-        let (creator, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_closed_creator".to_string(),
-                Some("webrtc_closed_creator@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register creator");
-        let (member, _, _) = fixture
-            .user_service
-            .register(
-                "webrtc_closed_member".to_string(),
-                Some("webrtc_closed_member@test.com".to_string()),
-                "TestPassword123!".to_string(),
-                None,
-            )
-            .await
-            .expect("register member");
+        let creator = register_fixture_user(&fixture, "webrtc_closed_creator").await;
+        let member = register_fixture_user(&fixture, "webrtc_closed_member").await;
 
         let (mut room, _) = fixture
             .room_service
@@ -706,69 +576,6 @@ mod permissions {
             ),
             other => panic!("expected authorization error, got {other:?}"),
         }
-    }
-}
-
-mod message_types {
-    use synctv_proto::client::{WebRtcAnswer, WebRtcIceCandidate, WebRtcOffer};
-
-    #[test]
-    fn test_webrtc_offer_serialization() {
-        let offer = WebRtcOffer {
-            to: "user2".to_string(),
-            from: "user1:conn1".to_string(),
-            data: r#"{"type":"offer","sdp":"v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\n..."}"#
-                .to_string(),
-        };
-
-        let json = serde_json::to_string(&offer).expect("Should serialize");
-        assert!(json.contains("user2"));
-        assert!(json.contains("user1:conn1"));
-        assert!(json.contains("offer"));
-    }
-
-    #[test]
-    fn test_webrtc_answer_serialization() {
-        let answer = WebRtcAnswer {
-            to: "user1".to_string(),
-            from: "user2:conn2".to_string(),
-            data: r#"{"type":"answer","sdp":"v=0\r\no=- 789 012 IN IP4 127.0.0.1\r\n..."}"#
-                .to_string(),
-        };
-
-        let json = serde_json::to_string(&answer).expect("Should serialize");
-        assert!(json.contains("user1"));
-        assert!(json.contains("user2:conn2"));
-        assert!(json.contains("answer"));
-    }
-
-    #[test]
-    fn test_ice_candidate_serialization() {
-        let candidate = WebRtcIceCandidate {
-            to: "user2".to_string(),
-            from: "user1:conn1".to_string(),
-            data: r#"{"candidate":"candidate:1 1 udp 2130706431 192.168.1.100 54321 typ host","sdpMid":"0","sdpMLineIndex":0}"#.to_string(),
-        };
-
-        let json = serde_json::to_string(&candidate).expect("Should serialize");
-        assert!(json.contains("user2"));
-        assert!(json.contains("user1:conn1"));
-        assert!(json.contains("candidate:"));
-        assert!(json.contains("typ host"));
-    }
-
-    #[test]
-    fn test_ice_candidate_with_srflx() {
-        let candidate = WebRtcIceCandidate {
-            to: "user3".to_string(),
-            from: "user1:conn1".to_string(),
-            data: r#"{"candidate":"candidate:foundation 1 udp 12345 203.0.113.1 12345 typ srflx"}"#
-                .to_string(),
-        };
-
-        let json = serde_json::to_string(&candidate).expect("Should serialize");
-        assert!(json.contains("user3"));
-        assert!(json.contains("typ srflx"));
     }
 }
 

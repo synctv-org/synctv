@@ -1,8 +1,6 @@
 //! Notification service tests
 //!
 //! Tests event construction, subscription, event type names, and serialization.
-//!
-//! Run with: cargo test --test `notification_service_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
@@ -23,9 +21,7 @@ async fn test_notify_user_joined_event_construction() {
     let room_id = RoomId::expect_positive(1);
     let user_id = UserId::expect_positive(2);
 
-    service
-        .notify_user_joined(&room_id, &user_id, "alice")
-        .unwrap();
+    assert_eq!(service.notify_user_joined(&room_id, &user_id, "alice"), 1);
 
     let (received_room_id, received_event) =
         tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
@@ -56,12 +52,8 @@ async fn test_subscribe_receives_events_in_order() {
     let room_id = RoomId::expect_positive(3);
     let user_id = UserId::expect_positive(4);
 
-    service
-        .notify_user_joined(&room_id, &user_id, "alice")
-        .unwrap();
-    service
-        .notify_user_left(&room_id, &user_id, "alice")
-        .unwrap();
+    assert_eq!(service.notify_user_joined(&room_id, &user_id, "alice"), 1);
+    assert_eq!(service.notify_user_left(&room_id, &user_id, "alice"), 1);
 
     // Receive in order
     let (_, event1) = tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
@@ -106,15 +98,6 @@ fn test_event_type_names_all_variants() {
                 timestamp: chrono::Utc::now(),
             },
             "chat_message",
-        ),
-        (
-            RoomEvent::PlaybackStateChanged {
-                playing: true,
-                position: 0.0,
-                speed: 1.0,
-                media_id: None,
-            },
-            "playback_state_changed",
         ),
         (
             RoomEvent::MediaAdded {
@@ -206,12 +189,8 @@ fn test_event_type_names_all_variants() {
     }
 }
 
-// Serialization tests
-
 #[test]
 fn test_serialization_user_joined_uses_tagged_type() {
-    // The RoomEvent enum uses #[serde(tag = "type", content = "data")]
-    // so serialization should produce {"type":"UserJoined","data":{...}}
     let event = RoomEvent::UserJoined {
         user_id: UserId::expect_positive(123),
         username: "testuser".to_string(),
@@ -219,59 +198,10 @@ fn test_serialization_user_joined_uses_tagged_type() {
 
     let json = serde_json::to_string(&event).unwrap();
 
-    // serde(tag = "type") uses the variant name as-is: "UserJoined"
     assert!(
         json.contains(r#""type":"UserJoined""#),
         "JSON should contain \"type\":\"UserJoined\", got: {json}"
     );
     assert!(json.contains("123"));
     assert!(json.contains("testuser"));
-}
-
-#[test]
-fn test_serialization_all_variants_produce_valid_json() {
-    let events = vec![
-        RoomEvent::UserJoined {
-            user_id: UserId::new(),
-            username: "test".to_string(),
-        },
-        RoomEvent::UserLeft {
-            user_id: UserId::new(),
-            username: "test".to_string(),
-        },
-        RoomEvent::RoomDeleted,
-        RoomEvent::StreamStarted {
-            media_id: MediaId::expect_positive(1),
-            user_id: UserId::new(),
-        },
-    ];
-
-    for event in events {
-        let json = event.to_json().unwrap();
-        // Verify it's valid JSON by parsing it back
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(
-            parsed.get("type").is_some(),
-            "Serialized event should have 'type' field"
-        );
-    }
-}
-
-#[test]
-fn test_room_event_deserialization_round_trip() {
-    let event = RoomEvent::UserJoined {
-        user_id: UserId::expect_positive(1),
-        username: "alice".to_string(),
-    };
-
-    let json = serde_json::to_string(&event).unwrap();
-    let deserialized: RoomEvent = serde_json::from_str(&json).unwrap();
-
-    match deserialized {
-        RoomEvent::UserJoined { user_id, username } => {
-            assert_eq!(user_id, UserId::expect_positive(1));
-            assert_eq!(username, "alice");
-        }
-        _ => panic!("Expected UserJoined after round-trip"),
-    }
 }

@@ -11,6 +11,12 @@ const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on
 const DEFAULT_ROOM_STREAMS_PAGE: i32 = 1;
 const DEFAULT_ROOM_STREAMS_PAGE_SIZE: i32 = 50;
 
+fn positive_i32_to_usize(value: i32, field: &'static str) -> Result<usize, ApiError> {
+    let value = u32::try_from(value)
+        .map_err(|_| ApiError::Internal(format!("{field} must be positive")))?;
+    usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
+}
+
 pub(crate) fn build_room_streams_request(
     req: ListRoomStreamsRequest,
 ) -> Result<ListRoomStreamsRequest, ApiError> {
@@ -33,22 +39,19 @@ pub(crate) fn build_room_streams_request(
     })
 }
 
-#[must_use]
 pub(crate) fn build_room_streams_response(
     media_ids: Vec<MediaId>,
     req: &ListRoomStreamsRequest,
     public_id_codec: &crate::PublicIdCodec,
-) -> ListRoomStreamsResponse {
+) -> Result<ListRoomStreamsResponse, ApiError> {
     let mut media_ids: Vec<String> = media_ids
         .into_iter()
-        .filter_map(|media_id| match public_id_codec.encode_media_id(media_id) {
-            Ok(public_id) => Some(public_id),
-            Err(error) => {
-                tracing::warn!(media_id = %media_id, error = %error, "Skipping invalid stream media id");
-                None
-            }
+        .map(|media_id| {
+            public_id_codec.encode_media_id(media_id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode active stream media id: {error}"))
+            })
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
         media_ids.retain(|media_id| media_id.to_ascii_lowercase().contains(search.as_str()));
     }
@@ -62,9 +65,10 @@ pub(crate) fn build_room_streams_response(
         media_ids.reverse();
     }
 
-    let page = usize::try_from(req.page.max(1)).unwrap_or(usize::MAX);
-    let page_size = usize::try_from(req.page_size.max(1)).unwrap_or(usize::MAX);
-    let total = i32::try_from(media_ids.len()).unwrap_or(i32::MAX);
+    let page = positive_i32_to_usize(req.page, "page")?;
+    let page_size = positive_i32_to_usize(req.page_size, "page_size")?;
+    let total = i32::try_from(media_ids.len())
+        .map_err(|_| ApiError::Internal("active stream count exceeds i32 range".to_string()))?;
     let offset = page.saturating_sub(1).saturating_mul(page_size);
     let streams = media_ids
         .into_iter()
@@ -76,7 +80,7 @@ pub(crate) fn build_room_streams_response(
         })
         .collect();
 
-    ListRoomStreamsResponse { streams, total }
+    Ok(ListRoomStreamsResponse { streams, total })
 }
 
 pub(crate) fn live_streaming_unavailable_error() -> ApiError {
@@ -151,11 +155,7 @@ impl ClientApiImpl {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| ApiError::Internal(format!("Invalid stream media id: {error}")))?;
 
-        Ok(build_room_streams_response(
-            media_ids,
-            &req,
-            &self.public_id_codec,
-        ))
+        build_room_streams_response(media_ids, &req, &self.public_id_codec)
     }
 
     pub async fn get_room_stream_info(
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn build_room_streams_response_applies_search_sort_and_pagination() {
-        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let media_ids = vec![
             synctv_core::models::MediaId::expect_positive(201),
             synctv_core::models::MediaId::expect_positive(202),
@@ -303,7 +303,8 @@ mod tests {
                 sort_direction: crate::proto::client::SortDirection::Desc as i32,
             },
             &public_id_codec,
-        );
+        )
+        .expect("valid stream ids should encode");
 
         assert_eq!(response.total, 3);
         assert_eq!(response.streams.len(), 1);

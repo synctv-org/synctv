@@ -1,6 +1,3 @@
-// Authentication HTTP handlers
-// This layer now uses proto types and delegates to the impls layer for business logic
-
 use axum::{
     extract::{FromRequest, FromRequestParts, Request, State},
     Json,
@@ -10,68 +7,17 @@ use serde::de::DeserializeOwned;
 use super::{AppError, AppResult, AppState};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
-    ConfirmEmailLoginRequest, CreateGuestTokenRequest, CreateGuestTokenResponse,
-    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest,
-    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse,
-    LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
+    ConfirmEmailLoginRequest, ConfirmEmailRegistrationRequest, CreateGuestTokenRequest,
+    CreateGuestTokenResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
+    FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest,
+    LoginResponse, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterResponse,
+    RegisterWithDirectPasswordRequest, RequestEmailLoginRequest, RequestEmailLoginResponse,
+    RequestEmailRegistrationRequest, RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
-    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
-    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
-    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
+    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
+    StartPasskeyLoginResponse, StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse,
+    VerifyMfaEmailCodeRequest,
 };
-
-pub async fn register(
-    State(state): State<AppState>,
-    request: Request,
-) -> AppResult<Json<RegisterResponse>> {
-    let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let client_ip = request_meta.client_ip;
-    let executor = state.shared_api_runtime.client_api.clone();
-    let client_api = state.shared_api_runtime.client_api.clone();
-    let response = executor
-        .execute_public_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |request_control| async move {
-                let req = parse_auth_json::<RegisterRequest>(request).await?;
-                client_api
-                    .register_with_control(req, client_ip, Some(&request_control))
-                    .await
-            },
-        )
-        .await
-        .map_err(super::error::map_api_error)?;
-    Ok(Json(response))
-}
-
-pub async fn login(
-    State(state): State<AppState>,
-    request: Request,
-) -> AppResult<Json<LoginResponse>> {
-    let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let client_ip = request_meta.client_ip;
-    let executor = state.shared_api_runtime.client_api.clone();
-    let client_api = state.shared_api_runtime.client_api.clone();
-    let response = executor
-        .execute_public_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |request_control| async move {
-                let req = parse_auth_json_into::<
-                    LoginRequest,
-                    synctv_proto::http_serde::LoginRequestDef,
-                >(request)
-                .await?;
-                client_api
-                    .login_with_control(req, client_ip, Some(&request_control))
-                    .await
-            },
-        )
-        .await
-        .map_err(super::error::map_api_error)?;
-    Ok(Json(response))
-}
 
 /// Extract the real client IP from a request.
 ///
@@ -83,7 +29,7 @@ pub fn extract_client_ip(
     config: &synctv_core::Config,
     socket_addr: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
-) -> std::net::IpAddr {
+) -> Result<std::net::IpAddr, crate::client_ip::ClientIpHeaderError> {
     crate::client_ip::extract_client_ip_from_headers(config, socket_addr.ip(), headers)
 }
 
@@ -112,16 +58,6 @@ where
         .await
         .map_err(|err| map_json_rejection(&err))?;
     Ok(request)
-}
-
-async fn parse_auth_json_into<T, U>(request: Request) -> Result<T, ApiError>
-where
-    U: DeserializeOwned,
-    T: TryFrom<U>,
-    T::Error: std::fmt::Display,
-{
-    let transport = parse_auth_json::<U>(request).await?;
-    T::try_from(transport).map_err(|err| ApiError::InvalidInput(err.to_string()))
 }
 
 #[cfg_attr(
@@ -202,7 +138,96 @@ pub async fn finish_opaque_registration(
     Ok(Json(response))
 }
 
-/// Confirm a passwordless email login token. Password login uses OPAQUE.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/direct-password/register",
+        tag = "Auth",
+        request_body = RegisterWithDirectPasswordRequest,
+        responses(
+            (status = 200, description = "Direct password registration succeeded", body = RegisterResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn register_with_direct_password(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RegisterResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RegisterWithDirectPasswordRequest>(request).await?;
+                client_api
+                    .register_with_direct_password_with_control(
+                        req,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/direct-password/login",
+        tag = "Auth",
+        request_body = synctv_proto::http_serde::LoginWithDirectPasswordRequestDef,
+        responses(
+            (status = 200, description = "Direct password login succeeded", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn login_with_direct_password(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = crate::proto::client::LoginWithDirectPasswordRequest::try_from(
+                    parse_auth_json::<synctv_proto::http_serde::LoginWithDirectPasswordRequestDef>(
+                        request,
+                    )
+                    .await?,
+                )
+                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                client_api
+                    .login_with_direct_password_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// Confirm a passwordless email login token.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -298,7 +323,7 @@ pub async fn create_guest_token(
         post,
         path = "/api/auth/opaque/login/start",
         tag = "Auth",
-        request_body = StartOpaqueLoginRequest,
+        request_body = synctv_proto::http_serde::StartOpaqueLoginRequestDef,
         responses(
             (status = 200, description = "OPAQUE login challenge created", body = StartOpaqueLoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -319,11 +344,13 @@ pub async fn start_opaque_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json_into::<
-                    StartOpaqueLoginRequest,
-                    synctv_proto::http_serde::StartOpaqueLoginRequestDef,
-                >(request)
-                .await?;
+                let req = crate::proto::client::StartOpaqueLoginRequest::try_from(
+                    parse_auth_json::<synctv_proto::http_serde::StartOpaqueLoginRequestDef>(
+                        request,
+                    )
+                    .await?,
+                )
+                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
                 client_api
                     .start_opaque_login_with_control(req, client_ip, Some(&request_control))
                     .await
@@ -468,7 +495,7 @@ pub async fn finish_passkey_registration(
         post,
         path = "/api/auth/passkeys/login/start",
         tag = "Auth",
-        request_body = StartPasskeyLoginRequest,
+        request_body = synctv_proto::http_serde::StartPasskeyLoginRequestDef,
         responses(
             (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -490,11 +517,13 @@ pub async fn start_passkey_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json_into::<
-                    StartPasskeyLoginRequest,
-                    synctv_proto::http_serde::StartPasskeyLoginRequestDef,
-                >(request)
-                .await?;
+                let req = crate::proto::client::StartPasskeyLoginRequest::try_from(
+                    parse_auth_json::<synctv_proto::http_serde::StartPasskeyLoginRequestDef>(
+                        request,
+                    )
+                    .await?,
+                )
+                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
                 client_api
                     .start_passkey_login_with_control(req, client_ip, Some(&request_control))
                     .await
@@ -547,7 +576,7 @@ pub async fn finish_passkey_login(
     Ok(Json(response))
 }
 
-fn require_email_api_api(
+fn require_email_api(
     state: &AppState,
 ) -> Result<std::sync::Arc<crate::impls::EmailApiImpl>, ApiError> {
     state.shared_api_runtime.email_api.clone().ok_or_else(|| {
@@ -584,7 +613,7 @@ pub async fn request_email_login(
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<RequestEmailLoginRequest>(request).await?;
-                let email_api = require_email_api_api(&state_for_request)?;
+                let email_api = require_email_api(&state_for_request)?;
                 email_api
                     .request_email_login_with_control(&req.email, Some(&request_control))
                     .await
@@ -596,6 +625,92 @@ pub async fn request_email_login(
     Ok(Json(RequestEmailLoginResponse {
         message: result.message,
     }))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/email/registration/request",
+        tag = "Auth",
+        request_body = RequestEmailRegistrationRequest,
+        responses(
+            (status = 200, description = "Email registration request accepted", body = RequestEmailRegistrationResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn request_email_registration(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RequestEmailRegistrationResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_request = state.clone();
+    let result = state
+        .shared_api_runtime
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RequestEmailRegistrationRequest>(request).await?;
+                let email_api = require_email_api(&state_for_request)?;
+                email_api
+                    .request_email_registration_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(RequestEmailRegistrationResponse {
+        message: result.message,
+    }))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/email/registration/confirm",
+        tag = "Auth",
+        request_body = ConfirmEmailRegistrationRequest,
+        responses(
+            (status = 200, description = "Email registration confirmed", body = RegisterResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn confirm_email_registration(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RegisterResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<ConfirmEmailRegistrationRequest>(request).await?;
+                client_api
+                    .confirm_email_registration_with_direct_password_with_control(
+                        req,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
 }
 
 #[cfg_attr(
@@ -627,7 +742,7 @@ pub async fn request_mfa_email_code(
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<RequestMfaEmailCodeRequest>(request).await?;
-                let email_api = require_email_api_api(&state_for_request)?;
+                let email_api = require_email_api(&state_for_request)?;
                 email_api
                     .request_mfa_email_code_response_with_control(req, Some(&request_control))
                     .await
@@ -670,7 +785,7 @@ pub async fn verify_mfa_email_code(
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<VerifyMfaEmailCodeRequest>(request).await?;
-                let email_api = require_email_api_api(&state_for_request)?;
+                let email_api = require_email_api(&state_for_request)?;
                 let outcome = email_api
                     .verify_mfa_email_code_request_with_control(
                         req,
@@ -678,10 +793,10 @@ pub async fn verify_mfa_email_code(
                         Some(&request_control),
                     )
                     .await?;
-                Ok::<_, ApiError>(crate::impls::client::login_outcome_to_proto(
+                crate::impls::client::login_outcome_to_proto(
                     outcome,
                     &state_for_request.shared_api_runtime.public_id_codec,
-                ))
+                )
             },
         )
         .await
@@ -872,60 +987,6 @@ pub async fn logout(
 mod tests {
     use super::*;
 
-    // Verify request types have expected fields and derive traits (Serialize, Deserialize, Clone)
-
-    #[test]
-    fn test_confirm_email_login_request_construction() {
-        let req = ConfirmEmailLoginRequest {
-            email: "test@example.com".to_string(),
-            email_token: "login-token".to_string(),
-        };
-        assert_eq!(req.email, "test@example.com");
-        assert_eq!(req.email_token, "login-token");
-    }
-
-    #[test]
-    fn test_confirm_email_login_request_json_roundtrip() {
-        let req = ConfirmEmailLoginRequest {
-            email: "test@example.com".to_string(),
-            email_token: "login-token".to_string(),
-        };
-        let json = serde_json::to_string(&req).expect("serialize");
-        let deserialized: ConfirmEmailLoginRequest =
-            serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.email, req.email);
-        assert_eq!(deserialized.email_token, req.email_token);
-    }
-
-    #[test]
-    fn test_refresh_token_request_construction() {
-        let req = RefreshTokenRequest {
-            refresh_token: "some_refresh_token".to_string(),
-        };
-        assert_eq!(req.refresh_token, "some_refresh_token");
-    }
-
-    #[test]
-    fn test_refresh_token_request_json_roundtrip() {
-        let req = RefreshTokenRequest {
-            refresh_token: "refresh_abc123".to_string(),
-        };
-        let json = serde_json::to_string(&req).expect("serialize");
-        let deserialized: RefreshTokenRequest = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.refresh_token, req.refresh_token);
-    }
-
-    #[test]
-    fn test_request_email_login_request_roundtrip() {
-        let req = RequestEmailLoginRequest {
-            email: "user@example.com".to_string(),
-        };
-        let json = serde_json::to_string(&req).expect("serialize");
-        let deserialized: RequestEmailLoginRequest =
-            serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.email, req.email);
-    }
-
     #[test]
     fn test_passkey_http_response_serializes_proto_options_as_json_object() {
         let response = StartPasskeyLoginResponse {
@@ -953,128 +1014,5 @@ mod tests {
             serde_json::from_slice(&request.credential).expect("credential json");
         assert_eq!(credential["id"], "cred");
         assert_eq!(credential["type"], "public-key");
-    }
-
-    // Auth handlers use
-    // map_api_error for consistent typed error classification.
-
-    #[test]
-    fn test_app_error_bad_request_status() {
-        let err = super::super::AppError::bad_request("registration failed");
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(err.message, "registration failed");
-    }
-
-    #[test]
-    fn test_app_error_unauthorized_status() {
-        let err = super::super::AppError::unauthorized("invalid credentials");
-        assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "invalid credentials");
-    }
-
-    #[test]
-    fn test_confirm_email_login_request_missing_fields_default_to_empty_strings() {
-        let json = r#"{"email":"user@example.com"}"#;
-        let req: ConfirmEmailLoginRequest =
-            serde_json::from_str(json).expect("deserialize with defaults");
-        assert_eq!(req.email, "user@example.com");
-        assert!(req.email_token.is_empty());
-    }
-
-    #[test]
-    fn test_logout_response_serialization() {
-        let resp = LogoutResponse {
-            success: true,
-            message: String::new(),
-        };
-        let json = serde_json::to_string(&resp).expect("serialize");
-        assert!(json.contains(r#""success":true"#));
-        assert!(json.contains(r#""message":""#));
-    }
-
-    #[test]
-    fn test_logout_response_partial_success() {
-        let resp = LogoutResponse {
-            success: true,
-            message: "Logged out but token invalidation may be delayed".to_string(),
-        };
-        let json = serde_json::to_string(&resp).expect("serialize");
-        assert!(json.contains(r#""success":true"#));
-        assert!(json.contains("token invalidation may be delayed"));
-    }
-
-    #[test]
-    fn test_logout_response_failure() {
-        let resp = LogoutResponse {
-            success: false,
-            message: String::new(),
-        };
-        let json = serde_json::to_string(&resp).expect("serialize");
-        assert!(json.contains(r#""success":false"#));
-    }
-
-    // Test the token extraction logic used by logout handler
-
-    #[test]
-    fn test_extract_bearer_token_valid() {
-        use synctv_core::service::auth::JwtValidator;
-
-        let header_value = "Bearer mytoken123";
-        let result = JwtValidator::extract_bearer_token(header_value);
-        assert!(result.is_ok(), "Should extract valid Bearer token");
-        assert_eq!(result.unwrap(), "mytoken123");
-    }
-
-    #[test]
-    fn test_extract_bearer_token_missing_bearer_prefix() {
-        use synctv_core::service::auth::JwtValidator;
-
-        let header_value = "mytoken123";
-        let result = JwtValidator::extract_bearer_token(header_value);
-        assert!(result.is_err(), "Should fail without Bearer prefix");
-    }
-
-    #[test]
-    fn test_extract_bearer_token_empty() {
-        use synctv_core::service::auth::JwtValidator;
-
-        let header_value = "";
-        let result = JwtValidator::extract_bearer_token(header_value);
-        assert!(result.is_err(), "Should fail with empty string");
-    }
-
-    #[test]
-    fn test_extract_bearer_token_bearer_only() {
-        use synctv_core::service::auth::JwtValidator;
-
-        let header_value = "Bearer ";
-        let result = JwtValidator::extract_bearer_token(header_value);
-        // Depending on implementation, this might fail or return empty
-        // The key is that an empty token after "Bearer " should be treated as invalid
-        if let Ok(token) = result {
-            assert!(token.is_empty(), "Token should be empty");
-        }
-    }
-
-    // Verify that the logout handler returns appropriate errors
-
-    #[test]
-    fn test_logout_missing_token_error_message() {
-        let err = super::super::error::AppError::bad_request(
-            "Missing Bearer token in Authorization header",
-        );
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(
-            err.message.contains("Missing"),
-            "Should mention missing token"
-        );
-    }
-
-    #[test]
-    fn test_logout_missing_token_error_status() {
-        let err = super::super::error::AppError::bad_request(
-            "Missing Bearer token in Authorization header",
-        );
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
     }
 }

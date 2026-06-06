@@ -8,9 +8,9 @@ import "proto/common.proto";
 
 // Admin API for SyncTV - Requires admin or root permissions
 //
-// SECURITY: Several RPCs (CreateUser, UpdateUserPassword) transmit passwords as
-// plaintext. Deployments MUST use TLS. UpdateUserPassword operations should be
-// logged for audit compliance.
+// SECURITY: User password operations revoke or initialize credentials through
+// the OPAQUE password reset flow. Admin APIs never receive user replacement
+// passwords.
 service AdminService {
   // =========================
   // System Settings Management
@@ -29,7 +29,7 @@ service AdminService {
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
   rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
-  rpc UpdateUserPassword(UpdateUserPasswordRequest) returns (UpdateUserPasswordResponse);
+  rpc SetUserPassword(SetUserPasswordRequest) returns (SetUserPasswordResponse);
   rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (UpdateUserUsernameResponse);
   rpc UpdateUserRole(UpdateUserRoleRequest) returns (UpdateUserRoleResponse);
   rpc BanUser(BanUserRequest) returns (BanUserResponse);
@@ -152,17 +152,17 @@ message UserRegistrationReview {
   synctv.common.ReviewStatus status = 5;
   int64 requested_at = 6;
   int64 reviewed_at = 7;
-  string reviewed_by = 8;
-  string rejection_reason = 9;
-  string oauth2_provider = 10; // Provider type, e.g. "github" or "oidc".
-  string oauth2_provider_user_id = 11;
-  string oauth2_provider_username = 12;
-  string oauth2_avatar_url = 13;
+  optional string reviewed_by = 8;
+  optional string rejection_reason = 9;
+  optional string oauth2_provider = 10; // Provider type, e.g. "github" or "oidc".
+  optional string oauth2_provider_user_id = 11;
+  optional string oauth2_provider_username = 12;
+  optional string oauth2_avatar_url = 13;
   bool oauth2_email_trusted = 14;
-  string oauth2_provider_instance_name = 15;
-  string oauth2_provider_issuer = 16;
-  string webauthn_credential_id = 17;
-  string webauthn_credential_name = 18;
+  optional string oauth2_provider_instance_name = 15;
+  optional string oauth2_provider_issuer = 16;
+  optional string webauthn_credential_id = 17;
+  optional string webauthn_credential_name = 18;
 }
 
 message RoomCreationReview {
@@ -174,8 +174,8 @@ message RoomCreationReview {
   synctv.common.ReviewStatus status = 6;
   int64 requested_at = 7;
   int64 reviewed_at = 8;
-  string reviewed_by = 9;
-  string rejection_reason = 10;
+  optional string reviewed_by = 9;
+  optional string rejection_reason = 10;
 }
 
 message RoomJoinReview {
@@ -188,8 +188,8 @@ message RoomJoinReview {
   synctv.common.ReviewStatus status = 7;
   int64 requested_at = 8;
   int64 reviewed_at = 9;
-  string reviewed_by = 10;
-  string rejection_reason = 11;
+  optional string reviewed_by = 10;
+  optional string rejection_reason = 11;
 }
 
 message BanRecord {
@@ -253,26 +253,28 @@ message SendTestEmailResponse {
 // User Management
 // =========================
 
-// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message CreateUserRequest {
   string username = 1 [(buf.validate.field).string = {
     min_len: 3
     max_len: 50
     pattern: "^[\\p{L}\\p{N}_-]+$"
   }];
-  string password = 2 [(buf.validate.field).string = {
-    min_len: 8
-    max_len: 128
-  }];
-  string email = 3 [
+  string email = 2 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
       max_len: 254
       email: true
     }
   ];
-  synctv.common.UserRole role = 4 [(buf.validate.field).enum.defined_only = true];
-  synctv.common.UserStatus status = 5 [(buf.validate.field).enum.defined_only = true];
+  synctv.common.UserRole role = 3 [(buf.validate.field).enum.defined_only = true];
+  synctv.common.UserStatus status = 4 [(buf.validate.field).enum.defined_only = true];
+  string password = 5 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).string = {
+      min_len: 8
+      max_len: 128
+    }
+  ];
 }
 
 message CreateUserResponse {
@@ -367,23 +369,19 @@ message UpdateUserPreferencesResponse {
   synctv.client.UserAuthFactors auth_factors = 3;
 }
 
-// SECURITY: Admin password reset is a privileged operation. The reason field
-// provides an audit trail for compliance.
-message UpdateUserPasswordRequest {
+message SetUserPasswordRequest {
   string user_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^usr_[A-Za-z0-9]+$"
   }];
-  string new_password = 2 [(buf.validate.field).string = {
-    min_len: 8
-    max_len: 128
-  }];
+  string password = 2 [(buf.validate.field).string = {min_len: 8, max_len: 1024}];
   string reason = 3 [(buf.validate.field).string.max_len = 500];
 }
 
-message UpdateUserPasswordResponse {
+message SetUserPasswordResponse {
   bool success = 1;
+  AdminUser user = 2;
 }
 
 message UpdateUserUsernameRequest {

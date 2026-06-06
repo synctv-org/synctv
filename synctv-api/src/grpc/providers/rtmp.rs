@@ -43,7 +43,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
 
@@ -68,7 +68,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
             &request,
             &self.config,
             Some(crate::grpc::grpc_unary_request_timeout()),
-        );
+        )?;
         let req = request.into_inner();
         let api = self.api.clone();
 

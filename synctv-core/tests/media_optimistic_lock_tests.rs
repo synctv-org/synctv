@@ -2,7 +2,6 @@
 //!
 //! Tests for version-based optimistic locking in `MediaRepository`.
 //!
-//! Run with: cargo test --test `media_optimistic_lock_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
@@ -38,11 +37,9 @@ fn make_user(username: &str) -> User {
 }
 
 struct TestContext {
-    #[allow(dead_code)]
-    container: TestContainer,
+    _container: TestContainer,
     pool: PgPool,
-    #[allow(dead_code)]
-    owner: User,
+    _owner: User,
     room: Room,
     root_playlist: Playlist,
 }
@@ -100,9 +97,9 @@ async fn setup_test_context(suffix: &str) -> TestContext {
         .unwrap();
 
     TestContext {
-        container,
+        _container: container,
         pool,
-        owner,
+        _owner: owner,
         room,
         root_playlist,
     }

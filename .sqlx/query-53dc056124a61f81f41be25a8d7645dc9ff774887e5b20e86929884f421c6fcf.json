@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_email_registration_tokens\n            WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "53dc056124a61f81f41be25a8d7645dc9ff774887e5b20e86929884f421c6fcf"
+}

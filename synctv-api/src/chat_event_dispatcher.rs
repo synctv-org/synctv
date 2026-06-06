@@ -3,23 +3,10 @@ use std::sync::Arc;
 use synctv_core::models::ChatMessageEvent;
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::runtime::{RealtimeDeliveryOutcome, RealtimeEventService, RealtimeMetrics};
+use crate::runtime::{RealtimeDeliveryOutcome, RealtimeEventService};
 
 pub trait ChatEventDispatcher: Send + Sync {
     fn dispatch(&self, event: &ChatMessageEvent) -> RealtimeDeliveryOutcome;
-}
-
-pub struct NoopChatEventDispatcher;
-
-impl ChatEventDispatcher for NoopChatEventDispatcher {
-    fn dispatch(&self, _event: &ChatMessageEvent) -> RealtimeDeliveryOutcome {
-        RealtimeDeliveryOutcome::from_publish_only(
-            false,
-            RealtimeMetrics {
-                distributed_enabled: false,
-            },
-        )
-    }
 }
 
 pub struct RealtimeChatEventDispatcher {
@@ -60,11 +47,6 @@ pub fn default_chat_event_dispatcher(
 }
 
 #[must_use]
-pub fn noop_chat_event_dispatcher() -> Arc<dyn ChatEventDispatcher> {
-    Arc::new(NoopChatEventDispatcher)
-}
-
-#[must_use]
 pub fn chat_message_event_to_realtime(event: &ChatMessageEvent) -> RealtimeEvent {
     RealtimeEvent::ChatMessageEvent {
         event_id: event.event_id.clone(),
@@ -78,6 +60,7 @@ pub fn chat_message_event_to_realtime(event: &ChatMessageEvent) -> RealtimeEvent
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::RealtimeMetrics;
     use async_trait::async_trait;
     use chrono::Utc;
     use std::sync::Mutex;

@@ -7,61 +7,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-/// Settings group names constants
-pub mod groups {
-    pub const SERVER: &str = "server";
-    pub const EMAIL: &str = "email";
-    pub const OAUTH: &str = "oauth";
-    pub const RATE_LIMIT: &str = "rate_limit";
-    pub const CONTENT_MODERATION: &str = "content_moderation";
-}
-
-/// Server settings key constants
-pub mod server {
-    pub const ALLOW_ROOM_CREATION: &str = "allow_room_creation";
-    pub const MAX_ROOMS_PER_USER: &str = "max_rooms_per_user";
-    pub const MAX_MEMBERS_PER_ROOM: &str = "max_members_per_room";
-
-    pub const DEFAULT_ROOM_SETTINGS: &str = "default_room_settings";
-    pub const DEFAULT_ROOM_ALLOW_GUEST: &str = "allow_guest";
-}
-
-/// Email settings key constants
-pub mod email {
-    pub const ENABLED: &str = "enabled";
-    pub const SMTP_HOST: &str = "smtp_host";
-    pub const SMTP_PORT: &str = "smtp_port";
-    pub const SMTP_USERNAME: &str = "smtp_username";
-    pub const SMTP_PASSWORD: &str = "smtp_password";
-    pub const USE_TLS: &str = "use_tls";
-    pub const FROM_EMAIL: &str = "from_email";
-    pub const FROM_NAME: &str = "from_name";
-}
-
-/// OAuth settings key constants
-pub mod oauth {
-    pub const GITHUB_ENABLED: &str = "github_enabled";
-    pub const GOOGLE_ENABLED: &str = "google_enabled";
-    pub const MICROSOFT_ENABLED: &str = "microsoft_enabled";
-    pub const DISCORD_ENABLED: &str = "discord_enabled";
-}
-
-/// Rate limit settings key constants
-pub mod rate_limit {
-    pub const ENABLED: &str = "enabled";
-    pub const API_RATE_LIMIT: &str = "api_rate_limit";
-    pub const API_RATE_WINDOW: &str = "api_rate_window";
-    pub const WS_RATE_LIMIT: &str = "ws_rate_limit";
-    pub const WS_RATE_WINDOW: &str = "ws_rate_window";
-}
-
-/// Content moderation settings key constants
-pub mod content_moderation {
-    pub const ENABLED: &str = "enabled";
-    pub const FILTER_PROFANITY: &str = "filter_profanity";
-    pub const MAX_MESSAGE_LENGTH: &str = "max_message_length";
-    pub const LINK_FILTER_ENABLED: &str = "link_filter_enabled";
-}
+const SERVER_GROUP: &str = "server";
+const EMAIL_GROUP: &str = "email";
+const OAUTH_GROUP: &str = "oauth";
+const RATE_LIMIT_GROUP: &str = "rate_limit";
+const CONTENT_MODERATION_GROUP: &str = "content_moderation";
 
 /// System settings group
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -106,28 +56,9 @@ impl SettingsGroup {
     }
 }
 
-/// Settings error types
-#[derive(Debug, thiserror::Error)]
-pub enum SettingsError {
-    #[error("Invalid settings path: {0}")]
-    InvalidPath(String),
-
-    #[error("Failed to merge settings")]
-    MergeFailed,
-
-    #[error("Serialization error: {0}")]
-    SerializationError(#[source] serde_json::Error),
-
-    #[error("Deserialization error: {0}")]
-    DeserializationError(#[source] serde_json::Error),
-
-    #[error("Settings group not found: {0}")]
-    NotFound(String),
-}
-
 /// Default settings for server group
 #[must_use]
-pub fn default_server_settings() -> JsonValue {
+fn default_server_settings() -> JsonValue {
     serde_json::json!({
         "allow_room_creation": true,
         "max_rooms_per_user": 10,
@@ -140,7 +71,7 @@ pub fn default_server_settings() -> JsonValue {
 
 /// Default settings for email group
 #[must_use]
-pub fn default_email_settings() -> JsonValue {
+fn default_email_settings() -> JsonValue {
     serde_json::json!({
         "enabled": false,
         "smtp_host": "",
@@ -155,7 +86,7 @@ pub fn default_email_settings() -> JsonValue {
 
 /// Default settings for OAuth group
 #[must_use]
-pub fn default_oauth_settings() -> JsonValue {
+fn default_oauth_settings() -> JsonValue {
     serde_json::json!({
         "github_enabled": false,
         "google_enabled": false,
@@ -168,17 +99,17 @@ pub fn default_oauth_settings() -> JsonValue {
 #[must_use]
 pub fn get_default_settings(group_name: &str) -> Option<JsonValue> {
     match group_name {
-        "server" => Some(default_server_settings()),
-        "email" => Some(default_email_settings()),
-        "oauth" => Some(default_oauth_settings()),
-        "rate_limit" => Some(serde_json::json!({
+        SERVER_GROUP => Some(default_server_settings()),
+        EMAIL_GROUP => Some(default_email_settings()),
+        OAUTH_GROUP => Some(default_oauth_settings()),
+        RATE_LIMIT_GROUP => Some(serde_json::json!({
             "enabled": true,
             "api_rate_limit": 100,
             "api_rate_window": 60,
             "ws_rate_limit": 50,
             "ws_rate_window": 60
         })),
-        "content_moderation" => Some(serde_json::json!({
+        CONTENT_MODERATION_GROUP => Some(serde_json::json!({
             "enabled": false,
             "filter_profanity": false,
             "max_message_length": 1000,
@@ -230,23 +161,10 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_group_serde_roundtrip() {
-        let sg = SettingsGroup::new("server".to_string(), r#"{"a":1}"#.to_string());
-        let json = serde_json::to_value(&sg).unwrap();
-        let deserialized: SettingsGroup = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.key, sg.key);
-        assert_eq!(deserialized.group_name, sg.group_name);
-        assert_eq!(deserialized.value, sg.value);
-    }
-
-    #[test]
     fn test_settings_group_json_field_name_is_group() {
-        // Verify that JSON serialization uses "group" field name
-        // even though the Rust struct field is "group_name" (matching database column)
         let sg = SettingsGroup::new("email".to_string(), r#"{"enabled":true}"#.to_string());
         let json = serde_json::to_value(&sg).unwrap();
 
-        // JSON should contain "group" not "group_name"
         assert!(
             json.get("group").is_some(),
             "JSON should contain 'group' field"
@@ -260,7 +178,6 @@ mod tests {
 
     #[test]
     fn test_settings_group_deserialize_from_group_field() {
-        // Verify that JSON deserialization accepts "group" field name
         let json = serde_json::json!({
             "key": "server.default",
             "group": "server",
@@ -290,32 +207,5 @@ mod tests {
         let result = sg.as_object();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not an object"));
-    }
-
-    #[test]
-    fn test_settings_error_display() {
-        let err = SettingsError::InvalidPath("foo.bar".to_string());
-        assert!(err.to_string().contains("Invalid settings path"));
-        assert!(err.to_string().contains("foo.bar"));
-
-        let err = SettingsError::NotFound("server".to_string());
-        assert!(err.to_string().contains("not found"));
-
-        let err = SettingsError::MergeFailed;
-        assert!(err.to_string().contains("merge"));
-    }
-
-    #[test]
-    fn test_group_name_constants() {
-        assert_eq!(groups::SERVER, "server");
-        assert_eq!(groups::EMAIL, "email");
-        assert_eq!(groups::OAUTH, "oauth");
-        assert_eq!(groups::RATE_LIMIT, "rate_limit");
-        assert_eq!(groups::CONTENT_MODERATION, "content_moderation");
-    }
-
-    #[test]
-    fn test_server_key_constants() {
-        assert_eq!(server::ALLOW_ROOM_CREATION, "allow_room_creation");
     }
 }

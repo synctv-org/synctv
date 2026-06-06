@@ -110,11 +110,6 @@ impl UnknownConfigDiagnostics {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ConfigLoadBehavior {
-    pub strict_unknown: bool,
-}
-
 struct LoadedConfig {
     config: Config,
     unknown: UnknownConfigDiagnostics,
@@ -123,34 +118,36 @@ struct LoadedConfig {
 pub fn default_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        return user_home_dir().map_or_else(
+        user_home_dir().map_or_else(
             || std::env::temp_dir().join("synctv"),
             |home| home.join(".synctv"),
-        );
+        )
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return absolute_env_path("XDG_STATE_HOME")
+        absolute_env_path("XDG_STATE_HOME")
             .map(|dir| dir.join("synctv"))
             .or_else(|| {
                 user_home_dir().map(|home| home.join(".local").join("state").join("synctv"))
             })
-            .unwrap_or_else(|| std::env::temp_dir().join("synctv"));
+            .unwrap_or_else(|| std::env::temp_dir().join("synctv"))
     }
 
     #[cfg(windows)]
     {
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| user_home_dir().map(|home| home.join("AppData").join("Local")))
             .unwrap_or_else(std::env::temp_dir)
-            .join("synctv");
+            .join("synctv")
     }
 
-    #[allow(unreachable_code)]
-    std::env::temp_dir().join("synctv")
+    #[cfg(not(any(target_os = "macos", unix, windows)))]
+    {
+        std::env::temp_dir().join("synctv")
+    }
 }
 
 pub fn default_management_runtime_dir() -> PathBuf {
@@ -418,7 +415,7 @@ fn normalize_split_database_config_value(value: &mut serde_json::Value) {
     };
 
     let has_explicit_url = database.contains_key("url");
-    let has_split_config = ["host", "port", "username", "user", "password", "name"]
+    let has_split_config = ["host", "port", "username", "password", "name"]
         .iter()
         .any(|key| database.contains_key(*key));
 
@@ -986,7 +983,6 @@ pub struct DatabaseConfig {
     pub url: String,
     pub host: String,
     pub port: u16,
-    #[serde(alias = "user")]
     pub username: String,
     pub password: String,
     pub name: String,
@@ -1077,7 +1073,6 @@ pub struct RedisConfig {
     pub url: String,
     pub host: String,
     pub port: u16,
-    #[serde(alias = "user")]
     pub username: String,
     pub password: String,
     pub database: i64,
@@ -1768,8 +1763,7 @@ impl Config {
         config_file: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, env, None, ConfigLoadBehavior::default())
-            .map(|loaded| loaded.config)
+        Self::load_with_env(config_file, env, None).map(|loaded| loaded.config)
     }
 
     pub fn load_with_env_map_and_data_dir_override(
@@ -1777,23 +1771,7 @@ impl Config {
         env: &HashMap<String, String>,
         data_dir_override: Option<&str>,
     ) -> Result<Self, ConfigError> {
-        Self::load_with_env(
-            config_file,
-            env,
-            data_dir_override,
-            ConfigLoadBehavior::default(),
-        )
-        .map(|loaded| loaded.config)
-    }
-
-    pub fn load_with_env_map_and_behavior(
-        config_file: Option<&str>,
-        env: &HashMap<String, String>,
-        data_dir_override: Option<&str>,
-        behavior: ConfigLoadBehavior,
-    ) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, env, data_dir_override, behavior)
-            .map(|loaded| loaded.config)
+        Self::load_with_env(config_file, env, data_dir_override).map(|loaded| loaded.config)
     }
 
     pub fn inspect_unknowns_with_env_map(
@@ -1801,20 +1779,29 @@ impl Config {
         env: &HashMap<String, String>,
         data_dir_override: Option<&str>,
     ) -> Result<UnknownConfigDiagnostics, ConfigError> {
-        Self::load_with_env(
-            config_file,
-            env,
-            data_dir_override,
-            ConfigLoadBehavior::default(),
-        )
-        .map(|loaded| loaded.unknown)
+        Self::load_with_env_lenient(config_file, env, data_dir_override)
+            .map(|loaded| loaded.unknown)
     }
 
     fn load_with_env(
         config_file: Option<&str>,
         env: &HashMap<String, String>,
         data_dir_override: Option<&str>,
-        behavior: ConfigLoadBehavior,
+    ) -> Result<LoadedConfig, ConfigError> {
+        let loaded = Self::load_with_env_lenient(config_file, env, data_dir_override)?;
+        if !loaded.unknown.is_empty() {
+            return Err(ConfigError::Message(format!(
+                "strict configuration rejected unknown setting(s): {}",
+                loaded.unknown.strict_error_message()
+            )));
+        }
+        Ok(loaded)
+    }
+
+    fn load_with_env_lenient(
+        config_file: Option<&str>,
+        env: &HashMap<String, String>,
+        data_dir_override: Option<&str>,
     ) -> Result<LoadedConfig, ConfigError> {
         let seen_env_keys = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
         if config_file.is_some() && env.contains_key("SYNCTV_CONFIG_PATH") {
@@ -1844,28 +1831,8 @@ impl Config {
         config.resolve_time_defaults_with(&get_env)?;
         let seen_env_keys = seen_env_keys.into_inner();
         unknown.env_keys = Self::collect_unknown_synctv_env_vars(env, &seen_env_keys);
-        if behavior.strict_unknown && !unknown.is_empty() {
-            return Err(ConfigError::Message(format!(
-                "strict configuration rejected unknown setting(s): {}",
-                unknown.strict_error_message()
-            )));
-        }
-        if let Some(path) = unknown.config_file.as_deref() {
-            Self::emit_unknown_config_file_warnings(Path::new(path), &unknown.config_keys);
-        }
-        Self::emit_unknown_synctv_env_var_warnings(&unknown.env_keys);
 
         Ok(LoadedConfig { config, unknown })
-    }
-
-    fn emit_unknown_config_file_warnings(path: &Path, unknown_keys: &[String]) {
-        if !unknown_keys.is_empty() {
-            eprintln!(
-                "Warning: ignoring unsupported config file key(s) in {}: {}",
-                absolute_display_path(path),
-                unknown_keys.join(", ")
-            );
-        }
     }
 
     fn load_config_file(path: &str) -> Result<(Self, UnknownConfigDiagnostics), ConfigError> {
@@ -1969,15 +1936,6 @@ impl Config {
         };
 
         Ok((config, Self::finalize_unknown_keys(unknown_keys)))
-    }
-
-    fn emit_unknown_synctv_env_var_warnings(unknown_keys: &[String]) {
-        if !unknown_keys.is_empty() {
-            eprintln!(
-                "Warning: ignoring unsupported SYNCTV_ environment variable(s): {}",
-                unknown_keys.join(", ")
-            );
-        }
     }
 
     fn collect_unknown_synctv_env_vars(
@@ -2205,9 +2163,7 @@ impl Config {
 
         let host = get_env("SYNCTV_REDIS_HOST");
         let port = get_env("SYNCTV_REDIS_PORT");
-        let user = get_env("SYNCTV_REDIS_USER");
-        let username_env = get_env("SYNCTV_REDIS_USERNAME");
-        let username = username_env.or(user);
+        let username = get_env("SYNCTV_REDIS_USERNAME");
         let mut password = get_env("SYNCTV_REDIS_PASSWORD");
         if let Some(path) = get_env("SYNCTV_REDIS_PASSWORD_FILE") {
             password = Some(load_config_string_from_file(
@@ -2579,7 +2535,6 @@ impl Config {
         let database_split_from_env = [
             "SYNCTV_DATABASE_HOST",
             "SYNCTV_DATABASE_PORT",
-            "SYNCTV_DATABASE_USER",
             "SYNCTV_DATABASE_USERNAME",
             "SYNCTV_DATABASE_PASSWORD",
             "SYNCTV_DATABASE_PASSWORD_FILE",
@@ -2599,7 +2554,6 @@ impl Config {
         )?;
         env_override_str("SYNCTV_DATABASE_HOST", &mut self.database.host);
         env_override_parse("SYNCTV_DATABASE_PORT", &mut self.database.port)?;
-        env_override_str("SYNCTV_DATABASE_USER", &mut self.database.username);
         env_override_str("SYNCTV_DATABASE_USERNAME", &mut self.database.username);
         env_override_str("SYNCTV_DATABASE_PASSWORD", &mut self.database.password);
         env_override_str_file(
@@ -2637,7 +2591,6 @@ impl Config {
         if self.redis.url.trim().is_empty() || redis_url_from_env {
             env_override_str("SYNCTV_REDIS_HOST", &mut self.redis.host);
             env_override_parse("SYNCTV_REDIS_PORT", &mut self.redis.port)?;
-            env_override_str("SYNCTV_REDIS_USER", &mut self.redis.username);
             env_override_str("SYNCTV_REDIS_USERNAME", &mut self.redis.username);
             env_override_str("SYNCTV_REDIS_PASSWORD", &mut self.redis.password);
             env_override_str_file(
@@ -5359,15 +5312,30 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env_ignores_unknown_server_port_env_vars() {
-        let config = Config::from_env_map(&env_map(&[
+    fn test_from_env_rejects_unknown_server_port_env_vars() {
+        let error = Config::from_env_map(&env_map(&[
             ("SYNCTV_SERVER_GRPC_PORT", "50051"),
             ("SYNCTV_SERVER_HTTP_PORT", "8080"),
             ("SYNCTV_SERVER_PORT", "18080"),
         ]))
-        .expect("unknown split-port env vars should be ignored with a warning");
+        .expect_err("unknown split-port env vars must fail fast");
 
-        assert_eq!(config.server.port, 18080);
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_SERVER_GRPC_PORT"));
+        assert!(message.contains("SYNCTV_SERVER_HTTP_PORT"));
+    }
+
+    #[test]
+    fn test_from_env_rejects_unknown_database_and_redis_keys() {
+        let error = Config::from_env_map(&env_map(&[
+            ("SYNCTV_DATABASE_UNKNOWN_KEY", "synctv"),
+            ("SYNCTV_REDIS_UNKNOWN_KEY", "cache-user"),
+        ]))
+        .expect_err("unknown nested env keys must fail fast");
+
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_DATABASE_UNKNOWN_KEY"));
+        assert!(message.contains("SYNCTV_REDIS_UNKNOWN_KEY"));
     }
 
     #[test]
@@ -5972,13 +5940,13 @@ bootstrap:
 database:
   host: "db.example.com"
   port: 5433
-  user: "synctv"
+  username: "synctv"
   password_file: "./database.password"
   name: "synctv_prod"
 redis:
   host: "redis.example.com"
   port: 6380
-  user: "cache-user"
+  username: "cache-user"
   password_file: "./redis.password"
   database: 7
 "#,
@@ -6374,8 +6342,8 @@ jwt:
         let unknown_keys =
             Config::collect_unknown_config_file_keys(path.to_str().expect("utf-8 path"))
                 .expect("unknown split-port keys should be collected");
-        let config = Config::from_file(path.to_str().expect("utf-8 path"))
-            .expect("unknown split-port file keys should warn and fall back to defaults");
+        let error = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect_err("unknown split-port file keys must fail fast");
         let _ = std::fs::remove_file(&path);
 
         assert!(
@@ -6386,8 +6354,48 @@ jwt:
             unknown_keys.contains(&"server.http_port".to_string()),
             "server.http_port should be reported as unknown: {unknown_keys:?}"
         );
-        assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.port, ServerConfig::default().port);
+        let message = error.to_string();
+        assert!(message.contains("server.grpc_port"));
+        assert!(message.contains("server.http_port"));
+    }
+
+    #[test]
+    fn test_from_file_rejects_unknown_database_and_redis_keys() {
+        let unique = format!(
+            "synctv-unknown-nested-config-{}-{}.yaml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r#"
+database:
+  host: "db.example.com"
+  port: 5432
+  unknown_key: "synctv"
+  password: "secret"
+  name: "synctv"
+redis:
+  host: "redis.example.com"
+  port: 6379
+  unknown_key: "cache-user"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("write config");
+
+        let error = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect_err("unknown nested config keys must fail fast");
+        let _ = std::fs::remove_file(&path);
+
+        let message = error.to_string();
+        assert!(message.contains("database.unknown_key"));
+        assert!(message.contains("redis.unknown_key"));
     }
 
     #[test]
@@ -7243,7 +7251,7 @@ jwt:
     }
 
     #[test]
-    fn test_from_file_ignores_unknown_keys_for_json_and_toml() {
+    fn test_from_file_rejects_unknown_keys_for_json_and_toml() {
         let secret = "12345678901234567890123456789012";
         let fixtures = [
             (
@@ -7279,8 +7287,8 @@ jwt:
             let unknown_keys =
                 Config::collect_unknown_config_file_keys(path.to_str().expect("utf-8 path"))
                     .expect("unknown keys should be collected");
-            let config = Config::from_file(path.to_str().expect("utf-8 path"))
-                .expect("unknown config keys should warn and continue");
+            let error = Config::from_file(path.to_str().expect("utf-8 path"))
+                .expect_err("unknown config keys must fail fast");
             let _ = std::fs::remove_file(&path);
 
             assert!(
@@ -7288,12 +7296,8 @@ jwt:
                 "missing unknown key {unknown_key} for {extension}: {unknown_keys:?}"
             );
             assert!(
-                config.metrics.enabled,
-                "known keys should still deserialize"
-            );
-            assert!(
-                config.metrics.auth.bearer_token.is_empty(),
-                "unknown key should not affect nested auth config for {extension}"
+                error.to_string().contains(unknown_key),
+                "unknown key should appear in strict error for {extension}: {error}"
             );
         }
     }

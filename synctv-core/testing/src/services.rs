@@ -1,9 +1,15 @@
 //! Service factory helpers for tests
 
 use crate::constants;
-use std::sync::Arc;
+use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
+use opaque_ke::rand::rngs::OsRng;
+use opaque_ke::{
+    ciphersuite::CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientRegistration,
+    ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
+};
+use std::{net::IpAddr, sync::Arc};
 use synctv_core::cache::{KeyBuilder, UsernameCache};
-use synctv_core::config::PasswordComplexityConfig;
+use synctv_core::models::User;
 use synctv_core::repository::SettingsRepository;
 use synctv_core::service::{
     auth::{
@@ -11,10 +17,148 @@ use synctv_core::service::{
         token_blacklist::InMemoryTokenBlacklistStore,
     },
     rate_limit::RequestRateLimiterService,
-    BruteForceProtection, BruteForceProtectionService, RateLimiter, RoomService, SettingsRegistry,
-    SettingsService, StreamingPublishKeyService, TokenBlacklistStore, UserService,
-    WebSocketTicketService, WsTicketService,
+    room::RoomServiceOptions,
+    user::{UserServiceDependencies, UserServiceRuntimeOptions},
+    AccountRegistrationOutcome, BruteForceProtection, BruteForceProtectionService, RateLimiter,
+    RoomService, SettingsRegistry, SettingsService, StreamingPublishKeyService,
+    TokenBlacklistStore, UserService, WebSocketTicketService, WsTicketService,
 };
+
+#[derive(Debug)]
+struct TestOpaqueCipherSuite;
+
+impl CipherSuite for TestOpaqueCipherSuite {
+    type OprfCs = opaque_ke::Ristretto255;
+    type KeyExchange = opaque_ke::TripleDh<opaque_ke::Ristretto255, sha2_010::Sha512>;
+    type Ksf = OpaqueArgon2Ksf<'static>;
+}
+
+/// Register a user through the public OPAQUE registration protocol.
+pub async fn opaque_register_user(
+    service: &UserService,
+    username: impl Into<String>,
+    email: Option<String>,
+    password: impl AsRef<str>,
+) -> synctv_core::Result<(User, Option<String>, Option<String>)> {
+    opaque_register_user_with_client_ip(service, username, email, password, None).await
+}
+
+/// Register a user through OPAQUE with an optional source IP.
+pub async fn opaque_register_user_with_client_ip(
+    service: &UserService,
+    username: impl Into<String>,
+    email: Option<String>,
+    password: impl AsRef<str>,
+    client_ip: Option<IpAddr>,
+) -> synctv_core::Result<(User, Option<String>, Option<String>)> {
+    let username = username.into();
+    let mut rng = OsRng;
+    let client_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_ref().as_bytes())
+            .map_err(|error| synctv_core::Error::Internal(error.to_string()))?;
+
+    let start = service
+        .start_opaque_registration_with_control(
+            username,
+            email,
+            client_start.message.serialize().to_vec(),
+            client_ip,
+            None,
+        )
+        .await?;
+
+    let registration_response =
+        RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(&start.registration_response)
+            .map_err(|error| synctv_core::Error::Internal(error.to_string()))?;
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_ref().as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .map_err(|error| synctv_core::Error::Internal(error.to_string()))?;
+
+    match service
+        .finish_opaque_registration_with_control(
+            &start.session_id,
+            client_finish.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await
+    {
+        Ok(AccountRegistrationOutcome::Registered {
+            user,
+            access_token,
+            refresh_token,
+            ..
+        }) => Ok((user, Some(access_token), Some(refresh_token))),
+        Ok(AccountRegistrationOutcome::PendingReview(_)) => Err(synctv_core::Error::Internal(
+            "test OPAQUE registration helper received pending review outcome".to_string(),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// Login through the public OPAQUE login protocol.
+pub async fn opaque_login_user(
+    service: &UserService,
+    identifier: impl Into<String>,
+    password: impl AsRef<str>,
+) -> synctv_core::Result<synctv_core::service::AuthenticatedLogin> {
+    let login = opaque_login_user_with_challenge(service, identifier, password).await?;
+
+    match login {
+        synctv_core::service::AuthenticatedLogin::Complete { .. } => Ok(login),
+        synctv_core::service::AuthenticatedLogin::MfaRequired { .. } => Err(
+            synctv_core::Error::Authentication("OPAQUE login requires MFA".to_string()),
+        ),
+    }
+}
+
+/// Login through OPAQUE and return either completed tokens or an MFA challenge.
+pub async fn opaque_login_user_with_challenge(
+    service: &UserService,
+    identifier: impl Into<String>,
+    password: impl AsRef<str>,
+) -> synctv_core::Result<synctv_core::service::AuthenticatedLogin> {
+    let mut rng = OsRng;
+    let client_start =
+        ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_ref().as_bytes())
+            .map_err(|error| synctv_core::Error::Internal(error.to_string()))?;
+    let start = service
+        .start_opaque_login_with_control(
+            identifier.into(),
+            client_start.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await?;
+    let credential_response =
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&start.credential_response)
+            .map_err(|error| synctv_core::Error::Internal(error.to_string()))?;
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password.as_ref().as_bytes(),
+            credential_response,
+            ClientLoginFinishParameters::default(),
+        )
+        .map_err(|_| synctv_core::Error::Authentication("Authentication failed".to_string()))?;
+    let login = service
+        .finish_opaque_login_with_control(
+            &start.session_id,
+            client_finish.message.serialize().to_vec(),
+            None,
+            None,
+        )
+        .await?;
+
+    Ok(login)
+}
 
 /// Creates a JWT service for testing
 ///
@@ -121,29 +265,42 @@ pub fn create_test_token_blacklist_store_service() -> Arc<dyn TokenBlacklistStor
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
 pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
-    let mut service = UserService::new(
+    UserService::new_with_brute_force_service_and_runtime(
         &pool,
-        create_test_jwt_service(),
-        UsernameCache::local_only("test:username:".to_string(), 128, 60),
-        PasswordComplexityConfig::default(),
-        create_test_token_blacklist_store_service(),
-        KeyBuilder::new("test"),
-        create_test_brute_force_protection_service(),
-    );
-    service.enable_password_registration_for_tests();
-    service
+        UserServiceDependencies {
+            jwt_service: create_test_jwt_service(),
+            username_cache: UsernameCache::local_only("test:username:".to_string(), 128, 60),
+            token_blacklist: create_test_token_blacklist_store_service(),
+            key_builder: KeyBuilder::new("test"),
+            brute_force: Arc::new(create_test_brute_force_protection_service()),
+            password_complexity: synctv_core::config::PasswordComplexityConfig::default(),
+        },
+        UserServiceRuntimeOptions {
+            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
+                enabled: true,
+                need_review: false,
+            }),
+            ..UserServiceRuntimeOptions::test_defaults()
+        },
+    )
 }
 
 /// Creates a `RoomService` with in-memory test dependencies where possible.
 #[must_use]
 pub fn create_test_room_service(pool: sqlx::PgPool) -> RoomService {
-    let mut service = RoomService::new(pool.clone(), create_test_user_service(pool.clone()));
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
-        pool,
+        pool.clone(),
     ));
-    service.set_settings_registry(Arc::new(SettingsRegistry::new(settings_service)));
-    service
+    RoomService::new_with_options(
+        pool.clone(),
+        create_test_user_service(pool),
+        RoomServiceOptions {
+            settings_registry: Some(Arc::new(SettingsRegistry::new(settings_service))),
+            ..RoomServiceOptions::test_defaults()
+        },
+    )
+    .expect("room service should build")
 }
 
 /// Creates a request rate limiter trait object for testing.
@@ -165,8 +322,8 @@ pub fn create_test_websocket_ticket_service(
 pub fn create_test_streaming_publish_key_service(
     token_ttl_hours: i64,
 ) -> Arc<dyn StreamingPublishKeyService> {
-    Arc::new(synctv_core::service::PublishKeyService::new(
-        create_test_jwt_service(),
-        token_ttl_hours,
-    ))
+    Arc::new(
+        synctv_core::service::PublishKeyService::new(create_test_jwt_service(), token_ttl_hours)
+            .expect("publish key service should build"),
+    )
 }

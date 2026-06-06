@@ -6417,7 +6417,6 @@ dependencies = [
  "aes-gcm",
  "ammonia",
  "anyhow",
- "argon2",
  "async-trait",
  "async_singleflight",
  "backon",
@@ -6501,7 +6500,10 @@ dependencies = [
 name = "synctv-core-testing"
 version = "1.0.0"
 dependencies = [
+ "opaque-ke",
+ "rand 0.10.1",
  "redis",
+ "sha2 0.10.9",
  "sqlx",
  "synctv-common",
  "synctv-core",

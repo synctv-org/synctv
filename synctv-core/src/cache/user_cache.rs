@@ -47,6 +47,17 @@ pub struct CachedUser {
     is_deleted: bool,
 }
 
+pub struct CachedUserSnapshot {
+    pub id: UserId,
+    pub username: String,
+    pub role: UserRole,
+    pub status: UserStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub is_banned: bool,
+    pub is_deleted: bool,
+}
+
 impl CachedUser {
     /// Create a new `CachedUser`
     #[must_use]
@@ -69,52 +80,17 @@ impl CachedUser {
         }
     }
 
-    /// Create a new `CachedUser` with explicit `updated_at` timestamp
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub const fn with_updated_at(
-        id: UserId,
-        username: String,
-        role: UserRole,
-        status: UserStatus,
-        created_at: chrono::DateTime<chrono::Utc>,
-        updated_at: chrono::DateTime<chrono::Utc>,
-        is_deleted: bool,
-    ) -> Self {
+    pub fn from_snapshot(snapshot: CachedUserSnapshot) -> Self {
         Self {
-            id,
-            username,
-            role,
-            status,
-            created_at,
-            updated_at,
-            is_banned: false,
-            is_deleted,
-        }
-    }
-
-    /// Create a new `CachedUser` with explicit security flags.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub const fn with_security_state(
-        id: UserId,
-        username: String,
-        role: UserRole,
-        status: UserStatus,
-        created_at: chrono::DateTime<chrono::Utc>,
-        updated_at: chrono::DateTime<chrono::Utc>,
-        is_banned: bool,
-        is_deleted: bool,
-    ) -> Self {
-        Self {
-            id,
-            username,
-            role,
-            status,
-            created_at,
-            updated_at,
-            is_banned,
-            is_deleted,
+            id: snapshot.id,
+            username: snapshot.username,
+            role: snapshot.role,
+            status: snapshot.status,
+            created_at: snapshot.created_at,
+            updated_at: snapshot.updated_at,
+            is_banned: snapshot.is_banned,
+            is_deleted: snapshot.is_deleted,
         }
     }
 
@@ -170,7 +146,7 @@ impl UserCache {
         l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
-    ) -> Result<Self> {
+    ) -> Self {
         let inner = TieredCache::new(
             l2,
             l1_max_capacity,
@@ -178,8 +154,8 @@ impl UserCache {
             l2_ttl_seconds,
             key_prefix,
             "user".to_string(),
-        )?;
-        Ok(Self { inner })
+        );
+        Self { inner }
     }
 
     /// Create a user cache for local-only operation without shared L2 state.
@@ -188,7 +164,7 @@ impl UserCache {
         l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
-    ) -> Result<Self> {
+    ) -> Self {
         Self::new(
             crate::cache::local_l2_cache_backend(),
             l1_max_capacity,
@@ -300,8 +276,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let user_id = create_test_user_id(96_001);
         let user = create_test_user(user_id, "alice");
@@ -327,8 +302,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let result = cache.invalidate_by_id("not-a-user-id").await;
 
@@ -343,8 +317,7 @@ mod tests {
             5,
             0,
             "test:".to_string(),
-        )
-        .unwrap();
+        );
 
         let user1 = create_test_user_id(96_002);
         let user2 = create_test_user_id(96_003);

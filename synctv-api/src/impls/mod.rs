@@ -21,15 +21,18 @@ pub mod room_settings_snapshot;
 pub(crate) mod validation;
 
 // Re-export for convenience
-pub use admin::AdminApiImpl;
-pub use client::{ClientApiConfig, ClientApiImpl};
+pub use admin::{AdminApiConfig, AdminApiImpl, AdminApiRuntime};
+pub use client::{ClientApiConfig, ClientApiImpl, ClientApiRuntime};
 pub use email::EmailApiImpl;
 pub use messaging::{
     HeartbeatSchedule, MessageConcurrencyConfig, MessageSender, ProtoCodec, StreamMessageHandler,
 };
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
-pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl, ProviderCommonApiImpl};
+pub use providers::{
+    AlistApiImpl, BilibiliApiImpl, EmbyApiImpl, ProviderApiRuntime, ProviderCommonApiImpl,
+    ProviderCommonApiRuntime,
+};
 pub use request_context::{
     EndpointRateLimitCategory, EndpointRateLimitScope, RequestContext, RequestExecutor,
     RequestMetadata, TransportProtocol,
@@ -74,9 +77,9 @@ pub(crate) fn proto_page_size_usize(
     page_size: i32,
     default_page_size: u32,
     max_page_size: u32,
-) -> usize {
+) -> Result<usize, ApiError> {
     usize::try_from(proto_page_params(1, page_size, default_page_size, max_page_size).page_size)
-        .unwrap_or(usize::MAX)
+        .map_err(|_| ApiError::Internal("page size exceeds usize::MAX".to_string()))
 }
 
 fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiError {
@@ -1209,13 +1212,6 @@ mod tests {
     }
 
     #[test]
-    fn test_api_error_from_string_conversion() {
-        let err = ApiError::NotFound("item".to_string());
-        let s: String = err.into();
-        assert_eq!(s, "item");
-    }
-
-    #[test]
     fn test_api_error_from_core_rate_limited() {
         // Test that synctv_core::Error::RateLimited is correctly converted to ApiError::RateLimited
         let core_err = synctv_core::Error::RateLimited("too many requests".to_string());
@@ -1438,20 +1434,6 @@ mod tests {
     }
 
     #[test]
-    fn test_api_error_rate_limited_display() {
-        let err = ApiError::RateLimited("exceeded quota".to_string());
-        let display = err.to_string();
-        assert_eq!(display, "exceeded quota");
-    }
-
-    #[test]
-    fn test_api_error_service_unavailable_display() {
-        let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
-        let display = err.to_string();
-        assert_eq!(display, "redis unavailable");
-    }
-
-    #[test]
     fn test_proto_page_params_uses_endpoint_default_for_zero_page_size() {
         let params = proto_page_params(0, 0, 50, 100);
 
@@ -1468,7 +1450,8 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_page_size_usize_uses_endpoint_default() {
-        assert_eq!(proto_page_size_usize(0, 50, 100), 50);
+    fn test_proto_page_size_usize_uses_endpoint_default() -> Result<(), ApiError> {
+        assert_eq!(proto_page_size_usize(0, 50, 100)?, 50);
+        Ok(())
     }
 }

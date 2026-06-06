@@ -55,8 +55,9 @@ impl Eq for ResourceInvalidation {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaybackSnapshotInvalidation {
     PlaybackStateChanged,
-    MediaUpdated { media_id: MediaId },
-    PlaylistUpdated { playlist_id: PlaylistId },
+    MediaChanged { media_id: MediaId },
+    PlaylistChanged { playlist_id: PlaylistId },
+    PlaylistItemsChanged { media_ids: Vec<MediaId> },
     Cache,
 }
 
@@ -68,24 +69,35 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
                 PlaybackSnapshotInvalidation::PlaybackStateChanged,
             ),
         ],
-        RealtimeEvent::MediaUpdated { media_id, .. } => vec![
+        RealtimeEvent::MediaUpdated { media_id, .. }
+        | RealtimeEvent::MediaRemoved { media_id, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::MediaUpdated {
+            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::MediaChanged {
                 media_id: *media_id,
             }),
         ],
         RealtimeEvent::PlaylistUpdated { playlist, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::PlaylistUpdated {
+            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::PlaylistChanged {
                 playlist_id: playlist.id,
             }),
         ],
-        RealtimeEvent::MediaAdded { .. }
-        | RealtimeEvent::MediaRemoved { .. }
-        | RealtimeEvent::MediaRemovedBatch { .. }
-        | RealtimeEvent::PlaylistCreated { .. }
-        | RealtimeEvent::PlaylistDeleted { .. }
-        | RealtimeEvent::PlaylistReordered { .. } => {
+        RealtimeEvent::MediaRemovedBatch { media_ids, .. }
+        | RealtimeEvent::PlaylistReordered { media_ids, .. } => vec![
+            ResourceInvalidation::PlaylistItems,
+            ResourceInvalidation::PlaybackSnapshot(
+                PlaybackSnapshotInvalidation::PlaylistItemsChanged {
+                    media_ids: media_ids.clone(),
+                },
+            ),
+        ],
+        RealtimeEvent::PlaylistDeleted { playlist_id, .. } => vec![
+            ResourceInvalidation::PlaylistItems,
+            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::PlaylistChanged {
+                playlist_id: *playlist_id,
+            }),
+        ],
+        RealtimeEvent::MediaAdded { .. } | RealtimeEvent::PlaylistCreated { .. } => {
             vec![ResourceInvalidation::PlaylistItems]
         }
         RealtimeEvent::RoomSettingsChanged { .. } => vec![
@@ -96,7 +108,8 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
         | RealtimeEvent::GuestJoined { .. }
         | RealtimeEvent::UserLeft { .. }
         | RealtimeEvent::GuestLeft { .. }
-        | RealtimeEvent::PermissionChanged { .. } => vec![ResourceInvalidation::RoomMembers],
+        | RealtimeEvent::PermissionChanged { .. }
+        | RealtimeEvent::KickUserFromRoom { .. } => vec![ResourceInvalidation::RoomMembers],
         RealtimeEvent::ChatMessageEvent { event, .. } => {
             vec![ResourceInvalidation::ChatEvents {
                 event: Box::new(event.clone()),
@@ -262,6 +275,25 @@ mod tests {
         );
     }
 
+    fn playlist_with_id(playlist_id: PlaylistId) -> Playlist {
+        Playlist {
+            id: playlist_id,
+            room_id: room_id(),
+            creator_id: Some(user_id()),
+            name: "list".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: None,
+            position: 0.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 1,
+        }
+    }
+
     #[test]
     fn playlist_update_invalidates_items_and_dependent_snapshot() {
         let playlist_id = PlaylistId::expect_positive(303);
@@ -270,22 +302,7 @@ mod tests {
             room_id: room_id(),
             user_id: user_id(),
             username: "actor".to_string(),
-            playlist: Playlist {
-                id: playlist_id,
-                room_id: room_id(),
-                creator_id: Some(user_id()),
-                name: "list".to_string(),
-                description: String::new(),
-                cover_file_reference_id: None,
-                parent_id: None,
-                position: 0.0,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                version: 1,
-            },
+            playlist: playlist_with_id(playlist_id),
             timestamp: Utc::now(),
         };
 
@@ -294,7 +311,83 @@ mod tests {
             vec![
                 ResourceInvalidation::PlaylistItems,
                 ResourceInvalidation::PlaybackSnapshot(
-                    PlaybackSnapshotInvalidation::PlaylistUpdated { playlist_id }
+                    PlaybackSnapshotInvalidation::PlaylistChanged { playlist_id }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn media_removed_invalidates_items_and_dependent_snapshot() {
+        let media_id = MediaId::expect_positive(404);
+        let event = RealtimeEvent::MediaRemoved {
+            event_id: "evt".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "actor".to_string(),
+            media_id,
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(
+            resource_invalidations_for_room_event(&event),
+            vec![
+                ResourceInvalidation::PlaylistItems,
+                ResourceInvalidation::PlaybackSnapshot(
+                    PlaybackSnapshotInvalidation::MediaChanged { media_id }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn playlist_item_batch_events_invalidate_items_and_dependent_snapshot() {
+        let media_ids = vec![MediaId::expect_positive(404), MediaId::expect_positive(405)];
+        let removed = RealtimeEvent::MediaRemovedBatch {
+            event_id: "evt-remove".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "actor".to_string(),
+            media_ids: media_ids.clone(),
+            timestamp: Utc::now(),
+        };
+        let reordered = RealtimeEvent::PlaylistReordered {
+            event_id: "evt-reorder".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "actor".to_string(),
+            media_ids: media_ids.clone(),
+            timestamp: Utc::now(),
+        };
+        let expected = vec![
+            ResourceInvalidation::PlaylistItems,
+            ResourceInvalidation::PlaybackSnapshot(
+                PlaybackSnapshotInvalidation::PlaylistItemsChanged { media_ids },
+            ),
+        ];
+
+        assert_eq!(resource_invalidations_for_room_event(&removed), expected);
+        assert_eq!(resource_invalidations_for_room_event(&reordered), expected);
+    }
+
+    #[test]
+    fn playlist_deleted_invalidates_items_and_dependent_snapshot() {
+        let playlist_id = PlaylistId::expect_positive(505);
+        let event = RealtimeEvent::PlaylistDeleted {
+            event_id: "evt".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "actor".to_string(),
+            playlist_id,
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(
+            resource_invalidations_for_room_event(&event),
+            vec![
+                ResourceInvalidation::PlaylistItems,
+                ResourceInvalidation::PlaybackSnapshot(
+                    PlaybackSnapshotInvalidation::PlaylistChanged { playlist_id }
                 ),
             ]
         );
@@ -345,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_presence_events_invalidate_room_members() {
+    fn membership_events_invalidate_room_members() {
         let joined = RealtimeEvent::GuestJoined {
             event_id: "guest-joined".to_string(),
             room_id: room_id(),
@@ -363,6 +456,13 @@ mod tests {
             username: "Guest".to_string(),
             timestamp: Utc::now(),
         };
+        let kicked = RealtimeEvent::KickUserFromRoom {
+            event_id: "kick-user-from-room".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            reason: "removed".to_string(),
+            timestamp: Utc::now(),
+        };
 
         assert_eq!(
             resource_invalidations_for_room_event(&joined),
@@ -370,6 +470,10 @@ mod tests {
         );
         assert_eq!(
             resource_invalidations_for_room_event(&left),
+            vec![ResourceInvalidation::RoomMembers]
+        );
+        assert_eq!(
+            resource_invalidations_for_room_event(&kicked),
             vec![ResourceInvalidation::RoomMembers]
         );
     }

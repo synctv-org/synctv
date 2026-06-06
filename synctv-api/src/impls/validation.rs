@@ -1,5 +1,6 @@
-use regex::Regex;
+use ammonia::{Builder, UrlRelative};
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -15,16 +16,36 @@ pub enum InputValidationError {
 
 pub type InputValidationResult<T> = Result<T, InputValidationError>;
 
-static CONTROL_CHARS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]").expect("Invalid control char regex")
+static PLAIN_TEXT_CLEANER: LazyLock<Builder<'static>> = LazyLock::new(|| {
+    let mut cleaner = Builder::default();
+    cleaner
+        .tags(HashSet::new())
+        .tag_attributes(HashMap::new())
+        .generic_attributes(HashSet::new())
+        .url_relative(UrlRelative::Deny);
+    cleaner
 });
-
-static HTML_TAGS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<[^>]+>").expect("Invalid HTML regex"));
 
 fn sanitize_string(input: &str) -> Cow<'_, str> {
     let trimmed = input.trim();
-    CONTROL_CHARS.replace_all(trimmed, "")
+    if !trimmed.chars().any(is_disallowed_control_char) {
+        return Cow::Borrowed(trimmed);
+    }
+
+    Cow::Owned(
+        trimmed
+            .chars()
+            .filter(|ch| !is_disallowed_control_char(*ch))
+            .collect(),
+    )
+}
+
+fn is_disallowed_control_char(ch: char) -> bool {
+    matches!(ch, '\u{0000}'..='\u{0008}' | '\u{000B}' | '\u{000C}' | '\u{000E}'..='\u{001F}' | '\u{007F}')
+}
+
+fn contains_html_markup(input: &str) -> bool {
+    PLAIN_TEXT_CLEANER.clean(input).to_string() != input
 }
 
 fn map_core_validation_error(
@@ -98,7 +119,7 @@ pub fn validate_room_name(name: &str) -> InputValidationResult<String> {
         .validate(&sanitized)
         .map_err(|error| map_core_validation_error("room_name", &error))?;
 
-    if HTML_TAGS.is_match(&sanitized) {
+    if contains_html_markup(&sanitized) {
         return Err(InputValidationError::SecurityRisk);
     }
 
@@ -118,7 +139,7 @@ pub fn validate_room_description(description: &str) -> InputValidationResult<Str
         });
     }
 
-    if HTML_TAGS.is_match(&sanitized) {
+    if contains_html_markup(&sanitized) {
         return Err(InputValidationError::SecurityRisk);
     }
 
@@ -130,7 +151,7 @@ pub fn validate_media_name(name: &str) -> InputValidationResult<String> {
     synctv_core::validation::validate_media_name(&sanitized)
         .map_err(|error| map_core_validation_error("media_name", &error))?;
 
-    if HTML_TAGS.is_match(&sanitized) {
+    if contains_html_markup(&sanitized) {
         return Err(InputValidationError::SecurityRisk);
     }
 
@@ -179,4 +200,34 @@ pub fn validate_websocket_connect_request(
     request: &synctv_proto::client::WebSocketConnectRequest,
 ) -> Result<(), crate::impls::ApiError> {
     crate::impls::validate_proto_request(request)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_name_rejects_html_markup() {
+        let error = validate_room_name("<b>watch party</b>").unwrap_err();
+        assert!(matches!(error, InputValidationError::SecurityRisk));
+    }
+
+    #[test]
+    fn room_description_preserves_entity_encoded_text() {
+        let description =
+            validate_room_description("&lt;script&gt;alert(1)&lt;/script&gt;").unwrap();
+        assert_eq!(description, "&lt;script&gt;alert(1)&lt;/script&gt;");
+    }
+
+    #[test]
+    fn media_name_rejects_markup_like_angle_brackets() {
+        let error = validate_media_name("Episode < 10 > Preview").unwrap_err();
+        assert!(matches!(error, InputValidationError::SecurityRisk));
+    }
+
+    #[test]
+    fn username_strips_disallowed_control_characters() {
+        let username = validate_username("  alice\u{0007}  ").unwrap();
+        assert_eq!(username, "alice");
+    }
 }

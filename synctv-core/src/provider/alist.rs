@@ -2063,7 +2063,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_search_falls_back_to_list_when_upstream_search_is_unavailable() {
-        let default_clients = ProviderClientManager::new_for_tests();
+        let default_clients = ProviderClientManager::new_for_tests()
+            .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(FakeAlistSearchUnavailableClient),
             default_clients.local_bilibili_client(),
@@ -2098,7 +2099,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_search_fallback_preserves_scope_filter() {
-        let default_clients = ProviderClientManager::new_for_tests();
+        let default_clients = ProviderClientManager::new_for_tests()
+            .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(FakeAlistSearchUnavailableClient),
             default_clients.local_bilibili_client(),

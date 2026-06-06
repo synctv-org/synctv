@@ -76,7 +76,7 @@ fn test_provider_grpc_host_validation_stays_compatible_with_self_hosted_targets(
 
 #[tokio::test]
 async fn test_alist_grpc_login_rejects_missing_username() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .login(Request::new(LoginReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -93,7 +93,7 @@ async fn test_alist_grpc_login_rejects_missing_username() {
 
 #[tokio::test]
 async fn test_alist_grpc_login_rejects_missing_credential() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .login(Request::new(LoginReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -110,7 +110,7 @@ async fn test_alist_grpc_login_rejects_missing_credential() {
 
 #[tokio::test]
 async fn test_alist_grpc_me_rejects_missing_token_before_io() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .me(Request::new(MeReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -125,7 +125,7 @@ async fn test_alist_grpc_me_rejects_missing_token_before_io() {
 
 #[tokio::test]
 async fn test_alist_grpc_fs_get_rejects_missing_token_before_io() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .fs_get(Request::new(FsGetReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -143,7 +143,7 @@ async fn test_alist_grpc_fs_get_rejects_missing_token_before_io() {
 
 #[tokio::test]
 async fn test_alist_grpc_fs_list_rejects_missing_token_before_io() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .fs_list(Request::new(FsListReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -163,7 +163,7 @@ async fn test_alist_grpc_fs_list_rejects_missing_token_before_io() {
 
 #[tokio::test]
 async fn test_alist_grpc_fs_other_rejects_missing_method_before_io() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .fs_other(Request::new(FsOtherReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -181,7 +181,7 @@ async fn test_alist_grpc_fs_other_rejects_missing_method_before_io() {
 
 #[tokio::test]
 async fn test_alist_grpc_fs_search_rejects_missing_token_before_io() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let status = service
         .fs_search(Request::new(FsSearchReq {
             host: "http://127.0.0.1:5244".to_string(),

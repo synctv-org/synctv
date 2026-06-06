@@ -98,15 +98,14 @@ pub struct BilibiliService {
 }
 
 impl BilibiliService {
-    pub fn new() -> Self {
-        Self {
-            client: crate::build_provider_http_client(
-                synctv_common::ssrf::SsrfGuard::strict_policy(),
-            )
-            .expect("default provider HTTP client should build"),
+    pub fn new() -> Result<Self, reqwest::Error> {
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+        let client = crate::build_provider_http_client(ssrf_guard.clone())?;
+        Ok(Self {
+            client,
             wbi_state: Arc::new(super::client::WbiState::default()),
-            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
-        }
+            ssrf_guard,
+        })
     }
 
     #[must_use]
@@ -128,12 +127,6 @@ impl BilibiliService {
             wbi_state: Arc::new(super::client::WbiState::default()),
             ssrf_guard,
         }
-    }
-}
-
-impl Default for BilibiliService {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -568,7 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_reuses_shared_wbi_state() {
-        let service = BilibiliService::new();
+        let service = BilibiliService::new().expect("provider HTTP client should build");
         service.wbi_state.reset_for_tests().await;
         service
             .wbi_state

@@ -11,10 +11,10 @@
 //! // Initialize during app startup
 //! let registry = SettingsRegistry::new(settings_service);
 //! let cancel = tokio_util::sync::CancellationToken::new();
-//! registry.init(cancel).unwrap();
+//! registry.init(cancel)?;
 //!
 //! // Read - type-safe, returns cached value
-//! if registry.enable_password_signup.get().unwrap() {
+//! if registry.enable_password_signup.get()? {
 //!     // Password signup is enabled
 //! }
 //!

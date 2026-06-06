@@ -40,17 +40,10 @@ pub struct BilibiliService {
 }
 
 impl BilibiliService {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            service: BilibiliServiceImpl::new(),
-        }
-    }
-}
-
-impl Default for BilibiliService {
-    fn default() -> Self {
-        Self::new()
+    pub fn new() -> Result<Self, reqwest::Error> {
+        Ok(Self {
+            service: BilibiliServiceImpl::new()?,
+        })
     }
 }
 

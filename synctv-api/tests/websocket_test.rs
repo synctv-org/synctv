@@ -967,9 +967,12 @@ mod websocket_e2e {
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
-            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                synctv_proxy::slice_cache::SliceCacheConfig::default(),
-            )),
+            proxy_slice_cache: std::sync::Arc::new(
+                synctv_proxy::slice_cache::SliceCache::new(
+                    synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                )
+                .expect("test slice cache should build"),
+            ),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
             proxy_http_client: synctv_proxy::build_proxy_http_client(
                 synctv_common::ssrf::SsrfGuard::disabled(),
@@ -4768,9 +4771,12 @@ mod websocket_connection_limit_timing {
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
-            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                synctv_proxy::slice_cache::SliceCacheConfig::default(),
-            )),
+            proxy_slice_cache: std::sync::Arc::new(
+                synctv_proxy::slice_cache::SliceCache::new(
+                    synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                )
+                .expect("test slice cache should build"),
+            ),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
             proxy_http_client: synctv_proxy::build_proxy_http_client(
                 synctv_common::ssrf::SsrfGuard::disabled(),

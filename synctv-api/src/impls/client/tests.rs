@@ -821,7 +821,8 @@ fn test_hot_room_embedded_room_member_count_uses_total_member_count() {
     let online_count = 3;
     let total_members = 17;
 
-    let proto = hot_room_to_proto(&room, None, online_count, total_members, &public_id_codec);
+    let proto = hot_room_to_proto(&room, None, online_count, total_members, &public_id_codec)
+        .expect("hot room proto should encode");
 
     assert_eq!(
         proto.room.as_ref().unwrap().member_count,

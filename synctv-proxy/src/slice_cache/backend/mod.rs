@@ -4,6 +4,10 @@
 //! (`init`, `create`, `update`, `free`, `expire`).
 
 pub mod file;
+mod file_format;
+mod file_index;
+mod file_loader;
+mod file_ops;
 pub mod memory;
 
 use async_trait::async_trait;

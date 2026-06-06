@@ -95,13 +95,6 @@ impl ProxySigningKey {
         Ok(Self { key })
     }
 
-    /// Derive a proxy signing key for tests.
-    #[cfg(test)]
-    #[must_use]
-    pub fn derive_from(jwt_secret: &[u8]) -> Self {
-        Self::try_derive_from(jwt_secret).expect("test proxy signing key should derive")
-    }
-
     /// Sign claims and return the hex-encoded HMAC-SHA256 signature.
     #[must_use]
     pub fn sign(&self, claims: &ProxyUrlClaims) -> String {

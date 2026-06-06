@@ -275,9 +275,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create service instances
-    let alist_service = AlistGrpcService::new();
-    let bilibili_service = BilibiliService::new();
-    let emby_service = EmbyService::new();
+    let alist_service = AlistGrpcService::new()?;
+    let bilibili_service = BilibiliService::new()?;
+    let emby_service = EmbyService::new()?;
 
     // Create one circuit breaker per provider service so that a
     // failing Alist backend does not open the circuit for Bilibili/Emby.
@@ -394,17 +394,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Wait for a shutdown signal (Ctrl+C or SIGTERM) for graceful connection draining.
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(%error, "Failed to install Ctrl+C handler");
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "Failed to install SIGTERM handler");
+            }
+        }
     };
 
     #[cfg(not(unix))]

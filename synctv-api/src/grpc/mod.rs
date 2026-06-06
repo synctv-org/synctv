@@ -645,7 +645,7 @@ fn cluster_node_id(event_service: &Arc<dyn RealtimeEventService>) -> String {
     event_service.node_id().to_string()
 }
 
-fn build_fallback_http_app_state(
+async fn build_fallback_http_app_state(
     deps: FallbackHttpAppStateDeps,
 ) -> anyhow::Result<Arc<crate::http::AppState>> {
     let ssrf_guard = deps.config.security.ssrf_guard();
@@ -658,6 +658,14 @@ fn build_fallback_http_app_state(
         .map_err(|error| anyhow::anyhow!("Failed to build gRPC proxy HTTP client: {error}"))?;
     let proxy_slice_cache_config =
         crate::config_adapters::proxy_slice_cache_config_from_app_config(deps.config.as_ref());
+    let proxy_slice_cache =
+        synctv_proxy::slice_cache::SliceCache::try_new_with_client_and_ssrf_guard(
+            proxy_slice_cache_config,
+            proxy_http_client.clone(),
+            ssrf_guard.clone(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("Failed to build gRPC fallback slice cache: {error}"))?;
 
     Ok(Arc::new(crate::http::create_app_state_from_config(
         crate::http::RouterConfig {
@@ -692,13 +700,7 @@ fn build_fallback_http_app_state(
             builtin_stun_url: deps.builtin_stun_url,
             webrtc_status: deps.webrtc_status,
             credential_encryption: deps.credential_encryption,
-            proxy_slice_cache: Arc::new(
-                synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
-                    proxy_slice_cache_config,
-                    proxy_http_client.clone(),
-                    ssrf_guard.clone(),
-                ),
-            ),
+            proxy_slice_cache: Arc::new(proxy_slice_cache),
             ssrf_guard,
             proxy_http_client,
             messaging_rate_limit_config: deps.messaging_rate_limit_config,
@@ -758,40 +760,43 @@ async fn build_axum_router_with_health(
     )?;
     let shared_http_app_state = match shared_http_app_state {
         Some(state) => state,
-        None => build_fallback_http_app_state(FallbackHttpAppStateDeps {
-            user_service: user_service.clone(),
-            user_cache: user_cache.clone(),
-            room_service: room_service.clone(),
-            event_service: event_service.clone(),
-            connection_service: connection_service.clone(),
-            config: Arc::new(config.clone()),
-            content_filter: content_filter.clone(),
-            publish_key_service: publish_key_service.clone(),
-            jwt_service: jwt_service.clone(),
-            live_streaming_infrastructure: live_streaming_infrastructure.clone(),
-            providers_manager: providers_manager.clone(),
-            provider_instance_manager: provider_instance_manager.clone(),
-            notification_service: notification_service.clone(),
-            chat_service: chat_service.clone(),
-            oauth2_service: oauth2_service.clone(),
-            passkey_service: passkey_service.clone(),
-            settings_service: settings_service.clone(),
-            settings_registry: settings_registry.clone(),
-            email_service: email_service.clone(),
-            email_token_service: email_token_service.clone(),
-            ws_ticket_service: ws_ticket_service.clone(),
-            realtime_fanout_service: realtime_fanout_service.clone(),
-            redis_runtime: redis_runtime.clone(),
-            rate_limiter: rate_limiter.clone(),
-            messaging_rate_limit_config: rate_limit_config.clone(),
-            credential_encryption: credential_encryption.clone(),
-            credential_repo: user_provider_credential_repository.clone(),
-            proxy_signing_key: proxy_signing_key.clone(),
-            provider_stores: provider_stores.clone(),
-            builtin_stun_url,
-            webrtc_status,
-            audit_service: audit_service.clone(),
-        })?,
+        None => {
+            build_fallback_http_app_state(FallbackHttpAppStateDeps {
+                user_service: user_service.clone(),
+                user_cache: user_cache.clone(),
+                room_service: room_service.clone(),
+                event_service: event_service.clone(),
+                connection_service: connection_service.clone(),
+                config: Arc::new(config.clone()),
+                content_filter: content_filter.clone(),
+                publish_key_service: publish_key_service.clone(),
+                jwt_service: jwt_service.clone(),
+                live_streaming_infrastructure: live_streaming_infrastructure.clone(),
+                providers_manager: providers_manager.clone(),
+                provider_instance_manager: provider_instance_manager.clone(),
+                notification_service: notification_service.clone(),
+                chat_service: chat_service.clone(),
+                oauth2_service: oauth2_service.clone(),
+                passkey_service: passkey_service.clone(),
+                settings_service: settings_service.clone(),
+                settings_registry: settings_registry.clone(),
+                email_service: email_service.clone(),
+                email_token_service: email_token_service.clone(),
+                ws_ticket_service: ws_ticket_service.clone(),
+                realtime_fanout_service: realtime_fanout_service.clone(),
+                redis_runtime: redis_runtime.clone(),
+                rate_limiter: rate_limiter.clone(),
+                messaging_rate_limit_config: rate_limit_config.clone(),
+                credential_encryption: credential_encryption.clone(),
+                credential_repo: user_provider_credential_repository.clone(),
+                proxy_signing_key: proxy_signing_key.clone(),
+                provider_stores: provider_stores.clone(),
+                builtin_stun_url,
+                webrtc_status,
+                audit_service: audit_service.clone(),
+            })
+            .await?
+        }
     };
 
     tracing::info!("Building gRPC router for {}", config.api_address());
@@ -1744,9 +1749,12 @@ mod tests {
                 webrtc_status:
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
-                proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                    synctv_proxy::slice_cache::SliceCacheConfig::default(),
-                )),
+                proxy_slice_cache: Arc::new(
+                    synctv_proxy::slice_cache::SliceCache::new(
+                        synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                    )
+                    .expect("test slice cache should build"),
+                ),
                 ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
                 proxy_http_client: synctv_proxy::build_proxy_http_client(
                     synctv_common::ssrf::SsrfGuard::strict_policy(),
@@ -1953,6 +1961,7 @@ mod tests {
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             audit_service: context.audit_service,
         })
+        .await
         .expect("fallback HTTP app state should build");
 
         assert!(

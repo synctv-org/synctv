@@ -1632,7 +1632,10 @@ mod tests {
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
-            proxy_slice_cache: Arc::new(SliceCache::new(SliceCacheConfig::default())),
+            proxy_slice_cache: Arc::new(
+                SliceCache::new(SliceCacheConfig::default())
+                    .expect("test slice cache should build"),
+            ),
             proxy_http_client: synctv_proxy::build_proxy_http_client(
                 synctv_common::ssrf::SsrfGuard::strict_policy(),
             )
@@ -1795,11 +1798,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_cancel() {
-        let cache = Arc::new(SliceCache::new(SliceCacheConfig {
-            eviction_interval: Duration::from_millis(20),
-            max_cache_size: 1024,
-            ..SliceCacheConfig::default()
-        }));
+        let cache = Arc::new(
+            SliceCache::new(SliceCacheConfig {
+                eviction_interval: Duration::from_millis(20),
+                max_cache_size: 1024,
+                ..SliceCacheConfig::default()
+            })
+            .expect("test slice cache should build"),
+        );
         let key = "expired-slice".to_string();
         cache
             .backend()
@@ -1838,10 +1844,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_proxy_cache_lifecycle_starts_even_when_runtime_toggle_is_off() {
-        let cache = Arc::new(SliceCache::new(SliceCacheConfig {
-            enabled: false,
-            ..SliceCacheConfig::default()
-        }));
+        let cache = Arc::new(
+            SliceCache::new(SliceCacheConfig {
+                enabled: false,
+                ..SliceCacheConfig::default()
+            })
+            .expect("test slice cache should build"),
+        );
 
         let lifecycle = start_proxy_cache_lifecycle(&cache);
         lifecycle.cancel.cancel();
@@ -1885,10 +1894,13 @@ mod tests {
         )
         .expect("jwt");
         let (audit_service, _audit_handle) = AuditService::new(pool);
-        let injected_cache = Arc::new(SliceCache::new(SliceCacheConfig {
-            enabled: false,
-            ..SliceCacheConfig::default()
-        }));
+        let injected_cache = Arc::new(
+            SliceCache::new(SliceCacheConfig {
+                enabled: false,
+                ..SliceCacheConfig::default()
+            })
+            .expect("test slice cache should build"),
+        );
         let injected_provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
             Arc::new(
                 synctv_core::provider::store::ProviderStoreRegistry::local_only("shared:test:"),

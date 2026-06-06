@@ -723,6 +723,7 @@ mod tests {
                 .extra_allowed_host("cdn.example.com".to_string())
                 .build(),
         )
+        .expect("test slice cache should build")
     }
 
     #[tokio::test]
@@ -1369,9 +1370,10 @@ mod tests {
                 webrtc_status:
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
-                proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                    SliceCacheConfig::default(),
-                )),
+                proxy_slice_cache: Arc::new(
+                    synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default())
+                        .expect("test slice cache should build"),
+                ),
                 ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
                 proxy_http_client: synctv_proxy::build_proxy_http_client(
                     synctv_common::ssrf::SsrfGuard::disabled(),
@@ -1608,9 +1610,10 @@ mod tests {
     async fn test_proxy_options_preflight_uses_configured_origin_allowlist() {
         let mut state = test_app_state_with_proxy_cache(
             None,
-            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                SliceCacheConfig::default(),
-            )),
+            Arc::new(
+                synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default())
+                    .expect("test slice cache should build"),
+            ),
         );
         let router_config = Arc::make_mut(&mut state.router_config);
         let config = Arc::make_mut(&mut router_config.config);
@@ -1648,9 +1651,10 @@ mod tests {
     async fn test_proxy_options_preflight_rejects_unconfigured_origin() {
         let mut state = test_app_state_with_proxy_cache(
             None,
-            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                SliceCacheConfig::default(),
-            )),
+            Arc::new(
+                synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default())
+                    .expect("test slice cache should build"),
+            ),
         );
         let router_config = Arc::make_mut(&mut state.router_config);
         let config = Arc::make_mut(&mut router_config.config);
@@ -1674,9 +1678,10 @@ mod tests {
     async fn test_proxy_options_preflight_rejects_non_utf8_origin() {
         let state = test_app_state_with_proxy_cache(
             None,
-            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                SliceCacheConfig::default(),
-            )),
+            Arc::new(
+                synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default())
+                    .expect("test slice cache should build"),
+            ),
         );
 
         let mut headers = HeaderMap::new();

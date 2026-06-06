@@ -85,129 +85,9 @@ pub async fn init_redis(
     }
 }
 
-#[cfg(test)]
-mod init_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_init_redis_standalone_without_url_returns_none() {
-        let mut config = Config::default();
-        config.redis.url.clear();
-        config.redis.deployment_mode = RedisDeploymentMode::Standalone;
-
-        let result = init_redis(&config, None)
-            .await
-            .expect("standalone without redis.url should be allowed");
-
-        assert!(result.runtime.is_none());
-        assert!(result.sentinel_health_check_task.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_init_redis_standalone_with_split_config_attempts_connection() {
-        let mut config = Config::default();
-        config.redis.url.clear();
-        config.redis.deployment_mode = RedisDeploymentMode::Standalone;
-        config.redis.host = "127.0.0.1".to_string();
-        config.redis.port = 1;
-        config.redis.database = 7;
-
-        let err = init_redis(&config, None)
-            .await
-            .expect_err("split redis config should be treated as configured at runtime");
-
-        assert!(
-            err.to_string().contains("Connection refused")
-                || err.to_string().contains("connection refused")
-                || err
-                    .to_string()
-                    .contains("failed to lookup address information")
-                || err.to_string().contains("timed out")
-                || err.to_string().contains("os error"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_init_redis_sentinel_without_url_attempts_backend_init() {
-        let mut config = Config::default();
-        config.redis.url.clear();
-        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
-        config.redis.sentinel_master_name = Some("mymaster".to_string());
-        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
-
-        let err = init_redis(&config, None)
-            .await
-            .expect_err("sentinel mode must not short-circuit to None when redis.url is empty");
-
-        assert!(
-            err.to_string().contains("Sentinel")
-                || err.to_string().contains("sentinel")
-                || err.to_string().contains("Connection refused")
-                || err.to_string().contains("InvalidClientConfig")
-                || err.to_string().contains("did not parse"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn test_parse_redis_node_settings_preserves_auth_and_db_from_url() {
-        let mut config = Config::default();
-        config.redis.url = "redis://sync-user:secret@redis.example.com:6380/7".to_string();
-
-        let redis_settings = parse_redis_node_settings(&config)
-            .expect("parse redis settings")
-            .expect("redis.url should produce redis settings");
-
-        assert_eq!(redis_settings.username(), Some("sync-user"));
-        assert_eq!(redis_settings.password(), Some("secret"));
-        assert_eq!(redis_settings.db(), 7);
-    }
-
-    #[test]
-    fn test_parse_redis_node_settings_preserves_auth_and_db_from_split_config() {
-        let mut config = Config::default();
-        config.redis.url.clear();
-        config.redis.host = "redis.example.com".to_string();
-        config.redis.port = 6380;
-        config.redis.username = "sync-user".to_string();
-        config.redis.password = "secret".to_string();
-        config.redis.database = 7;
-
-        let redis_settings = parse_redis_node_settings(&config)
-            .expect("parse redis settings")
-            .expect("split redis config should produce redis settings");
-
-        assert_eq!(redis_settings.username(), Some("sync-user"));
-        assert_eq!(redis_settings.password(), Some("secret"));
-        assert_eq!(redis_settings.db(), 7);
-    }
-
-    #[test]
-    fn test_redis_connection_manager_config_uses_connect_timeout() {
-        let mut config = Config::default();
-        config.redis.connect_timeout_seconds = 9;
-        config.redis.response_timeout_seconds = 11;
-        config.redis.pipeline_buffer_size = 768;
-
-        let manager_config = build_redis_connection_manager_config(&config);
-
-        assert_eq!(
-            manager_config.connection_timeout(),
-            Some(std::time::Duration::from_secs(9))
-        );
-        assert_eq!(
-            manager_config.response_timeout(),
-            Some(std::time::Duration::from_secs(11))
-        );
-        assert!(
-            format!("{manager_config:?}").contains("pipeline_buffer_size: Some(768)"),
-            "pipeline buffer size should be applied to ConnectionManagerConfig"
-        );
-    }
-}
-
-fn build_redis_connection_manager_config(config: &Config) -> redis::aio::ConnectionManagerConfig {
+pub(super) fn build_redis_connection_manager_config(
+    config: &Config,
+) -> redis::aio::ConnectionManagerConfig {
     redis_connection_manager_config(
         std::time::Duration::from_secs(config.redis.connect_timeout_seconds),
         std::time::Duration::from_secs(config.redis.response_timeout_seconds),
@@ -215,7 +95,9 @@ fn build_redis_connection_manager_config(config: &Config) -> redis::aio::Connect
     )
 }
 
-fn parse_redis_node_settings(config: &Config) -> Result<Option<RedisNodeSettings>, anyhow::Error> {
+pub(super) fn parse_redis_node_settings(
+    config: &Config,
+) -> Result<Option<RedisNodeSettings>, anyhow::Error> {
     let redis_url = config.redis_url();
     if redis_url.is_empty() {
         return Ok(None);
@@ -441,46 +323,5 @@ async fn init_sentinel(
 }
 
 #[cfg(test)]
-mod concurrency_tests {
-    use super::*;
-    use synctv_core_testing::start_redis_with_client;
-
-    /// Verify that the sentinel health check uses a read lock (clone) for PING,
-    /// not a write lock. We test this by confirming that multiple concurrent readers
-    /// are not blocked while the shared handle is held.
-    #[tokio::test]
-    async fn test_read_lock_allows_concurrent_access() {
-        // Create a shared RwLock<String> to simulate the connection pattern.
-        let shared = Arc::new(RwLock::new("original".to_string()));
-
-        // Take a read lock, clone the value, and verify another read lock is not blocked.
-        let cloned = {
-            let guard = shared.read().await;
-            guard.clone()
-        };
-        assert_eq!(cloned, "original");
-
-        // Another read should succeed immediately (no write lock held).
-        let second = shared.read().await.clone();
-        assert_eq!(second, "original");
-    }
-
-    /// Verify that ManagedRedisRuntime::snapshot returns a clone from the shared handle.
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_snapshot_returns_clone() {
-        let (_redis, client) = start_redis_with_client().await;
-        let conn = redis::aio::ConnectionManager::new(client.clone())
-            .await
-            .unwrap();
-        let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
-
-        // snapshot should return a working clone
-        let mut snapshot = runtime
-            .snapshot()
-            .await
-            .expect("snapshot should return a Redis connection");
-        let pong: String = redis::cmd("PING").query_async(&mut snapshot).await.unwrap();
-        assert_eq!(pong, "PONG");
-    }
-}
+#[path = "redis_tests.rs"]
+mod tests;

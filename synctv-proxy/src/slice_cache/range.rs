@@ -6,6 +6,131 @@
 //!   `ngx_http_slice_parse_content_range`
 //! - Slice-aligned range computation
 
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientRangePlan {
+    Explicit { start: u64, end: u64 },
+    OpenEnded { start: u64 },
+    Suffix { suffix_len: u64 },
+    MultiRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientRangeError {
+    InvalidRequest(String),
+    Unsatisfiable { message: String, total_size: u64 },
+}
+
+impl ClientRangeError {
+    fn message(&self) -> &str {
+        match self {
+            Self::InvalidRequest(message) | Self::Unsatisfiable { message, .. } => message,
+        }
+    }
+}
+
+impl fmt::Display for ClientRangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for ClientRangeError {}
+
+pub fn parse_client_range_plan(range: &str) -> Result<ClientRangePlan, ClientRangeError> {
+    let range = range.trim();
+    if !range.starts_with("bytes=") {
+        return Err(ClientRangeError::InvalidRequest(
+            "Invalid range format: must start with 'bytes='".to_string(),
+        ));
+    }
+
+    let spec = &range["bytes=".len()..];
+    if spec.contains(',') {
+        return Ok(ClientRangePlan::MultiRange);
+    }
+
+    let Some((start_text, end_text)) = spec.split_once('-') else {
+        return Err(ClientRangeError::InvalidRequest(
+            "Invalid range format".to_string(),
+        ));
+    };
+
+    if start_text.is_empty() {
+        let suffix_len = end_text
+            .parse::<u64>()
+            .map_err(|_| ClientRangeError::InvalidRequest("Invalid suffix range".to_string()))?;
+        if suffix_len == 0 {
+            return Err(ClientRangeError::InvalidRequest(
+                "Invalid suffix range".to_string(),
+            ));
+        }
+        return Ok(ClientRangePlan::Suffix { suffix_len });
+    }
+
+    let start = start_text
+        .parse::<u64>()
+        .map_err(|_| ClientRangeError::InvalidRequest("Invalid range start".to_string()))?;
+
+    if end_text.is_empty() {
+        return Ok(ClientRangePlan::OpenEnded { start });
+    }
+
+    let end = end_text
+        .parse::<u64>()
+        .map_err(|_| ClientRangeError::InvalidRequest("Invalid range end".to_string()))?;
+    if start > end {
+        return Err(ClientRangeError::InvalidRequest(
+            "Range start must not exceed range end".to_string(),
+        ));
+    }
+
+    Ok(ClientRangePlan::Explicit { start, end })
+}
+
+pub fn range_bounds_for_total(
+    plan: ClientRangePlan,
+    total_size: u64,
+) -> Result<(u64, u64), ClientRangeError> {
+    let unsatisfiable = |message: &str| ClientRangeError::Unsatisfiable {
+        message: message.to_string(),
+        total_size,
+    };
+
+    match plan {
+        ClientRangePlan::Explicit { start, mut end } => {
+            if start >= total_size {
+                return Err(unsatisfiable("Range start beyond total size"));
+            }
+            if end >= total_size {
+                end = total_size - 1;
+            }
+            Ok((start, end))
+        }
+        ClientRangePlan::OpenEnded { start } => {
+            if start >= total_size {
+                return Err(unsatisfiable("Range start beyond total size"));
+            }
+            Ok((start, total_size - 1))
+        }
+        ClientRangePlan::Suffix { suffix_len } => {
+            if suffix_len == 0 {
+                return Err(unsatisfiable("Suffix range out of bounds"));
+            }
+            Ok((total_size.saturating_sub(suffix_len), total_size - 1))
+        }
+        ClientRangePlan::MultiRange => Err(ClientRangeError::InvalidRequest(
+            "Multi-range requests are not supported by the slice cache".to_string(),
+        )),
+    }
+}
+
+#[must_use]
+pub fn slice_index_for_byte(byte: u64, slice_size: usize) -> u64 {
+    byte / slice_size as u64
+}
+
 // Request Range header parsing
 
 /// Parse a single HTTP Range header value.
@@ -221,103 +346,5 @@ pub fn aligned_range_for_slice(
 // Unit tests
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_content_range_basic() {
-        let cr = parse_content_range("bytes 0-499/1000").unwrap();
-        assert_eq!(cr.start, 0);
-        assert_eq!(cr.end, 500); // exclusive
-        assert_eq!(cr.complete_length, Some(1000));
-    }
-
-    #[test]
-    fn test_parse_content_range_large_values() {
-        let cr = parse_content_range("bytes 0-2097151/10485760").unwrap();
-        assert_eq!(cr.start, 0);
-        assert_eq!(cr.end, 2_097_152);
-        assert_eq!(cr.complete_length, Some(10_485_760));
-    }
-
-    #[test]
-    fn test_parse_content_range_wildcard_length() {
-        let cr = parse_content_range("bytes 100-199/*").unwrap();
-        assert_eq!(cr.start, 100);
-        assert_eq!(cr.end, 200);
-        assert_eq!(cr.complete_length, None);
-    }
-
-    #[test]
-    fn test_parse_content_range_with_spaces() {
-        // nginx tolerates spaces between tokens
-        let cr = parse_content_range("bytes  0 - 499 / 1000").unwrap();
-        assert_eq!(cr.start, 0);
-        assert_eq!(cr.end, 500);
-        assert_eq!(cr.complete_length, Some(1000));
-    }
-
-    #[test]
-    fn test_parse_content_range_missing_prefix() {
-        assert!(parse_content_range("0-499/1000").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_missing_dash() {
-        assert!(parse_content_range("bytes 0 499/1000").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_missing_slash() {
-        assert!(parse_content_range("bytes 0-499 1000").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_non_numeric_start() {
-        assert!(parse_content_range("bytes abc-499/1000").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_non_numeric_end() {
-        assert!(parse_content_range("bytes 0-xyz/1000").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_trailing_garbage() {
-        assert!(parse_content_range("bytes 0-499/1000 extra").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_empty() {
-        assert!(parse_content_range("").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_overflow() {
-        // u64::MAX = 18446744073709551615, adding 1 for exclusive end overflows
-        assert!(parse_content_range("bytes 0-18446744073709551615/999").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_u64_max_start() {
-        // Start value at u64::MAX is fine as long as end doesn't overflow
-        assert!(
-            parse_content_range("bytes 18446744073709551615-18446744073709551615/999").is_err()
-        );
-    }
-
-    #[test]
-    fn test_parse_content_range_start_greater_than_end() {
-        // Invalid: start (500) > end (100)
-        assert!(parse_content_range("bytes 500-100/1000").is_err());
-    }
-
-    #[test]
-    fn test_parse_content_range_start_equals_end_is_valid() {
-        // Valid: start == end means a single byte (e.g., bytes 100-100/1000)
-        let cr = parse_content_range("bytes 100-100/1000").unwrap();
-        assert_eq!(cr.start, 100);
-        assert_eq!(cr.end, 101); // exclusive, so it's 1 byte
-        assert_eq!(cr.complete_length, Some(1000));
-    }
-}
+#[path = "range_tests.rs"]
+mod tests;

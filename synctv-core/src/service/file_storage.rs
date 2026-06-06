@@ -1190,7 +1190,7 @@ fn file_upload_token(
     let signature = hex::encode(hmac_sha256(
         file_upload_token_key(user_id, storage_scope, secret).as_bytes(),
         &payload_bytes,
-    ));
+    )?);
     let encoded_payload = base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         payload_bytes,
@@ -1221,7 +1221,7 @@ fn validate_file_upload_token(
     let expected_signature = hex::encode(hmac_sha256(
         file_upload_token_key(user_id, storage_scope, secret).as_bytes(),
         &payload_bytes,
-    ));
+    )?);
     if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
         return Err(Error::InvalidInput(
             "invalid file upload session token".to_string(),
@@ -1786,10 +1786,11 @@ pub(crate) fn optional_file_storage_public_url(
     file_storage_public_url(config, object_key).map(Some)
 }
 
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any length");
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        .map_err(|error| Error::Internal(format!("failed to initialize HMAC-SHA256: {error}")))?;
     mac.update(data);
-    mac.finalize().into_bytes().to_vec()
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
 fn encode_database_file_object_key(object_key: &str) -> String {
@@ -1832,7 +1833,7 @@ fn database_file_read_token(
     let signature = hex::encode(hmac_sha256(
         format!("synctv:file-read:{secret}").as_bytes(),
         &payload_bytes,
-    ));
+    )?);
     let encoded_payload = base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         payload_bytes,
@@ -1968,7 +1969,7 @@ fn validate_versioned_hmac_token(
         encoded_payload,
     )
     .map_err(|_| Error::InvalidInput(error_message.to_string()))?;
-    let expected_signature = hex::encode(hmac_sha256(key, &payload_bytes));
+    let expected_signature = hex::encode(hmac_sha256(key, &payload_bytes)?);
     if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
         return Err(Error::InvalidInput(error_message.to_string()));
     }

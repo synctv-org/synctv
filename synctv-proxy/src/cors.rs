@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use axum::{body::Body, http::StatusCode, response::Response};
+use axum::{
+    body::Body,
+    http::{header, HeaderName, HeaderValue, StatusCode},
+    response::Response,
+};
 
 /// Standard CORS headers for preflight requests.
 const CORS_ALLOW_METHODS: &str = "GET, HEAD, OPTIONS";
@@ -14,71 +18,97 @@ const CORS_MAX_AGE: &str = "86400";
 /// (needed for video seeking), cache status, and other useful metadata.
 const CORS_EXPOSE_HEADERS: &str = "Content-Range, Accept-Ranges, Content-Length, Content-Type, Cache-Control, ETag, Last-Modified, X-Content-Type-Options";
 
+fn empty_response(status: StatusCode) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = status;
+    response
+}
+
+fn text_response(status: StatusCode, body: &'static str) -> Response {
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = status;
+    response
+}
+
+fn insert_static_header(response: &mut Response, name: &'static str, value: &'static str) {
+    response.headers_mut().insert(
+        HeaderName::from_static(name),
+        HeaderValue::from_static(value),
+    );
+}
+
+fn insert_preflight_headers(response: &mut Response) {
+    insert_static_header(response, "access-control-allow-methods", CORS_ALLOW_METHODS);
+    insert_static_header(response, "access-control-allow-headers", CORS_ALLOW_HEADERS);
+    insert_static_header(
+        response,
+        "access-control-expose-headers",
+        CORS_EXPOSE_HEADERS,
+    );
+    insert_static_header(response, "access-control-max-age", CORS_MAX_AGE);
+}
+
 /// Build a rate-limit response (429 Too Many Requests).
 #[cfg(test)]
 fn build_rate_limit_response() -> Response {
-    Response::builder()
-        .status(StatusCode::TOO_MANY_REQUESTS)
-        .header("Content-Type", "text/plain")
-        .header("Retry-After", "60")
-        .body(Body::from("Too Many Requests"))
-        .expect("Failed to build rate limit response")
+    let mut response = text_response(StatusCode::TOO_MANY_REQUESTS, "Too Many Requests");
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
+    response
 }
 
 /// Build a CORS preflight response for wildcard mode.
 ///
 /// Returns 204 No Content with `Access-Control-Allow-Origin: *`.
 fn build_wildcard_cors_response() -> Response {
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", "*")
-        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
-        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
-        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
-        .header("Access-Control-Max-Age", CORS_MAX_AGE)
-        .body(Body::empty())
-        .expect("Failed to build wildcard CORS response")
+    let mut response = empty_response(StatusCode::NO_CONTENT);
+    insert_static_header(&mut response, "access-control-allow-origin", "*");
+    insert_preflight_headers(&mut response);
+    response
 }
 
 /// Build a CORS preflight response when no Origin header is present.
 ///
 /// Returns 204 No Content without Access-Control-Allow-Origin header.
 fn build_no_origin_cors_response() -> Response {
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
-        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
-        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
-        .header("Access-Control-Max-Age", CORS_MAX_AGE)
-        .body(Body::empty())
-        .expect("Failed to build no-origin CORS response")
+    let mut response = empty_response(StatusCode::NO_CONTENT);
+    insert_preflight_headers(&mut response);
+    response
 }
 
 /// Build a CORS preflight response for a forbidden origin.
 ///
 /// Returns 403 Forbidden with plain text error message.
 fn build_forbidden_cors_response() -> Response {
-    Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header("Content-Type", "text/plain")
-        .body(Body::from("Origin not allowed"))
-        .expect("Failed to build forbidden CORS response")
+    let mut response = text_response(StatusCode::FORBIDDEN, "Origin not allowed");
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+    response
 }
 
 /// Build a CORS preflight response for an allowed origin.
 ///
 /// Returns 204 No Content with the origin echoed back.
 fn build_allowed_cors_response(origin: &str) -> Response {
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", origin)
-        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
-        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
-        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
-        .header("Access-Control-Max-Age", CORS_MAX_AGE)
-        .header("Vary", "Origin")
-        .body(Body::empty())
-        .expect("Failed to build allowed CORS response")
+    let Ok(origin) = HeaderValue::from_str(origin) else {
+        return build_forbidden_cors_response();
+    };
+
+    let mut response = empty_response(StatusCode::NO_CONTENT);
+    response.headers_mut().insert(
+        HeaderName::from_static("access-control-allow-origin"),
+        origin,
+    );
+    insert_preflight_headers(&mut response);
+    response
+        .headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Origin"));
+    response
 }
 
 /// Core CORS preflight logic shared between all preflight handlers.
@@ -189,196 +219,5 @@ pub async fn proxy_options_preflight_with_cors(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_rate_limit_response() {
-        let response = build_rate_limit_response();
-
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .map(|v| v.to_str().unwrap()),
-            Some("text/plain")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Retry-After")
-                .map(|v| v.to_str().unwrap()),
-            Some("60")
-        );
-    }
-
-    #[test]
-    fn test_build_wildcard_cors_response() {
-        let response = build_wildcard_cors_response();
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Origin")
-                .map(|v| v.to_str().unwrap()),
-            Some("*")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Methods")
-                .map(|v| v.to_str().unwrap()),
-            Some("GET, HEAD, OPTIONS")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Headers")
-                .map(|v| v.to_str().unwrap()),
-            Some("Authorization, Content-Type, Accept, Range")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Max-Age")
-                .map(|v| v.to_str().unwrap()),
-            Some("86400")
-        );
-        assert!(response
-            .headers()
-            .get("Access-Control-Allow-Credentials")
-            .is_none());
-        assert!(response.headers().get("Vary").is_none());
-    }
-
-    #[test]
-    fn test_build_no_origin_cors_response() {
-        let response = build_no_origin_cors_response();
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert!(response
-            .headers()
-            .get("Access-Control-Allow-Origin")
-            .is_none());
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Methods")
-                .map(|v| v.to_str().unwrap()),
-            Some("GET, HEAD, OPTIONS")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Headers")
-                .map(|v| v.to_str().unwrap()),
-            Some("Authorization, Content-Type, Accept, Range")
-        );
-    }
-
-    #[test]
-    fn test_build_forbidden_cors_response() {
-        let response = build_forbidden_cors_response();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .map(|v| v.to_str().unwrap()),
-            Some("text/plain")
-        );
-    }
-
-    #[test]
-    fn test_build_allowed_cors_response() {
-        let origin = "https://example.com";
-        let response = build_allowed_cors_response(origin);
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Origin")
-                .map(|v| v.to_str().unwrap()),
-            Some(origin)
-        );
-        assert!(response
-            .headers()
-            .get("Access-Control-Allow-Credentials")
-            .is_none());
-        assert_eq!(
-            response.headers().get("Vary").map(|v| v.to_str().unwrap()),
-            Some("Origin")
-        );
-    }
-
-    #[test]
-    fn test_handle_cors_preflight_wildcard_mode() {
-        let config = CorsConfig::new_wildcard();
-        let response = handle_cors_preflight(Some("https://example.com"), &config);
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Origin")
-                .map(|v| v.to_str().unwrap()),
-            Some("*")
-        );
-    }
-
-    #[test]
-    fn test_handle_cors_preflight_no_origin_header() {
-        let config = CorsConfig::new(vec!["https://example.com".to_string()]);
-        let response = handle_cors_preflight(None, &config);
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert!(response
-            .headers()
-            .get("Access-Control-Allow-Origin")
-            .is_none());
-    }
-
-    #[test]
-    fn test_handle_cors_preflight_origin_not_allowed() {
-        let config = CorsConfig::new(vec!["https://allowed.com".to_string()]);
-        let response = handle_cors_preflight(Some("https://evil.com"), &config);
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[test]
-    fn test_handle_cors_preflight_origin_allowed() {
-        let allowed_origin = "https://allowed.com";
-        let config = CorsConfig::new(vec![allowed_origin.to_string()]);
-        let response = handle_cors_preflight(Some(allowed_origin), &config);
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Origin")
-                .map(|v| v.to_str().unwrap()),
-            Some(allowed_origin)
-        );
-        assert!(response
-            .headers()
-            .get("Access-Control-Allow-Credentials")
-            .is_none());
-        assert_eq!(
-            response.headers().get("Vary").map(|v| v.to_str().unwrap()),
-            Some("Origin")
-        );
-    }
-
-    #[test]
-    fn test_handle_cors_preflight_empty_allowed_list_rejects_all() {
-        let config = CorsConfig::new(vec![]);
-        let response = handle_cors_preflight(Some("https://example.com"), &config);
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-}
+#[path = "cors_tests.rs"]
+mod tests;

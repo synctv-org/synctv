@@ -1724,24 +1724,22 @@ mod tests {
     #[test]
     fn test_playback_requires_state_resync() {
         let message = ServerMessage {
-            message: Some(
-                crate::proto::client::server_message::Message::Playback(
-                    crate::proto::client::PlaybackChanged {
+            message: Some(crate::proto::client::server_message::Message::Playback(
+                crate::proto::client::PlaybackChanged {
+                    room_id: "room_test".to_string(),
+                    playback: Some(crate::proto::client::Playback {
+                        media_id: String::new(),
+                        playlist_id: String::new(),
                         room_id: "room_test".to_string(),
-                        playback: Some(crate::proto::client::Playback {
-                            media_id: String::new(),
-                            playlist_id: String::new(),
-                            room_id: "room_test".to_string(),
-                            name: String::new(),
-                            playlist_position: 0.0,
-                            playback_infos: std::collections::HashMap::new(),
-                            default_mode: String::new(),
-                            metadata: std::collections::HashMap::new(),
-                            expires_at: Some(4_102_444_800),
-                        }),
-                    },
-                ),
-            ),
+                        name: String::new(),
+                        playlist_position: 0.0,
+                        playback_infos: std::collections::HashMap::new(),
+                        default_mode: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                        expires_at: Some(4_102_444_800),
+                    }),
+                },
+            )),
         };
 
         assert!(requires_state_resync(&message));

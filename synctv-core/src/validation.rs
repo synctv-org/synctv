@@ -337,11 +337,8 @@ impl PasswordValidator {
 }
 
 /// Pre-compiled email validation regex
-static EMAIL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    // SAFETY: This is a compile-time constant regex literal that is known to be valid.
-    regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-        .expect("email validation regex is a compile-time constant and always valid")
-});
+static EMAIL_REGEX: LazyLock<Result<regex::Regex, regex::Error>> =
+    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"));
 
 /// Email validator
 #[derive(Default)]
@@ -354,7 +351,13 @@ impl EmailValidator {
     }
 
     pub fn validate(&self, email: &str) -> ValidationResult<()> {
-        if !EMAIL_REGEX.is_match(email) {
+        let regex = EMAIL_REGEX
+            .as_ref()
+            .map_err(|error| ValidationError::Field {
+                field: "email".to_string(),
+                message: format!("email validator is not available: {error}"),
+            })?;
+        if !regex.is_match(email) {
             return Err(ValidationError::Field {
                 field: "email".to_string(),
                 message: "must be a valid email address".to_string(),

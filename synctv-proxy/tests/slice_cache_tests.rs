@@ -41,6 +41,7 @@ fn slice_cache_for_mock(config: SliceCacheConfig, mock_server: &MockServer) -> S
             .extra_allowed_host("cdn.example.com".to_string())
             .build(),
     )
+    .expect("mock slice cache should build")
 }
 
 struct HeaderAbsent(&'static str);
@@ -94,7 +95,7 @@ fn test_config_custom_slice_size() {
 #[test]
 fn test_slice_cache_new() {
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = SliceCache::new(config).expect("slice cache should build");
     assert_eq!(cache.config().slice_size, 2 * 1024 * 1024);
 }
 
@@ -106,7 +107,7 @@ fn test_slice_cache_custom_config() {
         max_cache_size: 100 * 1024 * 1024, // 100MB
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = SliceCache::new(config).expect("slice cache should build");
     assert_eq!(cache.config().slice_size, 1024 * 1024);
     assert_eq!(cache.config().max_cache_size, 100 * 1024 * 1024);
 }
@@ -637,7 +638,7 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let _cache = SliceCache::new(config);
+    let _cache = SliceCache::new(config).expect("slice cache should build");
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .resolve("cdn.example.com", *mock_server.address())
@@ -733,7 +734,6 @@ async fn test_proxy_head_with_cache_uses_head_and_reuses_cached_metadata() {
     assert_eq!(
         cache
             .get_resource_meta(&url, &provider_headers)
-            .await
             .and_then(|meta| meta.total_size),
         Some(total_size)
     );
@@ -800,7 +800,6 @@ async fn test_head_without_accept_ranges_stores_length_without_range_support() {
     assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
     let meta = cache
         .get_resource_meta(&url, &provider_headers)
-        .await
         .expect("HEAD should store metadata");
     assert_eq!(meta.total_size, Some(total_size));
     assert!(
@@ -1092,7 +1091,7 @@ async fn test_head_content_length_falls_back_when_head_omits_content_length() {
 #[tokio::test]
 async fn test_head_content_length_loopback_without_listener_fails_with_disabled_ssrf() {
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = SliceCache::new(config).expect("slice cache should build");
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
     let err = synctv_proxy::slice_cache::filter::head_content_length(
@@ -1127,7 +1126,7 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wi
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = SliceCache::new(config).expect("slice cache should build");
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
     let err = synctv_proxy::slice_cache::filter::head_content_length(
@@ -1152,7 +1151,7 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wi
 #[tokio::test]
 async fn test_proxy_with_cache_multi_range_rejected() {
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = SliceCache::new(config).expect("slice cache should build");
 
     let result = synctv_proxy::slice_cache::proxy_with_cache(
         &cache,
@@ -1758,7 +1757,7 @@ async fn test_suffix_range_without_meta_bypasses_once_and_learns_metadata() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body, suffix_body);
 
-    let meta = cache.get_resource_meta(&url, &provider_headers).await;
+    let meta = cache.get_resource_meta(&url, &provider_headers);
     assert_eq!(meta.as_ref().and_then(|m| m.total_size), Some(total_size));
     assert_eq!(
         meta.as_ref().and_then(|m| m.etag.as_deref()),
@@ -2582,7 +2581,7 @@ async fn test_resource_meta_stored_after_fetch() {
         .await
         .unwrap();
 
-    let meta = cache.get_resource_meta(&url, &headers).await;
+    let meta = cache.get_resource_meta(&url, &headers);
     assert!(meta.is_some(), "Resource meta should be stored after fetch");
     let meta = meta.unwrap();
     assert_eq!(meta.etag.as_deref(), Some("\"test-etag\""));
@@ -2861,7 +2860,7 @@ async fn test_cached_meta_avoids_head_request() {
     let _ = resp1.into_body().collect().await.unwrap().to_bytes();
 
     // Verify metadata is now cached
-    let meta = cache.get_resource_meta(&url, &provider_headers).await;
+    let meta = cache.get_resource_meta(&url, &provider_headers);
     assert!(
         meta.is_some(),
         "Metadata should be cached after first fetch"
@@ -3288,7 +3287,7 @@ async fn test_conditional_request_304_returns_revalidated() {
     assert_eq!(data.len(), 1024);
 
     // Verify metadata is stored (including Last-Modified).
-    let meta = cache.get_resource_meta(&url, &headers).await;
+    let meta = cache.get_resource_meta(&url, &headers);
     assert!(meta.is_some());
     let meta = meta.unwrap();
     assert_eq!(meta.etag.as_deref(), Some("\"etag-v1\""));
@@ -3436,7 +3435,7 @@ async fn test_last_modified_tracked_in_metadata() {
         .await
         .unwrap();
 
-    let meta = cache.get_resource_meta(&url, &headers).await;
+    let meta = cache.get_resource_meta(&url, &headers);
     assert!(meta.is_some());
     assert_eq!(
         meta.unwrap().last_modified.as_deref(),
@@ -3579,10 +3578,9 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_is_blocked_on_bypas
     );
 }
 
-/// SliceCache::new panics for file backend config.
+/// SliceCache::new returns an error for file backend config.
 #[test]
-#[should_panic(expected = "SliceCache::new() only supports the Memory backend")]
-fn test_new_panics_for_file_backend() {
+fn test_new_returns_error_for_file_backend() {
     let config = SliceCacheConfig {
         backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
             cache_dir: std::path::PathBuf::from("/tmp/test-panic"),
@@ -3590,7 +3588,13 @@ fn test_new_panics_for_file_backend() {
         },
         ..Default::default()
     };
-    let _cache = SliceCache::new(config);
+    let Err(error) = SliceCache::new(config) else {
+        panic!("file backend requires async constructor");
+    };
+    assert!(
+        error.to_string().contains("Memory backend"),
+        "unexpected error: {error}"
+    );
 }
 
 // File backend integration test
@@ -3660,7 +3664,7 @@ async fn test_file_backend_slice_cache_integration() {
 #[test]
 fn test_backend_accessor() {
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = SliceCache::new(config).expect("slice cache should build");
     let backend = cache.backend();
     // Just verify we can call the backend methods.
     assert_eq!(backend.current_size(), 0);
@@ -4110,19 +4114,18 @@ async fn test_lock_timeout_returns_stale_data() {
         stale_while_revalidate: false, // Disable so we go to lock path
         ..Default::default()
     };
-    let _cache = std::sync::Arc::new(SliceCache::new(config));
+    let _cache = std::sync::Arc::new(SliceCache::new(config).expect("slice cache should build"));
     let _url = format!("{}/h1-test.bin", mock_server.uri());
     let _headers: HashMap<String, String> = HashMap::new();
 
-    // This test primarily validates that the timeout code path exists
-    // and doesn't panic. The full concurrent lock-timeout scenario is
-    // harder to test deterministically without controlling task scheduling.
-    // We verify the cache creation with the timeout configuration doesn't
-    // break anything.
+    // This test primarily validates that the timeout code path accepts the
+    // configured cache settings. The full concurrent lock-timeout scenario is
+    // hard to test deterministically without controlling task scheduling.
     let cache2 = SliceCache::new(SliceCacheConfig {
         slice_size: 1024,
         ..Default::default()
-    });
+    })
+    .expect("slice cache should build");
     assert!(cache2.config().enabled);
 }
 

@@ -27,17 +27,10 @@ pub struct EmbyService {
 }
 
 impl EmbyService {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            service: EmbyServiceImpl::new(),
-        }
-    }
-}
-
-impl Default for EmbyService {
-    fn default() -> Self {
-        Self::new()
+    pub fn new() -> Result<Self, reqwest::Error> {
+        Ok(Self {
+            service: EmbyServiceImpl::new()?,
+        })
     }
 }
 

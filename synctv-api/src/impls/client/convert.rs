@@ -538,22 +538,23 @@ pub(crate) fn try_room_to_proto_with_availability_and_cover(
 }
 
 #[cfg(test)]
-#[must_use]
 pub(super) fn hot_room_to_proto(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     online_count: i32,
     total_members: i32,
     public_id_codec: &crate::PublicIdCodec,
-) -> crate::proto::client::RoomWithStats {
-    crate::proto::client::RoomWithStats {
-        room: Some(
-            try_room_to_proto_basic(room, settings, Some(total_members), public_id_codec)
-                .expect("hot room proto should encode"),
-        ),
+) -> Result<crate::proto::client::RoomWithStats, crate::impls::ApiError> {
+    Ok(crate::proto::client::RoomWithStats {
+        room: Some(try_room_to_proto_basic(
+            room,
+            settings,
+            Some(total_members),
+            public_id_codec,
+        )?),
         online_count,
         total_members,
-    }
+    })
 }
 
 #[must_use]
@@ -937,12 +938,7 @@ pub(crate) fn try_playback_to_proto(
     let metadata = result
         .metadata
         .iter()
-        .map(|(key, value)| {
-            Ok((
-                key.clone(),
-                json_to_string(value, "playback metadata")?,
-            ))
-        })
+        .map(|(key, value)| Ok((key.clone(), json_to_string(value, "playback metadata")?)))
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
     Ok(crate::proto::client::Playback {
@@ -1325,11 +1321,8 @@ mod tests {
         .build()
         .expect("playback result should build");
 
-        let proto = try_playback_to_proto(
-            &result,
-            &crate::PublicIdCodec::plain(),
-        )
-        .expect("playback should convert");
+        let proto = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+            .expect("playback should convert");
 
         let direct = proto
             .playback_infos

@@ -838,7 +838,7 @@ async fn test_alist_client_login_hashed_wrong_password() {
 
 #[tokio::test]
 async fn test_alist_service_login_requires_one_credential() {
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let err = service
         .login(LoginReq {
             host: "http://127.0.0.1:5244".to_string(),
@@ -873,7 +873,7 @@ async fn test_alist_service_login_uses_hashed_password_endpoint() {
         .mount(&server)
         .await;
 
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let token = service
         .login(LoginReq {
             host: server.uri(),
@@ -918,7 +918,7 @@ async fn test_alist_service_fs_list_forwards_refresh_password_and_pagination() {
         .mount(&server)
         .await;
 
-    let service = AlistService::new();
+    let service = AlistService::new().expect("provider HTTP client should build");
     let resp = service
         .fs_list(FsListReq {
             host: server.uri(),
@@ -1056,7 +1056,9 @@ async fn spawn_alist_grpc_server() -> (String, tokio::task::JoinHandle<()>) {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         Server::builder()
-            .add_service(AlistServer::new(GrpcAlistService::new()))
+            .add_service(AlistServer::new(
+                GrpcAlistService::new().expect("provider HTTP client should build"),
+            ))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .unwrap();

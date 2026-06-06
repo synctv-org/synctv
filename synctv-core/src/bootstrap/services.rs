@@ -1115,15 +1115,13 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
 }
 
 #[cfg(test)]
-fn test_providers_manager(pool: &PgPool) -> Arc<ProvidersManager> {
+fn test_providers_manager(pool: &PgPool) -> anyhow::Result<Arc<ProvidersManager>> {
     let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
     let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
         provider_repo,
         None,
     ));
-    Arc::new(
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build"),
-    )
+    Ok(Arc::new(ProvidersManager::new(provider_instance_manager)?))
 }
 
 fn build_publish_key_service(
@@ -1435,7 +1433,8 @@ mod tests {
             user_service,
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool),
+            providers_manager: test_providers_manager(&pool)
+                .expect("providers manager should build"),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
@@ -1522,7 +1521,8 @@ mod tests {
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool),
+            providers_manager: test_providers_manager(&pool)
+                .expect("providers manager should build"),
             cache_invalidation: cache_invalidation.clone(),
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
@@ -1562,7 +1562,8 @@ mod tests {
             user_service,
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool),
+            providers_manager: test_providers_manager(&pool)
+                .expect("providers manager should build"),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
@@ -1642,7 +1643,8 @@ mod tests {
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool),
+            providers_manager: test_providers_manager(&pool)
+                .expect("providers manager should build"),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
@@ -1703,7 +1705,8 @@ mod tests {
             "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
-        let providers_manager = test_providers_manager(&pool);
+        let providers_manager =
+            test_providers_manager(&pool).expect("providers manager should build");
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
@@ -1773,7 +1776,8 @@ mod tests {
             "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
-        let providers_manager = test_providers_manager(&pool);
+        let providers_manager =
+            test_providers_manager(&pool).expect("providers manager should build");
         let encryption = crate::credential_encryption::CredentialEncryption::new(&[7u8; 32])
             .expect("credential encryption should construct");
         let room_service = build_room_service(RoomServiceBuildArgs {

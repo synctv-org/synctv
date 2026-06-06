@@ -88,10 +88,10 @@ use crate::proto::client::{
     UploadChatImageObjectResponse, UploadUserAvatarObjectRequest, UploadUserAvatarObjectResponse,
     UploadVideoCoverObjectRequest, UploadVideoCoverObjectResponse, UserAvatarObjectResponse,
     VerifyMfaEmailCodeRequest, VideoCoverObjectResponse, WatchChatEventsEvent,
-    WatchChatEventsRequest, WatchPlaybackEvent, WatchPlaybackRequest,
-    WatchPlaybackStateEvent, WatchPlaybackStateRequest, WatchPlaylistItemsEvent,
-    WatchPlaylistItemsRequest, WatchRoomMembersEvent, WatchRoomMembersRequest,
-    WatchRoomSettingsEvent, WatchRoomSettingsRequest,
+    WatchChatEventsRequest, WatchPlaybackEvent, WatchPlaybackRequest, WatchPlaybackStateEvent,
+    WatchPlaybackStateRequest, WatchPlaylistItemsEvent, WatchPlaylistItemsRequest,
+    WatchRoomMembersEvent, WatchRoomMembersRequest, WatchRoomSettingsEvent,
+    WatchRoomSettingsRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -2196,11 +2196,7 @@ impl RoomService for ClientServiceImpl {
         >,
     >;
     type WatchPlaybackStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<WatchPlaybackEvent, Status>>
-                + Send
-                + 'static,
-        >,
+        Box<dyn tokio_stream::Stream<Item = Result<WatchPlaybackEvent, Status>> + Send + 'static>,
     >;
     type WatchRoomSettingsStream = std::pin::Pin<
         Box<
@@ -2476,9 +2472,8 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchPlaybackRequest>,
     ) -> Result<Response<Self::WatchPlaybackStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let observe =
-            crate::impls::messaging::watch_playback_observe(request.into_inner())
-                .map_err(Status::invalid_argument)?;
+        let observe = crate::impls::messaging::watch_playback_observe(request.into_inner())
+            .map_err(Status::invalid_argument)?;
         self.open_watch_stream(metadata, room_id, observe, watch_playback_event)
             .await
     }

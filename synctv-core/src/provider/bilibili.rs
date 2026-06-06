@@ -1762,7 +1762,8 @@ mod tests {
     }
 
     fn provider_with_mock_bilibili_client(client: Arc<dyn BilibiliInterface>) -> BilibiliProvider {
-        let default_clients = ProviderClientManager::new_for_tests();
+        let default_clients = ProviderClientManager::new_for_tests()
+            .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             default_clients.local_alist_client(),
             client,

@@ -13,163 +13,38 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
 use bytes::Bytes;
-use futures::StreamExt;
 use synctv_common::ExecutionControl;
 
 use crate::{
     apply_provider_headers, run_with_proxy_cancellation,
-    send_head_with_redirect_validation_with_control_and_timeout,
     send_with_redirect_validation_with_control_and_timeout, ProxyError,
 };
 
 use super::etag::CachedResourceMeta;
-use super::range::parse_content_range;
+use super::head;
+use super::passthrough::{
+    stream_existing_response_with_status, stream_head_through_with_status,
+    stream_through_with_status, StreamThroughRequest,
+};
+use super::range::{
+    parse_client_range_plan, range_bounds_for_total, slice_index_for_byte, ClientRangeError,
+    ClientRangePlan,
+};
 use super::status::CacheStatus;
-use super::store::{CachedSlice, HeadResourceResult, SliceCache, SliceFetchResult};
+use super::store::SliceCache;
+use super::types::{CachedSlice, HeadResourceResult, SliceFetchResult};
 
-pub(super) struct StreamThroughRequest<'a> {
-    client: &'a reqwest::Client,
-    ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
-    url: &'a str,
-    provider_headers: &'a HashMap<String, String>,
-    range_header: Option<&'a str>,
-    cache_status: CacheStatus,
-    request_control: Option<&'a ExecutionControl>,
-    upstream_header_timeout: Option<Duration>,
-}
-
-const PASSTHROUGH_RESPONSE_HEADERS: &[&str] = &[
-    "content-length",
-    "content-type",
-    "content-range",
-    "accept-ranges",
-    "cache-control",
-    "etag",
-    "last-modified",
-];
-
-// HEAD helper
-
-fn parse_content_length_header(resp: &reqwest::Response) -> Option<u64> {
-    resp.headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-}
-
-#[derive(Clone, Copy)]
-enum ClientRangePlan {
-    Explicit { start: u64, end: u64 },
-    OpenEnded { start: u64 },
-    Suffix { suffix_len: u64 },
-    MultiRange,
-}
-
-fn parse_client_range_plan(range: &str) -> Result<ClientRangePlan, ProxyError> {
-    let range = range.trim();
-    if !range.starts_with("bytes=") {
-        return Err(ProxyError::InvalidRequest(
-            "Invalid range format: must start with 'bytes='".to_string(),
-        ));
+fn proxy_error_from_client_range_error(error: ClientRangeError) -> ProxyError {
+    match error {
+        ClientRangeError::InvalidRequest(message) => ProxyError::InvalidRequest(message),
+        ClientRangeError::Unsatisfiable {
+            message,
+            total_size,
+        } => ProxyError::RangeNotSatisfiable {
+            message,
+            total_size,
+        },
     }
-
-    let spec = &range["bytes=".len()..];
-    if spec.contains(',') {
-        return Ok(ClientRangePlan::MultiRange);
-    }
-
-    let Some((start_text, end_text)) = spec.split_once('-') else {
-        return Err(ProxyError::InvalidRequest(
-            "Invalid range format".to_string(),
-        ));
-    };
-
-    if start_text.is_empty() {
-        if let Ok(suffix_len) = end_text.parse::<u64>() {
-            if suffix_len == 0 {
-                return Err(ProxyError::InvalidRequest(
-                    "Invalid suffix range".to_string(),
-                ));
-            }
-            return Ok(ClientRangePlan::Suffix { suffix_len });
-        }
-        return Err(ProxyError::InvalidRequest(
-            "Invalid suffix range".to_string(),
-        ));
-    }
-
-    let start = start_text
-        .parse::<u64>()
-        .map_err(|_| ProxyError::InvalidRequest("Invalid range start".to_string()))?;
-
-    if end_text.is_empty() {
-        return Ok(ClientRangePlan::OpenEnded { start });
-    }
-
-    let end = end_text
-        .parse::<u64>()
-        .map_err(|_| ProxyError::InvalidRequest("Invalid range end".to_string()))?;
-    if start > end {
-        return Err(ProxyError::InvalidRequest(
-            "Range start must not exceed range end".to_string(),
-        ));
-    }
-
-    Ok(ClientRangePlan::Explicit { start, end })
-}
-
-fn range_bounds_for_total(
-    plan: ClientRangePlan,
-    total_size: u64,
-) -> Result<(u64, u64), ProxyError> {
-    let unsatisfiable = |message: &str| ProxyError::RangeNotSatisfiable {
-        message: message.to_string(),
-        total_size,
-    };
-
-    match plan {
-        ClientRangePlan::Explicit { start, mut end } => {
-            if start >= total_size {
-                return Err(unsatisfiable("Range start beyond total size"));
-            }
-            if end >= total_size {
-                end = total_size - 1;
-            }
-            Ok((start, end))
-        }
-        ClientRangePlan::OpenEnded { start } => {
-            if start >= total_size {
-                return Err(unsatisfiable("Range start beyond total size"));
-            }
-            Ok((start, total_size - 1))
-        }
-        ClientRangePlan::Suffix { suffix_len } => {
-            if suffix_len == 0 {
-                return Err(unsatisfiable("Suffix range out of bounds"));
-            }
-            Ok((total_size.saturating_sub(suffix_len), total_size - 1))
-        }
-        ClientRangePlan::MultiRange => Err(ProxyError::InvalidRequest(
-            "Multi-range requests are not supported by the slice cache".to_string(),
-        )),
-    }
-}
-
-fn slice_index_for_byte(byte: u64, slice_size: usize) -> u64 {
-    byte / slice_size as u64
-}
-
-fn parse_total_size_from_content_range(
-    resp: &reqwest::Response,
-) -> Result<Option<u64>, anyhow::Error> {
-    let Some(value) = resp.headers().get("content-range") else {
-        return Ok(None);
-    };
-    let value = value
-        .to_str()
-        .map_err(|e| anyhow::anyhow!("Invalid Content-Range header in fallback response: {e}"))?;
-    let parsed = parse_content_range(value)?;
-    Ok(parsed.complete_length)
 }
 
 fn check_stream_active(request_control: Option<&ExecutionControl>) -> Result<(), io::Error> {
@@ -181,41 +56,97 @@ fn check_stream_active(request_control: Option<&ExecutionControl>) -> Result<(),
     Ok(())
 }
 
-async fn discover_content_length_via_range_get(
-    client: &reqwest::Client,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    url: &str,
-    provider_headers: &HashMap<String, String>,
-    request_control: Option<&ExecutionControl>,
+struct FullResourceStream {
+    cache: SliceCache,
+    url: String,
+    provider_headers: HashMap<String, String>,
+    total_size: u64,
+    total_slices: u64,
+    first_chunk: Bytes,
+    request_control: Option<ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
-) -> Result<u64, anyhow::Error> {
-    let mut request = client.get(url);
-    request = apply_provider_headers(request, url, provider_headers)?;
-    request = request.header("Range", "bytes=0-0");
-    let resp = send_with_redirect_validation_with_control_and_timeout(
-        client,
-        request,
-        ssrf_guard,
+}
+
+fn full_resource_slice_stream(
+    cfg: FullResourceStream,
+) -> impl futures::Stream<Item = Result<Bytes, io::Error>> {
+    let FullResourceStream {
+        cache,
+        url,
+        provider_headers,
+        total_size,
+        total_slices,
+        first_chunk,
         request_control,
         upstream_header_timeout,
-    )
-    .await
-    .context("Range GET fallback failed")?
-    .response;
+    } = cfg;
 
-    match resp.status() {
-        StatusCode::PARTIAL_CONTENT => {
-            parse_total_size_from_content_range(&resp)?.ok_or_else(|| {
-                anyhow::anyhow!("Missing complete length in Content-Range fallback response")
-            })
-        }
-        StatusCode::OK => parse_content_length_header(&resp).ok_or_else(|| {
-            anyhow::anyhow!("Missing or invalid Content-Length in fallback GET response")
-        }),
-        status => Err(anyhow::anyhow!(
-            "Range GET fallback returned status {status}"
-        )),
+    futures::stream::try_unfold(
+        (0_u64, Some(first_chunk)),
+        move |(slice_index, mut first_chunk)| {
+            let cache = cache.clone();
+            let url = url.clone();
+            let provider_headers = provider_headers.clone();
+            let request_control = request_control.clone();
+            async move {
+                if slice_index >= total_slices {
+                    return Ok::<Option<(Bytes, _)>, io::Error>(None);
+                }
+                check_stream_active(request_control.as_ref())?;
+                let next_index = slice_index.saturating_add(1);
+                let chunk = if let Some(chunk) = first_chunk.take() {
+                    Ok(chunk)
+                } else {
+                    cache
+                        .get_or_fetch_slice_with_control(
+                            &url,
+                            &provider_headers,
+                            slice_index,
+                            total_size,
+                            request_control.as_ref(),
+                            upstream_header_timeout,
+                        )
+                        .await
+                        .map(|(data, _status)| data)
+                        .map_err(|error| {
+                            io::Error::other(format!("Slice cache fetch failed: {error}"))
+                        })
+                }?;
+                Ok(Some((chunk, (next_index, first_chunk))))
+            }
+        },
+    )
+}
+
+fn crop_slice_for_range(
+    data: &Bytes,
+    slice_start: u64,
+    range_start: u64,
+    range_end: u64,
+) -> Result<Bytes, io::Error> {
+    #[allow(clippy::cast_possible_truncation)]
+    let offset_start = if range_start > slice_start {
+        (range_start - slice_start) as usize
+    } else {
+        0
+    };
+
+    let slice_len = data.len();
+    let slice_end = slice_start
+        .checked_add(slice_len as u64)
+        .ok_or_else(|| io::Error::other("Slice end overflow"))?;
+    #[allow(clippy::cast_possible_truncation)]
+    let offset_end = if range_end < slice_end {
+        (range_end - slice_start) as usize + 1
+    } else {
+        slice_len
+    };
+
+    if offset_start > offset_end || offset_end > slice_len {
+        return Err(io::Error::other("Invalid slice crop range"));
     }
+
+    Ok(data.slice(offset_start..offset_end))
 }
 
 async fn stream_original_range_with_learned_meta(
@@ -242,7 +173,7 @@ async fn stream_original_range_with_learned_meta(
     .response;
 
     if resp.status() == StatusCode::PARTIAL_CONTENT {
-        if let Some(total_size) = parse_total_size_from_content_range(&resp)? {
+        if let Some(total_size) = head::parse_total_size_from_content_range(&resp)? {
             cache.put_resource_meta(
                 url,
                 provider_headers,
@@ -286,7 +217,7 @@ pub async fn head_content_length(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<u64, anyhow::Error> {
-    head_content_length_with_control(client, ssrf_guard, url, provider_headers, None).await
+    head::head_content_length(client, ssrf_guard, url, provider_headers).await
 }
 
 #[allow(clippy::implicit_hasher)]
@@ -297,13 +228,12 @@ pub async fn head_content_length_with_control(
     provider_headers: &HashMap<String, String>,
     request_control: Option<&ExecutionControl>,
 ) -> Result<u64, anyhow::Error> {
-    head_content_length_with_control_and_timeout(
+    head::head_content_length_with_control(
         client,
         ssrf_guard,
         url,
         provider_headers,
         request_control,
-        None,
     )
     .await
 }
@@ -317,36 +247,7 @@ pub async fn head_content_length_with_control_and_timeout(
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<u64, anyhow::Error> {
-    let mut request = client.head(url);
-    request = apply_provider_headers(request, url, provider_headers)?;
-    let resp = send_head_with_redirect_validation_with_control_and_timeout(
-        client,
-        request,
-        ssrf_guard,
-        request_control,
-        upstream_header_timeout,
-    )
-    .await
-    .context("HEAD request failed")?
-    .response;
-
-    if !resp.status().is_success() {
-        return discover_content_length_via_range_get(
-            client,
-            ssrf_guard,
-            url,
-            provider_headers,
-            request_control,
-            upstream_header_timeout,
-        )
-        .await;
-    }
-
-    if let Some(content_length) = parse_content_length_header(&resp) {
-        return Ok(content_length);
-    }
-
-    discover_content_length_via_range_get(
+    head::head_content_length_with_control_and_timeout(
         client,
         ssrf_guard,
         url,
@@ -490,7 +391,7 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
         .await;
     }
 
-    if range_header.is_none() {
+    let Some(range_str) = range_header else {
         return no_range_slice_cache_path(
             cache,
             url,
@@ -499,28 +400,29 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
             upstream_header_timeout,
         )
         .await;
-    }
-
-    let Some(range_str) = range_header else {
-        unreachable!("range_header.is_none() was checked above");
     };
 
-    let plan = parse_client_range_plan(range_str)?;
-    if matches!(plan, ClientRangePlan::MultiRange) {
-        return stream_through_with_status(StreamThroughRequest {
-            client: cache.client(),
-            ssrf_guard: cache.ssrf_guard(),
-            url,
-            provider_headers,
-            range_header: Some(range_str),
-            cache_status: CacheStatus::Bypass,
-            request_control,
-            upstream_header_timeout,
-        })
-        .await;
+    let plan = parse_client_range_plan(range_str).map_err(proxy_error_from_client_range_error)?;
+    match plan {
+        ClientRangePlan::MultiRange => {
+            return stream_through_with_status(StreamThroughRequest {
+                client: cache.client(),
+                ssrf_guard: cache.ssrf_guard(),
+                url,
+                provider_headers,
+                range_header: Some(range_str),
+                cache_status: CacheStatus::Bypass,
+                request_control,
+                upstream_header_timeout,
+            })
+            .await;
+        }
+        ClientRangePlan::Explicit { .. }
+        | ClientRangePlan::OpenEnded { .. }
+        | ClientRangePlan::Suffix { .. } => {}
     }
 
-    let cached_meta = cache.get_resource_meta(url, provider_headers).await;
+    let cached_meta = cache.get_resource_meta(url, provider_headers);
     if cached_meta
         .as_ref()
         .is_some_and(|meta| !meta.supports_ranges)
@@ -539,7 +441,7 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
     }
     let known_total_size = cached_meta.and_then(|meta| meta.total_size);
     if let Some(total_size) = known_total_size {
-        range_bounds_for_total(plan, total_size)?;
+        range_bounds_for_total(plan, total_size).map_err(proxy_error_from_client_range_error)?;
     }
 
     match plan {
@@ -557,7 +459,19 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
                 .await;
             }
         }
-        ClientRangePlan::MultiRange => unreachable!("multi-range bypassed before slice path"),
+        ClientRangePlan::MultiRange => {
+            return stream_through_with_status(StreamThroughRequest {
+                client: cache.client(),
+                ssrf_guard: cache.ssrf_guard(),
+                url,
+                provider_headers,
+                range_header: Some(range_str),
+                cache_status: CacheStatus::Bypass,
+                request_control,
+                upstream_header_timeout,
+            })
+            .await;
+        }
     }
 
     range_slice_cache_path(
@@ -630,7 +544,9 @@ pub async fn proxy_head_with_cache_enabled_with_control_and_timeout(
     build_head_cache_response(&result)
 }
 
-fn build_head_cache_response(result: &HeadResourceResult) -> Result<Response, anyhow::Error> {
+pub(super) fn build_head_cache_response(
+    result: &HeadResourceResult,
+) -> Result<Response, anyhow::Error> {
     let mut builder = Response::builder()
         .status(
             StatusCode::from_u16(result.status.as_u16())
@@ -687,10 +603,23 @@ async fn range_slice_cache_path(
                 )
                 .await;
             };
-            let (start, _) = range_bounds_for_total(plan, total_size)?;
+            let (start, _) = range_bounds_for_total(plan, total_size)
+                .map_err(proxy_error_from_client_range_error)?;
             start
         }
-        ClientRangePlan::MultiRange => unreachable!("multi-range bypassed before slice path"),
+        ClientRangePlan::MultiRange => {
+            return stream_through_with_status(StreamThroughRequest {
+                client: cache.client(),
+                ssrf_guard: cache.ssrf_guard(),
+                url,
+                provider_headers,
+                range_header: Some(range_str),
+                cache_status: CacheStatus::Bypass,
+                request_control,
+                upstream_header_timeout,
+            })
+            .await;
+        }
     };
     let first_slice_index = slice_index_for_byte(first_byte, cache.config().slice_size);
     let first_slice = match cache
@@ -719,7 +648,8 @@ async fn range_slice_cache_path(
         last_modified: first_slice.slice.last_modified.clone(),
         data: Bytes::new(),
     };
-    let (range_start, range_end) = range_bounds_for_total(plan, total_size)?;
+    let (range_start, range_end) =
+        range_bounds_for_total(plan, total_size).map_err(proxy_error_from_client_range_error)?;
     if range_start > range_end {
         return Err(ProxyError::InvalidRequest("Invalid range".to_string()).into());
     }
@@ -777,27 +707,7 @@ async fn range_slice_cache_path(
                     let slice_start = idx
                         .checked_mul(cache.config().slice_size as u64)
                         .ok_or_else(|| io::Error::other("Slice start overflow"))?;
-
-                    #[allow(clippy::cast_possible_truncation)]
-                    let offset_start = if range_start > slice_start {
-                        (range_start - slice_start) as usize
-                    } else {
-                        0
-                    };
-
-                    let slice_len = fetched.slice.data.len();
-                    #[allow(clippy::cast_possible_truncation)]
-                    let offset_end = if range_end < slice_start + slice_len as u64 {
-                        (range_end - slice_start) as usize + 1
-                    } else {
-                        slice_len
-                    };
-
-                    if offset_start > offset_end || offset_end > slice_len {
-                        return Err(io::Error::other("Invalid slice crop range"));
-                    }
-
-                    Ok(fetched.slice.data.slice(offset_start..offset_end))
+                    crop_slice_for_range(&fetched.slice.data, slice_start, range_start, range_end)
                 });
 
                 chunk.map(|chunk| Some((chunk, (next_idx, first_slice))))
@@ -878,93 +788,26 @@ async fn no_range_slice_cache_path(
         .header("Content-Length", total_size.to_string())
         .header("Accept-Ranges", "bytes")
         .header("X-Cache-Status", first_slice.status.as_str());
-    if let Some(ref ct) = first_slice.slice.content_type {
-        builder = builder.header("Content-Type", ct.as_str());
-    }
-    if let Some(ref etag) = first_slice.slice.etag {
-        builder = builder.header("ETag", etag.as_str());
-    }
-    if let Some(ref last_modified) = first_slice.slice.last_modified {
-        builder = builder.header("Last-Modified", last_modified.as_str());
-    }
+    builder = apply_cached_slice_response_headers(builder, &first_slice.slice);
 
     let cache = cache.clone();
     let url = url.to_string();
     let provider_headers = provider_headers.clone();
     let request_control = request_control.cloned();
-    let first_chunk = Some(first_slice.slice.data);
-    let stream = futures::stream::try_unfold(
-        (0_u64, first_chunk),
-        move |(slice_index, mut first_chunk)| {
-            let cache = cache.clone();
-            let url = url.clone();
-            let provider_headers = provider_headers.clone();
-            let request_control = request_control.clone();
-            async move {
-                if slice_index >= total_slices {
-                    return Ok::<Option<(Bytes, _)>, io::Error>(None);
-                }
-                check_stream_active(request_control.as_ref())?;
-                let next_index = slice_index.saturating_add(1);
-                let chunk = if let Some(chunk) = first_chunk.take() {
-                    Ok(chunk)
-                } else {
-                    cache
-                        .get_or_fetch_slice_with_control(
-                            &url,
-                            &provider_headers,
-                            slice_index,
-                            total_size,
-                            request_control.as_ref(),
-                            upstream_header_timeout,
-                        )
-                        .await
-                        .map(|(data, _status)| data)
-                        .map_err(|error| {
-                            io::Error::other(format!("Slice cache fetch failed: {error}"))
-                        })
-                }?;
-                Ok(Some((chunk, (next_index, first_chunk))))
-            }
-        },
-    );
+    let stream = full_resource_slice_stream(FullResourceStream {
+        cache,
+        url,
+        provider_headers,
+        total_size,
+        total_slices,
+        first_chunk: first_slice.slice.data,
+        request_control,
+        upstream_header_timeout,
+    });
 
     builder
         .body(Body::from_stream(stream))
         .map_err(|e| anyhow::anyhow!("Failed to build no-range slice response: {e}"))
-}
-
-// Stream-through helper
-
-fn stream_existing_response_with_status(
-    resp: reqwest::Response,
-    cache_status: CacheStatus,
-) -> Result<Response, anyhow::Error> {
-    let status = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-        StatusCode::PARTIAL_CONTENT
-    } else {
-        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
-    };
-
-    let mut builder = Response::builder()
-        .status(status)
-        .header("X-Cache-Status", cache_status.as_str());
-
-    for name in PASSTHROUGH_RESPONSE_HEADERS {
-        if let Some(val) = resp.headers().get(*name) {
-            if let Ok(v) = val.to_str() {
-                builder = builder.header(*name, v);
-            }
-        }
-    }
-
-    let stream = resp
-        .bytes_stream()
-        .map(|result| result.map_err(|e| io::Error::other(format!("Stream error: {e}"))));
-
-    builder
-        .body(Body::from_stream(stream))
-        .map_err(|e| anyhow::anyhow!("Failed to build stream-through response: {e}"))
 }
 
 fn apply_cached_slice_response_headers(
@@ -981,58 +824,4 @@ fn apply_cached_slice_response_headers(
         builder = builder.header("Last-Modified", last_modified.as_str());
     }
     builder
-}
-
-/// Stream an upstream response through without caching, attaching the given
-/// `X-Cache-Status` header.
-pub(super) async fn stream_through_with_status(
-    cfg: StreamThroughRequest<'_>,
-) -> Result<Response, anyhow::Error> {
-    let mut request = cfg.client.get(cfg.url);
-    request = apply_provider_headers(request, cfg.url, cfg.provider_headers)?;
-
-    if let Some(range) = cfg.range_header {
-        request = request.header("Range", range);
-    }
-
-    let resp = send_with_redirect_validation_with_control_and_timeout(
-        cfg.client,
-        request,
-        cfg.ssrf_guard,
-        cfg.request_control,
-        cfg.upstream_header_timeout,
-    )
-    .await
-    .context("Upstream request failed")?
-    .response;
-
-    stream_existing_response_with_status(resp, cfg.cache_status)
-}
-
-async fn stream_head_through_with_status(
-    cfg: StreamThroughRequest<'_>,
-) -> Result<Response, anyhow::Error> {
-    let mut request = cfg.client.head(cfg.url);
-    request = apply_provider_headers(request, cfg.url, cfg.provider_headers)?;
-
-    if let Some(range) = cfg.range_header {
-        request = request.header("Range", range);
-    }
-
-    let resp = send_head_with_redirect_validation_with_control_and_timeout(
-        cfg.client,
-        request,
-        cfg.ssrf_guard,
-        cfg.request_control,
-        cfg.upstream_header_timeout,
-    )
-    .await
-    .context("Upstream HEAD request failed")?
-    .response;
-
-    build_head_cache_response(&HeadResourceResult {
-        status: resp.status(),
-        headers: resp.headers().clone(),
-        cache_status: cfg.cache_status,
-    })
 }

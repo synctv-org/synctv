@@ -4,47 +4,104 @@
 //! All metrics are automatically exposed via the /metrics endpoint for Prometheus scraping.
 
 use prometheus::{
-    register_counter_vec_with_registry, register_histogram_vec_with_registry,
-    register_int_counter_with_registry, register_int_gauge_with_registry, CounterVec, Encoder,
-    HistogramVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder,
+    core::Collector, CounterVec, Encoder, Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounter,
+    IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
 };
 
 /// Global metrics registry.
 pub static REGISTRY: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(|| {
     let registry = Registry::new();
     #[cfg(target_os = "linux")]
-    registry
-        .register(Box::new(
-            prometheus::process_collector::ProcessCollector::for_self(),
-        ))
-        .expect("failed to register Prometheus process collector");
+    if let Err(error) = registry.register(Box::new(
+        prometheus::process_collector::ProcessCollector::for_self(),
+    )) {
+        tracing::warn!(%error, "Failed to register Prometheus process collector");
+    }
     registry
 });
 
+fn register_metric<T>(metric: T, metric_name: &str) -> T
+where
+    T: Collector + Clone + 'static,
+{
+    if let Err(error) = REGISTRY.register(Box::new(metric.clone())) {
+        tracing::warn!(%error, metric = metric_name, "Failed to register Prometheus metric");
+    }
+    metric
+}
+
+fn abort_invalid_metric(metric_name: &str, error: &prometheus::Error) -> ! {
+    tracing::error!(%error, metric = metric_name, "Invalid Prometheus metric definition");
+    std::process::abort();
+}
+
+fn int_counter(name: &str, help: &str) -> IntCounter {
+    let metric =
+        IntCounter::new(name, help).unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn int_gauge(name: &str, help: &str) -> IntGauge {
+    let metric =
+        IntGauge::new(name, help).unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn gauge(name: &str, help: &str) -> Gauge {
+    let metric = Gauge::new(name, help).unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn counter_vec(name: &str, help: &str, labels: &[&str]) -> CounterVec {
+    let metric = CounterVec::new(Opts::new(name, help), labels)
+        .unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn int_counter_vec(name: &str, help: &str, labels: &[&str]) -> IntCounterVec {
+    let metric = IntCounterVec::new(Opts::new(name, help), labels)
+        .unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn gauge_vec(name: &str, help: &str, labels: &[&str]) -> GaugeVec {
+    let metric = GaugeVec::new(Opts::new(name, help), labels)
+        .unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn int_gauge_vec(name: &str, help: &str, labels: &[&str]) -> IntGaugeVec {
+    let metric = IntGaugeVec::new(Opts::new(name, help), labels)
+        .unwrap_or_else(|error| abort_invalid_metric(name, &error));
+    register_metric(metric, name)
+}
+
+fn histogram_vec(opts: HistogramOpts, labels: &[&str]) -> HistogramVec {
+    let metric_name = opts.common_opts.fq_name();
+    let metric = HistogramVec::new(opts, labels)
+        .unwrap_or_else(|error| abort_invalid_metric(&metric_name, &error));
+    register_metric(metric, &metric_name)
+}
+
 /// HTTP and WebSocket metrics
 pub mod http {
-    use super::{HistogramVec, IntCounterVec, IntGauge, REGISTRY};
-    use prometheus::{
-        register_int_counter_vec_with_registry, register_int_gauge_with_registry, HistogramOpts,
-        Opts,
-    };
+    use super::*;
 
     /// Total HTTP requests, labeled by method, path, and status code.
     pub static HTTP_REQUESTS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("http_requests_total", "Total number of HTTP requests"),
+            int_counter_vec(
+                "http_requests_total",
+                "Total number of HTTP requests",
                 &["method", "path", "status"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register HTTP_REQUESTS_TOTAL")
         });
 
     /// HTTP request duration in seconds, labeled by method and path.
     /// Buckets optimized for P50/P95/P99 calculation.
     pub static HTTP_REQUEST_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "http_request_duration_seconds",
                     "HTTP request duration in seconds (P50/P95/P99)",
@@ -54,130 +111,91 @@ pub mod http {
                 ]),
                 &["method", "path"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register HTTP_REQUEST_DURATION_SECONDS")
         });
 
     /// HTTP error rate counter, labeled by method, path, and error type.
     pub static HTTP_ERROR_RATE: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("http_error_rate_total", "Total HTTP errors by type"),
+            int_counter_vec(
+                "http_error_rate_total",
+                "Total HTTP errors by type",
                 &["method", "path", "error_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register HTTP_ERROR_RATE")
         });
 
     /// Number of in-flight HTTP requests.
     pub static HTTP_REQUESTS_IN_FLIGHT: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "http_requests_in_flight",
                 "Number of HTTP requests currently being processed",
-                REGISTRY.clone()
             )
-            .expect("Failed to register HTTP_REQUESTS_IN_FLIGHT")
         });
 
     /// Active WebSocket connections (aggregate; per-room stats belong in application dashboards).
     pub static WEBSOCKET_CONNECTIONS_ACTIVE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "websocket_connections_active",
                 "Number of active WebSocket connections",
-                REGISTRY.clone()
             )
-            .expect("Failed to register WEBSOCKET_CONNECTIONS_ACTIVE")
         });
 
     /// Total WebSocket connections opened, labeled by connection outcome.
     pub static WEBSOCKET_CONNECTIONS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "websocket_connections_total",
-                    "Total number of WebSocket connections opened"
-                ),
+            int_counter_vec(
+                "websocket_connections_total",
+                "Total number of WebSocket connections opened",
                 &["status"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register WEBSOCKET_CONNECTIONS_TOTAL")
         });
 
     /// Number of active rooms.
-    pub static ROOMS_ACTIVE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
-            "rooms_active",
-            "Number of currently active rooms",
-            REGISTRY.clone()
-        )
-        .expect("Failed to register ROOMS_ACTIVE")
-    });
+    pub static ROOMS_ACTIVE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| int_gauge("rooms_active", "Number of currently active rooms"));
 
     /// Number of online users.
-    pub static USERS_ONLINE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
-            "users_online",
-            "Number of currently online users",
-            REGISTRY.clone()
-        )
-        .expect("Failed to register USERS_ONLINE")
-    });
+    pub static USERS_ONLINE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| int_gauge("users_online", "Number of currently online users"));
 
     /// Number of active live streams.
-    pub static STREAMS_ACTIVE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
-            "streams_active",
-            "Number of active live streams",
-            REGISTRY.clone()
-        )
-        .expect("Failed to register STREAMS_ACTIVE")
-    });
+    pub static STREAMS_ACTIVE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| int_gauge("streams_active", "Number of active live streams"));
 
     /// Number of active WebRTC peer connections.
     pub static WEBRTC_PEERS_ACTIVE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "webrtc_peers_active",
                 "Number of active WebRTC peer connections",
-                REGISTRY.clone()
             )
-            .expect("Failed to register WEBRTC_PEERS_ACTIVE")
         });
 
     /// Total WebSocket messages processed, labeled by direction (inbound/outbound) and type (text/binary/ping/pong).
     pub static WEBSOCKET_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "websocket_messages_total",
-                    "Total number of WebSocket messages processed"
-                ),
+            int_counter_vec(
+                "websocket_messages_total",
+                "Total number of WebSocket messages processed",
                 &["direction", "type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register WEBSOCKET_MESSAGES_TOTAL")
         });
 
     /// Total WebSocket errors, labeled by error type.
     pub static WEBSOCKET_ERRORS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("websocket_errors_total", "Total number of WebSocket errors"),
+            int_counter_vec(
+                "websocket_errors_total",
+                "Total number of WebSocket errors",
                 &["error_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register WEBSOCKET_ERRORS_TOTAL")
         });
 
     /// WebSocket connection duration in seconds (how long each connection was alive).
     pub static WEBSOCKET_CONNECTION_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "websocket_connection_duration_seconds",
                     "WebSocket connection duration in seconds",
@@ -187,159 +205,128 @@ pub mod http {
                 ]),
                 &[],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register WEBSOCKET_CONNECTION_DURATION_SECONDS")
         });
 
     /// Total playlist items added.
     pub static PLAYLIST_ITEMS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "playlist_items_total",
-                    "Total number of playlist items added"
-                ),
+            int_counter_vec(
+                "playlist_items_total",
+                "Total number of playlist items added",
                 &[],
-                REGISTRY.clone()
             )
-            .expect("Failed to register PLAYLIST_ITEMS_TOTAL")
         });
 
     /// Total chat messages sent.
     pub static CHAT_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("chat_messages_total", "Total number of chat messages sent"),
+            int_counter_vec(
+                "chat_messages_total",
+                "Total number of chat messages sent",
                 &[],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CHAT_MESSAGES_TOTAL")
         });
 }
 
 /// Active connections gauge
 pub static ACTIVE_CONNECTIONS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-    register_int_gauge_with_registry!(
-        "active_connections",
-        "Current number of active connections",
-        REGISTRY.clone()
-    )
-    .expect("Failed to register ACTIVE_CONNECTIONS")
+    int_gauge("active_connections", "Current number of active connections")
 });
 
 /// Cache operations
 pub mod cache {
-    use super::{
-        register_counter_vec_with_registry, register_histogram_vec_with_registry, CounterVec,
-        HistogramVec, REGISTRY,
-    };
-    use prometheus::{register_gauge_vec_with_registry, GaugeVec};
+    use super::*;
 
     /// Cache hit counter
     pub static CACHE_HITS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
+        counter_vec(
             "cache_hits_total",
             "Total number of cache hits",
             &["cache_type", "level"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register CACHE_HITS")
     });
 
     /// Cache miss counter
     pub static CACHE_MISSES: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
+        counter_vec(
             "cache_misses_total",
             "Total number of cache misses",
             &["cache_type", "level"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register CACHE_MISSES")
     });
 
     /// Cache evictions counter
     pub static CACHE_EVICTIONS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
+        counter_vec(
             "cache_evictions_total",
             "Total number of cache evictions",
             &["cache_type"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register CACHE_EVICTIONS")
     });
 
     /// Cache error counter (L2 delete failures, cross-replica invalidation errors, etc.)
     pub static CACHE_ERRORS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
+        counter_vec(
             "cache_errors_total",
             "Total number of cache operation errors",
             &["cache_type", "operation"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register CACHE_ERRORS")
     });
 
     /// Cache fill duration histogram (time taken to load from DB and populate cache)
     pub static CACHE_FILL_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "cache_fill_duration_seconds",
-                "Time taken to fill cache from database",
+            histogram_vec(
+                HistogramOpts::new(
+                    "cache_fill_duration_seconds",
+                    "Time taken to fill cache from database",
+                ),
                 &["cache_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_FILL_DURATION")
         });
 
     /// `SingleFlight` merge counter (how many concurrent requests were deduplicated)
     pub static SINGLEFLIGHT_MERGES: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_singleflight_merges_total",
                 "Total number of requests merged by SingleFlight",
                 &["cache_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register SINGLEFLIGHT_MERGES")
         });
 
     /// Cross-replica cache invalidation duration histogram
     pub static INVALIDATION_LATENCY: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "cache_invalidation_latency_seconds",
-                "Time taken for cross-replica cache invalidation",
+            histogram_vec(
+                HistogramOpts::new(
+                    "cache_invalidation_latency_seconds",
+                    "Time taken for cross-replica cache invalidation",
+                ),
                 &["cache_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register INVALIDATION_LATENCY")
         });
 
     /// Total cache invalidations, labeled by cache type.
     pub static CACHE_INVALIDATIONS: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_invalidations_total",
                 "Total number of cache invalidations",
                 &["cache_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_INVALIDATIONS")
         });
 
     /// Cache operation duration in seconds, labeled by operation type (get/set/invalidate).
     pub static CACHE_OPERATION_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "cache_operation_duration_seconds",
-                "Duration of cache operations in seconds",
+            histogram_vec(
+                HistogramOpts::new(
+                    "cache_operation_duration_seconds",
+                    "Duration of cache operations in seconds",
+                ),
                 &["operation"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_OPERATION_DURATION")
         });
 
     /// Counter for broadcast-channel-lag-triggered full L1 cache flushes.
@@ -348,104 +335,82 @@ pub mod cache {
     /// This counter lets operators observe flush frequency and tune channel capacity.
     pub static CACHE_LAG_FLUSH_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_lag_flush_total",
                 "Total L1 cache flushes triggered by broadcast channel lag",
                 &["component"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_LAG_FLUSH_TOTAL")
         });
 
     /// Version-fence coordinator operations.
     pub static CACHE_FENCE_OPERATIONS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_fence_operations_total",
                 "Total number of cache version-fence operations",
                 &["domain", "operation", "result"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_FENCE_OPERATIONS_TOTAL")
         });
 
     /// Strong reads that bypassed cache and used PostgreSQL.
     pub static CACHE_DB_FALLBACK_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_db_fallback_total",
                 "Total number of strong cache reads that fell back to PostgreSQL",
                 &["domain", "reason"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_DB_FALLBACK_TOTAL")
         });
 
     /// Version-aware cache writes rejected because a newer value already exists.
     pub static CACHE_STALE_WRITE_REJECT_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_stale_write_reject_total",
                 "Total number of stale version-aware cache writes rejected",
                 &["cache_type", "level"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_STALE_WRITE_REJECT_TOTAL")
         });
 
     /// Pending version-fence writes by logical domain.
     pub static CACHE_FENCE_PENDING: std::sync::LazyLock<GaugeVec> =
         std::sync::LazyLock::new(|| {
-            register_gauge_vec_with_registry!(
+            gauge_vec(
                 "cache_fence_pending",
                 "Whether a cache version fence domain currently has a pending write",
                 &["domain"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_FENCE_PENDING")
         });
 
     /// Read-time fence repair and DB/fence comparison outcomes.
     pub static CACHE_FENCE_REPAIR_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "cache_fence_repair_total",
                 "Total number of read-time cache fence repair outcomes",
                 &["domain", "result"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_FENCE_REPAIR_TOTAL")
         });
 
     /// Latest DB-vs-fence patrol comparison by logical domain.
     pub static CACHE_FENCE_DB_COMPARE: std::sync::LazyLock<GaugeVec> =
         std::sync::LazyLock::new(|| {
-            register_gauge_vec_with_registry!(
+            gauge_vec(
                 "cache_fence_db_compare",
                 "Latest cache fence patrol comparison with PostgreSQL version (1 when observed)",
                 &["domain", "relation"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CACHE_FENCE_DB_COMPARE")
         });
 }
 
 /// Database operations
 pub mod database {
-    use super::{
-        register_counter_vec_with_registry, register_histogram_vec_with_registry,
-        register_int_gauge_with_registry, CounterVec, HistogramVec, IntCounterVec, IntGauge,
-        REGISTRY,
-    };
-    use prometheus::{
-        register_gauge_vec_with_registry, register_int_counter_vec_with_registry, GaugeVec,
-        HistogramOpts, Opts,
-    };
+    use super::*;
 
     /// Query duration histogram with optimized buckets for P50/P95/P99.
     pub static DB_QUERY_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "db_query_duration_seconds",
                     "Database query duration in seconds (P50/P95/P99)",
@@ -455,181 +420,149 @@ pub mod database {
                 ]),
                 &["operation", "table"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register DB_QUERY_DURATION")
         });
 
     /// Total database operations, labeled by operation, table, and result.
     pub static DB_OPERATIONS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("db_operations_total", "Total database operations"),
+            int_counter_vec(
+                "db_operations_total",
+                "Total database operations",
                 &["operation", "table", "result"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_OPERATIONS_TOTAL")
         });
 
     /// Active connections gauge
     pub static DB_CONNECTIONS_ACTIVE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "db_connections_active",
                 "Current number of active database connections",
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_CONNECTIONS_ACTIVE")
         });
 
     /// Query error counter
     pub static DB_QUERY_ERRORS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
+        counter_vec(
             "db_query_errors_total",
             "Total number of database query errors",
             &["operation", "error_type"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register DB_QUERY_ERRORS")
     });
 
     /// Pool utilization percentage (0.0 to 1.0)
     pub static DB_POOL_UTILIZATION: std::sync::LazyLock<GaugeVec> =
         std::sync::LazyLock::new(|| {
-            register_gauge_vec_with_registry!(
+            gauge_vec(
                 "db_pool_utilization_ratio",
                 "Database connection pool utilization ratio (active/max)",
                 &["pool"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_POOL_UTILIZATION")
         });
 
     /// Connections waiting for a connection from the pool
     pub static DB_CONNECTIONS_WAITING: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "db_connections_waiting",
                 "Number of connections waiting for a connection from the pool",
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_CONNECTIONS_WAITING")
         });
 
     /// Connection acquire duration histogram
     pub static DB_CONNECTION_ACQUIRE_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "db_connection_acquire_duration_seconds",
-                "Time taken to acquire a connection from the pool",
+            histogram_vec(
+                HistogramOpts::new(
+                    "db_connection_acquire_duration_seconds",
+                    "Time taken to acquire a connection from the pool",
+                ),
                 &["pool"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_CONNECTION_ACQUIRE_DURATION")
         });
 
     /// Transaction rollback counter
     pub static DB_TRANSACTION_ROLLBACKS: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "db_transaction_rollbacks_total",
                 "Total number of database transaction rollbacks",
                 &["reason"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_TRANSACTION_ROLLBACKS")
         });
 
     /// Total connections in the pool (max pool size)
     pub static DB_POOL_SIZE_MAX: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
+        int_gauge(
             "db_pool_size_max",
             "Maximum number of connections in the pool",
-            REGISTRY.clone()
         )
-        .expect("Failed to register DB_POOL_SIZE_MAX")
     });
 
     /// Idle connections in the pool
     pub static DB_CONNECTIONS_IDLE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "db_connections_idle",
                 "Number of idle connections in the pool",
-                REGISTRY.clone()
             )
-            .expect("Failed to register DB_CONNECTIONS_IDLE")
         });
 }
 
 /// gRPC operations
 pub mod grpc {
-    use super::{
-        register_histogram_vec_with_registry, register_int_gauge_with_registry, HistogramVec,
-        IntCounterVec, IntGauge, REGISTRY,
-    };
-    use prometheus::{register_int_counter_vec_with_registry, Opts};
+    use super::*;
 
     /// Total gRPC requests, labeled by service, method, and status code.
     pub static GRPC_REQUESTS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("grpc_requests_total", "Total number of gRPC requests"),
+            int_counter_vec(
+                "grpc_requests_total",
+                "Total number of gRPC requests",
                 &["service", "method", "status"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register GRPC_REQUESTS_TOTAL")
         });
 
     /// RPC request duration histogram
     pub static GRPC_REQUEST_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "grpc_request_duration_seconds",
-                "gRPC request duration in seconds",
+            histogram_vec(
+                HistogramOpts::new(
+                    "grpc_request_duration_seconds",
+                    "gRPC request duration in seconds",
+                ),
                 &["service", "method", "status"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register GRPC_REQUEST_DURATION")
         });
 
     /// Active RPC streams gauge
     pub static GRPC_ACTIVE_STREAMS: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "grpc_active_streams",
                 "Current number of active gRPC streams",
-                REGISTRY.clone()
             )
-            .expect("Failed to register GRPC_ACTIVE_STREAMS")
         });
 }
 
 /// Redis operations
 pub mod redis {
-    use super::{HistogramVec, IntCounterVec, REGISTRY};
-    use prometheus::{
-        register_int_counter_vec_with_registry, register_int_gauge_vec_with_registry,
-        HistogramOpts, IntGaugeVec, Opts,
-    };
+    use super::*;
 
     /// Total Redis operation errors, labeled by operation type.
     pub static REDIS_ERRORS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
-        register_int_counter_vec_with_registry!(
-            Opts::new("redis_errors_total", "Total Redis operation errors"),
+        int_counter_vec(
+            "redis_errors_total",
+            "Total Redis operation errors",
             &["operation"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register REDIS_ERRORS")
     });
 
     /// Redis operation duration in seconds, labeled by operation type.
     /// Buckets optimized for P50/P95/P99 calculation.
     pub static REDIS_OPERATION_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "redis_operation_duration_seconds",
                     "Redis operation duration in seconds (P50/P95/P99)",
@@ -639,137 +572,100 @@ pub mod redis {
                 ]),
                 &["operation"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register REDIS_OPERATION_DURATION")
         });
 
     /// Total Redis operations, labeled by operation and result (success/error).
     pub static REDIS_OPERATIONS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new("redis_operations_total", "Total Redis operations"),
+            int_counter_vec(
+                "redis_operations_total",
+                "Total Redis operations",
                 &["operation", "result"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register REDIS_OPERATIONS_TOTAL")
         });
 
     /// Redis connection pool size.
     pub static REDIS_POOL_SIZE: std::sync::LazyLock<IntGaugeVec> = std::sync::LazyLock::new(|| {
-        register_int_gauge_vec_with_registry!(
-            Opts::new("redis_pool_size", "Redis connection pool size"),
-            &["pool"],
-            REGISTRY.clone()
-        )
-        .expect("Failed to register REDIS_POOL_SIZE")
+        int_gauge_vec("redis_pool_size", "Redis connection pool size", &["pool"])
     });
 }
 
 /// Cluster operations
 pub mod cluster {
-    use super::{HistogramVec, IntCounterVec, IntGauge, REGISTRY};
-    use prometheus::{
-        register_int_counter_vec_with_registry, register_int_gauge_with_registry, HistogramOpts,
-        Opts,
-    };
+    use super::*;
 
     /// Current number of active connections on this cluster node.
     pub static CLUSTER_CONNECTIONS: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_connections_total",
                 "Current number of active connections on this cluster node",
-                REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_CONNECTIONS")
         });
 
     /// Current number of active rooms on this node (per-node, not cluster-wide).
     pub static NODE_ACTIVE_ROOMS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
+        int_gauge(
             "synctv_node_active_rooms",
             "Current number of active rooms on this node",
-            REGISTRY.clone()
         )
-        .expect("Failed to register NODE_ACTIVE_ROOMS")
     });
 
     /// Total realtime events published, labeled by event type.
     pub static REALTIME_EVENTS_PUBLISHED: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_realtime_events_published_total",
-                    "Total realtime events published"
-                ),
+            int_counter_vec(
+                "synctv_realtime_events_published_total",
+                "Total realtime events published",
                 &["event_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register REALTIME_EVENTS_PUBLISHED")
         });
 
     /// Total realtime events received from other nodes, labeled by event type.
     pub static REALTIME_EVENTS_RECEIVED: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_realtime_events_received_total",
-                    "Total realtime events received from other nodes"
-                ),
+            int_counter_vec(
+                "synctv_realtime_events_received_total",
+                "Total realtime events received from other nodes",
                 &["event_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register REALTIME_EVENTS_RECEIVED")
         });
 
     /// Total realtime events dropped (channel full or subscriber disconnected).
     pub static REALTIME_EVENTS_DROPPED: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_realtime_events_dropped_total",
-                    "Total realtime events dropped"
-                ),
+            int_counter_vec(
+                "synctv_realtime_events_dropped_total",
+                "Total realtime events dropped",
                 &["reason"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register REALTIME_EVENTS_DROPPED")
         });
 
     /// Consecutive heartbeat failures (network partition detection).
     /// Reset to 0 on successful heartbeat. Values >= 3 indicate possible partition.
     pub static CLUSTER_HEARTBEAT_FAILURES: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_heartbeat_failures",
                 "Consecutive Redis heartbeat failures for network partition detection",
-                REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_HEARTBEAT_FAILURES")
         });
 
     /// Node health status (1 = healthy, 0 = unhealthy).
     pub static NODE_HEALTH_STATUS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
+        int_gauge(
             "synctv_cluster_node_health_status",
             "Node health status (1 = healthy, 0 = unhealthy)",
-            REGISTRY.clone()
         )
-        .expect("Failed to register NODE_HEALTH_STATUS")
     });
 
     /// Leader election state (1 = leader, 0 = follower).
     pub static LEADER_ELECTION_STATE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_leader_election_state",
                 "Leader election state (1 = leader, 0 = follower)",
-                REGISTRY.clone()
             )
-            .expect("Failed to register LEADER_ELECTION_STATE")
         });
 
     /// Leader election epoch (fencing token), incremented on each leadership acquisition.
@@ -778,12 +674,10 @@ pub mod cluster {
     /// or if a node performs singleton tasks with an outdated epoch.
     pub static LEADER_ELECTION_EPOCH: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_leader_election_epoch",
                 "Leader election epoch (fencing token), incremented on each leadership acquisition",
-                REGISTRY.clone()
             )
-            .expect("Failed to register LEADER_ELECTION_EPOCH")
         });
 
     /// Leader election consecutive failures counter.
@@ -791,12 +685,7 @@ pub mod cluster {
     /// Alert threshold: > 3 consecutive failures for > 30 seconds.
     pub static LEADER_ELECTION_CONSECUTIVE_FAILURES: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
-            "synctv_cluster_leader_election_consecutive_failures",
-            "Consecutive leader election failures (network partition or backend outage detection)",
-            REGISTRY.clone()
-        )
-            .expect("Failed to register LEADER_ELECTION_CONSECUTIVE_FAILURES")
+            int_gauge("synctv_cluster_leader_election_consecutive_failures", "Consecutive leader election failures (network partition or backend outage detection)")
         });
 
     /// Epoch mismatch quarantine state (1 = quarantined, 0 = normal).
@@ -806,69 +695,56 @@ pub mod cluster {
     /// re-registered with a new epoch.
     pub static CLUSTER_EPOCH_MISMATCH_QUARANTINE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_epoch_mismatch_quarantine",
                 "Epoch mismatch quarantine state (1 = quarantined due to split-brain, 0 = normal)",
-                REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_EPOCH_MISMATCH_QUARANTINE")
         });
 
     /// Leader election mode (0 = `standalone/always_leader`, 1 = redis, 2 = `k8s_lease`).
     /// Helps operators understand the active election strategy at a glance.
     pub static LEADER_ELECTION_MODE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_leader_election_mode",
                 "Leader election mode (0=standalone, 1=redis, 2=k8s_lease)",
-                REGISTRY.clone()
             )
-            .expect("Failed to register LEADER_ELECTION_MODE")
         });
 
     /// Redis pub/sub connection health (1 = connected, 0 = disconnected).
     pub static REDIS_PUBSUB_HEALTH: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_redis_pubsub_health",
                 "Redis pub/sub connection health (1 = connected, 0 = disconnected)",
-                REGISTRY.clone()
             )
-            .expect("Failed to register REDIS_PUBSUB_HEALTH")
         });
 
     /// Total number of cluster members.
     pub static CLUSTER_MEMBER_COUNT: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_member_count",
                 "Total number of cluster members",
-                REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_MEMBER_COUNT")
         });
 
     /// Leader election duration in seconds.
     pub static LEADER_ELECTION_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "synctv_cluster_leader_election_duration_seconds",
                     "Leader election duration in seconds",
                 ),
                 &["result"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register LEADER_ELECTION_DURATION")
         });
 
     /// Redis pub/sub message publish latency in seconds.
     pub static REDIS_PUBSUB_PUBLISH_LATENCY: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "synctv_cluster_redis_pubsub_publish_latency_seconds",
                     "Redis pub/sub message publish latency in seconds",
@@ -876,17 +752,12 @@ pub mod cluster {
                 .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]),
                 &["channel"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register REDIS_PUBSUB_PUBLISH_LATENCY")
         });
 
     /// Node-to-node message latency in seconds (end-to-end).
     pub static NODE_MESSAGE_LATENCY: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "synctv_cluster_node_message_latency_seconds",
                     "Node-to-node message latency in seconds",
@@ -894,40 +765,26 @@ pub mod cluster {
                 .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]),
                 &["event_type"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register NODE_MESSAGE_LATENCY")
         });
 
     /// Total cluster synchronization errors, labeled by error type.
     pub static CLUSTER_SYNC_ERRORS: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_cluster_sync_errors_total",
-                    "Total cluster synchronization errors"
-                ),
+            int_counter_vec(
+                "synctv_cluster_sync_errors_total",
+                "Total cluster synchronization errors",
                 &["error_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_SYNC_ERRORS")
         });
 
     /// This node's last successful heartbeat timestamp (Unix timestamp).
     /// Reports only this node's own heartbeat (no per-node_id label to avoid unbounded cardinality).
     pub static NODE_LAST_HEARTBEAT: std::sync::LazyLock<prometheus::Gauge> =
         std::sync::LazyLock::new(|| {
-            prometheus::Gauge::with_opts(prometheus::Opts::new(
+            gauge(
                 "synctv_cluster_node_last_heartbeat_timestamp",
                 "This node's last successful heartbeat timestamp (Unix)",
-            ))
-            .and_then(|g| {
-                REGISTRY.register(Box::new(g.clone()))?;
-                Ok(g)
-            })
-            .expect("Failed to register NODE_LAST_HEARTBEAT")
+            )
         });
 
     /// Total distributed counter TTL refresh operations, labeled by result.
@@ -937,357 +794,284 @@ pub mod cluster {
     /// flat, distributed rate limiting may silently stop working.
     pub static DISTRIBUTED_COUNTER_TTL_REFRESHES: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_cluster_distributed_counter_ttl_refreshes_total",
-                    "Total distributed counter TTL refresh operations"
-                ),
+            int_counter_vec(
+                "synctv_cluster_distributed_counter_ttl_refreshes_total",
+                "Total distributed counter TTL refresh operations",
                 &["result"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register DISTRIBUTED_COUNTER_TTL_REFRESHES")
         });
 
     /// Number of keys refreshed in the last TTL refresh cycle.
     /// A sudden drop to 0 while connections are active indicates a problem.
     pub static DISTRIBUTED_COUNTER_TTL_KEYS_REFRESHED: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_distributed_counter_ttl_keys_refreshed",
                 "Number of keys refreshed in the last TTL refresh cycle",
-                REGISTRY.clone()
             )
-            .expect("Failed to register DISTRIBUTED_COUNTER_TTL_KEYS_REFRESHED")
         });
 
     /// Consecutive TTL refresh failures. Reset to 0 on success.
     /// Alert when value >= 3 (counters may have expired).
     pub static DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_cluster_distributed_counter_ttl_consecutive_failures",
                 "Consecutive TTL refresh failures (alert when >= 3)",
-                REGISTRY.clone()
             )
-            .expect("Failed to register DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES")
         });
 }
 
 /// Generic file storage metrics.
 pub mod file_storage {
-    use super::{IntCounterVec, IntGauge, REGISTRY};
-    use prometheus::{
-        register_int_counter_vec_with_registry, register_int_gauge_with_registry, Opts,
-    };
+    use super::*;
 
     /// File object delete attempts, labeled by cleanup origin and storage backend.
     pub static FILE_OBJECT_DELETE_ATTEMPTS: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_file_object_delete_attempts_total",
-                    "Total file object delete attempts"
-                ),
+            int_counter_vec(
+                "synctv_file_object_delete_attempts_total",
+                "Total file object delete attempts",
                 &["origin", "backend"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register FILE_OBJECT_DELETE_ATTEMPTS")
         });
 
     /// File object delete failures, labeled by cleanup origin and storage backend.
     pub static FILE_OBJECT_DELETE_FAILURES: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_file_object_delete_failures_total",
-                    "Total file object delete failures"
-                ),
+            int_counter_vec(
+                "synctv_file_object_delete_failures_total",
+                "Total file object delete failures",
                 &["origin", "backend"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register FILE_OBJECT_DELETE_FAILURES")
         });
 
     /// Due file cleanup jobs waiting for retry.
     pub static FILE_CLEANUP_JOBS_DUE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "synctv_file_cleanup_jobs_due",
                 "File cleanup jobs due for retry",
-                REGISTRY.clone()
             )
-            .expect("Failed to register FILE_CLEANUP_JOBS_DUE")
         });
 
     /// File cleanup retry job actions.
     pub static FILE_CLEANUP_JOBS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_vec_with_registry!(
-                Opts::new(
-                    "synctv_file_cleanup_jobs_total",
-                    "Total file cleanup retry job actions"
-                ),
+            int_counter_vec(
+                "synctv_file_cleanup_jobs_total",
+                "Total file cleanup retry job actions",
                 &["action", "origin", "backend"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register FILE_CLEANUP_JOBS_TOTAL")
         });
 }
 
 /// Spawned task monitoring
 pub mod task {
-    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+    use super::*;
 
     /// Total spawned task panics, labeled by task name.
     pub static TASK_PANICS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "spawned_task_panics_total",
                 "Total number of spawned task panics caught by spawn_monitored",
                 &["task_name"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register TASK_PANICS_TOTAL")
         });
 }
 
 /// Rate limiting operations
 pub mod rate_limit {
-    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+    use super::*;
 
     /// Total rate limit checks, labeled by backend ("redis" or "memory") and category.
     pub static RATE_LIMIT_CHECKS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "rate_limit_checks_total",
                 "Total number of rate limit checks",
                 &["backend", "category"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register RATE_LIMIT_CHECKS_TOTAL")
         });
 
     /// Total rate limit rejections (429s), labeled by backend and category.
     pub static RATE_LIMIT_REJECTIONS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "rate_limit_rejections_total",
                 "Total number of rate limit rejections (429)",
                 &["backend", "category"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register RATE_LIMIT_REJECTIONS_TOTAL")
         });
 
     /// Redis errors that triggered fallback to in-memory rate limiting.
     pub static RATE_LIMIT_REDIS_FALLBACKS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "rate_limit_redis_fallbacks_total",
                 "Total Redis errors that triggered in-memory rate limit fallback",
                 &["category"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register RATE_LIMIT_REDIS_FALLBACKS_TOTAL")
         });
 }
 
 /// Stream operations
 pub mod stream {
-    use super::{
-        register_counter_vec_with_registry, register_histogram_vec_with_registry,
-        register_int_gauge_with_registry, CounterVec, HistogramVec, IntGauge, REGISTRY,
-    };
+    use super::*;
 
     /// Stream relay duration histogram, labeled by stream type (rtmp/hls/webrtc).
     pub static STREAM_RELAY_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "stream_relay_duration_seconds",
-                "Stream relay operation duration in seconds",
+            histogram_vec(
+                HistogramOpts::new(
+                    "stream_relay_duration_seconds",
+                    "Stream relay operation duration in seconds",
+                ),
                 &["stream_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register STREAM_RELAY_DURATION")
         });
 
     /// Active relay streams gauge
     pub static ACTIVE_RELAY_STREAMS: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "active_relay_streams",
                 "Current number of active relay streams",
-                REGISTRY.clone()
             )
-            .expect("Failed to register ACTIVE_RELAY_STREAMS")
         });
 
     /// Stream error counter, labeled by stream type and error classification.
     pub static STREAM_ERRORS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
+        counter_vec(
             "stream_errors_total",
             "Total number of stream errors",
             &["stream_type", "error_type"],
-            REGISTRY.clone()
         )
-        .expect("Failed to register STREAM_ERRORS")
     });
 }
 
 /// `StreamHub` infrastructure metrics
 pub mod streamhub {
-    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+    use super::*;
 
     /// Total number of `StreamHub` event loop restarts, labeled by exit reason.
     /// Reasons: "panic" (`event_loop` panicked), "`channel_closed`" (all senders dropped).
     pub static STREAMHUB_RESTARTS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "streamhub_restarts_total",
                 "Total number of StreamHub event loop restarts",
                 &["reason"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register STREAMHUB_RESTARTS_TOTAL")
         });
 }
 
 /// Livestream metrics
 pub mod livestream {
-    use super::{
-        register_counter_vec_with_registry, register_histogram_vec_with_registry,
-        register_int_counter_with_registry, register_int_gauge_with_registry, CounterVec,
-        HistogramVec, IntCounter, IntGauge, REGISTRY,
-    };
-    use prometheus::Opts;
+    use super::*;
 
     /// Total publisher cleanups due to heartbeat failure.
     pub static PUBLISHER_HEARTBEAT_FAILURES: std::sync::LazyLock<IntCounter> =
         std::sync::LazyLock::new(|| {
-            IntCounter::with_opts(Opts::new(
+            int_counter(
                 "synctv_publisher_heartbeat_failures_total",
                 "Total publisher cleanups due to heartbeat failure",
-            ))
-            .and_then(|c| {
-                REGISTRY.register(Box::new(c.clone()))?;
-                Ok(c)
-            })
-            .expect("Failed to register PUBLISHER_HEARTBEAT_FAILURES")
+            )
         });
 
     /// Number of active publishers (streams being pushed).
     pub static LIVESTREAM_ACTIVE_PUBLISHERS: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "livestream_active_publishers",
                 "Number of active livestream publishers",
-                REGISTRY.clone()
             )
-            .expect("Failed to register LIVESTREAM_ACTIVE_PUBLISHERS")
         });
 
     /// Number of active viewers (clients consuming live streams).
     pub static LIVESTREAM_ACTIVE_VIEWERS: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "livestream_active_viewers",
                 "Number of active livestream viewers",
-                REGISTRY.clone()
             )
-            .expect("Failed to register LIVESTREAM_ACTIVE_VIEWERS")
         });
 
     /// Total bytes transferred for livestream, labeled by direction (in/out).
     pub static LIVESTREAM_BYTES_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "livestream_bytes_total",
                 "Total bytes transferred for livestream",
                 &["direction"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register LIVESTREAM_BYTES_TOTAL")
         });
 
     /// Livestream duration in seconds (how long each stream session lasted).
     pub static LIVESTREAM_STREAM_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            register_histogram_vec_with_registry!(
-                "livestream_stream_duration_seconds",
-                "Livestream session duration in seconds",
+            histogram_vec(
+                HistogramOpts::new(
+                    "livestream_stream_duration_seconds",
+                    "Livestream session duration in seconds",
+                ),
                 &["stream_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register LIVESTREAM_STREAM_DURATION_SECONDS")
         });
 
     /// Total stream pull errors, labeled by error type.
     pub static LIVESTREAM_PULL_ERRORS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
-            register_counter_vec_with_registry!(
+            counter_vec(
                 "livestream_pull_errors_total",
                 "Total number of livestream pull errors",
                 &["error_type"],
-                REGISTRY.clone()
             )
-            .expect("Failed to register LIVESTREAM_PULL_ERRORS_TOTAL")
         });
 
     /// Total relay frames dropped due to backpressure.
     pub static LIVESTREAM_RELAY_FRAME_DROPS: std::sync::LazyLock<IntCounter> =
         std::sync::LazyLock::new(|| {
-            IntCounter::with_opts(Opts::new(
+            int_counter(
                 "livestream_relay_frame_drops_total",
                 "Total relay frames dropped due to backpressure",
-            ))
-            .and_then(|c| {
-                REGISTRY.register(Box::new(c.clone()))?;
-                Ok(c)
-            })
-            .expect("Failed to register LIVESTREAM_RELAY_FRAME_DROPS")
+            )
         });
 
     /// Number of cached GOPs across all active streams.
     pub static GOP_CACHE_SIZE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
+        int_gauge(
             "gop_cache_size",
             "Number of cached GOPs across all active streams",
-            REGISTRY.clone()
         )
-        .expect("Failed to register GOP_CACHE_SIZE")
     });
 
     /// Total number of GOPs evicted due to memory limits since process start.
     pub static GOP_CACHE_DROPS_TOTAL: std::sync::LazyLock<IntCounter> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_with_registry!(
+            int_counter(
                 "gop_cache_drops_total",
                 "Total number of GOPs evicted due to memory limits",
-                REGISTRY.clone()
             )
-            .expect("Failed to register GOP_CACHE_DROPS_TOTAL")
         });
 
     /// Current memory usage in bytes of the GOP cache across all active streams.
     pub static GOP_CACHE_MEMORY_BYTES: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
-            register_int_gauge_with_registry!(
+            int_gauge(
                 "gop_cache_memory_bytes",
                 "Current memory usage in bytes of the GOP cache across all active streams",
-                REGISTRY.clone()
             )
-            .expect("Failed to register GOP_CACHE_MEMORY_BYTES")
         });
 
     /// Total FLV stream terminations due to slow client (exceeded consecutive frame drops).
     pub static LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL: std::sync::LazyLock<IntCounter> =
         std::sync::LazyLock::new(|| {
-            register_int_counter_with_registry!(
+            int_counter(
                 "livestream_flv_slow_client_terminations_total",
                 "Total FLV stream terminations due to slow client",
-                REGISTRY.clone()
             )
-            .expect("Failed to register LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL")
         });
 }
 
@@ -1419,13 +1203,12 @@ fn is_dynamic_segment(segment: &str) -> bool {
 
 /// Hot path metrics
 pub mod hot_paths {
-    use super::{HistogramVec, REGISTRY};
-    use prometheus::HistogramOpts;
+    use super::*;
 
     /// API endpoint latency for hot paths, optimized for P50/P95/P99.
     pub static API_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "api_hot_path_latency_seconds",
                     "API hot path latency in seconds (P50/P95/P99)",
@@ -1435,17 +1218,12 @@ pub mod hot_paths {
                 ]),
                 &["endpoint", "method"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register API_HOT_PATH_LATENCY")
         });
 
     /// Database query latency for hot paths.
     pub static DB_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "db_hot_path_latency_seconds",
                     "Database hot path query latency in seconds (P50/P95/P99)",
@@ -1455,17 +1233,12 @@ pub mod hot_paths {
                 ]),
                 &["query_name", "table"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register DB_HOT_PATH_LATENCY")
         });
 
     /// Redis operation latency for hot paths.
     pub static REDIS_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
-            HistogramVec::new(
+            histogram_vec(
                 HistogramOpts::new(
                     "redis_hot_path_latency_seconds",
                     "Redis hot path operation latency in seconds (P50/P95/P99)",
@@ -1473,11 +1246,6 @@ pub mod hot_paths {
                 .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]),
                 &["operation", "key_pattern"],
             )
-            .and_then(|m| {
-                REGISTRY.register(Box::new(m.clone()))?;
-                Ok(m)
-            })
-            .expect("Failed to register REDIS_HOT_PATH_LATENCY")
         });
 }
 

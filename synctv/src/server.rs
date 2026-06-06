@@ -38,20 +38,6 @@ use synctv_realtime::sync::RealtimeEvent;
 use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::shutdown::ShutdownCoordinator;
 
-#[cfg(test)]
-async fn complete_test_unpublish(
-    registry: &Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
-    tracker: &Arc<synctv_livestream::api::StreamTracker>,
-    room_id: &str,
-    media_id: &str,
-) {
-    registry
-        .unregister_publisher(room_id, media_id)
-        .await
-        .expect("test unpublish completion should unregister publisher");
-    let _ = tracker.remove_stream(room_id, media_id);
-}
-
 /// Livestream server state (held for graceful shutdown).
 ///
 /// Dropping the handle stops the `StreamHub` event loop and all dependent tasks.
@@ -1984,7 +1970,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, cleanup_partial_startup,
-        complete_test_unpublish, coordinator_shutdown_deadline, livestream_shutdown_timeout_secs,
+        coordinator_shutdown_deadline, livestream_shutdown_timeout_secs,
         management_apis_from_http_state, map_background_task_exit, map_runtime_server_exit,
         shutdown_after_startup_failure, shutdown_livestream_state,
         shutdown_metrics_connection_tasks, shutdown_runtime_phase, spawn_admin_event_listener,
@@ -2011,6 +1997,19 @@ mod tests {
     use tokio::sync::{oneshot, watch};
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
+
+    async fn complete_test_unpublish(
+        registry: &Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
+        tracker: &Arc<synctv_livestream::api::StreamTracker>,
+        room_id: &str,
+        media_id: &str,
+    ) {
+        registry
+            .unregister_publisher(room_id, media_id)
+            .await
+            .expect("test unpublish completion should unregister publisher");
+        let _ = tracker.remove_stream(room_id, media_id);
+    }
 
     fn test_user_service(pool: &sqlx::PgPool) -> UserService {
         let jwt_service =
@@ -2106,9 +2105,12 @@ mod tests {
                 webrtc_status:
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
-                proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                    synctv_proxy::slice_cache::SliceCacheConfig::default(),
-                )),
+                proxy_slice_cache: Arc::new(
+                    synctv_proxy::slice_cache::SliceCache::new(
+                        synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                    )
+                    .expect("test slice cache should build"),
+                ),
                 ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
                 proxy_http_client: synctv_proxy::build_proxy_http_client(
                     synctv_common::ssrf::SsrfGuard::strict_policy(),

@@ -28,6 +28,27 @@ use super::backend::CacheBackend;
 use super::backend::SliceCacheBackend;
 use super::config::SliceCacheConfig;
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn watermark_bytes(max_cache_size: u64, ratio: f64) -> u64 {
+    if !ratio.is_finite() {
+        return max_cache_size;
+    }
+
+    let clamped = ratio.clamp(0.0, 1.0);
+    if clamped <= 0.0 {
+        return 0;
+    }
+    if clamped >= 1.0 {
+        return max_cache_size;
+    }
+
+    (max_cache_size as f64 * clamped).floor() as u64
+}
+
 /// Background cache lifecycle manager.
 ///
 /// Owns a shared reference to the [`CacheBackend`] and a copy of the
@@ -93,34 +114,6 @@ impl CacheLifecycleManager {
     /// This is the core of the cache manager, equivalent to nginx's
     /// `ngx_http_file_cache_manager` function.
     async fn run_cycle(&self) {
-        fn compute_watermark(max_cache_size: u64, ratio: f64) -> u64 {
-            let clamped_ratio = if ratio.is_finite() {
-                ratio.clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-
-            // For the configured ratios used here (0.5, 0.875), formatting to a
-            // fixed decimal string preserves the intended decimal value while
-            // avoiding lossy integer<->float casts in the eviction path.
-            let ratio_text = format!("{clamped_ratio:.9}");
-            let mut parts = ratio_text.split('.');
-            let integer_part = parts.next().unwrap_or("0");
-            let fractional_raw = parts.next().unwrap_or("0");
-            let fractional_part = fractional_raw.trim_end_matches('0');
-            let scale_digits = fractional_part.len();
-            let scale = 10_u128.pow(u32::try_from(scale_digits).unwrap_or(0));
-            let numerator = integer_part.parse::<u128>().unwrap_or(0) * scale
-                + if fractional_part.is_empty() {
-                    0
-                } else {
-                    fractional_part.parse::<u128>().unwrap_or(0)
-                };
-            let watermark = u128::from(max_cache_size).saturating_mul(numerator) / scale.max(1);
-
-            u64::try_from(watermark).unwrap_or(max_cache_size)
-        }
-
         // 1. Evict expired entries.
         let expired = self.backend.evict_expired().await;
         if expired > 0 {
@@ -129,7 +122,7 @@ impl CacheLifecycleManager {
 
         // 2. Check watermark (7/8 of max_size like nginx).
         //    nginx: `if (size < cache->max_size && count < watermark) { break; }`
-        let watermark = compute_watermark(self.config.max_cache_size, self.config.watermark_ratio);
+        let watermark = watermark_bytes(self.config.max_cache_size, self.config.watermark_ratio);
         let current = self.backend.current_size();
         if current > watermark {
             let freed = self.backend.evict_to_size(watermark).await;
@@ -153,191 +146,5 @@ impl CacheLifecycleManager {
 // Tests
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    use bytes::Bytes;
-
-    use crate::slice_cache::backend::memory::MemoryBackend;
-    use crate::slice_cache::etag::StoredEntry;
-
-    /// Helper: create a memory backend wrapped in CacheBackend.
-    fn memory_backend() -> Arc<CacheBackend> {
-        Arc::new(CacheBackend::Memory(MemoryBackend::new(
-            64 * 1024 * 1024,
-            Duration::from_hours(1),
-        )))
-    }
-
-    /// Helper: config with a very short eviction interval for testing.
-    fn fast_config() -> SliceCacheConfig {
-        SliceCacheConfig {
-            eviction_interval: Duration::from_millis(50),
-            max_cache_size: 1024,
-            watermark_ratio: 0.875,
-            ..SliceCacheConfig::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_lifecycle_evicts_expired() {
-        let backend = memory_backend();
-
-        // Insert an entry that is already expired.
-        let expired_entry = StoredEntry {
-            data: Bytes::from("old_data"),
-            inserted_at: std::time::SystemTime::now() - Duration::from_mins(2),
-            ttl: Duration::from_secs(1),
-            last_accessed: std::time::SystemTime::now() - Duration::from_mins(2),
-        };
-        backend.put("expired_key", expired_entry).await.unwrap();
-
-        // Insert a fresh entry.
-        let fresh_entry = StoredEntry::new(Bytes::from("fresh"), Duration::from_hours(1));
-        backend.put("fresh_key", fresh_entry).await.unwrap();
-
-        // Verify both entries are retrievable before lifecycle starts.
-        assert!(backend.get("expired_key").await.is_some());
-        assert!(backend.get("fresh_key").await.is_some());
-
-        // Start the lifecycle manager.
-        let manager = CacheLifecycleManager::new(Arc::clone(&backend), fast_config());
-        let cancel = manager.cancellation_token();
-        let handle = manager.start();
-
-        // Wait for at least one cycle.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Cancel and wait for shutdown.
-        cancel.cancel();
-        handle.await.unwrap();
-
-        // The expired entry should have been evicted.
-        assert!(backend.get("expired_key").await.is_none());
-        // The fresh entry should still exist.
-        assert!(backend.get("fresh_key").await.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_lifecycle_watermark_eviction() {
-        let backend = memory_backend();
-
-        let config = SliceCacheConfig {
-            eviction_interval: Duration::from_millis(50),
-            max_cache_size: 500,  // 500 bytes max
-            watermark_ratio: 0.5, // watermark at 250 bytes
-            ..SliceCacheConfig::default()
-        };
-
-        // Insert entries totaling 400 bytes (above 250 watermark).
-        for i in 0..4u8 {
-            let entry = StoredEntry::new(Bytes::from(vec![i; 100]), Duration::from_hours(1));
-            backend.put(&format!("key_{i}"), entry).await.unwrap();
-            // Small sleep so last_accessed differs for LRU.
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-
-        assert_eq!(backend.current_size(), 400);
-
-        // Start the lifecycle manager.
-        let manager = CacheLifecycleManager::new(Arc::clone(&backend), config);
-        let cancel = manager.cancellation_token();
-        let handle = manager.start();
-
-        // Wait for eviction.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        cancel.cancel();
-        handle.await.unwrap();
-
-        // Size should be at or below the watermark (250).
-        assert!(
-            backend.current_size() <= 250,
-            "Expected size <= 250, got {}",
-            backend.current_size()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_lifecycle_cancellation() {
-        let backend = memory_backend();
-        let config = SliceCacheConfig {
-            eviction_interval: Duration::from_hours(1), // Long interval
-            ..SliceCacheConfig::default()
-        };
-
-        let manager = CacheLifecycleManager::new(Arc::clone(&backend), config);
-        let cancel = manager.cancellation_token();
-        let handle = manager.start();
-
-        // Cancel immediately.
-        cancel.cancel();
-
-        // The task should exit promptly.
-        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        assert!(
-            result.is_ok(),
-            "Lifecycle manager should have stopped within 2 seconds"
-        );
-        result.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_lifecycle_no_eviction_when_under_watermark() {
-        let backend = memory_backend();
-
-        let config = SliceCacheConfig {
-            eviction_interval: Duration::from_millis(50),
-            max_cache_size: 10_000,
-            watermark_ratio: 0.875,
-            ..SliceCacheConfig::default()
-        };
-
-        // Insert a small entry well below the watermark.
-        let entry = StoredEntry::new(Bytes::from("tiny"), Duration::from_hours(1));
-        backend.put("k1", entry).await.unwrap();
-
-        let manager = CacheLifecycleManager::new(Arc::clone(&backend), config);
-        let cancel = manager.cancellation_token();
-        let handle = manager.start();
-
-        // Let a few cycles run.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        cancel.cancel();
-        handle.await.unwrap();
-
-        // The entry should still be there.
-        assert!(backend.get("k1").await.is_some());
-        assert_eq!(backend.current_size(), 4);
-    }
-
-    #[tokio::test]
-    async fn test_lifecycle_multiple_cycles() {
-        let backend = memory_backend();
-        let config = fast_config();
-
-        let manager = CacheLifecycleManager::new(Arc::clone(&backend), config);
-        let cancel = manager.cancellation_token();
-        let handle = manager.start();
-
-        // Insert an expired entry partway through.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let expired_entry = StoredEntry {
-            data: Bytes::from("late_expired"),
-            inserted_at: std::time::SystemTime::now() - Duration::from_mins(2),
-            ttl: Duration::from_secs(1),
-            last_accessed: std::time::SystemTime::now() - Duration::from_mins(2),
-        };
-        backend.put("late_key", expired_entry).await.unwrap();
-
-        // Wait for another cycle to pick it up.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        cancel.cancel();
-        handle.await.unwrap();
-
-        assert!(backend.get("late_key").await.is_none());
-    }
-}
+#[path = "lifecycle_tests.rs"]
+mod tests;

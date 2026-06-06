@@ -25,17 +25,10 @@ pub struct AlistService {
 }
 
 impl AlistService {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            service: AlistServiceImpl::new(),
-        }
-    }
-}
-
-impl Default for AlistService {
-    fn default() -> Self {
-        Self::new()
+    pub fn new() -> Result<Self, reqwest::Error> {
+        Ok(Self {
+            service: AlistServiceImpl::new()?,
+        })
     }
 }
 

@@ -17,11 +17,13 @@
 //!   `StoredEntry` for backend storage.
 //! - **[`status`]**: `CacheStatus` enum (modeled after nginx cache status
 //!   defines).
+//! - **`keys`**: deterministic cache-key and metadata-key hashing.
+//! - **`types`**: shared slice-cache DTOs and public stats/result payloads.
+//! - **`maintenance`**: small lock/metadata cleanup helpers.
 //! - **[`backend`]**: `SliceCacheBackend` trait and `CacheBackend` enum
 //!   dispatch for memory and file backends.
 //! - **[`store`]**: `SliceCache` struct with per-key locking, backend-agnostic
-//!   storage, cache key computation, metadata management, and
-//!   stale-while-revalidate support.
+//!   storage, metadata management, and stale-while-revalidate support.
 //! - **[`filter`]**: `proxy_with_cache`, `head_content_length`, and the
 //!   range-probe / stream-through paths (the "filter" entry points, analogous
 //!   to nginx's header and body filters).
@@ -43,10 +45,15 @@ pub mod backend;
 pub mod config;
 pub mod etag;
 pub mod filter;
+mod head;
+mod keys;
 pub mod lifecycle;
+mod maintenance;
+mod passthrough;
 pub mod range;
 pub mod status;
 pub mod store;
+mod types;
 
 // Public slice-cache API.
 pub use backend::{CacheBackend, SliceCacheBackend};
@@ -65,4 +72,5 @@ pub use range::{
     ContentRange,
 };
 pub use status::CacheStatus;
-pub use store::{SliceCache, SliceCachePurgeResult, SliceCacheStats};
+pub use store::SliceCache;
+pub use types::{SliceCachePurgeResult, SliceCacheStats};

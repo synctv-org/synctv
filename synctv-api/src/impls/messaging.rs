@@ -138,9 +138,7 @@ pub struct ProviderPlaybackProgressSubscriber {
 impl ProviderPlaybackProgressSubscriber {
     #[must_use]
     pub fn new(playback_service: Arc<dyn PlaybackService>) -> Self {
-        Self {
-            playback_service,
-        }
+        Self { playback_service }
     }
 }
 

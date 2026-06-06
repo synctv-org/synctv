@@ -44,24 +44,15 @@ pub struct AlistService {
 }
 
 impl AlistService {
-    pub fn new() -> Self {
-        Self {
-            client: crate::build_provider_http_client(
-                synctv_common::ssrf::SsrfGuard::strict_policy(),
-            )
-            .expect("default provider HTTP client should build"),
-        }
+    pub fn new() -> Result<Self, reqwest::Error> {
+        let client =
+            crate::build_provider_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())?;
+        Ok(Self { client })
     }
 
     #[must_use]
     pub const fn with_client(client: Client) -> Self {
         Self { client }
-    }
-}
-
-impl Default for AlistService {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

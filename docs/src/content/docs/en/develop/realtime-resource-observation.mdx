@@ -5,14 +5,14 @@ description: Subscribe to playback state, playbacks, room settings, playlist ite
 
 import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-Resource observation subscribes to cacheable query results. The client submits its cached version, and the server decides whether the resource changed. When it changes, the server can push a full snapshot or only notify the client to fetch.
+Resource observation subscribes to room resources. Versioned resources can carry recovery cursors, while playback info always returns player-ready data for the current source. When a resource changes, the server can push a full payload or only notify the client to fetch.
 
 ## Supported Resources
 
 | Resource | `ObserveResource.resource` field | Version source | Typical use |
 | --- | --- | --- | --- |
 | Playback state | `playback_state` | `RoomPlaybackState.version` | Player UI and synchronized playback status |
-| Playback | `playback` | Current value on every observe | Current playback URL, headers, proxy policy, and expiry |
+| Playback | `playback` | Current value on every observe | Current playback URL, headers, proxy policy, subtitles, and expiry |
 | Room settings | `room_settings` | Room settings version | Chat, playback permissions, and UI controls |
 | Playlist items | `playlist_items` | List snapshot version | Root lists, child playlists, provider browsing, and search results |
 | Room members | `room_members` | Member list snapshot version | Member pagination, search, role filtering, and status filtering |
@@ -33,7 +33,7 @@ Each connection can hold up to 64 observations. Over-limit requests return `Reso
 
 <Steps>
 1. The client connects to the room WebSocket.
-2. The client sends `ClientMessage.observe_resource` with `observe_id`, `delivery_mode`, and the target resource. Resources that support recovery can also carry a cached version or event sequence.
+2. The client sends `ClientMessage.observe_resource` with `observe_id`, `delivery_mode`, and the target resource. Resources that support recovery can also carry an event sequence.
 3. The server loads the current resource and sends `ServerMessage.resource_observed`.
 4. If the server determines that the resource changed, it sends `ServerMessage.resource_changed` for the same `observe_id`.
 5. Later room events, cache invalidation, Provider credential changes, or playback expiry can trigger re-evaluation.
@@ -44,16 +44,16 @@ Each connection can hold up to 64 observations. Over-limit requests return `Reso
 | Field | Meaning |
 | --- | --- |
 | `observe_id` | The submitted subscription ID |
-| `version` | Current server-side version; playback info does not expose a client cache version |
 | `changed` | Whether the server should send the current resource to the client |
+| `event_cursor` | Recovery cursor for resources with event replay |
 
 `ResourceChanged` fields:
 
 | Field | Meaning |
 | --- | --- |
 | `observe_id` | Which subscription changed |
-| `version` | New version; playback info does not use it for client cache recovery |
 | `payload` | Full snapshot or `changed_only`, depending on `delivery_mode` |
+| `event_cursor` | Cursor associated with replayed resource events |
 
 ## Unsubscribe
 
@@ -80,9 +80,10 @@ The examples below use TypeScript-style pseudocode. Exact field names depend on 
 sendClientMessage({
   observeResource: {
     observeId: 'playback-state',
-    version: cached.playbackStateVersion ?? '',
     deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
-    playbackState: {},
+    playbackState: {
+      afterEventSequence: cached.playbackStateEventSequence,
+    },
   },
 });
 ```
@@ -113,9 +114,9 @@ Playback observation immediately returns the current playable URLs, headers, sub
 sendClientMessage({
   observeResource: {
     observeId: 'room-members:online',
-    version: cached.membersVersion ?? '',
     deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_NOTIFY_ONLY,
     roomMembers: {
+      afterEventSequence: cached.membersEventSequence,
       request: {
         page: 1,
         pageSize: 50,

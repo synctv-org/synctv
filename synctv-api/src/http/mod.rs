@@ -867,7 +867,7 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
             get(room::watch_playback_state),
         )
         .route(
-            "/api/rooms/{room_id}/watch/playback-snapshot",
+            "/api/rooms/{room_id}/watch/playback",
             get(room::watch_playback),
         )
         .route(

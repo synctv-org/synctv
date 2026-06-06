@@ -6637,13 +6637,13 @@ fn build_get_playback_cli_output(
     let mut flv_pull_url = None;
     let mut flv_absolute_pull_url = None;
 
-    if let Some(snapshot) = playback.as_ref() {
-        let mut modes = snapshot.playback_infos.iter().collect::<Vec<_>>();
+    if let Some(playback) = playback.as_ref() {
+        let mut modes = playback.playback_infos.iter().collect::<Vec<_>>();
         modes.sort_by_key(|(mode, _)| *mode);
 
         for (mode, info) in modes {
             for (index, playback_url) in info.urls.iter().enumerate() {
-                let is_default = mode == &snapshot.default_mode
+                let is_default = mode == &playback.default_mode
                     && i32::try_from(index).is_ok_and(|index| info.default_url_index == index);
                 let absolute_url = absolutize_cli_url(&playback_url.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
@@ -6681,7 +6681,7 @@ fn build_get_playback_cli_output(
 
     let default_mode = playback
         .as_ref()
-        .map(|snapshot| snapshot.default_mode.clone())
+        .map(|playback| playback.default_mode.clone())
         .filter(|mode| !mode.is_empty());
 
     GetPlaybackCliOutput {
@@ -13664,7 +13664,6 @@ mod tests {
                     )]),
                     default_mode: "direct".into(),
                     metadata: std::collections::HashMap::new(),
-                    version: "1".into(),
                     expires_at: None,
                 }),
             },

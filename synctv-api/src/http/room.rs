@@ -3817,8 +3817,8 @@ mod tests {
         sse_event_from_server_message, sse_event_id_from_resource_changed,
         watch_after_event_sequence, AddMediaBatchBody, CancelOnDropStream, ChatImageObjectQuery,
         CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, PlaylistCoverObjectQuery,
-        RoomCoverObjectQuery, UpdatePlaybackRequest, VideoCoverObjectQuery,
-        WatchPlaybackQuery, WatchQuery,
+        RoomCoverObjectQuery, UpdatePlaybackRequest, VideoCoverObjectQuery, WatchPlaybackQuery,
+        WatchQuery,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
@@ -4005,6 +4005,10 @@ mod tests {
         .is_err());
         assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
             "format=json&media_id=media_1&extra=true"
+        )
+        .is_err());
+        assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
+            "format=json&after_event_sequence=12"
         )
         .is_err());
         assert!(

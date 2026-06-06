@@ -34,7 +34,7 @@ use super::client::convert::{
     json_to_vec, playback_client_profile_from_proto, provider_playback_info_to_model,
     sign_local_bilibili_danmaku_urls, try_bilibili_live_danmaku_for_static_media,
     try_media_list_to_proto, try_media_to_proto, try_media_to_proto_with_availability,
-    try_members_to_proto, try_playback_to_proto, try_playback_state_to_proto,
+    try_members_to_proto, try_playback_state_to_proto, try_playback_to_proto,
     try_playlist_list_to_proto, try_playlist_path_node_to_proto, try_playlist_to_proto,
     try_playlist_to_proto_with_availability, user_status_to_proto,
 };
@@ -9992,9 +9992,7 @@ mod tests {
             public_media_id(&admin_api, media.id)
         );
 
-        let result = response
-            .playback
-            .expect("playback should be present");
+        let result = response.playback.expect("playback should be present");
         assert_eq!(result.media_id, public_media_id(&admin_api, media.id));
         assert_eq!(result.room_id, public_room_id(&admin_api, room.id));
         assert_eq!(result.name, media.name);
@@ -10002,7 +10000,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_get_playback_returns_state_when_snapshot_generation_fails_for_global_admin() {
+    async fn test_get_playback_returns_state_when_playback_info_generation_fails_for_global_admin()
+    {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, _redis_publish_rx) =
             make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -10054,7 +10053,9 @@ mod tests {
         let response = admin_api
             .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
             .await
-            .expect("global admin should get playback state even if snapshot generation fails");
+            .expect(
+                "global admin should get playback state even if playback info generation fails",
+            );
 
         let state = response
             .playback_state
@@ -10066,7 +10067,7 @@ mod tests {
         );
         assert!(
             response.playback.is_none(),
-            "admin playback queries should degrade to state-only responses on snapshot failures"
+            "admin playback queries should degrade to state-only responses on playback info failures"
         );
     }
 
@@ -10134,9 +10135,7 @@ mod tests {
             .await
             .expect("global admin should get signed provider playback");
 
-        let result = response
-            .playback
-            .expect("playback should be present");
+        let result = response.playback.expect("playback should be present");
         let direct = result
             .playback_infos
             .get("direct")
@@ -10227,9 +10226,7 @@ mod tests {
             .await
             .expect("local management actor should get signed provider playback");
 
-        let result = response
-            .playback
-            .expect("playback should be present");
+        let result = response.playback.expect("playback should be present");
         let direct = result
             .playback_infos
             .get("direct")

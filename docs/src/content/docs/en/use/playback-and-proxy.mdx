@@ -16,7 +16,7 @@ Playback issues often sit between the client, SyncTV, Provider, and upstream med
 2. SyncTV uses room state, media, user, Provider credentials, and client profile to build `Playback`.
 3. The Provider returns one or more `PlaybackInfo` entries with URL, format, headers, subtitles, expiry, and metadata.
 4. The client chooses direct URL, proxy URL, transcode variant, HLS, FLV, or subtitle URL.
-5. When URL expiry, media switch, credential change, or client capability changes, the client refreshes the snapshot.
+5. When URL expiry, media switch, credential change, or client capability changes, the client requests fresh playback info.
 </Steps>
 
 ## Direct and Proxy Playback
@@ -39,7 +39,7 @@ SyncTV proxy uses only headers explicitly provided by the Provider. It does not 
 | Browser cannot set `Referer` or custom headers | Prefer proxy URL |
 | Native client can set headers and access upstream | Direct URL can be used |
 | Mobile client lacks codec/container support | Declare capabilities in `PlaybackClientProfile` |
-| URL has `expires_at` | Refresh snapshot before expiry |
+| URL has `expires_at` | Request fresh playback info before expiry |
 | Subtitle has separate headers | Use subtitle-specific headers or proxy subtitle URL |
 
 ## Range and Slice Cache
@@ -67,7 +67,7 @@ New clients observe playback resources over Realtime:
 - `playback_state`: current position, state, and version.
 - `playback`: playback URLs, headers, subtitles, and expiry.
 
-On reconnect, send local `version`, `media_id`, `playlist_id`, `target`, and `playback_client_profile`. The server decides whether the cached snapshot is still valid.
+On reconnect, fetch `playback_state` and observe `playback` with the current `playback_client_profile`. Playback info is player-ready data for the current source and expires with its URLs.
 
 See [Realtime API](../../develop/realtime-api/).
 

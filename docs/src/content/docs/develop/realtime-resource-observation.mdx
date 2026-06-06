@@ -5,7 +5,7 @@ description: 使用 Realtime 订阅播放状态、播放信息、房间设置、
 
 import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-资源观察用于订阅可缓存查询结果。客户端提交自己的缓存版本，服务端判断是否变化；变化时可以推送完整快照，也可以只通知客户端重新拉取。
+资源观察用于订阅房间资源。带版本资源可以携带恢复游标，播放信息始终返回当前播放源可直接交给播放器使用的数据。资源变化时，服务端可以推送完整 payload，也可以只通知客户端重新拉取。
 
 ## 支持的资源
 
@@ -33,7 +33,7 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 <Steps>
 1. 客户端连接房间 WebSocket。
-2. 客户端发送 `ClientMessage.observe_resource`，包含 `observe_id`、`delivery_mode` 和目标资源。支持恢复游标的资源还可以带本地缓存版本或事件序列。
+2. 客户端发送 `ClientMessage.observe_resource`，包含 `observe_id`、`delivery_mode` 和目标资源。支持恢复游标的资源还可以带事件序列。
 3. 服务端加载当前资源，返回 `ServerMessage.resource_observed`。
 4. 如果服务端判断资源已变化，随后返回同一 `observe_id` 的 `ServerMessage.resource_changed`。
 5. 连接期间，房间事件、缓存失效、Provider credential 变更或播放信息过期会触发重新评估。
@@ -44,16 +44,16 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | 字段 | 说明 |
 | --- | --- |
 | `observe_id` | 对应客户端提交的订阅 ID |
-| `version` | 服务端当前版本；播放信息不暴露客户端缓存版本 |
 | `changed` | 服务端当前资源是否需要发送给客户端 |
+| `event_cursor` | 支持事件回放资源的恢复游标 |
 
 `ResourceChanged` 字段：
 
 | 字段 | 说明 |
 | --- | --- |
 | `observe_id` | 哪个订阅发生变化 |
-| `version` | 新版本；播放信息不使用该字段做客户端缓存恢复 |
 | `payload` | 完整快照或 `changed_only`，取决于 `delivery_mode` |
+| `event_cursor` | 已回放资源事件对应的游标 |
 
 ## 取消订阅
 
@@ -80,9 +80,10 @@ sendClientMessage({
 sendClientMessage({
   observeResource: {
     observeId: 'playback-state',
-    version: cached.playbackStateVersion ?? '',
     deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
-    playbackState: {},
+    playbackState: {
+      afterEventSequence: cached.playbackStateEventSequence,
+    },
   },
 });
 ```
@@ -113,9 +114,9 @@ sendClientMessage({
 sendClientMessage({
   observeResource: {
     observeId: 'room-members:online',
-    version: cached.membersVersion ?? '',
     deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_NOTIFY_ONLY,
     roomMembers: {
+      afterEventSequence: cached.membersEventSequence,
       request: {
         page: 1,
         pageSize: 50,

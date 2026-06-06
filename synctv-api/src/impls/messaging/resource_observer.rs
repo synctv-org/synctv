@@ -338,6 +338,12 @@ impl ResourceObservation {
         }
     }
 
+    fn exposes_client_event_cursor(&self) -> bool {
+        !matches!(self.resource, ObservedResource::Playback { .. })
+            && (matches!(self.resource, ObservedResource::ChatEvents)
+                || self.room_resource_cursor_types().is_some())
+    }
+
     fn evaluation_key(&self) -> ObservationEvaluationKey {
         let delivery_mode = self.delivery_mode as i32;
         match &self.resource {
@@ -615,9 +621,7 @@ impl ResourceObserver {
         request: &crate::proto::client::ObserveResource,
     ) -> i64 {
         let requested_sequence = Self::requested_replay_sequence(request).unwrap_or(0).max(0);
-        if matches!(observation.resource, ObservedResource::ChatEvents)
-            || observation.room_resource_cursor_types().is_some()
-        {
+        if observation.exposes_client_event_cursor() {
             requested_sequence
         } else {
             0
@@ -1292,7 +1296,9 @@ impl MediaResourceHub {
                         if let (Some(changed), Some(cursor)) =
                             (changed_message.as_mut(), event_cursor.as_ref())
                         {
-                            changed.event_cursor = Some(cursor.clone());
+                            if entry.observation.exposes_client_event_cursor() {
+                                changed.event_cursor = Some(cursor.clone());
+                            }
                         }
                         match self
                             .send_and_commit_subscription_update(
@@ -1468,7 +1474,6 @@ impl ResourceObserver {
     }
 
     fn observation_from_request(
-        &self,
         request: &crate::proto::client::ObserveResource,
     ) -> Result<ResourceObservation, String> {
         use crate::proto::client::observe_resource::Resource;
@@ -1498,17 +1503,17 @@ impl ResourceObserver {
             }
             Resource::RoomSettings(_) => ObservedResource::RoomSettings,
             Resource::PlaylistItems(observe) => ObservedResource::PlaylistItems {
-                    request: observe
-                        .request
-                        .clone()
-                        .ok_or_else(|| "playlist_items request is required".to_string())?,
-                },
+                request: observe
+                    .request
+                    .clone()
+                    .ok_or_else(|| "playlist_items request is required".to_string())?,
+            },
             Resource::RoomMembers(observe) => ObservedResource::RoomMembers {
-                    request: observe
-                        .request
-                        .clone()
-                        .ok_or_else(|| "room_members request is required".to_string())?,
-                },
+                request: observe
+                    .request
+                    .clone()
+                    .ok_or_else(|| "room_members request is required".to_string())?,
+            },
             Resource::ChatEvents(_) => ObservedResource::ChatEvents,
         };
 
@@ -1526,7 +1531,7 @@ impl ResourceObserver {
         self: &Arc<Self>,
         request: &crate::proto::client::ObserveResource,
     ) -> Result<(), String> {
-        let mut observation = match self.observation_from_request(request) {
+        let mut observation = match Self::observation_from_request(request) {
             Ok(observation) => observation,
             Err(error) => {
                 self.send_server_message(Self::resource_observe_error_message(
@@ -1552,7 +1557,8 @@ impl ResourceObserver {
 
         let start_sequence = Self::observation_start_sequence(&observation, request);
         let is_chat_observation = matches!(observation.resource, ObservedResource::ChatEvents);
-        let observed_cursor = if is_chat_observation {
+        let exposes_client_event_cursor = observation.exposes_client_event_cursor();
+        let internal_cursor = if is_chat_observation {
             Some(crate::proto::client::EventCursor {
                 event_id: None,
                 sequence: start_sequence,
@@ -1569,9 +1575,12 @@ impl ResourceObserver {
                 _ => None,
             }
         };
-        observation.last_sent_event_sequence = observed_cursor
+        observation.last_sent_event_sequence = internal_cursor
             .as_ref()
             .map_or(start_sequence, |cursor| cursor.sequence);
+        let observed_cursor = internal_cursor
+            .clone()
+            .filter(|_| exposes_client_event_cursor);
         match self.evaluate_observation(&mut observation).await {
             Ok(mut update) => {
                 if is_chat_observation {
@@ -1729,6 +1738,9 @@ impl ResourceObserver {
         let Some(observation) = self.local_observation(observe_id).await else {
             return Ok(());
         };
+        if !observation.exposes_client_event_cursor() {
+            return Ok(());
+        }
         let Some(resource_types) = observation.room_resource_cursor_types() else {
             return Ok(());
         };
@@ -1852,9 +1864,7 @@ impl ResourceObserver {
         Ok(())
     }
 
-    pub(super) async fn next_playback_refresh_deadline(
-        &self,
-    ) -> Option<tokio::time::Instant> {
+    pub(super) async fn next_playback_refresh_deadline(&self) -> Option<tokio::time::Instant> {
         let state = self.state.lock().await;
         let expires_at = state
             .observations
@@ -1877,9 +1887,7 @@ impl ResourceObserver {
         )
     }
 
-    pub(super) async fn refresh_expired_playback_observations(
-        &self,
-    ) -> Result<(), String> {
+    pub(super) async fn refresh_expired_playback_observations(&self) -> Result<(), String> {
         self.room_hub
             .refresh_expired_playbacks(Some(&self.connection_id))
             .await
@@ -2023,10 +2031,7 @@ impl ResourceObserver {
         _observation: &ResourceObservation,
         invalidation: &ResourceInvalidation,
     ) -> bool {
-        match invalidation {
-            ResourceInvalidation::Playback(_) => true,
-            _ => false,
-        }
+        matches!(invalidation, ResourceInvalidation::Playback(_))
     }
 
     async fn evaluate_observation(
@@ -2132,18 +2137,16 @@ impl ResourceObserver {
                     )),
                 }
             }
-            ObservedResource::Playback { .. } => {
-                self.playback_service.as_ref().map_or(
-                    SharedResourceServiceIdentity {
-                        id: 0,
-                        weak: SharedResourceServiceWeak::AlwaysAlive,
-                    },
-                    |service| SharedResourceServiceIdentity {
-                        id: Arc::as_ptr(service).cast::<()>() as usize,
-                        weak: SharedResourceServiceWeak::Playback(Arc::downgrade(service)),
-                    },
-                )
-            }
+            ObservedResource::Playback { .. } => self.playback_service.as_ref().map_or(
+                SharedResourceServiceIdentity {
+                    id: 0,
+                    weak: SharedResourceServiceWeak::AlwaysAlive,
+                },
+                |service| SharedResourceServiceIdentity {
+                    id: Arc::as_ptr(service).cast::<()>() as usize,
+                    weak: SharedResourceServiceWeak::Playback(Arc::downgrade(service)),
+                },
+            ),
             ObservedResource::RoomSettings => {
                 let id = self.room_settings_snapshot_service_id;
                 SharedResourceServiceIdentity {
@@ -2238,11 +2241,7 @@ impl ResourceObserver {
                         Payload::Playback(playback.clone())
                     }
                 };
-                (
-                    hex::encode(fingerprint),
-                    playback.expires_at,
-                    payload,
-                )
+                (hex::encode(fingerprint), playback.expires_at, payload)
             }
             ObservedResource::RoomSettings => {
                 let service = Arc::clone(&self.room_settings_snapshot_service);
@@ -2365,7 +2364,7 @@ mod tests {
 
     fn playback_observation() -> ResourceObservation {
         ResourceObservation {
-            observe_id: "playback-snapshot".to_string(),
+            observe_id: "playback".to_string(),
             last_fingerprint: String::new(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot,
             resource: ObservedResource::Playback {
@@ -2377,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_uses_room_resource_event_cursor_types() {
+    fn playback_tracks_room_resource_dependency_types() {
         let observation = playback_observation();
 
         assert_eq!(
@@ -2387,31 +2386,26 @@ mod tests {
     }
 
     #[test]
-    fn playback_is_room_resource_cursor_observation() {
+    fn playback_hides_client_event_cursor() {
         let observation = playback_observation();
 
-        assert!(observation.room_resource_cursor_types().is_some());
+        assert!(!observation.exposes_client_event_cursor());
     }
 
     #[test]
-    fn playback_observation_ignores_replay_sequence() {
+    fn playback_observation_has_no_requested_event_sequence() {
         let observation = playback_observation();
         let request = crate::proto::client::ObserveResource {
             observe_id: "playback".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(
-                crate::proto::client::observe_resource::Resource::Playback(
-                    crate::proto::client::ObservePlayback {
-                        playback_client_profile: None,
-                    },
-                ),
-            ),
+            resource: Some(crate::proto::client::observe_resource::Resource::Playback(
+                crate::proto::client::ObservePlayback {
+                    playback_client_profile: None,
+                },
+            )),
         };
 
-        assert_eq!(
-            ResourceObserver::requested_replay_sequence(&request),
-            None
-        );
+        assert_eq!(ResourceObserver::requested_replay_sequence(&request), None);
         assert_eq!(
             ResourceObserver::observation_start_sequence(&observation, &request),
             0
@@ -2419,18 +2413,16 @@ mod tests {
     }
 
     #[test]
-    fn playback_observation_uses_latest_room_resource_cursor_for_live_start() {
+    fn playback_observation_starts_from_current_playback_without_client_event_cursor() {
         let observation = playback_observation();
         let request = crate::proto::client::ObserveResource {
             observe_id: "playback".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(
-                crate::proto::client::observe_resource::Resource::Playback(
-                    crate::proto::client::ObservePlayback {
-                        playback_client_profile: None,
-                    },
-                ),
-            ),
+            resource: Some(crate::proto::client::observe_resource::Resource::Playback(
+                crate::proto::client::ObservePlayback {
+                    playback_client_profile: None,
+                },
+            )),
         };
 
         assert_eq!(
@@ -2440,7 +2432,7 @@ mod tests {
         assert_eq!(
             ResourceObserver::requested_replay_sequence(&request),
             None,
-            "absent playback cursor starts live and uses the latest durable room cursor"
+            "playback observation has no client event cursor"
         );
     }
 

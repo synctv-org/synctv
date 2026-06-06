@@ -16,7 +16,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 2. SyncTV 根据房间状态、媒体、用户、Provider 凭据和客户端能力生成 `Playback`。
 3. Provider 返回一个或多个 `PlaybackInfo`，每个模式包含 URL、format、header、字幕、过期时间和 metadata。
 4. 客户端选择合适模式：直连、proxy、转码、HLS、FLV 或字幕 URL。
-5. URL 过期、媒体切换、Provider 凭据变化或客户端能力变化后，客户端重新获取快照。
+5. URL 过期、媒体切换、Provider 凭据变化或客户端能力变化后，客户端重新获取播放信息。
 </Steps>
 
 ## 直连和代理
@@ -41,7 +41,7 @@ SyncTV proxy 只使用 Provider 明确给出的 header。它不会把浏览器�
 | 浏览器不能设置 `Referer` 或自定义 header | 优先选择 proxy URL |
 | 原生客户端可设置 header 且能访问上游 | 可使用直连 URL |
 | 移动端不支持某些 codec/container | 在 `PlaybackClientProfile` 中声明能力，选择转码或兼容模式 |
-| URL 有 `expires_at` | 到期前刷新快照，不要无限重试旧 URL |
+| URL 有 `expires_at` | 到期前重新获取播放信息 |
 | 字幕有独立 header | 使用字幕 URL 自带 header；proxy 字幕时 header 会合并 |
 
 ## Range 与 slice cache
@@ -69,7 +69,7 @@ SyncTV proxy slice cache 的边界：
 - `playback_state`：当前播放位置、状态和版本。
 - `playback`：当前媒体的播放 URL、headers、字幕和过期时间。
 
-断线重连时，带上本地 `version`、`media_id`、`playlist_id`、`target` 和 `playback_client_profile`。服务端会判断缓存是否仍有效，必要时推送新的快照。
+断线重连时，重新获取 `playback_state`，并用当前 `playback_client_profile` 观察 `playback`。播放信息是当前播放源可直接交给播放器使用的数据，生命周期跟随其中的 URL。
 
 完整协议见 [Realtime API](../../develop/realtime-api/)。
 

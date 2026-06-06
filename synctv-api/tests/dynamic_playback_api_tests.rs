@@ -541,12 +541,12 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         update_state.position < 17.5,
         "playing update response should not jump far beyond the requested seek position"
     );
-    let update_snapshot = update_response
+    let update_playback = update_response
         .playback
         .expect("update response should preserve read-after-write playback");
-    assert_eq!(update_snapshot.playlist_id, playlist_public_id);
-    assert_eq!(update_snapshot.name, "episode-1.mp4");
-    let update_direct = update_snapshot.playback_infos.get("direct").unwrap();
+    assert_eq!(update_playback.playlist_id, playlist_public_id);
+    assert_eq!(update_playback.name, "episode-1.mp4");
+    let update_direct = update_playback.playback_infos.get("direct").unwrap();
     assert_eq!(
         update_direct.urls[0].url,
         "https://alist_default.example.com/episode-1.mp4"
@@ -892,7 +892,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_without_active_media_returns_stable_non_empty_snapshot_version() {
+async fn test_get_playback_without_active_media_returns_idle_playback_info() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
@@ -963,7 +963,7 @@ async fn test_get_playback_without_active_media_returns_stable_non_empty_snapsho
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
+async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
@@ -1051,12 +1051,12 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
 
     let playback_state = response
         .playback_state
-        .expect("playback state should still be returned when snapshot generation fails");
+        .expect("playback state should still be returned when playback info generation fails");
     assert_eq!(playback_state.playing_media_id, media_public_id);
     assert!(playback_state.is_playing);
     assert!(
         response.playback.is_none(),
-        "snapshot failures should degrade to state-only responses"
+        "playback info failures should degrade to state-only responses"
     );
 }
 

@@ -65,9 +65,7 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
     match event {
         RealtimeEvent::PlaybackStateChanged { .. } => vec![
             ResourceInvalidation::PlaybackState,
-            ResourceInvalidation::Playback(
-                PlaybackInvalidation::PlaybackStateChanged,
-            ),
+            ResourceInvalidation::Playback(PlaybackInvalidation::PlaybackStateChanged),
         ],
         RealtimeEvent::MediaUpdated { media_id, .. }
         | RealtimeEvent::MediaRemoved { media_id, .. } => vec![
@@ -85,11 +83,9 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
         RealtimeEvent::MediaRemovedBatch { media_ids, .. }
         | RealtimeEvent::PlaylistReordered { media_ids, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::Playback(
-                PlaybackInvalidation::PlaylistItemsChanged {
-                    media_ids: media_ids.clone(),
-                },
-            ),
+            ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistItemsChanged {
+                media_ids: media_ids.clone(),
+            }),
         ],
         RealtimeEvent::PlaylistDeleted { playlist_id, .. } => vec![
             ResourceInvalidation::PlaylistItems,
@@ -235,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_state_event_invalidates_state_and_snapshot() {
+    fn playback_state_event_invalidates_state_and_playback() {
         let event = RealtimeEvent::PlaybackStateChanged {
             event_id: "evt".to_string(),
             room_id: room_id(),
@@ -249,9 +245,7 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaybackState,
-                ResourceInvalidation::Playback(
-                    PlaybackInvalidation::PlaybackStateChanged
-                ),
+                ResourceInvalidation::Playback(PlaybackInvalidation::PlaybackStateChanged),
             ]
         );
     }
@@ -310,9 +304,9 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::Playback(
-                    PlaybackInvalidation::PlaylistChanged { playlist_id }
-                ),
+                ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistChanged {
+                    playlist_id
+                }),
             ]
         );
     }
@@ -333,9 +327,7 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::Playback(
-                    PlaybackInvalidation::MediaChanged { media_id }
-                ),
+                ResourceInvalidation::Playback(PlaybackInvalidation::MediaChanged { media_id }),
             ]
         );
     }
@@ -361,9 +353,9 @@ mod tests {
         };
         let expected = vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::Playback(
-                PlaybackInvalidation::PlaylistItemsChanged { media_ids },
-            ),
+            ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistItemsChanged {
+                media_ids,
+            }),
         ];
 
         assert_eq!(resource_invalidations_for_room_event(&removed), expected);
@@ -386,9 +378,9 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::Playback(
-                    PlaybackInvalidation::PlaylistChanged { playlist_id }
-                ),
+                ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistChanged {
+                    playlist_id
+                }),
             ]
         );
     }

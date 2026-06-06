@@ -42,10 +42,8 @@ pub trait PlaybackService: Send + Sync {
     }
 }
 
-pub(crate) fn playback_expires_at(
-    snapshot: &crate::proto::client::Playback,
-) -> Option<i64> {
-    snapshot
+pub(crate) fn playback_expires_at(playback: &crate::proto::client::Playback) -> Option<i64> {
+    playback
         .playback_infos
         .values()
         .flat_map(|info| info.urls.iter().filter_map(|url| url.expire_at))

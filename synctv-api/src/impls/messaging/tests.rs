@@ -145,9 +145,7 @@ fn test_stream_handler_runtime() -> StreamMessageHandlerRuntime {
     }
 }
 
-fn runtime_with_playback_service(
-    service: Arc<dyn PlaybackService>,
-) -> StreamMessageHandlerRuntime {
+fn runtime_with_playback_service(service: Arc<dyn PlaybackService>) -> StreamMessageHandlerRuntime {
     StreamMessageHandlerRuntime {
         playback_service: Some(service),
         ..test_stream_handler_runtime()
@@ -451,6 +449,37 @@ fn watch_observe_builders_require_resource_bodies() {
     ));
 }
 
+#[test]
+fn watch_playback_observe_builds_playback_resource_only() {
+    let observe = watch_playback_observe(crate::proto::client::WatchPlaybackRequest {
+        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        playback: Some(crate::proto::client::ObservePlayback {
+            playback_client_profile: Some(crate::proto::client::PlaybackClientProfile {
+                delivery_preference: crate::proto::client::PlaybackDeliveryPreference::DirectPlay
+                    as i32,
+                max_streaming_bitrate: Some(1_500_000),
+                max_audio_channels: None,
+                supported_video_codecs: Vec::new(),
+                supported_containers: Vec::new(),
+                audio_capability: crate::proto::client::PlaybackAudioCapability::Unspecified as i32,
+                subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::Unspecified
+                    as i32,
+            }),
+        }),
+    })
+    .expect("watch playback observe should build");
+
+    assert_eq!(observe.observe_id, "playback");
+    assert!(matches!(
+        observe.resource,
+        Some(crate::proto::client::observe_resource::Resource::Playback(
+            crate::proto::client::ObservePlayback {
+                playback_client_profile: Some(_),
+            },
+        ))
+    ));
+}
+
 fn chat_event_with_content(
     room_id: RoomId,
     user_id: UserId,
@@ -734,22 +763,17 @@ fn observe_playback_state_message(
 
 fn observe_playback_message(
     observe_id: &'static str,
-    _media_id: impl Into<String>,
-    _playlist_id: impl Into<String>,
-    _target: Vec<u8>,
     playback_client_profile: Option<crate::proto::client::PlaybackClientProfile>,
 ) -> crate::proto::client::client_message::Message {
     crate::proto::client::client_message::Message::ObserveResource(
         crate::proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
             delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(
-                crate::proto::client::observe_resource::Resource::Playback(
-                    crate::proto::client::ObservePlayback {
-                        playback_client_profile,
-                    },
-                ),
-            ),
+            resource: Some(crate::proto::client::observe_resource::Resource::Playback(
+                crate::proto::client::ObservePlayback {
+                    playback_client_profile,
+                },
+            )),
         },
     )
 }
@@ -880,13 +904,9 @@ fn resource_playback_state(
     }
 }
 
-fn resource_playback(
-    message: &ServerMessage,
-) -> Option<&crate::proto::client::Playback> {
+fn resource_playback(message: &ServerMessage) -> Option<&crate::proto::client::Playback> {
     match resource_changed_payload(message) {
-        Some(crate::proto::client::resource_changed::Payload::Playback(snapshot)) => {
-            Some(snapshot)
-        }
+        Some(crate::proto::client::resource_changed::Payload::Playback(snapshot)) => Some(snapshot),
         _ => None,
     }
 }
@@ -1269,7 +1289,7 @@ fn test_connection_manager() -> Arc<ConnectionManager> {
 
 #[derive(Clone)]
 struct FakePlaybackService {
-    snapshot: crate::proto::client::Playback,
+    playback: crate::proto::client::Playback,
 }
 
 #[derive(Clone, Default)]
@@ -1294,7 +1314,7 @@ impl SnapshotCallProbe {
             }
         })
         .await
-        .expect("snapshot service should be called");
+        .expect("resource service should be called");
     }
 
     fn call_count(&self) -> usize {
@@ -1318,28 +1338,28 @@ impl crate::impls::playback::PlaybackService for FakePlaybackService {
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
-        Ok(self.snapshot.clone())
+        Ok(self.playback.clone())
     }
 }
 
 #[derive(Clone)]
 struct MutablePlaybackService {
-    snapshot: Arc<parking_lot::Mutex<crate::proto::client::Playback>>,
+    playback: Arc<parking_lot::Mutex<crate::proto::client::Playback>>,
     dependencies: Arc<parking_lot::Mutex<Vec<synctv_core::provider::ProviderCredentialDependency>>>,
     probe: SnapshotCallProbe,
 }
 
 impl MutablePlaybackService {
-    fn new(snapshot: crate::proto::client::Playback) -> Arc<Self> {
+    fn new(playback: crate::proto::client::Playback) -> Arc<Self> {
         Arc::new(Self {
-            snapshot: Arc::new(parking_lot::Mutex::new(snapshot)),
+            playback: Arc::new(parking_lot::Mutex::new(playback)),
             dependencies: Arc::new(parking_lot::Mutex::new(Vec::new())),
             probe: SnapshotCallProbe::default(),
         })
     }
 
-    fn replace(&self, snapshot: crate::proto::client::Playback) {
-        *self.snapshot.lock() = snapshot;
+    fn replace(&self, playback: crate::proto::client::Playback) {
+        *self.playback.lock() = playback;
     }
 
     fn replace_dependencies(
@@ -1371,7 +1391,7 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
         self.probe.mark_called();
-        Ok(self.snapshot.lock().clone())
+        Ok(self.playback.lock().clone())
     }
 
     async fn playback_credential_dependencies(
@@ -2037,10 +2057,7 @@ where
 }
 
 trait StreamMessageHandlerTestRuntimeExt {
-    fn with_playback_service(
-        self,
-        service: Arc<dyn PlaybackService>,
-    ) -> StreamMessageHandler;
+    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> StreamMessageHandler;
     fn with_playlist_items_snapshot_service(
         self,
         service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -2056,10 +2073,7 @@ trait StreamMessageHandlerTestRuntimeExt {
 }
 
 impl StreamMessageHandlerTestRuntimeExt for StreamMessageHandler {
-    fn with_playback_service(
-        self,
-        service: Arc<dyn PlaybackService>,
-    ) -> StreamMessageHandler {
+    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> StreamMessageHandler {
         test_handler_with_playback_service(self, service)
     }
 
@@ -2086,10 +2100,7 @@ impl StreamMessageHandlerTestRuntimeExt for StreamMessageHandler {
 }
 
 impl StreamMessageHandlerTestRuntimeExt for &StreamMessageHandler {
-    fn with_playback_service(
-        self,
-        service: Arc<dyn PlaybackService>,
-    ) -> StreamMessageHandler {
+    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> StreamMessageHandler {
         test_handler_with_playback_service(self, service)
     }
 
@@ -3226,14 +3237,14 @@ async fn test_observe_playback_state_without_cursor_sends_current_state_immediat
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_without_cursor_sends_snapshot_immediately() {
+async fn test_observe_playback_sends_current_playback_on_subscribe() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture_with_runtime_builder(
         "observe_playback_initial",
         message_sender.clone(),
         |room_id, _| {
             runtime_with_playback_service(Arc::new(FakePlaybackService {
-                snapshot: crate::proto::client::Playback {
+                playback: crate::proto::client::Playback {
                     media_id: public_media_id(),
                     playlist_id: String::new(),
                     room_id: public_id_codec().encode_room_id(room_id).unwrap(),
@@ -3258,13 +3269,7 @@ async fn test_observe_playback_without_cursor_sends_snapshot_immediately() {
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
@@ -3294,9 +3299,9 @@ async fn test_observe_playback_without_cursor_sends_snapshot_immediately() {
     );
     let messages = message_sender.sent_messages();
     match messages.iter().find_map(resource_playback) {
-        Some(snapshot) => {
-            assert_eq!(snapshot.media_id, public_media_id());
-            assert_eq!(snapshot.expires_at, Some(12345));
+        Some(playback) => {
+            assert_eq!(playback.media_id, public_media_id());
+            assert_eq!(playback.expires_at, Some(12345));
         }
         None => panic!("expected Playback after observe, got {messages:?}"),
     }
@@ -3308,14 +3313,14 @@ async fn test_observe_playback_without_cursor_sends_snapshot_immediately() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_reports_current_playback_without_replay_cursor() {
+async fn test_observe_playback_reports_current_playback_without_event_cursor() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture_with_runtime_builder(
-        "observe_pb_snapshot_cursor",
+        "observe_pb_playback_current",
         message_sender.clone(),
         |room_id, _| {
             runtime_with_playback_service(Arc::new(FakePlaybackService {
-                snapshot: crate::proto::client::Playback {
+                playback: crate::proto::client::Playback {
                     media_id: public_media_id(),
                     playlist_id: String::new(),
                     room_id: public_id_codec().encode_room_id(room_id).unwrap(),
@@ -3360,9 +3365,7 @@ async fn test_observe_playback_reports_current_playback_without_replay_cursor() 
     let changed = messages
         .iter()
         .find_map(|message| match &message.message {
-            Some(Message::ResourceChanged(changed))
-                if changed.observe_id == "playback" =>
-            {
+            Some(Message::ResourceChanged(changed)) if changed.observe_id == "playback" => {
                 Some(changed)
             }
             _ => None,
@@ -3372,7 +3375,7 @@ async fn test_observe_playback_reports_current_playback_without_replay_cursor() 
     assert!(resource_playback(&ServerMessage {
         message: Some(Message::ResourceChanged(changed.clone()))
     })
-    .is_some_and(|snapshot| snapshot.media_id == public_media_id()));
+    .is_some_and(|playback| playback.media_id == public_media_id()));
     fixture.shutdown().await;
 }
 
@@ -3460,7 +3463,7 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_state_sends_current_snapshot() {
+async fn test_observe_playback_state_sends_current_state() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
         "observe_playback_state_same_version",
@@ -3507,7 +3510,7 @@ async fn test_observe_playback_state_sends_current_snapshot() {
             .sent_messages()
             .iter()
             .any(|message| { resource_playback_state(message).is_some() }),
-        "observe should send the current playback state snapshot"
+        "observe should send the current playback state"
     );
     assert!(
         stream_state
@@ -3524,30 +3527,29 @@ async fn test_observe_playback_state_sends_current_snapshot() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_with_matching_source_sends_current_snapshot() {
+async fn test_observe_playback_with_matching_source_sends_current_playback() {
     let message_sender = RecordingMessageSender::new();
-    let snapshot_service_slot = Arc::new(std::sync::Mutex::new(None));
-    let snapshot_service_out = Arc::clone(&snapshot_service_slot);
+    let playback_service_slot = Arc::new(std::sync::Mutex::new(None));
+    let playback_service_out = Arc::clone(&playback_service_slot);
     let fixture = create_start_handler_fixture_with_runtime_builder(
-        "observe_pb_snap_same_src",
+        "observe_pb_playback_same_src",
         message_sender.clone(),
         move |room_id, _| {
-            let snapshot_service =
-                MutablePlaybackService::new(crate::proto::client::Playback {
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    room_id: public_id_codec().encode_room_id(room_id).unwrap(),
-                    name: "test media".to_string(),
-                    playlist_position: 0.0,
-                    playback_infos: std::collections::HashMap::new(),
-                    default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    expires_at: Some(chrono::Utc::now().timestamp() + 3600),
-                });
-            *snapshot_service_out
+            let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+                media_id: String::new(),
+                playlist_id: String::new(),
+                room_id: public_id_codec().encode_room_id(room_id).unwrap(),
+                name: "test media".to_string(),
+                playlist_position: 0.0,
+                playback_infos: std::collections::HashMap::new(),
+                default_mode: String::new(),
+                metadata: std::collections::HashMap::new(),
+                expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+            });
+            *playback_service_out
                 .lock()
-                .expect("snapshot slot should lock") = Some(snapshot_service.clone());
-            runtime_with_playback_service(snapshot_service)
+                .expect("playback slot should lock") = Some(playback_service.clone());
+            runtime_with_playback_service(playback_service)
         },
     )
     .await;
@@ -3557,36 +3559,30 @@ async fn test_observe_playback_with_matching_source_sends_current_snapshot() {
         event_service,
         ..
     } = &fixture;
-    let snapshot_service = snapshot_service_slot
+    let playback_service = playback_service_slot
         .lock()
-        .expect("snapshot slot should lock")
+        .expect("playback slot should lock")
         .clone()
-        .expect("snapshot service should be captured");
+        .expect("playback service should be captured");
 
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
     wait_for_recorded_message_count(&stream_state, 1).await;
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
 
     let sent_messages = message_sender.sent_messages();
     assert!(
         sent_messages
             .iter()
             .any(|message| resource_playback(message)
-                .is_some_and(|snapshot| snapshot.name == "test media")),
+                .is_some_and(|playback| playback.name == "test media")),
         "observe should send the current playback: {sent_messages:?}"
     );
     let stream_messages = stream_state.sent_messages();
@@ -3607,7 +3603,7 @@ async fn test_observe_playback_with_matching_source_sends_current_snapshot() {
 async fn test_observe_playback_sends_current_playback_immediately() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
-        create_start_handler_fixture("observe_pb_snap_src_diff", message_sender.clone()).await;
+        create_start_handler_fixture("observe_pb_playback_src_diff", message_sender.clone()).await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -3615,35 +3611,26 @@ async fn test_observe_playback_sends_current_playback_immediately() {
         ..
     } = &fixture;
 
-    let handler =
-        handler
-            .clone()
-            .with_playback_service(Arc::new(FakePlaybackService {
-                snapshot: crate::proto::client::Playback {
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-                    name: "test media".to_string(),
-                    playlist_position: 0.0,
-                    playback_infos: std::collections::HashMap::new(),
-                    default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    expires_at: Some(12345),
-                },
-            }));
+    let handler = handler
+        .clone()
+        .with_playback_service(Arc::new(FakePlaybackService {
+            playback: crate::proto::client::Playback {
+                media_id: String::new(),
+                playlist_id: String::new(),
+                room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+                name: "test media".to_string(),
+                playlist_position: 0.0,
+                playback_infos: std::collections::HashMap::new(),
+                default_mode: String::new(),
+                metadata: std::collections::HashMap::new(),
+                expires_at: Some(12345),
+            },
+        }));
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            public_id_codec()
-                .encode_media_id(MediaId::expect_positive(999))
-                .expect("stale media id should encode"),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
@@ -3673,11 +3660,9 @@ async fn test_observe_playback_sends_current_playback_immediately() {
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_observed_playback_receives_future_playback_state_updates() {
     let message_sender = RecordingMessageSender::new();
-    let fixture = create_start_handler_fixture(
-        "observe_playback_future_update",
-        message_sender.clone(),
-    )
-    .await;
+    let fixture =
+        create_start_handler_fixture("observe_playback_future_update", message_sender.clone())
+            .await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -3685,48 +3670,41 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         ..
     } = &fixture;
 
-    let snapshot_service =
-        MutablePlaybackService::new(crate::proto::client::Playback {
-            media_id: public_media_id(),
-            playlist_id: String::new(),
-            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-            name: "test media".to_string(),
-            playlist_position: 0.0,
-            playback_infos: std::collections::HashMap::new(),
-            default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
-            expires_at: Some(4_102_444_800),
-        });
+    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+        media_id: public_media_id(),
+        playlist_id: String::new(),
+        room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+        name: "test media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: Some(4_102_444_800),
+    });
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
     assert!(
         message_sender
             .sent_messages()
             .iter()
             .any(|message| resource_playback(message)
-                .is_some_and(|snapshot| snapshot.expires_at == Some(4_102_444_800))),
+                .is_some_and(|playback| playback.expires_at == Some(4_102_444_800))),
         "observe should send the current playback"
     );
 
-    snapshot_service.replace(crate::proto::client::Playback {
+    playback_service.replace(crate::proto::client::Playback {
         media_id: public_media_id(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3739,7 +3717,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
     });
 
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
-        event_id: "evt-observe-playback-snapshot-update".to_string(),
+        event_id: "evt-observe-playback-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
@@ -3762,7 +3740,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         loop {
             if message_sender.sent_messages().iter().any(|message| {
                 resource_playback(message)
-                    .is_some_and(|snapshot| snapshot.expires_at == Some(4_102_444_801))
+                    .is_some_and(|playback| playback.expires_at == Some(4_102_444_801))
             }) {
                 break;
             }
@@ -3781,7 +3759,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_provider_credential_change_refreshes_dependent_playback() {
     let message_sender = RecordingMessageSender::new();
-    let fixture = create_start_handler_fixture("pb_snap_cred", message_sender.clone()).await;
+    let fixture = create_start_handler_fixture("pb_playback_cred", message_sender.clone()).await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -3824,19 +3802,18 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         .await
         .expect("playback state should be set");
 
-    let snapshot_service =
-        MutablePlaybackService::new(crate::proto::client::Playback {
-            media_id: public_id_codec().encode_media_id(media.id).unwrap(),
-            playlist_id: String::new(),
-            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-            name: "credential-backed media".to_string(),
-            playlist_position: 0.0,
-            playback_infos: std::collections::HashMap::new(),
-            default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
-            expires_at: Some(4_102_444_800),
-        });
-    snapshot_service.replace_dependencies(vec![
+    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+        media_id: public_id_codec().encode_media_id(media.id).unwrap(),
+        playlist_id: String::new(),
+        room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+        name: "credential-backed media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: Some(4_102_444_800),
+    });
+    playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
             "bilibili",
             handler.user_id.to_string(),
@@ -3845,25 +3822,19 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
     ]);
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
 
-    snapshot_service.replace(crate::proto::client::Playback {
+    playback_service.replace(crate::proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3887,7 +3858,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         loop {
             if message_sender.sent_messages().iter().any(|message| {
                 resource_playback(message)
-                    .is_some_and(|snapshot| snapshot.expires_at == Some(4_102_444_801))
+                    .is_some_and(|playback| playback.expires_at == Some(4_102_444_801))
             }) {
                 break;
             }
@@ -3906,7 +3877,8 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     let message_sender = RecordingMessageSender::new();
-    let fixture = create_start_handler_fixture("pb_snap_cred_unrel", message_sender.clone()).await;
+    let fixture =
+        create_start_handler_fixture("pb_playback_cred_unrel", message_sender.clone()).await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -3949,19 +3921,18 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         .await
         .expect("playback state should be set");
 
-    let snapshot_service =
-        MutablePlaybackService::new(crate::proto::client::Playback {
-            media_id: public_id_codec().encode_media_id(media.id).unwrap(),
-            playlist_id: String::new(),
-            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-            name: "credential-backed media".to_string(),
-            playlist_position: 0.0,
-            playback_infos: std::collections::HashMap::new(),
-            default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
-            expires_at: Some(4_102_444_800),
-        });
-    snapshot_service.replace_dependencies(vec![
+    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+        media_id: public_id_codec().encode_media_id(media.id).unwrap(),
+        playlist_id: String::new(),
+        room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+        name: "credential-backed media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: Some(4_102_444_800),
+    });
+    playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
             "bilibili",
             handler.user_id.to_string(),
@@ -3970,23 +3941,17 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     ]);
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
 
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
         event_id: "evt-provider-credential-unrelated".to_string(),
@@ -3998,7 +3963,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     assert_eq!(
-        snapshot_service.probe.call_count(),
+        playback_service.probe.call_count(),
         1,
         "unrelated credential changes must not reload observed playbacks"
     );
@@ -4013,7 +3978,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
 async fn test_observed_playback_refreshes_when_current_media_is_updated() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
-        create_start_handler_fixture("observe_pb_snap_md_upd", message_sender.clone()).await;
+        create_start_handler_fixture("observe_pb_playback_md_upd", message_sender.clone()).await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -4062,44 +4027,37 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         .await
         .expect("playback should point at created media");
 
-    let snapshot_service =
-        MutablePlaybackService::new(crate::proto::client::Playback {
-            media_id: public_id_codec().encode_media_id(media.id).unwrap(),
-            playlist_id: String::new(),
-            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-            name: "observe-playback-media-update".to_string(),
-            playlist_position: 0.0,
-            playback_infos: std::collections::HashMap::new(),
-            default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
-            expires_at: Some(4_102_444_800),
-        });
+    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+        media_id: public_id_codec().encode_media_id(media.id).unwrap(),
+        playlist_id: String::new(),
+        room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+        name: "observe-playback-media-update".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: Some(4_102_444_800),
+    });
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            public_id_codec().encode_media_id(media.id).unwrap(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
     assert!(
         message_sender
             .sent_messages()
             .iter()
             .any(|message| resource_playback(message)
-                .is_some_and(|snapshot| snapshot.name == "observe-playback-media-update")),
+                .is_some_and(|playback| playback.name == "observe-playback-media-update")),
         "observe should send the current playback"
     );
 
@@ -4114,7 +4072,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         .await
         .expect("editing current playback media should succeed");
 
-    snapshot_service.replace(crate::proto::client::Playback {
+    playback_service.replace(crate::proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4130,7 +4088,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
     });
 
     event_service.broadcast(RealtimeEvent::MediaUpdated {
-        event_id: "evt-observe-playback-snapshot-media-update".to_string(),
+        event_id: "evt-observe-playback-media-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
@@ -4142,11 +4100,11 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             if message_sender.sent_messages().iter().any(|message| {
-                resource_playback(message).is_some_and(|snapshot| {
-                    snapshot
-                            .metadata
-                            .get("token")
-                            .is_some_and(|token| token == "\"media-updated\"")
+                resource_playback(message).is_some_and(|playback| {
+                    playback
+                        .metadata
+                        .get("token")
+                        .is_some_and(|token| token == "\"media-updated\"")
                 })
             }) {
                 break;
@@ -4167,7 +4125,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
 async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
-        create_start_handler_fixture("observe_pb_snap_pl_upd", message_sender.clone()).await;
+        create_start_handler_fixture("observe_pb_playback_pl_upd", message_sender.clone()).await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -4212,44 +4170,37 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .await
         .expect("playback should point at created playlist");
 
-    let snapshot_service =
-        MutablePlaybackService::new(crate::proto::client::Playback {
-            media_id: String::new(),
-            playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
-            room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-            name: "observe-playback-playlist-update".to_string(),
-            playlist_position: 0.0,
-            playback_infos: std::collections::HashMap::new(),
-            default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
-            expires_at: Some(4_102_444_800),
-        });
+    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+        media_id: String::new(),
+        playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
+        room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
+        name: "observe-playback-playlist-update".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: Some(4_102_444_800),
+    });
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            public_id_codec().encode_playlist_id(playlist.id).unwrap(),
-            br#"{"relative_path":"/playlist-item-1.mp4"}"#.to_vec(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
     assert!(
         message_sender
             .sent_messages()
             .iter()
             .any(|message| resource_playback(message)
-                .is_some_and(|snapshot| snapshot.name == "observe-playback-playlist-update")),
+                .is_some_and(|playback| playback.name == "observe-playback-playlist-update")),
         "observe should send the current playback"
     );
 
@@ -4268,7 +4219,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .await
         .expect("editing current playback playlist should succeed");
 
-    snapshot_service.replace(crate::proto::client::Playback {
+    playback_service.replace(crate::proto::client::Playback {
         media_id: String::new(),
         playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4284,7 +4235,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
     });
 
     event_service.broadcast(RealtimeEvent::PlaylistUpdated {
-        event_id: "evt-observe-playback-snapshot-playlist-update".to_string(),
+        event_id: "evt-observe-playback-playlist-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
@@ -4295,11 +4246,11 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             if message_sender.sent_messages().iter().any(|message| {
-                resource_playback(message).is_some_and(|snapshot| {
-                    snapshot
-                            .metadata
-                            .get("token")
-                            .is_some_and(|token| token == "\"playlist-updated\"")
+                resource_playback(message).is_some_and(|playback| {
+                    playback
+                        .metadata
+                        .get("token")
+                        .is_some_and(|token| token == "\"playlist-updated\"")
                 })
             }) {
                 break;
@@ -4320,7 +4271,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
 async fn test_observed_playback_refreshes_when_target_changes_at_same_version() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
-        "observe_pb_snap_same_ver_target_change",
+        "observe_pb_playback_same_target_change",
         message_sender.clone(),
     )
     .await;
@@ -4332,7 +4283,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
     } = &fixture;
     promote_handler_to_room_admin(&fixture).await;
 
-    let snapshot_service = SequencedPlaybackService::new([
+    let playback_service = SequencedPlaybackService::new([
         Ok(crate::proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
@@ -4361,30 +4312,24 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
     ]);
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
     assert!(
         message_sender
             .sent_messages()
             .iter()
             .any(|message| resource_playback(message)
-                .is_some_and(|snapshot| snapshot.expires_at == Some(4_102_444_800))),
+                .is_some_and(|playback| playback.expires_at == Some(4_102_444_800))),
         "observe should send the current playback"
     );
 
@@ -4407,7 +4352,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
         .expect("playback target should update before broadcasting state change");
 
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
-        event_id: "evt-observe-playback-snapshot-same-version-new-content".to_string(),
+        event_id: "evt-observe-playback-same-version-new-content".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
@@ -4418,11 +4363,11 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             if message_sender.sent_messages().iter().any(|message| {
-                resource_playback(message).is_some_and(|snapshot| {
-                    snapshot
-                            .metadata
-                            .get("token")
-                            .is_some_and(|token| token == "\"refreshed\"")
+                resource_playback(message).is_some_and(|playback| {
+                    playback
+                        .metadata
+                        .get("token")
+                        .is_some_and(|token| token == "\"refreshed\"")
                 })
             }) {
                 break;
@@ -4443,7 +4388,8 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
 async fn test_playback_refresh_failure_removes_observation_without_closing_connection() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
-        create_start_handler_fixture("observe_pb_snap_refresh_fail", message_sender.clone()).await;
+        create_start_handler_fixture("observe_pb_playback_refresh_fail", message_sender.clone())
+            .await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -4451,7 +4397,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
         ..
     } = &fixture;
 
-    let snapshot_service = SequencedPlaybackService::new([
+    let playback_service = SequencedPlaybackService::new([
         Ok(crate::proto::client::Playback {
             media_id: public_media_id(),
             playlist_id: String::new(),
@@ -4469,18 +4415,12 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
     ]);
     let handler = handler
         .clone()
-        .with_playback_service(snapshot_service.clone());
+        .with_playback_service(playback_service.clone());
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
@@ -4502,7 +4442,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
     .expect("initial observed playback should be delivered");
 
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
-        event_id: "evt-observe-playback-snapshot-refresh-error".to_string(),
+        event_id: "evt-observe-playback-refresh-error".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
@@ -4521,16 +4461,16 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
         timestamp: now(),
     });
 
-    snapshot_service.wait_for_calls(1).await;
+    playback_service.wait_for_calls(1).await;
     assert!(
         connection_service
             .get_connection(handler.connection_id())
             .is_some(),
-        "snapshot refresh failures should not tear down the realtime connection"
+        "playback refresh failures should not tear down the realtime connection"
     );
 
     event_service.broadcast(RealtimeEvent::UserLeft {
-        event_id: "evt-after-snapshot-refresh-error".to_string(),
+        event_id: "evt-after-playback-refresh-error".to_string(),
         room_id: handler.room_id,
         user_id: UserId::expect_positive(113_002),
         username: "another-user".to_string(),
@@ -4559,7 +4499,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
         .count();
     assert_eq!(
         playback_messages, 1,
-        "failed snapshot refresh should remove the observation instead of repeatedly resending"
+        "failed playback refresh should remove the observation instead of repeatedly resending"
     );
 
     connection_service.disconnect_connection(handler.connection_id());
@@ -4569,10 +4509,10 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_playback_observation_refreshes_when_snapshot_expires_without_state_change() {
+async fn test_playback_observation_refreshes_when_playback_expires_without_state_change() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
-        create_start_handler_fixture("observe_pb_snap_expiry", message_sender.clone()).await;
+        create_start_handler_fixture("observe_pb_playback_expiry", message_sender.clone()).await;
     let StartTestFixture {
         handler,
         connection_service,
@@ -4581,7 +4521,7 @@ async fn test_playback_observation_refreshes_when_snapshot_expires_without_state
     } = &fixture;
 
     let refresh_at = chrono::Utc::now().timestamp() + 1;
-    let snapshot_service = SequencedPlaybackService::new([
+    let playback_service = SequencedPlaybackService::new([
         Ok(crate::proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
@@ -4608,20 +4548,12 @@ async fn test_playback_observation_refreshes_when_snapshot_expires_without_state
             expires_at: Some(refresh_at + 60),
         }),
     ]);
-    let handler = handler
-        .clone()
-        .with_playback_service(snapshot_service);
+    let handler = handler.clone().with_playback_service(playback_service);
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message(
-            "playback-snapshot",
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-        )),
+        message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
@@ -4633,11 +4565,11 @@ async fn test_playback_observation_refreshes_when_snapshot_expires_without_state
                 .sent_messages()
                 .iter()
                 .filter_map(resource_playback)
-                .any(|snapshot| {
-                    snapshot
-                            .metadata
-                            .get("token")
-                            .is_some_and(|token| token == "\"refreshed\"")
+                .any(|playback| {
+                    playback
+                        .metadata
+                        .get("token")
+                        .is_some_and(|token| token == "\"refreshed\"")
                 })
             {
                 break;

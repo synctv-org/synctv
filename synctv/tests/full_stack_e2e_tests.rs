@@ -115,28 +115,18 @@ fn optional_event_sequence(sequence: impl Into<String>) -> Option<i64> {
     }
 }
 
-fn observe_playback_message(
-    observe_id: &str,
-    after_event_sequence: impl Into<String>,
-) -> synctv_proto::client::ClientMessage {
+fn observe_playback_message(observe_id: &str) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObservePlayback, ObserveResource,
-        ResourceDeliveryMode,
+        client_message, observe_resource, ObservePlayback, ObserveResource, ResourceDeliveryMode,
     };
 
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(observe_resource::Resource::Playback(
-                ObservePlayback {
-                    media_id: None,
-                    playlist_id: None,
-                    target: Vec::new(),
-                    playback_client_profile: None,
-                    after_event_sequence: optional_event_sequence(after_event_sequence),
-                },
-            )),
+            resource: Some(observe_resource::Resource::Playback(ObservePlayback {
+                playback_client_profile: None,
+            })),
         })),
     }
 }
@@ -210,9 +200,7 @@ fn observe_room_members_message(
     }
 }
 
-fn resource_playback(
-    message: &ServerMessage,
-) -> Option<&synctv_proto::client::Playback> {
+fn resource_playback(message: &ServerMessage) -> Option<&synctv_proto::client::Playback> {
     match &message.message {
         Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
             Some(synctv_proto::client::resource_changed::Payload::Playback(snapshot)) => {
@@ -4215,10 +4203,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         media_one_id
     );
     assert_eq!(playback_state["playback_state"]["is_playing"], true);
-    assert_eq!(
-        playback_state["playback"]["media_id"],
-        media_one_id
-    );
+    assert_eq!(playback_state["playback"]["media_id"], media_one_id);
 
     let stopped_playback = run_synctv_remote_cli_json(
         &server,
@@ -7073,12 +7058,11 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_future_updates(
-) {
+async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_future_updates() {
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use tokio_stream::wrappers::ReceiverStream;
 
-    let fixture = start_room_realtime_fixture("grpc-watch-playback-snapshot").await;
+    let fixture = start_room_realtime_fixture("grpc-watch-playback").await;
     let RoomRealtimeFixture {
         server,
         room_id,
@@ -7149,10 +7133,7 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
         .expect("connect member room gRPC client");
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
     outbound_tx
-        .send(observe_playback_message(
-            "grpc-playback-snapshot",
-            String::new(),
-        ))
+        .send(observe_playback_message("grpc-playback"))
         .await
         .expect("queue initial playback observe request");
     let outbound = ReceiverStream::new(outbound_rx);
@@ -7169,21 +7150,15 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
         .expect("message_stream should establish")
         .into_inner();
 
-    let initial_snapshot = recv_matching_grpc_server_message(
+    let _initial_playback = recv_matching_grpc_server_message(
         &mut inbound,
         Duration::from_secs(10),
         |message| {
-            resource_playback(message).is_some_and(|snapshot| {
-                snapshot.media_id == media_one_id && !snapshot.version.is_empty()
-            })
+            resource_playback(message).is_some_and(|playback| playback.media_id == media_one_id)
         },
         "initial grpc playback",
     )
     .await;
-    let initial_version = resource_playback(&initial_snapshot)
-        .expect("playback should be present")
-        .version
-        .clone();
 
     let _ = run_synctv_remote_cli_json(
         &server,
@@ -7200,25 +7175,19 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
     )
     .await;
 
-    let updated_snapshot = recv_matching_grpc_server_message(
+    let updated_playback = recv_matching_grpc_server_message(
         &mut inbound,
         Duration::from_secs(10),
         |message| {
-            resource_playback(message).is_some_and(|snapshot| {
-                snapshot.media_id == media_two_id && !snapshot.version.is_empty()
-            })
+            resource_playback(message).is_some_and(|playback| playback.media_id == media_two_id)
         },
         "updated grpc playback",
     )
     .await;
 
-    let snapshot =
-        resource_playback(&updated_snapshot).expect("updated snapshot should be present");
-    assert_eq!(snapshot.media_id, media_two_id);
-    assert_eq!(
-        snapshot.version, initial_version,
-        "switching between newly-created media should preserve resource version"
-    );
+    let playback =
+        resource_playback(&updated_playback).expect("updated playback should be present");
+    assert_eq!(playback.media_id, media_two_id);
 }
 
 #[tokio::test]
@@ -8341,7 +8310,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
 async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates() {
     use synctv_proto::client::server_message;
 
-    let fixture = start_room_realtime_fixture("ws-watch-playback-snapshot").await;
+    let fixture = start_room_realtime_fixture("ws-watch-playback").await;
     let RoomRealtimeFixture {
         server,
         api_addr,
@@ -8464,27 +8433,17 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
     )
     .await;
 
-    send_client_message(
-        &mut member_ws,
-        observe_playback_message("ws-playback-snapshot", String::new()),
-    )
-    .await;
+    send_client_message(&mut member_ws, observe_playback_message("ws-playback")).await;
 
-    let initial_snapshot = recv_matching_server_message(
+    let _initial_playback = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_playback(message).is_some_and(|snapshot| {
-                snapshot.media_id == media_one_id && !snapshot.version.is_empty()
-            })
+            resource_playback(message).is_some_and(|playback| playback.media_id == media_one_id)
         },
         "initial playback",
     )
     .await;
-    let initial_version = resource_playback(&initial_snapshot)
-        .expect("playback should be present")
-        .version
-        .clone();
 
     let _ = run_synctv_remote_cli_json(
         &server,
@@ -8501,25 +8460,19 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
     )
     .await;
 
-    let updated_snapshot = recv_matching_server_message(
+    let updated_playback = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_playback(message).is_some_and(|snapshot| {
-                snapshot.media_id == media_two_id && !snapshot.version.is_empty()
-            })
+            resource_playback(message).is_some_and(|playback| playback.media_id == media_two_id)
         },
         "updated playback",
     )
     .await;
 
-    let snapshot =
-        resource_playback(&updated_snapshot).expect("updated snapshot should be present");
-    assert_eq!(snapshot.media_id, media_two_id);
-    assert_eq!(
-        snapshot.version, initial_version,
-        "switching between newly-created media should preserve resource version"
-    );
+    let playback =
+        resource_playback(&updated_playback).expect("updated playback should be present");
+    assert_eq!(playback.media_id, media_two_id);
 }
 
 #[tokio::test]
